@@ -32,6 +32,7 @@ pub fn run() {
       host::send,
       host::cancel_turn,
       host::get_state,
+      host::answer_permission,
       snapshot::snapshot_refresh,
       snapshot::pane_capture,
     ])

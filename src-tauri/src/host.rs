@@ -15,9 +15,10 @@
 //!   with `session/load`.
 //!
 //! Commands: `host_start`, `host_stop`, `host_restart`, `send`, `get_state`,
-//! and `cancel_turn`, which answers "not supported yet".
+//! `answer_permission`, and `cancel_turn`, which answers "not supported yet".
 //! Events: `session`, `state`, `text`, `tool_call`, `update`, `outbox`,
-//! `prompt_result`, `usage`, `permission`, `host_health`.
+//! `prompt_result`, `usage`, `permission`, `permission_request`,
+//! `permission_resolved`, `host_health`.
 
 use crate::envpath;
 use serde_json::{json, Value};
@@ -74,6 +75,7 @@ pub enum Cmd {
     Restart { reply: oneshot::Sender<Result<(), String>> },
     Send { text: String, reply: oneshot::Sender<Result<String, String>> },
     GetState { reply: oneshot::Sender<Value> },
+    AnswerPermission { id: String, option_id: String, reply: oneshot::Sender<Result<(), String>> },
 }
 
 /// Where the host sends its events and keeps its per-home files. The app uses
@@ -183,11 +185,22 @@ pub async fn get_state(host: TauriState<'_, HostHandle>) -> Result<Value, String
     host.call(|reply| Cmd::GetState { reply }).await
 }
 
+/// Answer an approval the first mate asked for in an ask-first home.
+#[tauri::command]
+pub async fn answer_permission(
+    id: String,
+    option_id: String,
+    host: TauriState<'_, HostHandle>,
+) -> Result<(), String> {
+    host.call(|reply| Cmd::AnswerPermission { id, option_id, reply }).await?
+}
+
 // ------------------------------------------------------------------- rpc ---
 
 enum HostEvent {
     Update { gen: u64, params: Value },
     Permission { gen: u64, params: Value, chose: String },
+    PermissionAsked { gen: u64, rpc_id: u64, params: Value },
     Exited { gen: u64 },
     Stderr { gen: u64, line: String },
     PromptDone { gen: u64, outbox_id: String, result: RpcResult },
@@ -384,6 +397,7 @@ async fn spawn_adapter(
     gen: u64,
     resume: Option<String>,
     groups: &Groups,
+    auto_allow: bool,
 ) -> Result<Spawned, String> {
     let name = std::env::var("ACP_ADAPTER").unwrap_or_else(|_| "claude-agent-acp".to_string());
     let program = envpath::resolve(&name)
@@ -450,10 +464,16 @@ async fn spawn_adapter(
                             let _ = events.send(HostEvent::Update { gen, params });
                         }
                     (Some("session/request_permission"), Some(id)) => {
-                        // Permission posture is firstmate policy, applied through the
-                        // session mode; a request that still arrives is answered
-                        // allow_once and reported, never turned into a card.
                         let params = message.get("params").cloned().unwrap_or(Value::Null);
+                        if !auto_allow {
+                            // An ask-first home: the adapter only asks when Claude wants a
+                            // human, so the captain decides. The request stays open until
+                            // answered while this reader keeps reading.
+                            let _ = events.send(HostEvent::PermissionAsked { gen, rpc_id: id, params });
+                            continue;
+                        }
+                        // A bypass home skips prompts through the session mode; a request
+                        // that still arrives is answered allow_once and reported.
                         let options = params
                             .get("options")
                             .and_then(Value::as_array)
@@ -791,6 +811,13 @@ impl State {
     }
 }
 
+/// An approval the first mate asked for in an ask-first home, waiting on the captain.
+struct AskedPermission {
+    rpc_id: u64,
+    title: String,
+    options: Vec<Value>,
+}
+
 struct Host {
     env: Arc<dyn HostEnv>,
     ev_tx: mpsc::UnboundedSender<HostEvent>,
@@ -802,6 +829,7 @@ struct Host {
     state: State,
     detail: Value,
     permission: Option<&'static str>,
+    asked: HashMap<String, AskedPermission>,
     in_flight: VecDeque<String>,
     started_hint: Option<String>,
     last_activity: Instant,
@@ -827,6 +855,7 @@ impl Host {
             detail: json!({}),
             permission: None,
             in_flight: VecDeque::new(),
+            asked: HashMap::new(),
             started_hint: None,
             last_activity: Instant::now(),
             last_prompt_done: None,
@@ -928,6 +957,24 @@ impl Host {
         Err("stopped before the first mate finished starting".to_string())
     }
 
+    /// Send the captain's answer to an approval the first mate is waiting on.
+    async fn answer_permission(&mut self, id: &str, option_id: &str) -> Result<(), String> {
+        let Some(asked) = self.asked.get(id) else {
+            return Err("that approval request is no longer waiting".to_string());
+        };
+        if !asked.options.iter().any(|option| option["option_id"] == option_id) {
+            return Err(format!("'{option_id}' is not one of the offered choices"));
+        }
+        let Some(adapter) = self.adapter.as_ref() else {
+            return Err("the first mate is not running".to_string());
+        };
+        let response = json!({"jsonrpc": "2.0", "id": asked.rpc_id, "result": {"outcome": {"outcome": "selected", "optionId": option_id}}});
+        adapter.rpc.write(&response).await?;
+        self.asked.remove(id);
+        self.emit("permission_resolved", json!({"id": id, "option_id": option_id}));
+        Ok(())
+    }
+
     async fn stop_now(&mut self) {
         self.requeue_in_flight();
         self.stop_adapter().await;
@@ -971,6 +1018,9 @@ impl Host {
                 self.emit("outbox", json!({"id": id, "state": "queued", "while": self.state.name()}));
                 let _ = reply.send(Ok(id));
             }
+            Cmd::AnswerPermission { id, option_id, reply } => {
+                let _ = reply.send(self.answer_permission(&id, &option_id).await);
+            }
             Cmd::GetState { reply } => {
                 let queued: Vec<String> = self
                     .outbox
@@ -987,6 +1037,11 @@ impl Host {
                     "queued": queued,
                     "agent_turns": self.agent_turns,
                     "rewake_storm": self.storm_active,
+                    "permission_requests": self
+                        .asked
+                        .iter()
+                        .map(|(id, asked)| json!({"id": id, "title": asked.title, "options": asked.options}))
+                        .collect::<Vec<_>>(),
                 }));
             }
         }
@@ -1041,7 +1096,8 @@ impl Host {
 
         let resume = read_session_id(&host_dir);
         self.gen += 1;
-        let spawned = match spawn_adapter(&home, self.ev_tx.clone(), self.gen, resume, &self.groups).await {
+        let auto_allow = config_mode == "bypass";
+        let spawned = match spawn_adapter(&home, self.ev_tx.clone(), self.gen, resume, &self.groups, auto_allow).await {
             Ok(spawned) => spawned,
             Err(reason) => {
                 self.set_state(State::Dead, json!({"reason": reason}));
@@ -1158,6 +1214,8 @@ impl Host {
     }
 
     async fn stop_adapter(&mut self) {
+        // Open approvals belong to the adapter being stopped; they cannot be answered after it.
+        self.asked.clear();
         if let Some(mut adapter) = self.adapter.take() {
             let report = adapter.kill_tree().await;
             self.report_kill(report, "stop");
@@ -1177,11 +1235,32 @@ impl Host {
                 let title = params.pointer("/toolCall/title").and_then(Value::as_str).unwrap_or("");
                 self.emit("permission", json!({"title": title, "chose": chose}));
             }
+            HostEvent::PermissionAsked { gen, rpc_id, params } if gen == self.gen => {
+                let title = params
+                    .pointer("/toolCall/title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("an action")
+                    .to_string();
+                let options: Vec<Value> = params
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .map(|options| {
+                        options
+                            .iter()
+                            .map(|o| json!({"option_id": o.get("optionId"), "name": o.get("name"), "kind": o.get("kind")}))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let id = format!("g{gen}-r{rpc_id}");
+                self.emit("permission_request", json!({"id": id, "title": title, "options": options}));
+                self.asked.insert(id, AskedPermission { rpc_id, title, options });
+            }
             HostEvent::Stderr { gen, line } if gen == self.gen => {
                 let short: String = line.chars().take(240).collect();
                 self.emit("host_health", json!({"kind": "adapter_stderr", "line": short}));
             }
             HostEvent::Exited { gen } if gen == self.gen && self.state.live() => {
+                self.asked.clear();
                 // The adapter is gone, but the Claude CLI and hook processes it
                 // started may not be: kill the group off the loop.
                 if let Some(mut adapter) = self.adapter.take() {
@@ -1561,6 +1640,130 @@ mod tests {
         }
     }
 
+    /// Tests that point ACP_ADAPTER at a fake adapter take this, since the variable is process-wide.
+    static ADAPTER_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Answers the handshake, then asks for one approval during a prompt and
+    /// replies with the option it was given.
+    const FAKE_ADAPTER: &str = r#"#!/usr/bin/env python3
+import json, os, sys
+open(os.path.join(os.environ["FM_HOME"], "adapter.pid"), "w").write(str(os.getpid()))
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+prompt = None
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    m = json.loads(line)
+    method = m.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"agentCapabilities": {"loadSession": False}}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s1", "modes": {"availableModes": [{"id": "auto"}, {"id": "bypassPermissions"}]}}})
+    elif method == "session/set_mode":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+    elif method == "session/prompt":
+        prompt = m["id"]
+        send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {"sessionId": "s1", "toolCall": {"title": "Delete the build folder"}, "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]}})
+    elif method is None and m.get("id") == 9001:
+        chose = m["result"]["outcome"]["optionId"]
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "chose " + chose}}}})
+        send({"jsonrpc": "2.0", "id": prompt, "result": {"stopReason": "end_turn"}})
+"#;
+
+    #[derive(Default)]
+    struct EventLog(std::sync::Mutex<Vec<(String, Value)>>);
+
+    struct RecordingEnv {
+        dir: PathBuf,
+        log: Arc<EventLog>,
+    }
+
+    impl HostEnv for RecordingEnv {
+        fn emit(&self, event: &str, body: Value) {
+            self.log.0.lock().unwrap().push((event.to_string(), body));
+        }
+
+        fn data_dir(&self) -> Result<PathBuf, String> {
+            Ok(self.dir.clone())
+        }
+    }
+
+    async fn wait_for(log: &EventLog, limit: Duration, pred: impl Fn(&str, &Value) -> bool) -> Option<Value> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if let Some((_, body)) = log.0.lock().unwrap().iter().find(|(event, body)| pred(event, body)) {
+                return Some(body.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        None
+    }
+
+    /// Runs one prompt on the fake adapter in a home with the given permission
+    /// mode, answering the approval with `answer` when the captain is asked.
+    async fn fake_permission_turn(name: &str, mode: Option<&str>, answer: Option<&str>) -> (Vec<(String, Value)>, String) {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = home_with_lock_script(
+            name,
+            Some(r#"if [ -f "$FM_HOME/adapter.pid" ]; then echo "lock: held by live harness pid $(cat "$FM_HOME/adapter.pid")"; else echo 'lock: free'; fi"#),
+        );
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        if let Some(mode) = mode {
+            std::fs::create_dir_all(home.join("config")).unwrap();
+            std::fs::write(home.join("config").join("claude-permission-mode"), format!("{mode}\n")).unwrap();
+        }
+        let adapter = home.join("fake-adapter.py");
+        std::fs::write(&adapter, FAKE_ADAPTER).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Send { text: "go".into(), reply }).await.unwrap().expect("send");
+        if let Some(answer) = answer {
+            let request = wait_for(&log, Duration::from_secs(10), |e, _| e == "permission_request")
+                .await
+                .expect("the captain was asked");
+            let id = request["id"].as_str().unwrap().to_string();
+            host.call(|reply| Cmd::AnswerPermission { id, option_id: answer.to_string(), reply })
+                .await
+                .unwrap()
+                .expect("the answer was accepted");
+        }
+        let done = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["state"] == "picked_up").await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        assert!(done.is_some(), "the prompt never finished: {events:?}");
+        let text = events
+            .iter()
+            .filter(|(event, _)| event == "text")
+            .filter_map(|(_, body)| body["text"].as_str())
+            .collect();
+        let _ = std::fs::remove_dir_all(&home);
+        (events, text)
+    }
+
+    #[tokio::test]
+    async fn ask_first_home_asks_the_captain_and_sends_their_answer() {
+        let (events, text) = fake_permission_turn("perm-auto", Some("auto"), Some("reject")).await;
+        assert_eq!(text, "chose reject");
+        let request = events.iter().find(|(e, _)| e == "permission_request").map(|(_, b)| b).unwrap();
+        assert_eq!(request["title"], "Delete the build folder");
+        assert!(events.iter().any(|(e, b)| e == "permission_resolved" && b["option_id"] == "reject"));
+        assert!(!events.iter().any(|(e, _)| e == "permission"), "an ask-first home never auto-approves");
+    }
+
+    #[tokio::test]
+    async fn bypass_home_approves_without_asking() {
+        let (events, text) = fake_permission_turn("perm-bypass", None, None).await;
+        assert_eq!(text, "chose allow");
+        assert!(!events.iter().any(|(e, _)| e == "permission_request"));
+    }
+
     struct QuietEnv(PathBuf);
 
     impl HostEnv for QuietEnv {
@@ -1580,6 +1783,7 @@ mod tests {
         let adapter = home.join("hung-adapter.sh");
         std::fs::write(&adapter, "#!/bin/sh\nsleep 600 &\nexec sleep 600\n").unwrap();
         std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _adapter_env = ADAPTER_ENV.lock().await;
         std::env::set_var("ACP_ADAPTER", &adapter);
 
         let host = HostHandle::spawn_with(Arc::new(QuietEnv(home.join("appdata"))));
