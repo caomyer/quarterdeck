@@ -1231,6 +1231,13 @@ impl Host {
         if error.is_none() {
             self.record(&outbox_id, None, "picked_up", json!({}));
             self.emit("outbox", json!({"id": outbox_id, "state": "picked_up"}));
+        } else if let Some(message) = error.as_deref().and_then(session_limit_message) {
+            // The adapter also streams this as chat text; the health event is what
+            // tells the UI the account is out of turns rather than the mate talking.
+            self.emit(
+                "host_health",
+                json!({"kind": "session_limit", "id": outbox_id, "warning": message}),
+            );
         }
         self.emit(
             "prompt_result",
@@ -1290,6 +1297,17 @@ impl Host {
             });
         }
     }
+}
+
+/// The user-facing text of a prompt error that means the Claude account hit its
+/// usage limit, as the adapter reports it: `data.errorKind == "rate_limit"`.
+fn session_limit_message(error: &str) -> Option<String> {
+    let error: Value = serde_json::from_str(error).ok()?;
+    if error.pointer("/data/errorKind").and_then(Value::as_str) != Some("rate_limit") {
+        return None;
+    }
+    let message = error.get("message").and_then(Value::as_str).unwrap_or("Claude's usage limit was reached");
+    Some(message.trim_start_matches("Internal error: ").to_string())
 }
 
 fn report_kill(env: &dyn HostEnv, report: Value, after: &str) {
@@ -1439,6 +1457,18 @@ mod tests {
             .collect();
         assert_eq!(seen, vec![("a", "first", true), ("c", "third", false)]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_limit_is_read_from_the_adapter_error() {
+        // Verbatim from the live run's prompt_result.
+        let limit = r#"{"code":-32603,"data":{"errorKind":"rate_limit"},"message":"Internal error: You've hit your session limit · resets 1:50pm (America/Los_Angeles)"}"#;
+        assert_eq!(
+            session_limit_message(limit).as_deref(),
+            Some("You've hit your session limit · resets 1:50pm (America/Los_Angeles)")
+        );
+        assert_eq!(session_limit_message(r#"{"code":-32603,"message":"Internal error: boom"}"#), None);
+        assert_eq!(session_limit_message("the adapter exited"), None);
     }
 
     struct QuietEnv(PathBuf);
