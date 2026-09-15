@@ -14,7 +14,8 @@
 //! - restart kills the adapter's process group and resumes the conversation
 //!   with `session/load`.
 //!
-//! Commands: `host_start`, `host_stop`, `host_restart`, `send`, `get_state`.
+//! Commands: `host_start`, `host_stop`, `host_restart`, `send`, `get_state`,
+//! and `cancel_turn`, which answers "not supported yet".
 //! Events: `session`, `state`, `text`, `tool_call`, `update`, `outbox`,
 //! `prompt_result`, `usage`, `permission`, `host_health`.
 
@@ -128,6 +129,13 @@ pub async fn host_restart(host: TauriState<'_, HostHandle>) -> Result<(), String
 #[tauri::command]
 pub async fn send(text: String, host: TauriState<'_, HostHandle>) -> Result<String, String> {
     host.call(|reply| Cmd::Send { text, reply }).await?
+}
+
+/// Registered so the UI gets a clear answer; cancelling and steering a turn
+/// land after the first end-to-end run.
+#[tauri::command]
+pub async fn cancel_turn() -> Result<(), String> {
+    Err("cancelling the first mate's turn is not supported yet".to_string())
 }
 
 #[tauri::command]

@@ -28,6 +28,7 @@ pub fn run() {
       host::host_stop,
       host::host_restart,
       host::send,
+      host::cancel_turn,
       host::get_state,
       snapshot::snapshot_refresh,
       snapshot::pane_capture,
