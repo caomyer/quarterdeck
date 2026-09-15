@@ -782,7 +782,7 @@ impl Outbox {
             .into_iter()
             .filter_map(|id| {
                 let (text, state, ever_sent) = latest.get(&id)?.clone();
-                (state != "picked_up").then_some(Pending { id, text, ever_sent })
+                (!matches!(state.as_str(), "picked_up" | "failed")).then_some(Pending { id, text, ever_sent })
             })
             .collect();
         Outbox { path: path.to_path_buf(), queue, counter: 0 }
@@ -1418,16 +1418,28 @@ impl Host {
             .unwrap_or(Value::Null);
         let usage = result.as_ref().ok().and_then(|r| r.get("usage")).cloned().unwrap_or(Value::Null);
         let error = result.as_ref().err().cloned();
-        if error.is_none() {
-            self.record(&outbox_id, None, "picked_up", json!({}));
-            self.emit("outbox", json!({"id": outbox_id, "state": "picked_up"}));
-        } else if let Some(message) = error.as_deref().and_then(session_limit_message) {
-            // The adapter also streams this as chat text; the health event is what
-            // tells the UI the account is out of turns rather than the mate talking.
-            self.emit(
-                "host_health",
-                json!({"kind": "session_limit", "id": outbox_id, "warning": message}),
-            );
+        match error.as_deref() {
+            None => {
+                self.record(&outbox_id, None, "picked_up", json!({}));
+                self.emit("outbox", json!({"id": outbox_id, "state": "picked_up"}));
+            }
+            // The adapter went away mid-turn: the message stays unread and is re-sent
+            // after the next start, marked requeued.
+            Some(error) if cut_off_by_exit(error) => {}
+            // The turn itself ended in an error. Recording that is final, so a restart
+            // never sends the message a second time; the captain decides to send again.
+            Some(error) => {
+                self.record(&outbox_id, None, "failed", json!({"error": error}));
+                self.emit("outbox", json!({"id": outbox_id, "state": "failed", "error": error}));
+                if let Some(message) = session_limit_message(error) {
+                    // The adapter also streams this as chat text; the health event is what
+                    // tells the UI the account is out of turns rather than the mate talking.
+                    self.emit(
+                        "host_health",
+                        json!({"kind": "session_limit", "id": outbox_id, "warning": message}),
+                    );
+                }
+            }
         }
         self.emit(
             "prompt_result",
@@ -1500,6 +1512,12 @@ fn session_limit_message(error: &str) -> Option<String> {
 fn report_kill(env: &dyn HostEnv, report: Value, after: &str) {
     let kind = if has_survivors(&report) { "kill_refused" } else { "kill_group" };
     env.emit("host_health", json!({"kind": kind, "after": after, "report": report, "at_ms": now_ms()}));
+}
+
+/// Whether a prompt error came from the adapter going away rather than from the
+/// turn itself. These are the errors `Rpc` produces when the adapter is gone.
+fn cut_off_by_exit(error: &str) -> bool {
+    error.starts_with("the adapter exited") || error.starts_with("write failed")
 }
 
 fn read_session_id(host_dir: &Path) -> Option<String> {
@@ -1723,6 +1741,9 @@ while True:
     elif method == "session/prompt":
         text = "".join(part.get("text", "") for part in m["params"]["prompt"])
         open(os.path.join(home, "prompts.log"), "a").write(text + "\n")
+        if "fail-me" in text:
+            send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32603, "message": "Internal error: boom"}})
+            continue
         if "fm-session-start.sh" in text:
             claim()
             send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
@@ -1807,6 +1828,40 @@ while True:
             .collect();
         let _ = std::fs::remove_dir_all(&home);
         (events, text)
+    }
+
+    /// A turn that ends in an error is recorded failed and is never sent again,
+    /// not on restart and not on a later start.
+    #[tokio::test]
+    async fn a_failed_turn_is_not_sent_twice() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = home_with_lock_script(
+            "failed-turn",
+            Some(r#"if [ -f "$FM_HOME/adapter.pid" ]; then echo "lock: held by live harness pid $(cat "$FM_HOME/adapter.pid")"; else echo 'lock: free'; fi"#),
+        );
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        let adapter = home.join("fake-adapter.py");
+        std::fs::write(&adapter, FAKE_ADAPTER).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        let id = host.call(|reply| Cmd::Send { text: "fail-me".into(), reply }).await.unwrap().expect("send");
+        let failed = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == id.as_str() && b["state"] == "failed").await;
+        let _ = std::fs::remove_file(home.join("adapter.pid"));
+        host.call(|reply| Cmd::Restart { reply }).await.unwrap().expect("restart");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let prompts = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default();
+        let events = log.0.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&home);
+
+        let failed = failed.expect("the failed turn was reported");
+        assert!(failed["error"].as_str().is_some_and(|e| e.contains("boom")), "{failed}");
+        assert_eq!(prompts.matches("fail-me").count(), 1, "sent more than once: {prompts:?}");
+        assert!(!events.iter().any(|(e, b)| e == "outbox" && b["id"] == id.as_str() && b["state"] == "requeued"));
     }
 
     /// A resumed session whose hook only nudged: the host sends firstmate's
