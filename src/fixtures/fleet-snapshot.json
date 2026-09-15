@@ -1,0 +1,97 @@
+{
+  "schema": "fm-fleet-snapshot.v1",
+  "generated": "2026-09-15T07:25:36Z",
+  "fm_home": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate",
+  "roots": {
+    "fm_root": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate",
+    "state": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/state",
+    "data": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data",
+    "config": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/config",
+    "projects": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/projects"
+  },
+  "backlog": { "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/backlog.md", "present": false, "records": [] },
+  "tasks": [
+    {
+      "id": "probe-task",
+      "kind": "ship",
+      "harness": "claude",
+      "mode": "local-only",
+      "yolo": "off",
+      "project": "/tmp/fm-probe-nonexistent",
+      "spawn_gen": null,
+      "backend": "tmux",
+      "remote": null,
+      "paths": {
+        "meta": { "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/state/probe-task.meta", "present": true },
+        "status_log": {
+          "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/state/probe-task.status",
+          "present": true,
+          "kind": "event_history",
+          "last_event": { "state": "working", "note": "probe placeholder task, not real work", "raw": "working: probe placeholder task, not real work" }
+        },
+        "worktree": { "path": "/tmp/fm-probe-nonexistent", "present": false },
+        "home": { "path": null, "present": false },
+        "report": { "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/probe-task/report.md", "present": false }
+      },
+      "secondmate_projects": [],
+      "current_state": {
+        "state": "unknown",
+        "source": "none",
+        "detail": "worktree gone (torn down?)",
+        "raw": "state: unknown · source: none · worktree gone (torn down?)",
+        "observed_at": "2026-09-15T07:25:36Z",
+        "freshness": "fresh"
+      },
+      "endpoint": {
+        "target": "firstmate:fm-probe-task",
+        "exists": false,
+        "agent_alive": "not_checked",
+        "status": "absent",
+        "observed_at": "2026-09-15T07:25:36Z",
+        "freshness": "fresh"
+      },
+      "pr": { "url": null, "source": "absent" },
+      "hints": {
+        "pending_decision": false,
+        "blocked_event": false,
+        "open_decisions": [],
+        "scout_report_present": false,
+        "last_event_text": "working: probe placeholder task, not real work"
+      },
+      "actions": {
+        "watch": "bin/fm-peek.sh fm-probe-task",
+        "steer": "bin/fm-send.sh fm-probe-task '<instruction>'",
+        "return_channel_note": null
+      },
+      "backlog": null
+    }
+  ],
+  "main_inventory": { "valid": true, "reason": null, "orphan_in_flight": [], "unstructured_current_count": 0 },
+  "scout_reports": [],
+  "secondmate_current": {
+    "registry": {
+      "present": false,
+      "available": true,
+      "complete": true,
+      "reason": null,
+      "provenance": "registered-table",
+      "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/secondmates.md",
+      "freshness": { "status": "fresh", "observed_at": "2026-09-15T07:25:36Z" },
+      "records": [],
+      "input_truncated": false,
+      "records_truncated": false,
+      "reasons": [],
+      "lines_in_window": 0,
+      "records_in_window": 0
+    },
+    "records": [],
+    "total_registered": 0,
+    "total": 0,
+    "shown": 0,
+    "truncated": 0
+  },
+  "secondmate_landed": { "records": [], "truncated": [], "unreadable": [], "partial": [] },
+  "secondmate_guidance": {
+    "note": "For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
+  }
+}

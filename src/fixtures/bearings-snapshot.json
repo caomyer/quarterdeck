@@ -1,0 +1,40 @@
+{
+  "schema": "fm-bearings.v1",
+  "home": "fm-probe/firstmate",
+  "generated": "2026-09-15T07:25:37Z",
+  "prs": "not_requested (run: /bearings include PRs)",
+  "in_flight": [
+    {
+      "id": "probe-task",
+      "kind": "ship",
+      "state": "unknown",
+      "repo": "/tmp/fm-probe-nonexistent",
+      "name": "probe-task",
+      "doing": "worktree gone (torn down?)"
+    }
+  ],
+  "secondmates": [],
+  "secondmate_reconcile": [],
+  "decisions_open": [],
+  "landed": [],
+  "gates": [],
+  "reports": [],
+  "recorded_prs": [],
+  "unhealthy_endpoints": [
+    {
+      "id": "probe-task",
+      "backend": "tmux",
+      "target": "firstmate:fm-probe-task",
+      "exists": false,
+      "agent": "not_checked"
+    }
+  ],
+  "omitted": [
+    { "surface": "backlog item bodies", "reveal": "--fields bodies" },
+    { "surface": "task paths", "reveal": "--fields paths" },
+    { "surface": "watch/steer actions", "reveal": "--fields actions" },
+    { "surface": "healthy endpoint detail", "reveal": "--fields endpoints" },
+    { "surface": "full scout-report inventory", "reveal": "--all-reports" },
+    { "surface": "live PR discovery + checks", "reveal": "--include-prs" }
+  ]
+}
