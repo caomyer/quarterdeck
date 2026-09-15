@@ -152,6 +152,17 @@ async fn send(host: &HostHandle, text: String) -> Result<String, String> {
     ask(host, |reply| Cmd::Send { text, reply }).await
 }
 
+/// Kills whatever the host still has running when the test ends, panic or not.
+/// Without it, a failing live run leaves a first mate holding the home and the
+/// next run reads that as another session.
+struct StopOnDrop(Arc<HostHandle>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.kill_on_exit();
+    }
+}
+
 struct Step {
     name: &'static str,
     pass: bool,
@@ -247,7 +258,8 @@ async fn host_e2e_live_scratch_home() {
         tx,
     });
     println!("home: {}\nrecording: {}", home.display(), recording.display());
-    let host = HostHandle::spawn_with(recorder.clone());
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
     let mut events = Events { rx, seen: Vec::new() };
     let mut steps = Vec::new();
 
@@ -493,7 +505,8 @@ async fn host_lock_claim_probe() {
         data_dir,
         tx,
     });
-    let host = HostHandle::spawn_with(recorder.clone());
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
     println!("lock before start: {}", lock_status(&home));
     let asked = Instant::now();
     let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
