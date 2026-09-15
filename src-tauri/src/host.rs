@@ -43,6 +43,14 @@ const TRAILER_WINDOW: Duration = Duration::from_millis(1500);
 const STORM_TURNS: usize = 6;
 const STORM_WINDOW: Duration = Duration::from_secs(120);
 
+/// Bounded waits, so a hung adapter or script fails a start instead of hanging it.
+const HANDSHAKE_WAIT: Duration = Duration::from_secs(60);
+/// Loading replays the whole conversation, so it gets longer.
+const LOAD_WAIT: Duration = Duration::from_secs(180);
+const SET_MODE_WAIT: Duration = Duration::from_secs(30);
+const LOCK_WAIT: Duration = Duration::from_secs(15);
+const REAP_WAIT: Duration = Duration::from_secs(5);
+
 const PERMISSION_UNREADABLE: &str =
     "error: config/claude-permission-mode must be a readable regular file holding one of: bypass, auto";
 
@@ -210,6 +218,13 @@ impl Rpc {
         rx.await
             .unwrap_or_else(|_| Err("the adapter exited before responding".to_string()))
     }
+
+    /// `request`, bounded: a hung adapter answers with an error instead of never.
+    async fn request_within(&self, method: &str, params: Value, limit: Duration) -> RpcResult {
+        tokio::time::timeout(limit, self.request(method, params))
+            .await
+            .unwrap_or_else(|_| Err(format!("no answer to {method} within {}s", limit.as_secs())))
+    }
 }
 
 // ------------------------------------------------------- process groups ---
@@ -336,7 +351,7 @@ impl Adapter {
         let report = tokio::task::spawn_blocking(move || kill_group_blocking(pgid))
             .await
             .unwrap_or_else(|e| json!({"pgid": pgid, "survivors": {"error": e.to_string()}}));
-        let _ = self.child.wait().await;
+        let _ = tokio::time::timeout(REAP_WAIT, self.child.wait()).await;
         self.killed = true;
         self.groups.remove(pgid);
         report
@@ -515,9 +530,10 @@ async fn open_session(
     resume: Option<String>,
 ) -> Result<(String, &'static str, Value), String> {
     let init = rpc
-        .request(
+        .request_within(
             "initialize",
             json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}}),
+            HANDSHAKE_WAIT,
         )
         .await
         .map_err(|e| format!("initialize failed: {e}"))?;
@@ -530,7 +546,7 @@ async fn open_session(
     if let Some(previous) = resume.filter(|_| can_load) {
         loading.store(true, Ordering::SeqCst);
         let loaded = rpc
-            .request("session/load", json!({"sessionId": previous, "cwd": cwd, "mcpServers": []}))
+            .request_within("session/load", json!({"sessionId": previous, "cwd": cwd, "mcpServers": []}), LOAD_WAIT)
             .await;
         loading.store(false, Ordering::SeqCst);
         if let Ok(session) = loaded {
@@ -538,7 +554,7 @@ async fn open_session(
         }
     }
     let session = rpc
-        .request("session/new", json!({"cwd": cwd, "mcpServers": []}))
+        .request_within("session/new", json!({"cwd": cwd, "mcpServers": []}), HANDSHAKE_WAIT)
         .await
         .map_err(|e| format!("session/new failed: {e}"))?;
     let session_id = session
@@ -591,8 +607,11 @@ async fn lock_status(home: &Path) -> Lock {
         .env("FM_HOME", home)
         .current_dir(home)
         .stdin(Stdio::null())
-        .output()
-        .await;
+        .kill_on_drop(true)
+        .output();
+    let Ok(output) = tokio::time::timeout(LOCK_WAIT, output).await else {
+        return Lock::Unknown(format!("fm-lock.sh status did not answer within {}s", LOCK_WAIT.as_secs()));
+    };
     let text = match output {
         // `fm-lock.sh status` documents that it always exits 0.
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -813,10 +832,17 @@ impl Host {
         mut ev_rx: mpsc::UnboundedReceiver<HostEvent>,
     ) {
         let mut ticker = tokio::time::interval(Duration::from_millis(250));
+        // Commands that arrived while a start was running, handled in order after it.
+        let mut backlog: VecDeque<Cmd> = VecDeque::new();
         loop {
+            if let Some(cmd) = backlog.pop_front() {
+                self.handle_cmd(cmd, &mut cmd_rx, &mut backlog).await;
+                self.dispatch();
+                continue;
+            }
             tokio::select! {
                 cmd = cmd_rx.recv() => match cmd {
-                    Some(cmd) => self.handle_cmd(cmd).await,
+                    Some(cmd) => self.handle_cmd(cmd, &mut cmd_rx, &mut backlog).await,
                     None => {
                         self.stop_adapter().await;
                         break;
@@ -829,16 +855,58 @@ impl Host {
         }
     }
 
-    async fn handle_cmd(&mut self, cmd: Cmd) {
+    /// Start, but keep Stop answerable: a Stop that arrives mid-start abandons
+    /// the start (an adapter already spawned is KILLed with its group when it is
+    /// dropped) and stops at once. Other commands wait for the start to finish.
+    async fn start_interruptible(
+        &mut self,
+        home: PathBuf,
+        announce_loaded: bool,
+        cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>,
+        backlog: &mut VecDeque<Cmd>,
+    ) -> Result<(), String> {
+        let mut stop_reply = None;
+        let finished = {
+            let start = self.start(home, announce_loaded);
+            tokio::pin!(start);
+            loop {
+                tokio::select! {
+                    result = &mut start => break Some(result),
+                    cmd = cmd_rx.recv() => match cmd {
+                        Some(Cmd::Stop { reply }) => {
+                            stop_reply = Some(reply);
+                            break None;
+                        }
+                        Some(other) => backlog.push_back(other),
+                        None => break None,
+                    },
+                }
+            }
+        };
+        if let Some(result) = finished {
+            return result;
+        }
+        self.stop_now().await;
+        if let Some(reply) = stop_reply {
+            let _ = reply.send(Ok(()));
+        }
+        Err("stopped before the first mate finished starting".to_string())
+    }
+
+    async fn stop_now(&mut self) {
+        self.requeue_in_flight();
+        self.stop_adapter().await;
+        self.set_state(State::Stopped, json!({}));
+    }
+
+    async fn handle_cmd(&mut self, cmd: Cmd, cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>, backlog: &mut VecDeque<Cmd>) {
         match cmd {
             Cmd::Start { home, reply } => {
-                let result = self.start(home, true).await;
+                let result = self.start_interruptible(home, true, cmd_rx, backlog).await;
                 let _ = reply.send(result);
             }
             Cmd::Stop { reply } => {
-                self.requeue_in_flight();
-                self.stop_adapter().await;
-                self.set_state(State::Stopped, json!({}));
+                self.stop_now().await;
                 let _ = reply.send(Ok(()));
             }
             Cmd::Restart { reply } => {
@@ -849,7 +917,7 @@ impl Host {
                 self.set_state(State::Restarting, json!({}));
                 self.requeue_in_flight();
                 self.stop_adapter().await;
-                let result = self.start(home, false).await;
+                let result = self.start_interruptible(home, false, cmd_rx, backlog).await;
                 let _ = reply.send(result);
             }
             Cmd::Send { text, reply } => {
@@ -956,7 +1024,11 @@ impl Host {
         let applied = if offered {
             adapter
                 .rpc
-                .request("session/set_mode", json!({"sessionId": adapter.session_id, "modeId": mode_id}))
+                .request_within(
+                    "session/set_mode",
+                    json!({"sessionId": adapter.session_id, "modeId": mode_id}),
+                    SET_MODE_WAIT,
+                )
                 .await
                 .map(|_| ())
         } else {
@@ -1367,5 +1439,53 @@ mod tests {
             .collect();
         assert_eq!(seen, vec![("a", "first", true), ("c", "third", false)]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct QuietEnv(PathBuf);
+
+    impl HostEnv for QuietEnv {
+        fn emit(&self, _event: &str, _body: Value) {}
+
+        fn data_dir(&self) -> Result<PathBuf, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// An adapter that never answers `initialize` must not make Stop hang, and
+    /// the abandoned start must not leave its process group running.
+    #[tokio::test]
+    async fn stop_answers_while_the_adapter_hangs_in_its_handshake() {
+        let home = home_with_lock_script("hung-adapter", Some("echo 'lock: free'"));
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        let adapter = home.join("hung-adapter.sh");
+        std::fs::write(&adapter, "#!/bin/sh\nsleep 600 &\nexec sleep 600\n").unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+
+        let host = HostHandle::spawn_with(Arc::new(QuietEnv(home.join("appdata"))));
+        let start = host.call(|reply| Cmd::Start { home: home.clone(), reply });
+        let stop = async {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while host.groups.all().is_empty() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let pgid = host.groups.all().first().copied();
+            let asked = Instant::now();
+            let answer = tokio::time::timeout(Duration::from_secs(10), host.call(|reply| Cmd::Stop { reply })).await;
+            (pgid, answer, asked.elapsed())
+        };
+        let (started, (pgid, stopped, took)) = tokio::join!(start, stop);
+
+        assert!(matches!(&started, Ok(Err(reason)) if reason.contains("stopped before")), "{started:?}");
+        assert!(matches!(stopped, Ok(Ok(Ok(())))), "stop did not answer: {stopped:?}");
+        assert!(took < Duration::from_secs(5), "stop took {took:?}");
+        let pgid = pgid.expect("the hung adapter was spawned");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !group_members(pgid).unwrap().is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(group_members(pgid).unwrap().is_empty(), "{:?}", group_members(pgid));
+        assert!(host.groups.all().is_empty());
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
