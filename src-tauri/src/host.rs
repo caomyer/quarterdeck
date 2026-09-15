@@ -401,8 +401,16 @@ async fn spawn_adapter(
         let events = events.clone();
         let loading = loading.clone();
         tauri::async_runtime::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(raw)) = lines.next_line().await {
+            // Bytes, decoded lossily: one invalid UTF-8 byte must not end the reader.
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let raw = String::from_utf8_lossy(&buf);
                 let Ok(message) = serde_json::from_str::<Value>(raw.trim()) else {
                     continue;
                 };
@@ -463,8 +471,14 @@ async fn spawn_adapter(
     {
         let events = events.clone();
         tauri::async_runtime::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stderr);
+            let mut buf = Vec::new();
+            while let Ok(read) = reader.read_until(b'\n', &mut buf).await {
+                if read == 0 {
+                    break;
+                }
+                let line = String::from_utf8_lossy(&buf).trim_end().to_string();
+                buf.clear();
                 let _ = events.send(HostEvent::Stderr { gen, line });
             }
         });
