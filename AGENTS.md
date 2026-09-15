@@ -23,8 +23,10 @@ The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
 
 - Rust is pinned by `rust-toolchain.toml`, and `cargo` lives in `~/.cargo/bin`.
 - Backend: `cd src-tauri && cargo clippy --all-targets && cargo test`.
-- Live end-to-end test, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e -- --ignored --nocapture`.
+- Live end-to-end test, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e_live_scratch_home -- --ignored --nocapture`.
   It writes a summary and a replayable event recording to `~/.buzz/.scratch/firstmate-desktop-e2e/`.
+  Name the test exactly: `host_e2e` also matches the lock probe, and two first mates in one home make the loser report the other as another session.
+  Only one live run per home runs at a time; a second one waits in the same binary and refuses across processes, naming the run that holds it.
 - Replay that recording through the UI, which spends no tokens: start Vite on your own port, then
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm replay`.
   It plays the recorded host events into the real UI and checks the resumed conversation, the crash banner, the re-sent message and the messages restored from the outbox.

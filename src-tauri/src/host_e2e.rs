@@ -3,8 +3,13 @@
 //! because it spends model tokens and takes several minutes:
 //!
 //! ```sh
-//! cd src-tauri && cargo test host_e2e -- --ignored --nocapture
+//! cd src-tauri && cargo test host_e2e_live_scratch_home -- --ignored --nocapture
 //! ```
+//!
+//! Name the test exactly. `host_e2e` matches this test and the lock probe, which
+//! starts two first mates in one home; the one that loses the race truthfully
+//! reports the other as another session, which reads like a bug and is not. Only
+//! one live run per home may be in flight, and `LiveRun` enforces it.
 //!
 //! `FM_E2E_HOME` picks the home (default `~/.buzz/.scratch/fm-probe/firstmate`).
 //! It must be a scratch home that no other host is using, never a live one.
@@ -22,6 +27,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
 const REPLY_WAIT: Duration = Duration::from_secs(240);
@@ -155,6 +161,62 @@ async fn send(host: &HostHandle, text: String) -> Result<String, String> {
 /// Kills whatever the host still has running when the test ends, panic or not.
 /// Without it, a failing live run leaves a first mate holding the home and the
 /// next run reads that as another session.
+/// Serializes live runs inside one test binary, which is where `cargo test host_e2e`
+/// used to start both live tests at once.
+static LIVE_RUN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The right to run a live first mate against one home, held for the whole test.
+/// Two hosts on one home make the loser report the winner as another session, so
+/// this waits for other tests in this binary and refuses a run started elsewhere.
+struct LiveRun {
+    lock: PathBuf,
+    _in_process: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl LiveRun {
+    async fn take(out: &Path, home: &Path) -> LiveRun {
+        let _in_process = LIVE_RUN.lock().await;
+        let digest = Sha256::digest(home.to_string_lossy().as_bytes());
+        let key: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+        let lock = out.join(format!("live-run-{key}.lock"));
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "{}", std::process::id());
+                    return LiveRun { lock, _in_process };
+                }
+                Err(_) => {
+                    let holder = std::fs::read_to_string(&lock)
+                        .ok()
+                        .and_then(|text| text.trim().parse::<u32>().ok())
+                        .filter(|pid| process_alive(*pid));
+                    assert!(
+                        holder.is_none(),
+                        "another live run (pid {}) is already using {}; run one live test at a time and name it exactly, for example cargo test host_e2e_live_scratch_home -- --ignored",
+                        holder.unwrap_or_default(),
+                        home.display()
+                    );
+                    let _ = std::fs::remove_file(&lock); // the run that held it is gone
+                }
+            }
+        }
+    }
+}
+
+impl Drop for LiveRun {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock);
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("/bin/ps")
+        .args(["-o", "pid=", "-p", &pid.to_string()])
+        .output()
+        .map(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
+        .unwrap_or(false)
+}
+
 struct StopOnDrop(Arc<HostHandle>);
 
 impl Drop for StopOnDrop {
@@ -246,6 +308,8 @@ async fn host_e2e_live_scratch_home() {
     );
 
     let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
     let run = now_ms();
     let data_dir = out.join(format!("appdata-{run}"));
     std::fs::create_dir_all(&data_dir).expect("create the app data folder");
@@ -494,6 +558,9 @@ async fn host_lock_claim_probe() {
         .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
     let home = std::fs::canonicalize(&home).expect("the scratch home exists");
     assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
     let run = now_ms();
     let data_dir = buzz.join(format!(".scratch/firstmate-desktop-e2e/appdata-lockprobe-{run}"));
     std::fs::create_dir_all(&data_dir).unwrap();
