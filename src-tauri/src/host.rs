@@ -1156,7 +1156,11 @@ impl Host {
     }
 
     fn tick(&mut self) {
-        if self.state == State::AgentTurn && self.last_activity.elapsed() > AGENT_TURN_QUIET {
+        // Quiet only ends an agent turn; with a prompt in flight its result decides.
+        if self.state == State::AgentTurn
+            && self.in_flight.is_empty()
+            && self.last_activity.elapsed() > AGENT_TURN_QUIET
+        {
             self.set_state(State::Idle, json!({"derived": "agent turn quiet for 4s"}));
         }
     }
@@ -1176,7 +1180,9 @@ impl Host {
             self.record(&pending.id, None, "sent", json!({}));
             self.emit("outbox", json!({"id": pending.id, "state": "sent", "while": self.state.name()}));
             self.in_flight.push_back(pending.id.clone());
-            if self.state == State::Idle {
+            // A prompt in flight is a prompt turn, even when it was handed over
+            // during an agent turn and is queued behind it.
+            if self.state != State::PromptTurn {
                 self.set_state(State::PromptTurn, json!({"origin": "prompt"}));
             }
             let rpc = rpc.clone();
