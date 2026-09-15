@@ -468,3 +468,42 @@ async fn host_e2e_live_scratch_home() {
     println!("\n{passed}/{} steps passed; summary-{run}.json", steps.len());
     assert!(steps.iter().all(|s| s.pass), "{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
 }
+
+/// Live probe: does the hosted first mate claim the home's session lock on its
+/// own right after the session opens, before any prompt is sent?
+#[tokio::test]
+#[ignore = "live: starts the real claude-agent-acp against a firstmate scratch home"]
+async fn host_lock_claim_probe() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+    let run = now_ms();
+    let data_dir = buzz.join(format!(".scratch/firstmate-desktop-e2e/appdata-lockprobe-{run}"));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let recording = buzz.join(format!(".scratch/firstmate-desktop-e2e/lockprobe-{run}.jsonl"));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).unwrap()),
+        data_dir,
+        tx,
+    });
+    let host = HostHandle::spawn_with(recorder.clone());
+    println!("lock before start: {}", lock_status(&home));
+    let asked = Instant::now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    println!("start={started:?} after {:.1}s; groups={:?}", asked.elapsed().as_secs_f32(), host.live_groups());
+    for second in 0..45 {
+        let members = host.live_groups().first().map(|g| group_members(*g));
+        println!("t+{second}s lock: {} | group: {members:?}", lock_status(&home));
+        if lock_status(&home).starts_with("lock: held") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    println!("lock after stop: {}", lock_status(&home));
+}

@@ -50,6 +50,9 @@ const LOAD_WAIT: Duration = Duration::from_secs(180);
 const SET_MODE_WAIT: Duration = Duration::from_secs(30);
 const LOCK_WAIT: Duration = Duration::from_secs(15);
 const REAP_WAIT: Duration = Duration::from_secs(5);
+/// How long firstmate's own session-start hook gets to claim the home's lock.
+/// A live probe saw it claimed before session/new returned, about 4s after spawn.
+const LOCK_CLAIM_WAIT: Duration = Duration::from_secs(30);
 
 const PERMISSION_UNREADABLE: &str =
     "error: config/claude-permission-mode must be a readable regular file holding one of: bypass, auto";
@@ -642,6 +645,39 @@ async fn lock_status(home: &Path) -> Lock {
     Lock::Unknown(format!("fm-lock.sh status printed an unrecognised answer: '{text}'"))
 }
 
+enum LockClaim {
+    Ours,
+    Other { pid: u32, command: String },
+    Unclaimed(String),
+}
+
+/// Wait for the hosted first mate to claim the home's lock, and say whose it
+/// became. The holder is ours when it is a live process in our process group.
+async fn wait_for_lock_claim(home: &Path, pgid: u32, limit: Duration) -> LockClaim {
+    let deadline = Instant::now() + limit;
+    loop {
+        let last = match lock_status(home).await {
+            Lock::HeldBy { pid, command } => {
+                let holder = pid.to_string();
+                let ours = tokio::task::spawn_blocking(move || group_members(pgid))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .is_some_and(|members| {
+                        members.iter().any(|line| line.split_whitespace().next() == Some(holder.as_str()))
+                    });
+                return if ours { LockClaim::Ours } else { LockClaim::Other { pid, command } };
+            }
+            Lock::Free => "lock: free".to_string(),
+            Lock::Unknown(text) => text,
+        };
+        if Instant::now() >= deadline {
+            return LockClaim::Unclaimed(last);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 // ---------------------------------------------------------------- outbox ---
 
 struct Pending {
@@ -1039,6 +1075,32 @@ impl Host {
             let reason = format!("could not apply config/claude-permission-mode ({config_mode}): {error}");
             self.set_state(State::Refused, json!({"reason": reason}));
             return Err(reason);
+        }
+
+        // firstmate's session-start hook claims the home's lock as the session opens.
+        // Only call this first mate running once the lock is confirmed to be its own:
+        // a terminal session that won the race keeps the home, and ours stops.
+        match wait_for_lock_claim(&home, adapter.pgid, LOCK_CLAIM_WAIT).await {
+            LockClaim::Ours => {}
+            LockClaim::Other { pid, command } => {
+                let report = adapter.kill_tree().await;
+                self.report_kill(report, "lock_taken");
+                self.set_state(
+                    State::LockedByOther,
+                    json!({"holder_pid": pid, "holder_command": command}),
+                );
+                return Ok(());
+            }
+            LockClaim::Unclaimed(text) => {
+                let report = adapter.kill_tree().await;
+                self.report_kill(report, "lock_unclaimed");
+                let reason = format!(
+                    "the first mate did not claim this home's session lock within {}s, so it was stopped. {text}",
+                    LOCK_CLAIM_WAIT.as_secs()
+                );
+                self.set_state(State::Refused, json!({"reason": reason, "lock_status": text}));
+                return Err(reason);
+            }
         }
 
         write_session_id(&host_dir, &adapter.session_id, &home);
@@ -1465,6 +1527,38 @@ mod tests {
         );
         assert_eq!(session_limit_message(r#"{"code":-32603,"message":"Internal error: boom"}"#), None);
         assert_eq!(session_limit_message("the adapter exited"), None);
+    }
+
+    #[tokio::test]
+    async fn lock_claim_is_ours_only_when_the_holder_is_in_our_group() {
+        let (mut child, pgid) = spawn_stubborn_group();
+        let member = group_members(pgid).unwrap()[1].split_whitespace().next().unwrap().to_string();
+
+        let ours = home_with_lock_script("claim-ours", Some(&format!("echo 'lock: held by live harness pid {member}'")));
+        assert!(matches!(wait_for_lock_claim(&ours, pgid, Duration::from_secs(1)).await, LockClaim::Ours));
+
+        let other = home_with_lock_script(
+            "claim-other",
+            Some(&format!("echo 'lock: held by live harness pid {}'", std::process::id())),
+        );
+        assert!(matches!(
+            wait_for_lock_claim(&other, pgid, Duration::from_secs(1)).await,
+            LockClaim::Other { pid, .. } if pid == std::process::id()
+        ));
+
+        let free = home_with_lock_script("claim-free", Some("echo 'lock: free'"));
+        let started = Instant::now();
+        assert!(matches!(
+            wait_for_lock_claim(&free, pgid, Duration::from_secs(1)).await,
+            LockClaim::Unclaimed(text) if text == "lock: free"
+        ));
+        assert!(started.elapsed() < Duration::from_secs(3));
+
+        kill_group_blocking(pgid);
+        let _ = child.wait();
+        for home in [ours, other, free] {
+            let _ = std::fs::remove_dir_all(home);
+        }
     }
 
     struct QuietEnv(PathBuf);
