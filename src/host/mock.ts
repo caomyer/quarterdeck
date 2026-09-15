@@ -96,6 +96,11 @@ const MARKDOWN_SAMPLE: HistoryItem[] = [
 /** `?relaunch`: the message the first mate was answering when the app went away. It is the last thing said, so the crash cut its reply off. */
 const CUT_OFF_MESSAGE = "Ship the titles branch when CI is green.";
 
+/** `?call-answered`: the captain's answer to the fixture's open call, worded the way the card writes it. */
+const CALL_ANSWER = "On the res model download: Wi-Fi only with visible progress.";
+
+const SESSION_LIMIT_ERROR = JSON.stringify({ code: -32603, data: { errorKind: "rate_limit" }, message: "Internal error: You've hit your session limit · resets 1:50pm (America/Los_Angeles)" });
+
 export class MockHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
   private timers = new Set<number>();
@@ -166,9 +171,23 @@ export class MockHostAdapter implements HostAdapter {
         // Oldest first, as the durable outbox holds them: the cut-off message was handed over before, the other never was.
         this.emit({ type: "outbox", payload: { id: "m-1", status: "requeued", resent_after_restart: true, text: CUT_OFF_MESSAGE } });
         this.emit({ type: "outbox", payload: { id: "m-2", status: "queued", text: "Also merge the foreman PR." } });
+        // `?call-answered`: one of the messages still waiting is the captain's answer to the open Captain's Call.
+        if (reviewFlag("call-answered")) this.emit({ type: "outbox", payload: { id: "m-3", status: "queued", text: CALL_ANSWER } });
         this.emit({ type: "session", payload: { mode: lost ? "new" : "loaded", session_id: "79f27945-68cf-4639-899d-49576d4668e4", previous_session_lost: lost } });
         if (!lost) this.emit({ type: "history", payload: { items: [...EARLIER_CONVERSATION, { who: "captain", text: CUT_OFF_MESSAGE }] } });
         this.emit({ type: "state", payload: { state: "idle" } });
+        // The host then hands the waiting messages over: `?drain` to the first mate, which reads them,
+        // or `?failed` into a turn that errors, as a session limit does.
+        if (reviewFlag("failed") || reviewFlag("drain")) {
+          this.later(600, () => {
+            for (const id of ["m-1", "m-2", "m-3"]) {
+              this.emit({ type: "outbox", payload: { id, status: "sent" } });
+              this.emit(reviewFlag("failed")
+                ? { type: "outbox", payload: { id, status: "failed", error: SESSION_LIMIT_ERROR } }
+                : { type: "outbox", payload: { id, status: "picked_up" } });
+            }
+          });
+        }
       });
       return;
     }

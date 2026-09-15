@@ -127,6 +127,29 @@ export function App() {
     };
   }) ?? [], [bearings, fleet]);
 
+  // Which message answered which call. The link this session made is authoritative; after a relaunch
+  // the app has none, so a message still in the host's outbox is matched by the call it names.
+  const callAnswers = useMemo(() => {
+    const found: Record<string, string> = {};
+    for (const message of messages) {
+      // Only an answer still on its way is matched. A read one is already the first mate's business, so a
+      // launch that finds nothing waiting asks rather than showing an answer that has been dealt with.
+      if (message.who !== "captain" || !outbox[message.id] || outbox[message.id].status === "picked_up") continue;
+      const call = decisions.find((decision) => answersCall(message.text, decision));
+      if (call) found[call.id] = message.id;
+    }
+    return { ...found, ...callMessageIds };
+  }, [messages, outbox, decisions, callMessageIds]);
+
+  // A match made here is kept for the rest of the session. Without this the card would drop the answer the
+  // moment the first mate read it and ask its question again, in front of the captain who had just answered.
+  useEffect(() => {
+    setCallMessageIds((current) => {
+      const matched = Object.entries(callAnswers).filter(([call, message]) => current[call] !== message);
+      return matched.length ? { ...current, ...Object.fromEntries(matched) } : current;
+    });
+  }, [callAnswers]);
+
   const selectedProjectData = projects.find((project) => project.name === selectedProject);
   const title = view === "bearings" ? "Bearings" : view === "chat" ? "Chat" : view === "projects" ? "Projects" : selectedProject ?? "Project";
   const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture : view === "chat" ? "The first mate" : view === "bearings" ? (bearings ? `As of ${formatTime(bearings.generated)}` : "") : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
@@ -173,7 +196,7 @@ export function App() {
   }
 
   async function answerCall(id: string, text: string) {
-    const previous = callMessageIds[id];
+    const previous = callAnswers[id];
     const messageId = previous ? await bridge.resend(previous, text) : await bridge.send(text);
     setCallMessageIds((current) => ({ ...current, [id]: messageId }));
   }
@@ -261,7 +284,7 @@ export function App() {
             )}
             <DashboardSection title="Captain's Call" icon={<Inbox size={17} />} tone="coral" count={bearings.decisions_open.length}>
               {decisions.map((decision) => (
-                <DecisionCard key={decision.id} decision={decision} state={outbox[callMessageIds[decision.id]]} runtime={runtime.state} onSend={(text) => answerCall(decision.id, text)} onStart={() => void bridge.start()} />
+                <DecisionCard key={decision.id} decision={decision} state={outbox[callAnswers[decision.id]]} answerText={messages.find((message) => message.id === callAnswers[decision.id])?.text} runtime={runtime.state} onSend={(text) => answerCall(decision.id, text)} onStart={() => void bridge.start()} />
               ))}
               {bearings.decisions_open.length === 0 && <EmptyState label="Nothing needs your action right now." />}
             </DashboardSection>
@@ -375,14 +398,31 @@ function CompactRow({ title, detail, icon, badge }: { title: string; detail: str
   return <div className="compact-row"><span>{icon}</span><div><strong>{title}</strong>{shown && <small>{shown}</small>}</div>{badge && <em>{badge}</em>}</div>;
 }
 
-function DecisionCard({ decision, state, runtime, onSend, onStart }: { decision: Decision & { title: string }; state: CallState; runtime: HostRuntimeState; onSend: (text: string) => void; onStart: () => void }) {
+/** How an answer names its call, which is what lets a waiting answer find its card again after a relaunch. */
+function callName(decision: Decision) {
+  return (decision.key || decision.id).replaceAll("-", " ");
+}
+
+function callPrUrl(decision: { summary: string }) {
+  return decision.summary.match(/https:\/\/\S+\/pull\/\d+/)?.[0] ?? "";
+}
+
+/** Whether a message the captain sent is an answer to this call: the app wrote both forms itself. */
+function answersCall(text: string, decision: Decision & { summary: string }) {
+  const said = text.trim();
+  const prUrl = callPrUrl(decision);
+  if (prUrl && said === `Merge ${prUrl}`) return true;
+  return said.toLowerCase().startsWith(`on the ${callName(decision).toLowerCase()}:`);
+}
+
+function DecisionCard({ decision, state, answerText, runtime, onSend, onStart }: { decision: Decision & { title: string }; state: CallState; answerText?: string; runtime: HostRuntimeState; onSend: (text: string) => void; onStart: () => void }) {
   const options = optionLabels(decision.summary);
   const [selection, setSelection] = useState("");
   const [note, setNote] = useState("");
   const [dateOpen, setDateOpen] = useState(false);
   const [deferDate, setDeferDate] = useState("");
-  const decisionName = (decision.key || decision.id).replaceAll("-", " ");
-  const prUrl = decision.summary.match(/https:\/\/\S+\/pull\/\d+/)?.[0] ?? "";
+  const decisionName = callName(decision);
+  const prUrl = callPrUrl(decision);
   const mergeSelected = selection === "Merge now" && Boolean(prUrl);
   const answer = deferDate ? `not now. Ask me again on ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${deferDate}T12:00:00`))}.` : [selection, note.trim()].filter(Boolean).join(selection && note.trim() ? ". " : "");
   const preview = mergeSelected && !note.trim() ? `Merge ${prUrl}` : answer ? `On the ${decisionName}: ${answer.replace(/[.]*$/, ".")}` : "…";
@@ -405,7 +445,9 @@ function DecisionCard({ decision, state, runtime, onSend, onStart }: { decision:
         : runtime === "locked_by_other"
           ? "This goes when the first mate runs in this app"
           : "The first mate will read this when it finishes what it's doing";
-    return <article className={`decision-card ${read ? "read" : "queued"}`}><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><div className="call-state"><Check size={16} /><span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent ? <button onClick={() => onSend(preview)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></article>;
+    // After a relaunch the card is fresh, so what the captain chose lives in the message, not in this card's state.
+    const resendText = preview === "…" ? answerText : preview;
+    return <article className={`decision-card ${read ? "read" : "queued"}`}><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3>{decision.title}</h3>{answerText && <p className="call-answer" title={answerText}>{answerText}</p>}<div className="call-state"><Check size={16} /><span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent && resendText ? <button onClick={() => onSend(resendText)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></article>;
   }
   return <article className="decision-card" data-decision-id={decision.id}><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3 data-testid="decision-title">{decision.title}</h3><p data-testid="decision-reason">{decision.summary}</p><div className="suggestion-chips">{options.map((option) => <button className={selection === option.label ? "selected" : ""} key={option.label} onClick={() => { setSelection(option.label); setDateOpen(false); setDeferDate(""); }}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}<button className={dateOpen ? "selected" : ""} onClick={() => { setDateOpen(true); setSelection(""); }}>Not now</button></div>{dateOpen && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} onChange={(event) => setDeferDate(event.target.value)} /></label>}<label className="reply-field"><span>{selection === "Send it back" ? "What should change?" : "Or write your own answer"}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} /></label><div className="decision-actions"><span>{preview !== "…" && `→ sends: ${preview}`}</span><button disabled={preview === "…"} onClick={() => onSend(preview)}><Send size={15} /> {mergeSelected && !note.trim() ? "Merge now" : "Send"}</button></div>{mergeSelected && note.trim() && <p className="merge-hint">This sends instructions, not a merge. Use Merge now to merge.</p>}</article>;
 }

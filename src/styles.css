@@ -167,6 +167,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .decision-actions > span { overflow: hidden; color: var(--muted); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: .6rem; text-overflow: ellipsis; white-space: nowrap; }
 .decision-actions button { display: flex; align-items: center; gap: 6px; min-height: 33px; padding: 0 12px; border: 0; border-radius: 6px; color: white; background: var(--sea); font-size: .66rem; font-weight: 720; }
 .merge-hint { margin: 7px 0 0 !important; color: var(--amber) !important; font-size: .6rem !important; }
+.call-answer { margin: 6px 0 0; padding-left: 9px; border-left: 2px solid color-mix(in srgb, var(--sea) 55%, var(--border)); color: var(--muted); font-size: .68rem; line-height: 1.5; }
 .call-state { display: flex; align-items: center; gap: 9px; min-height: 58px; margin-top: 10px; color: var(--amber); }.call-state > span { display: flex; flex: 1; flex-direction: column; gap: 2px; }.call-state strong { color: var(--ink); font-size: .68rem; }.call-state small { color: var(--muted); font-size: .61rem; }.call-state button { min-height: 31px; padding: 0 8px; border: 0; border-radius: 6px; color: white; background: var(--sea); font-size: .6rem; }
 
 .projects-page, .project-page { display: flex; flex-direction: column; gap: 24px; }
