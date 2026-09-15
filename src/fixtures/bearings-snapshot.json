@@ -1,7 +1,7 @@
 {
   "schema": "fm-bearings.v1",
   "home": "fm-probe/firstmate",
-  "generated": "2026-09-15T07:25:37Z",
+  "generated": "2026-09-15T15:54:16Z",
   "prs": "not_requested (run: /bearings include PRs)",
   "in_flight": [
     {
@@ -15,9 +15,33 @@
   ],
   "secondmates": [],
   "secondmate_reconcile": [],
-  "decisions_open": [],
-  "landed": [],
-  "gates": [],
+  "decisions_open": [
+    {
+      "id": "res-model-download",
+      "key": "res-model-download",
+      "verb": "captain-hold",
+      "summary": "Resonance: when may the app download the 150 MB speech model?: Only 2 of 9281 sampled epis…",
+      "owner": "(main)"
+    }
+  ],
+  "landed": [
+    {
+      "id": "foreman-rebase-before-review",
+      "what": "Foreman: rebase the subject before anybody reads it",
+      "artifact": "https://github.com/caomyer/foreman/pull/24",
+      "owner": "(main)"
+    }
+  ],
+  "gates": [
+    {
+      "id": "res-ai-titles",
+      "title": "Resonance: AI titles and notes for snips",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)",
+      "filed": "2026-09-15"
+    }
+  ],
   "reports": [],
   "recorded_prs": [],
   "unhealthy_endpoints": [
@@ -30,11 +54,29 @@
     }
   ],
   "omitted": [
-    { "surface": "backlog item bodies", "reveal": "--fields bodies" },
-    { "surface": "task paths", "reveal": "--fields paths" },
-    { "surface": "watch/steer actions", "reveal": "--fields actions" },
-    { "surface": "healthy endpoint detail", "reveal": "--fields endpoints" },
-    { "surface": "full scout-report inventory", "reveal": "--all-reports" },
-    { "surface": "live PR discovery + checks", "reveal": "--include-prs" }
+    {
+      "surface": "backlog item bodies",
+      "reveal": "--fields bodies"
+    },
+    {
+      "surface": "task paths",
+      "reveal": "--fields paths"
+    },
+    {
+      "surface": "watch/steer actions",
+      "reveal": "--fields actions"
+    },
+    {
+      "surface": "healthy endpoint detail",
+      "reveal": "--fields endpoints"
+    },
+    {
+      "surface": "full scout-report inventory",
+      "reveal": "--all-reports"
+    },
+    {
+      "surface": "live PR discovery + checks",
+      "reveal": "--include-prs"
+    }
   ]
 }
