@@ -1083,11 +1083,17 @@ impl Host {
     }
 
     async fn start(&mut self, home: PathBuf, announce_loaded: bool) -> Result<(), String> {
-        let home = std::fs::canonicalize(&home)
-            .map_err(|e| format!("{} is not a readable folder: {e}", home.display()))?;
+        let home = match std::fs::canonicalize(&home) {
+            Ok(home) => home,
+            Err(error) => {
+                let reason = format!("{} is not a readable folder: {error}", home.display());
+                self.set_state(State::Refused, json!({"reason": reason, "reason_kind": "not_a_home"}));
+                return Err(reason);
+            }
+        };
         if !home.join("AGENTS.md").is_file() || !home.join("bin").is_dir() {
             let reason = format!("{} is not a firstmate home", home.display());
-            self.set_state(State::Refused, json!({"reason": reason}));
+            self.set_state(State::Refused, json!({"reason": reason, "reason_kind": "not_a_home"}));
             return Err(reason);
         }
         if self.adapter.is_some() {
@@ -1107,7 +1113,7 @@ impl Host {
         let (config_mode, mode_id) = match permission_mode(&home) {
             Ok(mode) => mode,
             Err(reason) => {
-                self.set_state(State::Refused, json!({"reason": reason}));
+                self.set_state(State::Refused, json!({"reason": reason, "reason_kind": "permission_mode"}));
                 return Err(reason);
             }
         };
@@ -1123,7 +1129,10 @@ impl Host {
             }
             Lock::Unknown(text) => {
                 let reason = format!("could not confirm this home's session lock is free, so nothing was started. {text}");
-                self.set_state(State::Refused, json!({"reason": reason, "lock_status": text}));
+                self.set_state(
+                    State::Refused,
+                    json!({"reason": reason, "reason_kind": "lock_unconfirmed", "lock_status": text}),
+                );
                 return Err(reason);
             }
             Lock::Free => {}
@@ -1135,7 +1144,10 @@ impl Host {
         let spawned = match spawn_adapter(&home, self.ev_tx.clone(), self.gen, resume, &self.groups, auto_allow).await {
             Ok(spawned) => spawned,
             Err(reason) => {
-                self.set_state(State::Dead, json!({"reason": reason}));
+                self.set_state(
+                    State::Dead,
+                    json!({"reason": reason, "reason_kind": adapter_failure_kind(&reason)}),
+                );
                 return Err(reason);
             }
         };
@@ -1162,9 +1174,19 @@ impl Host {
         };
         if let Err(error) = applied {
             let report = adapter.kill_tree().await;
-            self.report_kill(report, "mode_refused");
+            self.report_kill(report, "start_failed");
+            // An adapter that crashed or hung while applying the mode is not a bad
+            // permission setting; say which one it was.
+            if cut_off_by_exit(&error) || error.starts_with("no answer to") {
+                let reason = format!("the first mate stopped while starting: {error}");
+                self.set_state(
+                    State::Dead,
+                    json!({"reason": reason, "reason_kind": adapter_failure_kind(&error)}),
+                );
+                return Err(reason);
+            }
             let reason = format!("could not apply config/claude-permission-mode ({config_mode}): {error}");
-            self.set_state(State::Refused, json!({"reason": reason}));
+            self.set_state(State::Refused, json!({"reason": reason, "reason_kind": "permission_mode"}));
             return Err(reason);
         }
 
@@ -1204,7 +1226,10 @@ impl Host {
                     "the first mate did not claim this home's session lock within {}s of being asked to start its session, so it was stopped. {text}",
                     CLAIM_WAIT_AFTER_NUDGE.as_secs()
                 );
-                self.set_state(State::Refused, json!({"reason": reason, "lock_status": text}));
+                self.set_state(
+                    State::Refused,
+                    json!({"reason": reason, "reason_kind": "lock_unclaimed", "lock_status": text}),
+                );
                 return Err(reason);
             }
         }
@@ -1320,7 +1345,10 @@ impl Host {
                         report_kill(env.as_ref(), report, "exit");
                     });
                 }
-                self.set_state(State::Dead, json!({"reason": "the first mate process exited"}));
+                self.set_state(
+                    State::Dead,
+                    json!({"reason": "the first mate process exited", "reason_kind": "exited"}),
+                );
             }
             HostEvent::PromptDone { gen, outbox_id, result } if gen == self.gen => {
                 self.on_prompt_done(outbox_id, result)
@@ -1512,6 +1540,18 @@ fn session_limit_message(error: &str) -> Option<String> {
 fn report_kill(env: &dyn HostEnv, report: Value, after: &str) {
     let kind = if has_survivors(&report) { "kill_refused" } else { "kill_group" };
     env.emit("host_health", json!({"kind": kind, "after": after, "report": report, "at_ms": now_ms()}));
+}
+
+/// The kind of a failure to start the adapter, read from the host's own messages,
+/// so the UI can choose its words and action without matching text.
+fn adapter_failure_kind(reason: &str) -> &'static str {
+    if reason.contains("was not found on the login shell PATH") || reason.starts_with("could not start") {
+        "adapter_missing"
+    } else if reason.contains("no answer to") {
+        "timeout"
+    } else {
+        "adapter_crashed"
+    }
 }
 
 /// Whether a prompt error came from the adapter going away rather than from the
@@ -1828,6 +1868,31 @@ while True:
             .collect();
         let _ = std::fs::remove_dir_all(&home);
         (events, text)
+    }
+
+    #[test]
+    fn start_failures_are_classified_without_the_ui_matching_text() {
+        assert_eq!(adapter_failure_kind("claude-agent-acp was not found on the login shell PATH"), "adapter_missing");
+        assert_eq!(adapter_failure_kind("could not start /x/claude-agent-acp: No such file or directory"), "adapter_missing");
+        assert_eq!(adapter_failure_kind("initialize failed: no answer to initialize within 60s"), "timeout");
+        assert_eq!(adapter_failure_kind("initialize failed: the adapter exited before responding"), "adapter_crashed");
+    }
+
+    #[tokio::test]
+    async fn a_missing_adapter_is_reported_as_missing() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = home_with_lock_script("missing-adapter", Some("echo 'lock: free'"));
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        std::env::set_var("ACP_ADAPTER", home.join("no-such-adapter"));
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        let started = host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap();
+        let dead = wait_for(&log, Duration::from_secs(2), |e, b| e == "state" && b["state"] == "dead").await;
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(started.is_err());
+        let dead = dead.expect("the start failure was reported");
+        assert_eq!(dead["reason_kind"], "adapter_missing", "{dead}");
+        assert!(dead["reason"].as_str().is_some_and(|r| r.contains("no-such-adapter")), "{dead}");
     }
 
     /// A turn that ends in an error is recorded failed and is never sent again,
