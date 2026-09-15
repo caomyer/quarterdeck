@@ -81,8 +81,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .connection > span:nth-child(2) { display: flex; flex-direction: column; gap: 1px; }
 .connection strong { font-size: .67rem; }.connection small { color: rgb(238 244 241 / 38%); font-size: .55rem; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #62cb91; box-shadow: 0 0 0 3px rgb(98 203 145 / 14%); }
-.live-dot.state-dead, .live-dot.state-locked_by_other { background: #899391; box-shadow: none; }
-.live-dot.state-restarting { background: var(--amber); box-shadow: 0 0 0 3px rgb(217 167 85 / 14%); }
+.live-dot.state-dead, .live-dot.state-stopped, .live-dot.state-refused, .live-dot.state-locked_by_other { background: #899391; box-shadow: none; }
+.live-dot.state-starting, .live-dot.state-restarting { background: var(--amber); box-shadow: 0 0 0 3px rgb(217 167 85 / 14%); }
 .runtime-button { min-height: 29px; padding: 0 8px; border: 1px solid rgb(255 255 255 / 13%); border-radius: 5px; color: rgb(238 244 241 / 68%); background: transparent; font-size: .59rem; }
 
 .main-surface { display: flex; min-height: 0; flex-direction: column; background: var(--surface); }
@@ -181,9 +181,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .chat-status { display: flex; align-items: center; gap: 10px; margin: 20px 24px 0; padding: 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
 .avatar { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 7px; color: white; background: #356960; font-size: .68rem; font-weight: 800; }
 .avatar.small { width: 28px; height: 28px; font-size: .58rem; }
-.chat-status > div { display: flex; flex-direction: column; gap: 2px; }.chat-status strong { font-size: .72rem; }.chat-status span { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: .59rem; }.chat-status i { width: 7px; height: 7px; border-radius: 50%; background: #56b883; }
+.chat-status > div { display: flex; flex-direction: column; gap: 2px; }.chat-status strong { font-size: .72rem; }.chat-status > div > span { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: .59rem; }.chat-status i { width: 7px; height: 7px; border-radius: 50%; background: #56b883; }
 .chat-status > .icon-button { margin-left: auto; }
-.chat-status i.offline { background: #899391; }
+.chat-status i.state-starting, .chat-status i.state-restarting { background: var(--amber); }
+.chat-status i.state-dead, .chat-status i.state-stopped, .chat-status i.state-refused, .chat-status i.state-locked_by_other { background: #899391; }
 .chat-messages { min-height: 0; flex: 1; overflow: auto; padding: 22px 24px; }
 .day-label { margin-bottom: 22px; color: var(--muted); font-size: .58rem; text-align: center; text-transform: uppercase; }
 .mate-message, .captain-message { display: flex; gap: 9px; max-width: 620px; margin-bottom: 18px; }.mate-message > div, .captain-message > div { flex: 1; }.mate-message strong, .captain-message strong { font-size: .66rem; }.mate-message p, .captain-message p { margin: 4px 0; color: var(--ink); font-size: .72rem; line-height: 1.55; }.mate-message time, .captain-message time { color: var(--muted); font-size: .56rem; }
