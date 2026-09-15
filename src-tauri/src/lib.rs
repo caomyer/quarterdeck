@@ -1,5 +1,7 @@
 mod envpath;
 mod host;
+#[cfg(test)]
+mod host_e2e;
 mod snapshot;
 
 use tauri::Manager;

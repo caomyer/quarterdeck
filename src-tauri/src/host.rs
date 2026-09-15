@@ -65,6 +65,25 @@ pub enum Cmd {
     GetState { reply: oneshot::Sender<Value> },
 }
 
+/// Where the host sends its events and keeps its per-home files. The app uses
+/// Tauri; the live end-to-end test records the events instead.
+pub(crate) trait HostEnv: Send + Sync + 'static {
+    fn emit(&self, event: &str, body: Value);
+    fn data_dir(&self) -> Result<PathBuf, String>;
+}
+
+struct TauriEnv(AppHandle);
+
+impl HostEnv for TauriEnv {
+    fn emit(&self, event: &str, body: Value) {
+        let _ = self.0.emit(event, body);
+    }
+
+    fn data_dir(&self) -> Result<PathBuf, String> {
+        self.0.path().app_data_dir().map_err(|e| format!("no app data folder: {e}"))
+    }
+}
+
 /// Tauri-managed handle to the host task.
 pub struct HostHandle {
     tx: mpsc::UnboundedSender<Cmd>,
@@ -73,12 +92,22 @@ pub struct HostHandle {
 
 impl HostHandle {
     pub fn spawn(app: AppHandle) -> Self {
+        Self::spawn_with(Arc::new(TauriEnv(app)))
+    }
+
+    pub(crate) fn spawn_with(env: Arc<dyn HostEnv>) -> Self {
         let (tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
         let groups = Groups::default();
-        let host = Host::new(app, ev_tx, groups.clone());
+        let host = Host::new(env, ev_tx, groups.clone());
         tauri::async_runtime::spawn(host.run(cmd_rx, ev_rx));
         HostHandle { tx, groups }
+    }
+
+    /// Process groups of the adapters running now.
+    #[cfg(test)]
+    pub(crate) fn live_groups(&self) -> Vec<u32> {
+        self.groups.all()
     }
 
     /// For the app's exit handler: kill every first mate process group still
@@ -95,7 +124,7 @@ impl HostHandle {
         }
     }
 
-    async fn call<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> Cmd) -> Result<T, String> {
+    pub(crate) async fn call<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> Cmd) -> Result<T, String> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(make(reply))
@@ -210,7 +239,7 @@ impl Groups {
 
 /// Live members of a process group, as `pid pgid stat command` lines.
 /// Zombies are left out: they are already dead and cannot be signalled.
-fn group_members(pgid: u32) -> Result<Vec<String>, String> {
+pub(crate) fn group_members(pgid: u32) -> Result<Vec<String>, String> {
     let out = std::process::Command::new("/bin/ps")
         .args(["-A", "-o", "pid=,pgid=,stat=,comm="])
         .stdin(Stdio::null())
@@ -695,7 +724,7 @@ impl State {
 }
 
 struct Host {
-    app: AppHandle,
+    env: Arc<dyn HostEnv>,
     ev_tx: mpsc::UnboundedSender<HostEvent>,
     home: Option<PathBuf>,
     host_dir: Option<PathBuf>,
@@ -716,9 +745,9 @@ struct Host {
 }
 
 impl Host {
-    fn new(app: AppHandle, ev_tx: mpsc::UnboundedSender<HostEvent>, groups: Groups) -> Self {
+    fn new(env: Arc<dyn HostEnv>, ev_tx: mpsc::UnboundedSender<HostEvent>, groups: Groups) -> Self {
         Host {
-            app,
+            env,
             ev_tx,
             groups,
             home: None,
@@ -743,7 +772,7 @@ impl Host {
         if let Value::Object(map) = &mut body {
             map.insert("at_ms".into(), json!(now_ms()));
         }
-        let _ = self.app.emit(event, body);
+        self.env.emit(event, body);
     }
 
     fn set_state(&mut self, state: State, detail: Value) {
@@ -942,13 +971,7 @@ impl Host {
     fn host_dir_for(&self, home: &Path) -> Result<PathBuf, String> {
         let digest = Sha256::digest(home.to_string_lossy().as_bytes());
         let key: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-        let dir = self
-            .app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("no app data folder: {e}"))?
-            .join("homes")
-            .join(key);
+        let dir = self.env.data_dir()?.join("homes").join(key);
         std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
         Ok(dir)
     }
@@ -993,7 +1016,7 @@ impl Host {
     /// `kill_refused` means processes may still be running; anything else is a
     /// routine `kill_group` record.
     fn report_kill(&self, report: Value, after: &str) {
-        report_kill(&self.app, report, after);
+        report_kill(self.env.as_ref(), report, after);
     }
 
     fn handle_event(&mut self, event: HostEvent) {
@@ -1011,10 +1034,10 @@ impl Host {
                 // The adapter is gone, but the Claude CLI and hook processes it
                 // started may not be: kill the group off the loop.
                 if let Some(mut adapter) = self.adapter.take() {
-                    let app = self.app.clone();
+                    let env = self.env.clone();
                     tauri::async_runtime::spawn(async move {
                         let report = adapter.kill_tree().await;
-                        report_kill(&app, report, "exit");
+                        report_kill(env.as_ref(), report, "exit");
                     });
                 }
                 self.set_state(State::Dead, json!({"reason": "the first mate process exited"}));
@@ -1173,9 +1196,9 @@ impl Host {
     }
 }
 
-fn report_kill(app: &AppHandle, report: Value, after: &str) {
+fn report_kill(env: &dyn HostEnv, report: Value, after: &str) {
     let kind = if has_survivors(&report) { "kill_refused" } else { "kill_group" };
-    let _ = app.emit("host_health", json!({"kind": kind, "after": after, "report": report, "at_ms": now_ms()}));
+    env.emit("host_health", json!({"kind": kind, "after": after, "report": report, "at_ms": now_ms()}));
 }
 
 fn read_session_id(host_dir: &Path) -> Option<String> {
