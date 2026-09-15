@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, SnapshotEvent } from "./types";
+import type { HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ReasonKind, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
   "session",
+  "history",
   "state",
   "text",
   "tool_call",
@@ -57,6 +58,7 @@ export class TauriHostAdapter implements HostAdapter {
         state: state.state,
         holder: typeof state.detail?.holder_command === "string" ? state.detail.holder_command : undefined,
         reason: typeof state.detail?.reason === "string" ? state.detail.reason : undefined,
+        reasonKind: text(state.detail?.reason_kind) as ReasonKind | undefined,
       },
       home: typeof state.home === "string" ? state.home : null,
       permissionRequests: (state.permission_requests ?? []).map(permissionRequest).filter((request): request is PermissionRequest => request !== null),
@@ -138,7 +140,14 @@ function normalizeEvent(name: (typeof EVENT_NAMES)[number], raw: Record<string, 
     };
   }
   if (name === "outbox") {
-    return { type: name, payload: { id: String(raw.id), status: raw.state as OutboxStatus, resent_after_restart: raw.resent_after_restart === true } };
+    return { type: name, payload: { id: String(raw.id), status: raw.state as OutboxStatus, resent_after_restart: raw.resent_after_restart === true, error: text(raw.error) } };
+  }
+  if (name === "history") {
+    const items = (Array.isArray(raw.items) ? raw.items : []).flatMap((item: Record<string, unknown>): HistoryItem[] => {
+      const who = item?.who;
+      return (who === "captain" || who === "mate" || who === "step") && typeof item.text === "string" ? [{ who, text: item.text }] : [];
+    });
+    return { type: name, payload: { items } };
   }
   if (name === "snapshot") {
     return { type: name, payload: { ...raw, phase: (raw.phase ?? "ready") as "refreshing" | "ready", refreshing: raw.phase === "refreshing" } } as HostEvent;

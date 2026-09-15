@@ -69,7 +69,14 @@ export type FleetSnapshot = {
 export type SnapshotProject = { name: string; mode: string; yolo: boolean; description?: string; added?: string | null };
 
 export type HostRuntimeState = "stopped" | "starting" | "idle" | "prompt_turn" | "agent_turn" | "restarting" | "dead" | "locked_by_other" | "refused";
-export type OutboxStatus = "queued" | "sent" | "likely_started" | "picked_up" | "requeued";
+/** `failed`: delivered, but its turn errored, for example on a session limit. A turn cut off by a crash is `requeued` and re-sent instead. */
+export type OutboxStatus = "queued" | "sent" | "likely_started" | "picked_up" | "requeued" | "failed";
+
+/** Why the host refused to start or the first mate died. Banners pick their copy from this, never from `reason`'s text. */
+export type ReasonKind = "not_a_home" | "permission_mode" | "lock_unconfirmed" | "lock_unclaimed" | "adapter_missing" | "adapter_crashed" | "timeout" | "exited";
+
+/** One item of the conversation a resumed session had before, oldest first. */
+export type HistoryItem = { who: "captain" | "mate" | "step"; text: string };
 
 export type PermissionOption = { option_id: string; name: string; kind: "allow_once" | "allow_always" | "reject_once" | "reject_always" | string };
 /** An approval the first mate is waiting on, in a home whose permission mode is `auto`. */
@@ -79,12 +86,14 @@ export type PermissionRequest = { id: string; title: string; options: Permission
 export type ToolStep = { id: string; title?: string; kind?: string; status?: string };
 
 export type HostEvent =
-  | { type: "session"; payload: { mode: "new" | "loaded"; session_id: string; can_load: boolean; prompt_queueing: boolean } }
-  | { type: "state"; payload: { state: HostRuntimeState; origin?: string; derived?: boolean; holder?: string; holder_command?: string; reason?: string; /** Set on `starting`: the home the host is starting in. */ home?: string } }
+  | { type: "session"; payload: { mode: "new" | "loaded"; session_id: string; can_load?: boolean; prompt_queueing?: boolean; /** With `mode: "new"`: the host tried to resume the previous session and couldn't. */ previous_session_lost?: boolean } }
+  /** Sent once right after a session resumes: the whole earlier conversation, in order. */
+  | { type: "history"; payload: { items: HistoryItem[] } }
+  | { type: "state"; payload: { state: HostRuntimeState; origin?: string; derived?: boolean; holder?: string; holder_command?: string; reason?: string; reason_kind?: ReasonKind; /** Set on `starting`: the home the host is starting in. */ home?: string } }
   | { type: "text"; payload: { chunk: string; origin: "prompt" | "agent" | "prompt_or_agent" } }
   | { type: "tool_call"; payload: ToolStep }
   | { type: "tool_update"; payload: ToolStep }
-  | { type: "outbox"; payload: { id: string; status: OutboxStatus; resent_after_restart?: boolean } }
+  | { type: "outbox"; payload: { id: string; status: OutboxStatus; resent_after_restart?: boolean; /** Set on `failed`. */ error?: string } }
   | { type: "prompt_result"; payload: { id: string; stop_reason?: string; error?: string | null; usage?: Record<string, number> } }
   | { type: "usage"; payload: Record<string, number> }
   | { type: "permission"; payload: Record<string, unknown> }
@@ -112,7 +121,7 @@ export type SnapshotEvent = {
 };
 
 export type HostStateSnapshot = {
-  state: { state: HostRuntimeState; holder?: string; reason?: string };
+  state: { state: HostRuntimeState; holder?: string; reason?: string; reasonKind?: ReasonKind };
   /** The home the host last started in, which messages and restarts go to; `null` before any Start. */
   home: string | null;
   /** Approvals still waiting, so a relaunched window can show them again. */

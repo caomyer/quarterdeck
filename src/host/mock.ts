@@ -4,6 +4,7 @@ import recordedStream from "./mock-event-stream.json";
 import type {
   BearingsSnapshot,
   FleetSnapshot,
+  HistoryItem,
   HomeStatus,
   HostAdapter,
   HostEvent,
@@ -12,10 +13,18 @@ import type {
   HostStateSnapshot,
   OutboxStatus,
   PaneCapture,
+  ReasonKind,
   SnapshotEvent,
 } from "./types";
 
 type RecordedEvent = { t_ms: number; type: HostEvent["type"]; payload: Record<string, unknown> };
+
+declare global {
+  interface Window {
+    /** `?replay`: a host recording (`recording-latest.jsonl` as an array) for the review to play through the UI. */
+    __FM_REPLAY__?: { t_ms: number; type: string; payload: Record<string, unknown> }[];
+  }
+}
 
 /** `?slow` replays at recorded speed, so a turn stays on screen long enough to review. */
 const TIMING_SCALE = reviewFlag("slow") ? 1 : recordedStream.source.timing_scale;
@@ -24,14 +33,50 @@ function reviewFlag(name: string) {
   return new URLSearchParams(window.location.search).has(name);
 }
 
+function reviewValue(name: string) {
+  return new URLSearchParams(window.location.search).get(name);
+}
+
+/** What the host says for each `reason_kind`, so the review shows the details a captain would see. */
+const MOCK_REASONS: Record<ReasonKind, string> = {
+  not_a_home: "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate is not a firstmate home",
+  permission_mode: "config/claude-permission-mode is 'sometimes', which is not one of bypass or auto",
+  lock_unconfirmed: "could not confirm this home's session lock is free, so nothing was started. lock: unknown",
+  lock_unclaimed: "the first mate did not claim this home's session lock within 30s",
+  adapter_missing: "claude-agent-acp was not found on the login shell PATH",
+  adapter_crashed: "claude-agent-acp exited with signal 9 during a turn",
+  timeout: "session/new did not answer within 60s",
+  exited: "the first mate process exited",
+};
+
+/** `?history` also tells a resumed first mate what came before this window. */
+const EARLIER_CONVERSATION: HistoryItem[] = [
+  { who: "captain", text: "What's waiting on me?" },
+  { who: "step", text: "bin/fm-bearings-snapshot.sh --json" },
+  { who: "step", text: "Read /Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/backlog.md" },
+  { who: "mate", text: "Two calls: the resonance titles PR is ready to merge, and foreman wants a yes or no on Wi-Fi only uploads." },
+];
+
 export class MockHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
   private timers = new Set<number>();
   private outstanding = new Set<string>();
-  private state: HostRuntimeState = reviewFlag("not-started") ? "stopped" : "idle";
+  /** Like the real host, a refused or dead start only shows once the captain presses Start. */
+  private state: HostRuntimeState = reviewFlag("not-started") || reviewFlag("replay") || this.problem() ? "stopped" : "idle";
+  /** `?slow-start`: messages sent while starting, handed over once the first mate is ready. */
+  private deferred: (() => void)[] = [];
+  /** `?replay`: resolves the recorded send the replay is waiting on, with the id the host gave it. */
+  private awaitingSend: ((id: string) => void) | null = null;
+  private replayIds: string[] = [];
+  /** Messages the review already sent, which the replay need not wait for when it reaches them. */
+  private replaySent = new Set<string>();
   private sequence = 0;
   private startupPlayed = false;
   private homeChosen = false;
+  private startThrown = false;
+  /** The session's conversation so far, which a resumed session sends back as `history`. */
+  private transcript: HistoryItem[] = reviewFlag("history") ? [...EARLIER_CONVERSATION] : [];
+  private streaming = false;
   private readonly snapshot = {
     bearings: bearingsFixture as unknown as BearingsSnapshot,
     fleet: fleetFixture as unknown as FleetSnapshot,
@@ -39,15 +84,45 @@ export class MockHostAdapter implements HostAdapter {
 
   subscribe(listener: HostEventListener) {
     this.listeners.add(listener);
-    // The recorded startup starts the first mate, which `?not-started` must not do.
-    if (!this.startupPlayed && !reviewFlag("not-started")) {
+    if (reviewFlag("replay")) {
+      if (!this.startupPlayed) void this.replay(window.__FM_REPLAY__ ?? []);
+      this.startupPlayed = true;
+      return () => this.listeners.delete(listener);
+    }
+    // The recorded startup starts the first mate, which `?not-started` and a refused or dead start must not do.
+    if (!this.startupPlayed && !reviewFlag("not-started") && !this.problem()) {
       this.startupPlayed = true;
       this.play(recordedStream.startup as RecordedEvent[]);
+      const health = reviewValue("health");
+      if (health) this.later(700, () => this.emit({ type: "host_health", payload: health === "session_limit"
+        ? { kind: "session_limit", id: "mock-0", warning: "You've hit your session limit · resets 1:50pm (America/Los_Angeles)" }
+        : { kind: health, after: "restart", report: { pgid: 4242, survivors: ["4243 node claude-agent-acp"] } } }));
     }
     return () => this.listeners.delete(listener);
   }
 
   async hostStart() {
+    const problem = this.problem();
+    if (problem) {
+      this.emit({ type: "state", payload: { state: problem.state, reason: problem.reason, reason_kind: problem.kind } });
+      throw new Error(problem.reason);
+    }
+    // `?start-throws`: the first Start fails before the host reports any state.
+    if (reviewFlag("start-throws") && !this.startThrown) {
+      this.startThrown = true;
+      throw new Error("host_start: the host is still shutting down the previous first mate");
+    }
+    // `?slow-start`: starting takes a while, so the captain can send first; with `?history` it resumes the recorded session.
+    if (reviewFlag("slow-start")) {
+      this.emit({ type: "state", payload: { state: "starting", home: this.snapshot.fleet.fm_home } });
+      this.later(1500, () => {
+        const loaded = reviewFlag("history");
+        this.emit({ type: "session", payload: { mode: loaded ? "loaded" : "new", session_id: "79f27945-68cf-4639-899d-49576d4668e4", previous_session_lost: false } });
+        if (loaded) this.emit({ type: "history", payload: { items: [...this.transcript] } });
+        this.emit({ type: "state", payload: { state: "idle" } });
+      });
+      return;
+    }
     this.emit({ type: "state", payload: { state: "idle" } });
   }
 
@@ -62,14 +137,39 @@ export class MockHostAdapter implements HostAdapter {
     this.play(recordedStream.restart as RecordedEvent[], id);
   }
 
-  async send(_text: string) {
+  async send(text: string) {
+    if (reviewFlag("replay")) {
+      // The recording's next message goes when the captain sends one, under the id the host gave it.
+      const id = this.replayIds.shift() ?? `replay-extra-${++this.sequence}`;
+      this.replaySent.add(id);
+      this.awaitingSend?.(id);
+      this.awaitingSend = null;
+      return id;
+    }
     const id = `mock-${++this.sequence}`;
     this.outstanding.add(id);
     this.emit({ type: "outbox", payload: { id, status: "queued" } });
-    this.play(recordedStream.send as RecordedEvent[], id);
+    const run = () => this.deliver(id, text);
+    if (this.state === "starting") this.deferred.push(run);
+    else run();
+    return id;
+  }
+
+  /** Hands a message to the first mate: from here it's part of the session's conversation. */
+  private deliver(id: string, text: string) {
+    this.transcript.push({ who: "captain", text });
+    // `?failed`: the message is delivered, but its turn errors on the session limit, which the host also reports as a health warning.
+    const limit = "You've hit your session limit · resets 1:50pm (America/Los_Angeles)";
+    const events = (recordedStream.send as RecordedEvent[]).flatMap((item): RecordedEvent[] => reviewFlag("failed") && item.type === "outbox" && item.payload.state === "picked_up"
+      ? [
+        { ...item, type: "host_health", payload: { kind: "session_limit", id: "$id", warning: limit } },
+        { ...item, payload: { ...item.payload, state: "failed", error: JSON.stringify({ code: -32603, data: { errorKind: "rate_limit" }, message: `Internal error: ${limit}` }) } },
+      ]
+      : [item]);
+    this.play(events, id);
     if (reviewFlag("ask")) {
       // `?ask`: the first mate asks for an approval partway through the turn.
-      const timer = window.setTimeout(() => this.emit({ type: "permission_request", payload: {
+      this.later(400, () => this.emit({ type: "permission_request", payload: {
         id: `ask-${id}`,
         title: "cd /Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/projects/resonance && \\\n  git push origin fm/res-ai-titles",
         options: [
@@ -77,10 +177,8 @@ export class MockHostAdapter implements HostAdapter {
           { option_id: "allow_always", name: "Always Allow", kind: "allow_always" },
           { option_id: "reject", name: "Reject", kind: "reject_once" },
         ],
-      } }), 400);
-      this.timers.add(timer);
+      } }));
     }
-    return id;
   }
 
   async cancelTurn() {
@@ -89,8 +187,13 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   async getState(): Promise<HostStateSnapshot> {
+    // Until a Start, the host has nothing to report about one.
+    const problem = this.state === "stopped" ? null : this.problem();
     // `?not-started`: the first mate has not started in any home since launch.
-    return { state: { state: this.state }, home: reviewFlag("not-started") ? null : this.snapshot.fleet.fm_home };
+    return {
+      state: { state: this.state, reason: problem?.reason, reasonKind: problem?.kind },
+      home: reviewFlag("not-started") || problem ? null : this.snapshot.fleet.fm_home,
+    };
   }
 
   async latestSnapshot(): Promise<SnapshotEvent> {
@@ -132,10 +235,48 @@ export class MockHostAdapter implements HostAdapter {
     };
   }
 
+  /** `?refused=<reason_kind>` or `?dead=<reason_kind>`: every Start ends that way. */
+  private problem() {
+    for (const state of ["refused", "dead"] as const) {
+      const kind = reviewValue(state) as ReasonKind | null;
+      if (kind) return { state, kind, reason: MOCK_REASONS[kind] ?? `the host reported ${kind}` };
+    }
+    return null;
+  }
+
+  /**
+   * Plays a real host recording in order at 1/50 speed. Before each message's first `queued`, it waits for the review to send that message,
+   * so captain messages reach the chat the way they do in the app. Recorded tool calls and their updates carry the ACP update nested.
+   */
+  private async replay(events: NonNullable<Window["__FM_REPLAY__"]>) {
+    const queued = new Set<string>();
+    this.replayIds = events.filter((item) => item.type === "outbox" && item.payload.state === "queued").map((item) => String(item.payload.id));
+    let previous = events.at(0)?.t_ms ?? 0;
+    for (const item of events) {
+      await new Promise((resolve) => this.later(Math.min(400, Math.round((item.t_ms - previous) / 50)), () => resolve(null)));
+      previous = item.t_ms;
+      const raw = item.payload;
+      if (item.type === "outbox" && raw.state === "queued" && !queued.has(String(raw.id))) {
+        queued.add(String(raw.id));
+        if (!this.replaySent.has(String(raw.id))) await new Promise<string>((resolve) => { this.awaitingSend = resolve; });
+      }
+      if (item.type === "tool_call" || (item.type === "update" && raw.kind === "tool_call_update")) {
+        const update = (raw.update ?? {}) as Record<string, unknown>;
+        this.emit({ type: item.type === "tool_call" ? "tool_call" : "tool_update", payload: { id: String(update.toolCallId), title: (update.title ?? raw.title) as string | undefined, kind: update.kind as string | undefined, status: update.status as string | undefined } });
+      } else if (["session", "history", "state", "text", "outbox", "prompt_result", "host_health", "permission_request", "permission_resolved"].includes(item.type)) {
+        this.emit(this.normalize(item.type as HostEvent["type"], raw));
+      }
+    }
+  }
+
+  private later(ms: number, run: () => void) {
+    this.timers.add(window.setTimeout(run, ms));
+  }
+
   private play(events: RecordedEvent[], id?: string) {
     const startedAt = events.at(0)?.t_ms ?? 0;
     for (const item of events) {
-      const timer = window.setTimeout(() => {
+      this.later(Math.round((item.t_ms - startedAt) * TIMING_SCALE), () => {
         const payload = JSON.parse(JSON.stringify(item.payload).replaceAll("$id", id ?? "")) as Record<string, unknown>;
         if (item.type === "snapshot" && payload.phase === "ready") {
           payload.bearings = this.snapshot.bearings;
@@ -145,11 +286,15 @@ export class MockHostAdapter implements HostAdapter {
             { name: "foreman", mode: "direct-PR", yolo: true, description: "Agent supervision" },
           ];
         }
+        // `?session-lost`: the host couldn't resume the previous session, so the startup opens a fresh one.
+        if (item.type === "session" && reviewFlag("session-lost")) payload.previous_session_lost = true;
+        // `?history`: the startup resumes the previous session instead of opening a new one.
+        if (item.type === "session" && reviewFlag("history") && !reviewFlag("session-lost")) payload.mode = "loaded";
         const event = this.normalize(item.type, payload);
         this.emit(event);
-        if (event.type === "outbox" && event.payload.status === "picked_up") this.outstanding.delete(event.payload.id);
-      }, Math.round((item.t_ms - startedAt) * TIMING_SCALE));
-      this.timers.add(timer);
+        if (event.type === "session" && event.payload.mode === "loaded") this.emit({ type: "history", payload: { items: [...this.transcript] } });
+        if (event.type === "outbox" && (event.payload.status === "picked_up" || event.payload.status === "failed")) this.outstanding.delete(event.payload.id);
+      });
     }
   }
 
@@ -158,7 +303,7 @@ export class MockHostAdapter implements HostAdapter {
       return { type, payload: { chunk: String(raw.text ?? raw.chunk ?? ""), origin: (raw.origin ?? "prompt_or_agent") as "prompt" | "agent" | "prompt_or_agent" } };
     }
     if (type === "outbox") {
-      return { type, payload: { id: String(raw.id), status: (raw.state ?? raw.status) as OutboxStatus, resent_after_restart: raw.resent_after_restart === true } };
+      return { type, payload: { id: String(raw.id), status: (raw.state ?? raw.status) as OutboxStatus, resent_after_restart: raw.resent_after_restart === true, error: raw.error as string | undefined } };
     }
     if (type === "tool_call" || type === "tool_update") {
       return { type, payload: { id: String(raw.toolCallId), title: raw.title as string | undefined, kind: raw.kind as string | undefined, status: raw.status as string | undefined } };
@@ -167,8 +312,26 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   private emit(event: HostEvent) {
-    if (event.type === "state") this.state = event.payload.state;
+    if (event.type === "state") {
+      this.state = event.payload.state;
+      // Like the host, messages sent while starting go to the first mate once it's ready, however it started.
+      if (["idle", "prompt_turn", "agent_turn"].includes(this.state)) this.deferred.splice(0).forEach((run) => run());
+    }
+    this.record(event);
     this.listeners.forEach((listener) => listener(event));
+  }
+
+  /** Keeps the transcript the way the adapter's session would: the captain's words, each step, and the first mate's replies. */
+  private record(event: HostEvent) {
+    if (event.type === "text") {
+      const last = this.transcript.at(-1);
+      if (this.streaming && last?.who === "mate") last.text += event.payload.chunk;
+      else this.transcript.push({ who: "mate", text: event.payload.chunk });
+      this.streaming = true;
+      return;
+    }
+    if (event.type === "tool_call") this.transcript.push({ who: "step", text: event.payload.title ?? "" });
+    if (event.type !== "tool_update") this.streaming = false;
   }
 
   private clearTimers() {
