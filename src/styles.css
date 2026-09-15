@@ -136,6 +136,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .compact-row > em { padding: 4px 6px; border-radius: 5px; color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); font-size: .58rem; font-style: normal; font-weight: 720; }
 
 .task-list { overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+/* An empty list would draw as a 2px bar above the empty state. */
+.task-list:empty { display: none; }
 .task-row { display: grid; grid-template-columns: 28px minmax(140px, .8fr) minmax(230px, 1.3fr) 18px; align-items: center; gap: 10px; width: 100%; min-height: 67px; padding: 9px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; text-align: left; }
 .task-row:last-child { border-bottom: 0; }.task-row:hover { background: var(--surface-2); }
 .task-state { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; }.task-state.warning { color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); }
