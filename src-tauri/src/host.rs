@@ -656,8 +656,13 @@ impl Host {
                     return;
                 };
                 let id = outbox.next_id();
-                outbox.queue.push_back(Pending { id: id.clone(), text: text.clone(), ever_sent: false });
-                self.record(&id, Some(&text), "queued", json!({}));
+                // Durable first: a message the outbox could not save is refused, not
+                // queued, so the captain never sees "queued" for words a crash would lose.
+                if let Err(error) = outbox.record(&id, Some(&text), "queued", json!({})) {
+                    let _ = reply.send(Err(format!("could not save the message, so it was not sent: {error}")));
+                    return;
+                }
+                outbox.queue.push_back(Pending { id: id.clone(), text, ever_sent: false });
                 self.emit("outbox", json!({"id": id, "state": "queued", "while": self.state.name()}));
                 let _ = reply.send(Ok(id));
             }
@@ -1061,5 +1066,37 @@ mod tests {
 
         let empty = lock_for("empty", Some("true")).await;
         assert!(matches!(empty, Lock::Unknown(_)));
+    }
+
+    #[test]
+    fn outbox_record_reports_a_failed_write() {
+        let path = std::env::temp_dir()
+            .join(format!("fm-desktop-test-no-such-dir-{}", std::process::id()))
+            .join("outbox.jsonl");
+        let outbox = Outbox::load(&path);
+        assert!(outbox.record("m1", Some("hello"), "queued", json!({})).is_err());
+    }
+
+    #[test]
+    fn outbox_reload_keeps_unfinished_messages_in_order() {
+        let dir = std::env::temp_dir().join(format!("fm-desktop-test-outbox-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("outbox.jsonl");
+        let outbox = Outbox::load(&path);
+        outbox.record("a", Some("first"), "queued", json!({})).unwrap();
+        outbox.record("b", Some("second"), "queued", json!({})).unwrap();
+        outbox.record("c", Some("third"), "queued", json!({})).unwrap();
+        outbox.record("a", None, "sent", json!({})).unwrap();
+        outbox.record("b", None, "sent", json!({})).unwrap();
+        outbox.record("b", None, "picked_up", json!({})).unwrap();
+        let reloaded = Outbox::load(&path);
+        let seen: Vec<(&str, &str, bool)> = reloaded
+            .queue
+            .iter()
+            .map(|p| (p.id.as_str(), p.text.as_str(), p.ever_sent))
+            .collect();
+        assert_eq!(seen, vec![("a", "first", true), ("c", "third", false)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
