@@ -36,7 +36,7 @@ await page.getByText(/Answered · the first mate read it by/).waitFor();
 
 await page.getByRole("button", { name: /Chat/ }).click();
 await page.locator(".captain-message").filter({ hasText: "On the res model download: Wi-Fi only with visible progress." }).waitFor();
-await page.locator(".mate-message").filter({ hasText: "I have that, captain. I’ll carry it through and report what changes." }).waitFor();
+await page.locator(".mate-message").filter({ hasText: "aye" }).waitFor();
 await page.screenshot({ path: `${output}/03-chat-stream-and-read.png`, fullPage: true });
 
 await page.getByLabel("Message the first mate").fill("Keep the existing error text.");

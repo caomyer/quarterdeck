@@ -1,20 +1,54 @@
 {
+  "source": {
+    "recording": "recording-latest.jsonl",
+    "host_commit": "c857723",
+    "captured_at_ms": 1789497059535,
+    "timing_scale": 0.08
+  },
   "startup": [
-    { "after_ms": 80, "type": "state", "payload": { "state": "agent_turn", "origin": "agent", "derived": true } },
-    { "after_ms": 140, "type": "text", "payload": { "chunk": "Captain, I took fresh bearings. ", "origin": "agent" } },
-    { "after_ms": 90, "type": "text", "payload": { "chunk": "One call is waiting and one item is underway.", "origin": "agent" } },
-    { "after_ms": 160, "type": "state", "payload": { "state": "idle" } },
-    { "after_ms": 280, "type": "snapshot", "payload": { "phase": "refreshing", "refreshing": true } },
-    { "after_ms": 180, "type": "snapshot", "payload": { "phase": "ready", "refreshing": false } }
+    { "t_ms": 1, "type": "state", "payload": { "at_ms": 1789497059536, "home": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate", "state": "starting" } },
+    { "t_ms": 5326, "type": "session", "payload": { "at_ms": 1789497064861, "mode": "new", "permission_mode": "bypass", "session_id": "79f27945-68cf-4639-899d-49576d4668e4" } },
+    { "t_ms": 5326, "type": "state", "payload": { "at_ms": 1789497064861, "state": "idle" } },
+    { "t_ms": 10500, "type": "snapshot", "payload": { "phase": "refreshing", "refreshing": true, "synthetic": true } },
+    { "t_ms": 30000, "type": "snapshot", "payload": { "phase": "ready", "refreshing": false, "synthetic": true } }
   ],
   "send": [
-    { "after_ms": 30, "type": "outbox", "payload": { "id": "$id", "status": "sent" } },
-    { "after_ms": 160, "type": "state", "payload": { "state": "prompt_turn", "origin": "prompt" } },
-    { "after_ms": 100, "type": "outbox", "payload": { "id": "$id", "status": "likely_started" } },
-    { "after_ms": 220, "type": "text", "payload": { "chunk": "I have that, captain. ", "origin": "prompt" } },
-    { "after_ms": 130, "type": "text", "payload": { "chunk": "I’ll carry it through and report what changes.", "origin": "prompt" } },
-    { "after_ms": 120, "type": "outbox", "payload": { "id": "$id", "status": "picked_up" } },
-    { "after_ms": 20, "type": "prompt_result", "payload": { "id": "$id", "stop_reason": "end_turn", "error": null, "usage": { "input_tokens": 82, "output_tokens": 24 } } },
-    { "after_ms": 40, "type": "state", "payload": { "state": "idle" } }
+    { "t_ms": 5356, "type": "outbox", "payload": { "at_ms": 1789497064891, "id": "$id", "state": "queued", "while": "idle" } },
+    { "t_ms": 5373, "type": "outbox", "payload": { "at_ms": 1789497064908, "id": "$id", "state": "sent", "while": "idle" } },
+    { "t_ms": 5373, "type": "state", "payload": { "at_ms": 1789497064908, "origin": "prompt", "state": "prompt_turn" } },
+    { "t_ms": 8739, "type": "outbox", "payload": { "at_ms": 1789497068275, "authoritative": false, "id": "$id", "state": "likely_started" } },
+    { "t_ms": 8740, "type": "text", "payload": { "at_ms": 1789497068275, "origin": "prompt_or_agent", "text": "aye" } },
+    { "t_ms": 9097, "type": "outbox", "payload": { "at_ms": 1789497068632, "id": "$id", "state": "picked_up" } },
+    { "t_ms": 9097, "type": "prompt_result", "payload": { "at_ms": 1789497068632, "error": null, "id": "$id", "stop_reason": "end_turn", "usage": { "cachedReadTokens": 10126, "cachedWriteTokens": 41657, "inputTokens": 2, "outputTokens": 164, "totalTokens": 51949 } } },
+    { "t_ms": 9097, "type": "state", "payload": { "at_ms": 1789497068633, "state": "idle" } }
+  ],
+  "restart": [
+    { "t_ms": 16958, "type": "state", "payload": { "at_ms": 1789497076493, "state": "restarting" } },
+    { "t_ms": 16985, "type": "outbox", "payload": { "at_ms": 1789497076520, "id": "$id", "resent_after_restart": true, "state": "requeued" } },
+    { "t_ms": 16985, "type": "state", "payload": { "at_ms": 1789497076520, "home": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate", "state": "starting" } },
+    { "t_ms": 19814, "type": "session", "payload": { "at_ms": 1789497079349, "mode": "loaded", "permission_mode": "bypass", "session_id": "79f27945-68cf-4639-899d-49576d4668e4" } },
+    { "t_ms": 19815, "type": "state", "payload": { "at_ms": 1789497079350, "state": "idle" } },
+    { "t_ms": 19836, "type": "outbox", "payload": { "at_ms": 1789497079372, "id": "$id", "state": "sent", "while": "idle" } },
+    { "t_ms": 19837, "type": "state", "payload": { "at_ms": 1789497079372, "origin": "prompt", "state": "prompt_turn" } },
+    { "t_ms": 22696, "type": "outbox", "payload": { "at_ms": 1789497082231, "authoritative": false, "id": "$id", "state": "likely_started" } },
+    { "t_ms": 22697, "type": "text", "payload": { "at_ms": 1789497082232, "origin": "prompt_or_agent", "text": "1" } },
+    { "t_ms": 23049, "type": "text", "payload": { "at_ms": 1789497082584, "origin": "prompt_or_agent", "text": "\n2\n3\n4\n5" } },
+    { "t_ms": 23049, "type": "text", "payload": { "at_ms": 1789497082585, "origin": "prompt_or_agent", "text": "\n6\n7\n8\n9" } },
+    { "t_ms": 23050, "type": "text", "payload": { "at_ms": 1789497082585, "origin": "prompt_or_agent", "text": "\n10\n11\n12\n13" } },
+    { "t_ms": 23050, "type": "text", "payload": { "at_ms": 1789497082585, "origin": "prompt_or_agent", "text": "\n14\n15\n16\n17" } },
+    { "t_ms": 23051, "type": "text", "payload": { "at_ms": 1789497082586, "origin": "prompt_or_agent", "text": "\n18\n19\n20\n21" } },
+    { "t_ms": 23075, "type": "text", "payload": { "at_ms": 1789497082610, "origin": "prompt_or_agent", "text": "\n22\n23\n24\n25" } },
+    { "t_ms": 23138, "type": "text", "payload": { "at_ms": 1789497082674, "origin": "prompt_or_agent", "text": "\n26\n27\n28\n29" } },
+    { "t_ms": 23202, "type": "text", "payload": { "at_ms": 1789497082737, "origin": "prompt_or_agent", "text": "\n30\n31\n32\n33" } },
+    { "t_ms": 23268, "type": "text", "payload": { "at_ms": 1789497082803, "origin": "prompt_or_agent", "text": "\n34\n35\n36\n37" } },
+    { "t_ms": 23329, "type": "text", "payload": { "at_ms": 1789497082864, "origin": "prompt_or_agent", "text": "\n38\n39\n40\n41" } },
+    { "t_ms": 23392, "type": "text", "payload": { "at_ms": 1789497082928, "origin": "prompt_or_agent", "text": "\n42\n43\n44\n45" } },
+    { "t_ms": 23455, "type": "text", "payload": { "at_ms": 1789497082990, "origin": "prompt_or_agent", "text": "\n46\n47\n48\n49" } },
+    { "t_ms": 23525, "type": "text", "payload": { "at_ms": 1789497083060, "origin": "prompt_or_agent", "text": "\n50\n51\n52\n53" } },
+    { "t_ms": 23588, "type": "text", "payload": { "at_ms": 1789497083124, "origin": "prompt_or_agent", "text": "\n54\n55\n56\n57" } },
+    { "t_ms": 23634, "type": "text", "payload": { "at_ms": 1789497083169, "origin": "prompt_or_agent", "text": "\n58\n59\n60" } },
+    { "t_ms": 23836, "type": "outbox", "payload": { "at_ms": 1789497083371, "id": "$id", "state": "picked_up" } },
+    { "t_ms": 23836, "type": "prompt_result", "payload": { "at_ms": 1789497083371, "error": null, "id": "$id", "stop_reason": "end_turn", "usage": { "cachedReadTokens": 52692, "cachedWriteTokens": 596, "inputTokens": 2, "outputTokens": 263, "totalTokens": 53553 } } },
+    { "t_ms": 23836, "type": "state", "payload": { "at_ms": 1789497083372, "state": "idle" } }
   ]
 }

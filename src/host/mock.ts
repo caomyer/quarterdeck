@@ -9,10 +9,13 @@ import type {
   HostEventListener,
   HostRuntimeState,
   HostStateSnapshot,
+  OutboxStatus,
   PaneCapture,
 } from "./types";
 
-type RecordedEvent = { after_ms: number; type: HostEvent["type"]; payload: Record<string, unknown> };
+type RecordedEvent = { t_ms: number; type: HostEvent["type"]; payload: Record<string, unknown> };
+
+const TIMING_SCALE = recordedStream.source.timing_scale;
 
 export class MockHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
@@ -46,13 +49,8 @@ export class MockHostAdapter implements HostAdapter {
 
   async hostRestart() {
     this.clearTimers();
-    this.emit({ type: "state", payload: { state: "restarting" } });
-    for (const id of this.outstanding) {
-      this.emit({ type: "outbox", payload: { id, status: "requeued", resent_after_restart: true } });
-    }
-    await this.wait(420);
-    this.emit({ type: "session", payload: { mode: "loaded", session_id: "mock-session-1", can_load: true, prompt_queueing: true } });
-    this.emit({ type: "state", payload: { state: "idle" } });
+    const [id] = this.outstanding;
+    this.play(recordedStream.restart as RecordedEvent[], id);
   }
 
   async send(_text: string) {
@@ -80,9 +78,8 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   private play(events: RecordedEvent[], id?: string) {
-    let elapsed = 0;
+    const startedAt = events.at(0)?.t_ms ?? 0;
     for (const item of events) {
-      elapsed += item.after_ms;
       const timer = window.setTimeout(() => {
         const payload = JSON.parse(JSON.stringify(item.payload).replaceAll("$id", id ?? "")) as Record<string, unknown>;
         if (item.type === "snapshot" && payload.phase === "ready") {
@@ -93,12 +90,25 @@ export class MockHostAdapter implements HostAdapter {
             { name: "foreman", mode: "direct-PR", yolo: true, description: "Agent supervision" },
           ];
         }
-        const event = { type: item.type, payload } as HostEvent;
+        const event = this.normalize(item.type, payload);
         this.emit(event);
         if (event.type === "outbox" && event.payload.status === "picked_up") this.outstanding.delete(event.payload.id);
-      }, elapsed);
+      }, Math.round((item.t_ms - startedAt) * TIMING_SCALE));
       this.timers.add(timer);
     }
+  }
+
+  private normalize(type: HostEvent["type"], raw: Record<string, unknown>): HostEvent {
+    if (type === "text") {
+      return { type, payload: { chunk: String(raw.text ?? raw.chunk ?? ""), origin: (raw.origin ?? "prompt_or_agent") as "prompt" | "agent" | "prompt_or_agent" } };
+    }
+    if (type === "outbox") {
+      return { type, payload: { id: String(raw.id), status: (raw.state ?? raw.status) as OutboxStatus, resent_after_restart: raw.resent_after_restart === true } };
+    }
+    if (type === "snapshot") {
+      return { type, payload: raw } as HostEvent;
+    }
+    return { type, payload: raw } as HostEvent;
   }
 
   private emit(event: HostEvent) {
@@ -109,12 +119,5 @@ export class MockHostAdapter implements HostAdapter {
   private clearTimers() {
     this.timers.forEach((timer) => window.clearTimeout(timer));
     this.timers.clear();
-  }
-
-  private wait(ms: number) {
-    return new Promise<void>((resolve) => {
-      const timer = window.setTimeout(resolve, ms);
-      this.timers.add(timer);
-    });
   }
 }
