@@ -382,6 +382,9 @@ enum Lock {
 }
 
 /// Read the home's session lock through firstmate's own read-only status.
+/// Anything but a recognised answer from a clean exit is `Unknown`, and an
+/// unknown lock refuses the start: a second first mate in one home is worse
+/// than not starting.
 async fn lock_status(home: &Path) -> Lock {
     let output = envpath::command(home.join("bin").join("fm-lock.sh"))
         .arg("status")
@@ -391,8 +394,17 @@ async fn lock_status(home: &Path) -> Lock {
         .output()
         .await;
     let text = match output {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        Err(err) => return Lock::Unknown(format!("fm-lock.sh status failed: {err}")),
+        // `fm-lock.sh status` documents that it always exits 0.
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        Ok(out) => {
+            let said = format!(
+                "{} {}",
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            return Lock::Unknown(format!("fm-lock.sh status exited with {}: {}", out.status, said.trim()));
+        }
+        Err(err) => return Lock::Unknown(format!("could not run fm-lock.sh status: {err}")),
     };
     if let Some(pid) = text
         .strip_prefix("lock: held by live harness pid ")
@@ -409,7 +421,7 @@ async fn lock_status(home: &Path) -> Lock {
     if text == "lock: free" || text.starts_with("lock: stale") {
         return Lock::Free;
     }
-    Lock::Unknown(text)
+    Lock::Unknown(format!("fm-lock.sh status printed an unrecognised answer: '{text}'"))
 }
 
 // ---------------------------------------------------------------- outbox ---
@@ -710,7 +722,9 @@ impl Host {
                 return Ok(());
             }
             Lock::Unknown(text) => {
-                self.emit("host_health", json!({"kind": "lock_unreadable", "detail": text}));
+                let reason = format!("could not confirm this home's session lock is free, so nothing was started. {text}");
+                self.set_state(State::Refused, json!({"reason": reason, "lock_status": text}));
+                return Err(reason);
             }
             Lock::Free => {}
         }
@@ -992,4 +1006,60 @@ fn read_session_id(host_dir: &Path) -> Option<String> {
 fn write_session_id(host_dir: &Path, session_id: &str, home: &Path) {
     let body = json!({"session_id": session_id, "home": home.to_string_lossy(), "at_ms": now_ms()});
     let _ = std::fs::write(host_dir.join("session.json"), body.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A throwaway home whose `bin/fm-lock.sh` is the given shell body.
+    fn home_with_lock_script(name: &str, body: Option<&str>) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("fm-desktop-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        if let Some(body) = body {
+            let script = home.join("bin").join("fm-lock.sh");
+            std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        home
+    }
+
+    async fn lock_for(name: &str, body: Option<&str>) -> Lock {
+        let home = home_with_lock_script(name, body);
+        let lock = lock_status(&home).await;
+        let _ = std::fs::remove_dir_all(&home);
+        lock
+    }
+
+    #[tokio::test]
+    async fn lock_free_and_stale_start() {
+        assert!(matches!(lock_for("free", Some("echo 'lock: free'")).await, Lock::Free));
+        assert!(matches!(
+            lock_for("stale", Some("echo 'lock: stale (pid 5410 dead or not a harness)'")).await,
+            Lock::Free
+        ));
+    }
+
+    #[tokio::test]
+    async fn lock_held_reports_the_holder() {
+        let lock = lock_for("held", Some(&format!("echo 'lock: held by live harness pid {}'", std::process::id()))).await;
+        assert!(matches!(lock, Lock::HeldBy { pid, .. } if pid == std::process::id()));
+    }
+
+    #[tokio::test]
+    async fn lock_that_cannot_be_confirmed_is_unknown() {
+        let missing = lock_for("missing", None).await;
+        assert!(matches!(&missing, Lock::Unknown(text) if text.contains("could not run fm-lock.sh")));
+
+        let failed = lock_for("failed", Some("echo 'lock: free'; echo boom >&2; exit 3")).await;
+        assert!(matches!(&failed, Lock::Unknown(text) if text.contains("exited with") && text.contains("boom")));
+
+        let unreadable = lock_for("unreadable", Some("echo 'lock: unreadable'")).await;
+        assert!(matches!(&unreadable, Lock::Unknown(text) if text.contains("lock: unreadable")));
+
+        let empty = lock_for("empty", Some("true")).await;
+        assert!(matches!(empty, Lock::Unknown(_)));
+    }
 }
