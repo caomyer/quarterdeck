@@ -395,6 +395,8 @@ struct Spawned {
     adapter: Adapter,
     mode: &'static str,
     session: Value,
+    /// The updates a resumed session replayed, in order; empty for a new session.
+    history: Vec<Value>,
 }
 
 async fn spawn_adapter(
@@ -431,13 +433,16 @@ async fn spawn_adapter(
         pending: Arc::new(Mutex::new(HashMap::new())),
         next_id: Arc::new(AtomicU64::new(1)),
     };
-    // While session/load replays history, its updates are not live activity.
+    // While session/load replays history, its updates are not live activity: they
+    // are kept in `replay` and handed to the UI as the earlier conversation.
     let loading = Arc::new(AtomicBool::new(false));
+    let replay: Arc<std::sync::Mutex<Vec<Value>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     {
         let rpc = rpc.clone();
         let events = events.clone();
         let loading = loading.clone();
+        let replay = replay.clone();
         tauri::async_runtime::spawn(async move {
             // Bytes, decoded lossily: one invalid UTF-8 byte must not end the reader.
             let mut reader = BufReader::new(stdout);
@@ -464,11 +469,16 @@ async fn spawn_adapter(
                             let _ = tx.send(result);
                         }
                     }
-                    (Some("session/update"), _)
-                        if !loading.load(Ordering::SeqCst) => {
-                            let params = message.get("params").cloned().unwrap_or(Value::Null);
+                    (Some("session/update"), _) => {
+                        let params = message.get("params").cloned().unwrap_or(Value::Null);
+                        if loading.load(Ordering::SeqCst) {
+                            if let Ok(mut replay) = replay.lock() {
+                                replay.push(params.get("update").cloned().unwrap_or(Value::Null));
+                            }
+                        } else {
                             let _ = events.send(HostEvent::Update { gen, params });
                         }
+                    }
                     (Some("session/request_permission"), Some(id)) => {
                         let params = message.get("params").cloned().unwrap_or(Value::Null);
                         if !auto_allow {
@@ -538,7 +548,8 @@ async fn spawn_adapter(
     match open_session(&rpc, &loading, home, resume).await {
         Ok((session_id, mode, session)) => {
             adapter.session_id = session_id;
-            Ok(Spawned { adapter, mode, session })
+            let history = replay.lock().map(|mut replay| std::mem::take(&mut *replay)).unwrap_or_default();
+            Ok(Spawned { adapter, mode, session, history })
         }
         Err(reason) => {
             let report = adapter.kill_tree().await;
@@ -1139,6 +1150,7 @@ impl Host {
         }
 
         let resume = read_session_id(&host_dir);
+        let had_previous = resume.is_some();
         self.gen += 1;
         let auto_allow = config_mode == "bypass";
         let spawned = match spawn_adapter(&home, self.ev_tx.clone(), self.gen, resume, &self.groups, auto_allow).await {
@@ -1151,7 +1163,7 @@ impl Host {
                 return Err(reason);
             }
         };
-        let Spawned { mut adapter, mode, session } = spawned;
+        let Spawned { mut adapter, mode, session, history } = spawned;
 
         // Apply firstmate's permission posture; never approximate a missing mode.
         let offered = session
@@ -1237,8 +1249,17 @@ impl Host {
         write_session_id(&host_dir, &adapter.session_id, &home);
         self.emit(
             "session",
-            json!({"mode": mode, "session_id": adapter.session_id, "permission_mode": config_mode}),
+            json!({
+                "mode": mode,
+                "session_id": adapter.session_id,
+                "permission_mode": config_mode,
+                // An earlier conversation existed but could not be resumed.
+                "previous_session_lost": had_previous && mode == "new",
+            }),
         );
+        if mode == "loaded" {
+            self.emit("history", json!({"items": history_items(&history)}));
+        }
         self.adapter = Some(adapter);
         self.in_flight.clear();
         self.started_hint = None;
@@ -1542,6 +1563,67 @@ fn report_kill(env: &dyn HostEnv, report: Value, after: &str) {
     env.emit("host_health", json!({"kind": kind, "after": after, "report": report, "at_ms": now_ms()}));
 }
 
+/// The earlier conversation a resumed session replayed, as the chat shows it:
+/// consecutive chunks of one message joined, each tool call as a step titled by
+/// its latest title, thoughts left out, and firstmate's operational inputs hidden
+/// because the captain did not write them.
+fn history_items(updates: &[Value]) -> Vec<Value> {
+    struct Item {
+        who: &'static str,
+        text: String,
+        tool_id: Option<String>,
+        message_id: Option<String>,
+    }
+    let mut items: Vec<Item> = Vec::new();
+    for update in updates {
+        let text = |key: &str| update.get(key).and_then(Value::as_str).map(str::to_string);
+        let who = match update.get("sessionUpdate").and_then(Value::as_str) {
+            Some("user_message_chunk") => "captain",
+            Some("agent_message_chunk") => "mate",
+            Some("tool_call") => {
+                items.push(Item {
+                    who: "step",
+                    text: text("title").unwrap_or_default(),
+                    tool_id: text("toolCallId"),
+                    message_id: None,
+                });
+                continue;
+            }
+            Some("tool_call_update") => {
+                if let (Some(id), Some(title)) = (text("toolCallId"), text("title")) {
+                    if let Some(step) = items.iter_mut().rev().find(|i| i.who == "step" && i.tool_id.as_deref() == Some(&id)) {
+                        step.text = title;
+                    }
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let chunk = update.pointer("/content/text").and_then(Value::as_str).unwrap_or("");
+        let message_id = text("messageId");
+        match items.last_mut() {
+            // The adapter gives every replayed message an id; chunks join only when they
+            // share one, so two separate prompts are never run together.
+            Some(last) if last.who == who && message_id.is_some() && last.message_id == message_id => {
+                last.text.push_str(chunk)
+            }
+            _ => items.push(Item { who, text: chunk.to_string(), tool_id: None, message_id }),
+        }
+    }
+    items
+        .into_iter()
+        .filter(|item| !item.text.trim().is_empty())
+        .filter(|item| !(item.who == "captain" && is_operational_input(&item.text)))
+        .map(|item| json!({"who": item.who, "text": item.text}))
+        .collect()
+}
+
+/// firstmate prefixes inputs the captain did not write with U+2063; the plain
+/// session-start instruction is the older form it still accepts.
+fn is_operational_input(text: &str) -> bool {
+    text.starts_with('\u{2063}') || text.trim() == SESSION_START_BODY
+}
+
 /// The kind of a failure to start the adapter, read from the host's own messages,
 /// so the UI can choose its words and action without matching text.
 fn adapter_failure_kind(reason: &str) -> &'static str {
@@ -1773,7 +1855,18 @@ while True:
     m = json.loads(line)
     method = m.get("method")
     if method == "initialize":
-        send({"jsonrpc": "2.0", "id": m["id"], "result": {"agentCapabilities": {"loadSession": False}}})
+        can_load = os.path.exists(os.path.join(home, "can-load"))
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"agentCapabilities": {"loadSession": can_load}}})
+    elif method == "session/load":
+        def replay(update):
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": update}})
+        replay({"sessionUpdate": "user_message_chunk", "messageId": "u1", "content": {"type": "text", "text": "earlier "}})
+        replay({"sessionUpdate": "user_message_chunk", "messageId": "u1", "content": {"type": "text", "text": "question"}})
+        replay({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "thinking"}})
+        replay({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "earlier answer"}})
+        replay({"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read File", "kind": "read", "status": "pending"})
+        replay({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "title": "Read AGENTS.md"})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
     elif method == "session/new":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s1", "modes": {"availableModes": [{"id": "auto"}, {"id": "bypassPermissions"}]}}})
     elif method == "session/set_mode":
@@ -1868,6 +1961,80 @@ while True:
             .collect();
         let _ = std::fs::remove_dir_all(&home);
         (events, text)
+    }
+
+    #[test]
+    fn history_joins_messages_keeps_steps_and_hides_what_the_captain_did_not_write() {
+        let chunk = |kind: &str, text: &str, message: Option<&str>| {
+            let mut update = json!({"sessionUpdate": kind, "content": {"type": "text", "text": text}});
+            if let Some(message) = message {
+                update["messageId"] = json!(message);
+            }
+            update
+        };
+        let updates = vec![
+            chunk("user_message_chunk", "\u{2063}FIRSTMATE_OP: v1 session-start: Run it", None),
+            chunk("agent_message_chunk", "Captain, ", Some("a1")),
+            chunk("agent_message_chunk", "on deck.", Some("a1")),
+            chunk("agent_thought_chunk", "private thinking", None),
+            chunk("agent_message_chunk", "Second message.", Some("a2")),
+            json!({"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read File"}),
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "title": "Read AGENTS.md"}),
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"}),
+            chunk("user_message_chunk", SESSION_START_BODY, None),
+            chunk("user_message_chunk", "Ship the fix.", None),
+        ];
+        assert_eq!(
+            history_items(&updates),
+            vec![
+                json!({"who": "mate", "text": "Captain, on deck."}),
+                json!({"who": "mate", "text": "Second message."}),
+                json!({"who": "step", "text": "Read AGENTS.md"}),
+                json!({"who": "captain", "text": "Ship the fix."}),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resumed_session_sends_its_earlier_conversation() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = home_with_lock_script(
+            "resume-history",
+            Some(r#"if [ -f "$FM_HOME/adapter.pid" ]; then echo "lock: held by live harness pid $(cat "$FM_HOME/adapter.pid")"; else echo 'lock: free'; fi"#),
+        );
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        std::fs::write(home.join("can-load"), "").unwrap();
+        let adapter = home.join("fake-adapter.py");
+        std::fs::write(&adapter, FAKE_ADAPTER).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
+        let _ = std::fs::remove_file(home.join("adapter.pid"));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("second start");
+        let history = wait_for(&log, Duration::from_secs(2), |e, _| e == "history").await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&home);
+
+        let sessions: Vec<&Value> = events.iter().filter(|(e, _)| e == "session").map(|(_, b)| b).collect();
+        assert_eq!(sessions.len(), 2, "{events:?}");
+        assert_eq!(sessions[0]["mode"], "new");
+        assert_eq!(sessions[1]["mode"], "loaded");
+        assert_eq!(sessions[1]["previous_session_lost"], false);
+        let history = history.expect("the earlier conversation was sent");
+        assert_eq!(
+            history["items"],
+            json!([
+                {"who": "captain", "text": "earlier question"},
+                {"who": "mate", "text": "earlier answer"},
+                {"who": "step", "text": "Read AGENTS.md"},
+            ])
+        );
+        assert!(!events.iter().any(|(e, b)| e == "text" && b["text"] == "earlier answer"), "replay leaked into live chat");
     }
 
     #[test]
