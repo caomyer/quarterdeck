@@ -1,0 +1,20 @@
+{
+  "startup": [
+    { "after_ms": 80, "type": "state", "payload": { "state": "agent_turn", "origin": "agent", "derived": true } },
+    { "after_ms": 140, "type": "text", "payload": { "chunk": "Captain, I took fresh bearings. ", "origin": "agent" } },
+    { "after_ms": 90, "type": "text", "payload": { "chunk": "One call is waiting and one item is underway.", "origin": "agent" } },
+    { "after_ms": 160, "type": "state", "payload": { "state": "idle" } },
+    { "after_ms": 280, "type": "snapshot", "payload": { "phase": "refreshing", "refreshing": true } },
+    { "after_ms": 180, "type": "snapshot", "payload": { "phase": "ready", "refreshing": false } }
+  ],
+  "send": [
+    { "after_ms": 30, "type": "outbox", "payload": { "id": "$id", "status": "sent" } },
+    { "after_ms": 160, "type": "state", "payload": { "state": "prompt_turn", "origin": "prompt" } },
+    { "after_ms": 100, "type": "outbox", "payload": { "id": "$id", "status": "likely_started" } },
+    { "after_ms": 220, "type": "text", "payload": { "chunk": "I have that, captain. ", "origin": "prompt" } },
+    { "after_ms": 130, "type": "text", "payload": { "chunk": "I’ll carry it through and report what changes.", "origin": "prompt" } },
+    { "after_ms": 120, "type": "outbox", "payload": { "id": "$id", "status": "picked_up" } },
+    { "after_ms": 20, "type": "prompt_result", "payload": { "id": "$id", "stop_reason": "end_turn", "error": null, "usage": { "input_tokens": 82, "output_tokens": 24 } } },
+    { "after_ms": 40, "type": "state", "payload": { "state": "idle" } }
+  ]
+}
