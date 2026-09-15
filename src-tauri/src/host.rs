@@ -992,18 +992,22 @@ impl Host {
         }
     }
 
-    /// Messages handed over but not finished go back to the front of the queue.
+    /// Before a restart: everything not yet picked up goes back to the queue from
+    /// the durable log, and each message that was already handed over is marked
+    /// requeued. The log, not `in_flight`, decides, because a crash or an error
+    /// result has already cleared `in_flight` by the time a restart happens.
     fn requeue_in_flight(&mut self) {
-        let ids: Vec<String> = self.in_flight.drain(..).collect();
-        for id in ids.iter().rev() {
-            self.record(id, None, "requeued", json!({"resent_after_restart": true}));
+        self.in_flight.clear();
+        self.started_hint = None;
+        let (Some(outbox), Some(host_dir)) = (self.outbox.as_mut(), self.host_dir.as_ref()) else {
+            return;
+        };
+        outbox.queue = Outbox::load(&host_dir.join("outbox.jsonl")).queue;
+        let resent: Vec<String> = outbox.queue.iter().filter(|p| p.ever_sent).map(|p| p.id.clone()).collect();
+        for id in resent {
+            self.record(&id, None, "requeued", json!({"resent_after_restart": true}));
             self.emit("outbox", json!({"id": id, "state": "requeued", "resent_after_restart": true}));
         }
-        if let (Some(outbox), Some(home_dir)) = (self.outbox.as_mut(), self.host_dir.as_ref()) {
-            let reloaded = Outbox::load(&home_dir.join("outbox.jsonl"));
-            outbox.queue = reloaded.queue;
-        }
-        self.started_hint = None;
     }
 
     async fn stop_adapter(&mut self) {
