@@ -542,7 +542,11 @@ async fn host_e2e_live_scratch_home() {
         "steps": steps.iter().map(|s| json!({"step": s.name, "pass": s.pass, "evidence": s.evidence})).collect::<Vec<_>>(),
     });
     let _ = std::fs::write(out.join(format!("summary-{run}.json")), serde_json::to_string_pretty(&summary).unwrap_or_default());
-    let _ = std::fs::copy(&recording, out.join("recording-latest.jsonl"));
+    // Only a run that passed becomes the shared recording the UI replay reads; a failed
+    // run's recording is incomplete and would quietly break `pnpm replay`.
+    if steps.iter().all(|s| s.pass) {
+        let _ = std::fs::copy(&recording, out.join("recording-latest.jsonl"));
+    }
     println!("\n{passed}/{} steps passed; summary-{run}.json", steps.len());
     assert!(steps.iter().all(|s| s.pass), "{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
 }

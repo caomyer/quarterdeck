@@ -55,8 +55,9 @@ const REAP_WAIT: Duration = Duration::from_secs(5);
 /// its own. A live probe saw a new session claim it before session/new returned,
 /// about 4s after spawn; a resumed session only nudges and claims it on a turn.
 const CLAIM_WAIT_BEFORE_NUDGE: Duration = Duration::from_secs(10);
-/// How long the session-start turn gets to claim the lock after it is sent.
-const CLAIM_WAIT_AFTER_NUDGE: Duration = Duration::from_secs(180);
+/// How long the session-start turn gets to claim the lock after it is sent. Missing
+/// the claim no longer stops the start, so this only delays calling it ready.
+const CLAIM_WAIT_AFTER_NUDGE: Duration = Duration::from_secs(60);
 /// firstmate's own session-start instruction, as `bin/fm-sessionstart-nudge.sh` words it.
 const SESSION_START_BODY: &str =
     "Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.";
@@ -1319,13 +1320,18 @@ impl Host {
             return Err(reason);
         }
 
-        // Only call this first mate running once the home's lock is confirmed to be its
-        // own: a terminal session that won the race keeps the home, and ours stops.
-        // A new session's hook claims the lock as the session opens. A resumed one only
-        // nudges, and firstmate claims the lock on its next turn, so when nothing claims
-        // it the host hands the first mate that same session-start instruction as a turn.
+        // The lock guards against two first mates in one home, so a live holder that is
+        // not ours stops this start. Nobody holding it is a different matter: after a
+        // crash the lock names a dead process, which firstmate reads as stale, so nothing
+        // else is running. A resumed first mate also rightly refuses to repeat a session
+        // start it already ran, and so never claims one. Never stop our own first mate
+        // over an unclaimed lock; say it plainly instead.
         let mut claim = wait_for_lock_claim(&home, adapter.pgid, CLAIM_WAIT_BEFORE_NUDGE).await;
-        if matches!(claim, LockClaim::Unclaimed(_)) {
+        if matches!(claim, LockClaim::Unclaimed(_)) && mode == "new" {
+            // A new session whose own hook has not taken the helm gets firstmate's
+            // session-start instruction as its first turn. A resumed one is left alone:
+            // its hook has already nudged it, and asking again spends a turn to be told
+            // about the exactly-once contract.
             let input = session_start_input(&home).await;
             let rpc = adapter.rpc.clone();
             let session_id = adapter.session_id.clone();
@@ -1350,19 +1356,14 @@ impl Host {
                 );
                 return Ok(());
             }
-            LockClaim::Unclaimed(text) => {
-                let report = adapter.kill_tree().await;
-                self.report_kill(report, "lock_unclaimed");
-                let reason = format!(
-                    "the first mate did not claim this home's session lock within {}s of being asked to start its session, so it was stopped. {text}",
-                    CLAIM_WAIT_AFTER_NUDGE.as_secs()
-                );
-                self.set_state(
-                    State::Refused,
-                    json!({"reason": reason, "reason_kind": "lock_unclaimed", "lock_status": text}),
-                );
-                return Err(reason);
-            }
+            LockClaim::Unclaimed(text) => self.emit(
+                "host_health",
+                json!({
+                    "kind": "lock_unclaimed",
+                    "lock_status": text,
+                    "warning": "This first mate has not claimed the folder yet. Nothing else is using it, so it is running.",
+                }),
+            ),
         }
 
         write_session_id(&host_dir, &adapter.session_id, &home);
@@ -2298,6 +2299,57 @@ while True:
 
     /// A resumed session whose hook only nudged: the host sends firstmate's
     /// session-start instruction as a turn, and starts once that claims the lock.
+    /// A resumed first mate holds to firstmate's exactly-once session start, so it
+    /// never claims the lock. Nothing else holds it, so the app still starts, says so,
+    /// and does not spend another turn asking.
+    #[tokio::test]
+    async fn a_resumed_first_mate_that_never_claims_the_lock_still_starts() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = home_with_lock_script(
+            "resume-unclaimed",
+            Some(r#"if [ -f "$FM_HOME/adapter.pid" ]; then echo "lock: held by live harness pid $(cat "$FM_HOME/adapter.pid")"; else echo 'lock: free'; fi"#),
+        );
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        std::fs::write(home.join("can-load"), "").unwrap();
+        std::fs::write(home.join("claim-on-prompt"), "").unwrap();
+        let adapter = home.join("fake-adapter.py");
+        std::fs::write(&adapter, FAKE_ADAPTER).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
+        // The lock now names a process that is gone, exactly as it does after a crash.
+        let _ = std::fs::remove_file(home.join("adapter.pid"));
+        let from = log.0.lock().unwrap().len();
+        let resumed = host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap();
+        let idle = wait_for(&log, Duration::from_secs(2), |e, b| e == "state" && b["state"] == "idle").await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let prompts = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default();
+        let events = log.0.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(resumed.is_ok(), "{resumed:?}");
+        assert!(idle.is_some(), "the resumed first mate never became ready");
+        let after = &events[from..];
+        assert_eq!(after.iter().filter(|(e, b)| e == "session" && b["mode"] == "loaded").count(), 1, "{after:?}");
+        assert!(
+            after.iter().any(|(e, b)| e == "host_health" && b["kind"] == "lock_unclaimed"),
+            "the unclaimed lock was not reported: {after:?}"
+        );
+        assert!(
+            !after.iter().any(|(e, b)| e == "state" && b["state"] == "refused"),
+            "a resumed first mate was stopped over an unclaimed lock: {after:?}"
+        );
+        assert_eq!(
+            prompts.matches("fm-session-start.sh").count(),
+            1,
+            "the resumed session was asked to start again: {prompts:?}"
+        );
+    }
+
     #[tokio::test]
     async fn unclaimed_lock_gets_the_session_start_turn() {
         let _adapter_env = ADAPTER_ENV.lock().await;
