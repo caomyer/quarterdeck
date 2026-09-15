@@ -1,20 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture } from "./types";
+import type { HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, SnapshotEvent } from "./types";
 
-const EVENT_NAMES: HostEvent["type"][] = [
+/** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
+const EVENT_NAMES = [
   "session",
   "state",
   "text",
   "tool_call",
+  "update",
   "outbox",
   "prompt_result",
   "usage",
   "permission",
+  "permission_request",
+  "permission_resolved",
   "host_health",
   "snapshot",
-];
+] as const;
 
 export class TauriHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
@@ -48,13 +52,23 @@ export class TauriHostAdapter implements HostAdapter {
   }
 
   getState() {
-    return invoke<{ state: HostRuntimeState; detail?: Record<string, unknown> }>("get_state").then((state): HostStateSnapshot => ({
+    return invoke<{ state: HostRuntimeState; home?: string | null; detail?: Record<string, unknown>; permission_requests?: unknown[] }>("get_state").then((state): HostStateSnapshot => ({
       state: {
         state: state.state,
         holder: typeof state.detail?.holder_command === "string" ? state.detail.holder_command : undefined,
         reason: typeof state.detail?.reason === "string" ? state.detail.reason : undefined,
       },
+      home: typeof state.home === "string" ? state.home : null,
+      permissionRequests: (state.permission_requests ?? []).map(permissionRequest).filter((request): request is PermissionRequest => request !== null),
     }));
+  }
+
+  latestSnapshot() {
+    return invoke<{ snapshot: SnapshotEvent | null }>("snapshot_latest").then((latest) => latest.snapshot);
+  }
+
+  answerPermission(id: string, optionId: string) {
+    return invoke<void>("answer_permission", { id, optionId });
   }
 
   paneCapture(taskId: string) {
@@ -64,12 +78,24 @@ export class TauriHostAdapter implements HostAdapter {
     }));
   }
 
+  getHome() {
+    return invoke<HomeStatus>("home_get");
+  }
+
+  chooseHome() {
+    return invoke<HomeStatus | null>("home_choose");
+  }
+
+  refreshSnapshot() {
+    return invoke<void>("snapshot_refresh");
+  }
+
   private ensureListening() {
     if (this.listening) return this.listening;
-    this.listening = Promise.all(EVENT_NAMES.map(async (type) => {
-      const dispose = await listen(type, ({ payload }) => {
-        const normalized = normalizeEvent(type, payload as Record<string, unknown>);
-        this.listeners.forEach((listener) => listener(normalized));
+    this.listening = Promise.all(EVENT_NAMES.map(async (name) => {
+      const dispose = await listen(name, ({ payload }) => {
+        const normalized = normalizeEvent(name, payload as Record<string, unknown>);
+        if (normalized) this.listeners.forEach((listener) => listener(normalized));
       });
       this.unlisten.push(dispose);
     })).then(() => undefined);
@@ -77,22 +103,52 @@ export class TauriHostAdapter implements HostAdapter {
   }
 }
 
-function normalizeEvent(type: HostEvent["type"], raw: Record<string, unknown>): HostEvent {
-  if (type === "text") {
-    return { type, payload: { chunk: String(raw.text ?? ""), origin: (raw.origin ?? "prompt_or_agent") as "prompt" | "agent" | "prompt_or_agent" } };
+function text(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+/** The host passes the adapter's options through as-is, so any field may be missing; an option without an id can't be answered. */
+function permissionRequest(value: unknown): PermissionRequest | null {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  const id = text(raw.id);
+  if (!id) return null;
+  const options = (Array.isArray(raw.options) ? raw.options : []).flatMap((option: Record<string, unknown>) => {
+    const optionId = text(option?.option_id);
+    return optionId ? [{ option_id: optionId, name: text(option.name) ?? optionId, kind: text(option.kind) ?? "" }] : [];
+  });
+  return { id, title: text(raw.title) ?? "an action", options };
+}
+
+function normalizeEvent(name: (typeof EVENT_NAMES)[number], raw: Record<string, unknown>): HostEvent | null {
+  if (name === "permission_request") {
+    const request = permissionRequest(raw);
+    return request && { type: name, payload: request };
   }
-  if (type === "outbox") {
-    return { type, payload: { id: String(raw.id), status: raw.state as OutboxStatus, resent_after_restart: raw.resent_after_restart === true } };
+  if (name === "text") {
+    return { type: name, payload: { chunk: String(raw.text ?? ""), origin: (raw.origin ?? "prompt_or_agent") as "prompt" | "agent" | "prompt_or_agent" } };
   }
-  if (type === "snapshot") {
-    return { type, payload: { ...raw, phase: (raw.phase ?? "ready") as "refreshing" | "ready", refreshing: raw.phase === "refreshing" } } as HostEvent;
+  if (name === "tool_call" || name === "update") {
+    const update = (raw.update ?? {}) as Record<string, unknown>;
+    if (name === "update" && raw.kind !== "tool_call_update") return null;
+    const id = text(update.toolCallId);
+    if (!id) return null;
+    return {
+      type: name === "tool_call" ? "tool_call" : "tool_update",
+      payload: { id, title: text(update.title) ?? text(raw.title), kind: text(update.kind), status: text(update.status) },
+    };
   }
-  if (type === "host_health") {
-    return { type, payload: {
+  if (name === "outbox") {
+    return { type: name, payload: { id: String(raw.id), status: raw.state as OutboxStatus, resent_after_restart: raw.resent_after_restart === true } };
+  }
+  if (name === "snapshot") {
+    return { type: name, payload: { ...raw, phase: (raw.phase ?? "ready") as "refreshing" | "ready", refreshing: raw.phase === "refreshing" } } as HostEvent;
+  }
+  if (name === "host_health") {
+    return { type: name, payload: {
       ...raw,
       warning: typeof raw.warning === "string" ? raw.warning : undefined,
       rewake_storm: raw.kind === "rewake_storm",
     } } as HostEvent;
   }
-  return { type, payload: raw } as HostEvent;
+  return { type: name, payload: raw } as HostEvent;
 }

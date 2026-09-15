@@ -10,6 +10,7 @@ import {
   ExternalLink,
   FileText,
   FolderGit2,
+  FolderOpen,
   Gauge,
   GitBranch,
   Inbox,
@@ -21,6 +22,7 @@ import {
   Search,
   Send,
   Settings,
+  ShieldQuestion,
   ShipWheel,
   Sparkles,
   Sun,
@@ -30,7 +32,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import { createHostAdapter, type Decision, type FleetTask, type HostRuntimeState } from "./host";
-import { type ChatMessage, type OutboxView, type RewakeStorm, useHost } from "./host/use-host";
+import { type ChatMessage, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
 
 type View = "bearings" | "chat" | "projects" | "project";
 type CallState = OutboxView | undefined;
@@ -69,7 +71,8 @@ function optionLabels(reason: string) {
   }));
 }
 
-function runtimeLabel(state: HostRuntimeState, pending: number) {
+function runtimeLabel(state: HostRuntimeState, pending: number, approvals: number) {
+  if (approvals > 0 && ["idle", "prompt_turn", "agent_turn"].includes(state)) return "Waiting for your OK";
   if (state === "prompt_turn") return `Working on your ${pending > 1 ? `${pending} messages` : "message"}`;
   if (state === "agent_turn") return "Handling a fleet update";
   if (state === "restarting") return "Restarting…";
@@ -96,6 +99,7 @@ export function App() {
   const [ahoyVisible, setAhoyVisible] = useState(true);
   const [callMessageIds, setCallMessageIds] = useState<Record<string, string>>({});
   const [chatDraft, setChatDraft] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const projects = useMemo(() => {
     const byName = new Map<string, { tasks: FleetTask[]; mode?: string; yolo?: boolean }>();
@@ -123,11 +127,13 @@ export function App() {
 
   const selectedProjectData = projects.find((project) => project.name === selectedProject);
   const title = view === "bearings" ? "Bearings" : view === "chat" ? "Chat" : view === "projects" ? "Projects" : selectedProject ?? "Project";
-  const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture : view === "chat" ? "The first mate" : view === "bearings" && bearings ? `As of ${formatTime(bearings.generated)}` : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
+  const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture : view === "chat" ? "The first mate" : view === "bearings" ? (bearings ? `As of ${formatTime(bearings.generated)}` : "") : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
   const openCallCount = bearings?.decisions_open.length ?? 0;
+  const approvalCount = bridge.permissionRequests.length;
   const pendingCount = Object.values(outbox).filter((item) => item.status !== "picked_up").length;
   const runningHere = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime.state);
-  const hostLabel = bridge.rewakeStorm ? `Woken ${bridge.rewakeStorm.turns} times in ${Math.round(bridge.rewakeStorm.windowSecs / 60)} min` : runtimeLabel(runtime.state, pendingCount);
+  const hostLabel = bridge.rewakeStorm ? `Woken ${bridge.rewakeStorm.turns} times in ${Math.round(bridge.rewakeStorm.windowSecs / 60)} min` : runtimeLabel(runtime.state, pendingCount, approvalCount);
+  const offlineDetail = bridge.startError ?? (runtime.state === "dead" ? runtime.reason : undefined);
 
   function navigate(next: View) {
     setView(next);
@@ -148,7 +154,8 @@ export function App() {
 
   async function sendChat() {
     const message = chatDraft.trim();
-    if (!message) return;
+    // Keep the draft: it can go once the first mate has started in this folder.
+    if (!message || !bridge.sendReady) return;
     setChatDraft("");
     await bridge.send(message);
   }
@@ -170,7 +177,8 @@ export function App() {
     }
   }
 
-  if (!bearings || !fleet) return <div className="app-loading">Taking fresh bearings…</div>;
+  if (!bridge.homeChecked) return <div className="app-loading">Opening firstmate…</div>;
+  if (!bridge.home) return <HomeSetup problem={bridge.homeProblem} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} />;
 
   return (
     <div className="app-shell">
@@ -183,7 +191,7 @@ export function App() {
         </div>
         <nav className="primary-nav" aria-label="Main navigation">
           <NavButton active={view === "bearings"} icon={<Gauge size={18} />} label="Bearings" count={openCallCount || undefined} onClick={() => navigate("bearings")} />
-          <NavButton active={view === "chat"} icon={<MessageSquareText size={18} />} label="Chat" detail="First Mate" onClick={() => navigate("chat")} />
+          <NavButton active={view === "chat"} icon={<MessageSquareText size={18} />} label="Chat" detail="First Mate" count={approvalCount || undefined} countTitle={approvalCount ? `The first mate is waiting for your OK on ${approvalCount === 1 ? "one thing" : `${approvalCount} things`}` : undefined} onClick={() => navigate("chat")} />
           <NavButton active={view === "projects" || view === "project"} icon={<FolderGit2 size={18} />} label="Projects" count={projects.length} onClick={() => navigate("projects")} />
         </nav>
         <div className="sidebar-rule" />
@@ -198,7 +206,7 @@ export function App() {
         <div className="sidebar-footer">
           <div className="connection"><span className={`live-dot state-${runtime.state}`} /><span><strong>First Mate</strong><small>{hostLabel}</small></span></div>
           <button className="runtime-button" disabled={runtime.state === "restarting"} onClick={runningHere ? stopHost : () => void bridge.start()}>{runtime.state === "locked_by_other" ? "Check again" : runningHere ? "Stop" : "Start"}</button>
-          <button className="icon-button" title="Settings"><Settings size={17} /></button>
+          <button className="icon-button" title="Settings" onClick={() => setSettingsOpen(true)}><Settings size={17} /></button>
         </div>
       </aside>
 
@@ -216,15 +224,19 @@ export function App() {
 
         {view === "bearings" && (
           <div className={`content-scroll bearings-page ${bridge.refreshing ? "snapshot-refreshing" : ""}`} data-screen="bearings" aria-busy={bridge.refreshing}>
-            {(runtime.state === "dead" || runtime.state === "stopped") && <OfflineBanner onStart={() => void bridge.start()} />}
+            {(runtime.state === "dead" || runtime.state === "stopped") && <OfflineBanner detail={offlineDetail} onStart={() => void bridge.start()} />}
             {runtime.state === "locked_by_other" && <LockedBanner holder={runtime.holder} onCheck={() => void bridge.start()} />}
+            {bridge.snapshotHealth.errors.length > 0 && <SnapshotBanner health={bridge.snapshotHealth} refreshing={bridge.refreshing} onRetry={() => void bridge.refreshSnapshot()} />}
+            {approvalCount > 0 && view === "bearings" && <ApprovalBanner count={approvalCount} onOpen={() => navigate("chat")} />}
             {runtime.state === "refused" && <RefusedBanner reason={runtime.reason} onRetry={() => void bridge.start()} />}
             {bridge.rewakeStorm && <StormBanner storm={bridge.rewakeStorm} onAsk={() => { navigate("chat"); void bridge.send(stormQuestion(bridge.rewakeStorm!)); }} onRestart={() => void bridge.restart()} />}
             {bridge.healthWarning && <HostHealthBanner message={bridge.healthWarning} onRetry={() => void bridge.stop()} />}
+            {!bearings && bridge.snapshotHealth.errors.length === 0 && <EmptyState label="Taking fresh bearings of this home…" />}
+            {bearings && <>
             {ahoyVisible && (
               <section className="ahoy-card">
                 <div className="ahoy-mark"><ShipWheel size={22} /></div>
-                <div><span>Ahoy</span><h2>You've been away 3h 12m.</h2><p>The first mate can catch you up and take you through what's waiting.</p><strong>{bearings.decisions_open.length} waiting on you · {bearings.in_flight.length} underway</strong></div>
+                <div><span>Ahoy</span><h2>Welcome back.</h2><p>The first mate can catch you up and take you through what's waiting.</p><strong>{bearings.decisions_open.length} waiting on you · {bearings.in_flight.length} underway</strong></div>
                 <div className="ahoy-actions"><button onClick={runAhoy}>Ahoy</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
               </section>
             )}
@@ -243,7 +255,7 @@ export function App() {
             <DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={bearings.in_flight.length}>
               <div className="task-list">
                 {bearings.in_flight.map((item) => {
-                  const task = fleet.tasks.find((candidate) => candidate.id === item.id);
+                  const task = fleet?.tasks.find((candidate) => candidate.id === item.id);
                   return <button className="task-row" key={item.id} onClick={() => task && setActiveTask(task)}><span className="task-state warning"><CircleAlert size={16} /></span><span className="task-copy"><strong>{item.name}</strong><small>{projectName(item.repo)} · {item.kind}</small></span><span className="task-chip warning">{stateLabel(item.state)}</span><ChevronRight size={17} /></button>;
                 })}
               </div>
@@ -252,25 +264,82 @@ export function App() {
 
             <DashboardSection title="Charted Next" icon={<Clock3 size={17} />} tone="amber" count={bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length}>
               {bearings.gates.map((item) => <CompactRow key={item.id} title={item.title} detail={item.reason} icon={<Clock3 size={15} />} badge="waiting" />)}
-              {(bearings.unhealthy_endpoints ?? []).map((item) => <CompactRow key={`health-${item.id}`} title={`The first mate's records for ${projectName(fleet.tasks.find((task) => task.id === item.id)?.project ?? item.id)} don't match.`} detail="Nothing to do on your side." icon={<CircleAlert size={15} />} badge="needs repair" />)}
+              {(bearings.unhealthy_endpoints ?? []).map((item) => <CompactRow key={`health-${item.id}`} title={`The first mate's records for ${projectName(fleet?.tasks.find((task) => task.id === item.id)?.project ?? item.id)} don't match.`} detail="Nothing to do on your side." icon={<CircleAlert size={15} />} badge="needs repair" />)}
               {bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length === 0 && <EmptyState label="Nothing is queued." />}
             </DashboardSection>
+            </>}
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} outbox={outbox} draft={chatDraft} runtime={runtime.state} refusalReason={runtime.reason} hostLabel={hostLabel} storm={bridge.rewakeStorm} healthWarning={bridge.healthWarning} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(text) => void bridge.send(text)} onStart={() => void bridge.start()} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} outbox={outbox} draft={chatDraft} runtime={runtime.state} refusalReason={runtime.reason} offlineDetail={offlineDetail} hostLabel={hostLabel} home={bridge.home} sendReady={bridge.sendReady} storm={bridge.rewakeStorm} healthWarning={bridge.healthWarning} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(text) => void bridge.send(text)} onStart={() => void bridge.start()} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} onOpenTask={setActiveTask} />}
       </main>
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
-      {activeTask && <TaskDrawer task={activeTask} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
+      {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} onClose={() => setSettingsOpen(false)} />}
+      {activeTask && fleet && <TaskDrawer task={activeTask} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
     </div>
   );
 }
 
-function NavButton({ active, icon, label, detail, count, onClick }: { active: boolean; icon: React.ReactNode; label: string; detail?: string; count?: number; onClick: () => void }) {
-  return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span><strong>{label}</strong>{detail && <small>{detail}</small>}</span>{count !== undefined && <em>{count}</em>}</button>;
+function NavButton({ active, icon, label, detail, count, countTitle, onClick }: { active: boolean; icon: React.ReactNode; label: string; detail?: string; count?: number; countTitle?: string; onClick: () => void }) {
+  return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span><strong>{label}</strong>{detail && <small>{detail}</small>}</span>{count !== undefined && <em title={countTitle}>{count}</em>}</button>;
+}
+
+function HomeSetup({ problem, choosing, onChoose }: { problem: string | null; choosing: boolean; onChoose: () => void }) {
+  return <div className="home-setup"><section><div className="brand-mark"><Anchor size={21} /></div><h1>Where does firstmate live on this Mac?</h1><p>Choose your firstmate folder, the one with <code>AGENTS.md</code> and <code>bin</code> inside. The app runs the first mate there and reads Bearings from it.</p><p>You only do this once. You can change it later in Settings.</p>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose folder…"}</button></section></div>;
+}
+
+function HomeProblem({ problem }: { problem: string }) {
+  return <div className="home-problem" role="alert"><CircleAlert size={16} /><span>{problem}</span></div>;
+}
+
+function SettingsDialog({ home, problem, running, choosing, onChoose, onClose }: { home: string; problem: string | null; running: boolean; choosing: boolean; onChoose: () => void; onClose: () => void }) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [onClose]);
+  return <div className="drawer-backdrop" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>Settings</span><h2>firstmate folder</h2></div><button className="icon-button" onClick={onClose} title="Close settings"><X size={18} /></button></header><div className="settings-body"><p>The first mate runs here, and Bearings is read from here.</p><code className="settings-path" title={home}>{home}</code>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={running || choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose a different folder…"}</button>{running && <small>Stop the first mate before choosing a different folder.</small>}</div></section></div>;
+}
+
+const SNAPSHOT_SOURCES: Record<string, { label: string; part: "bearingsAt" | "fleetAt" }> = {
+  "fm-bearings-snapshot.sh": { label: "Bearings", part: "bearingsAt" },
+  "fm-fleet-snapshot.sh": { label: "the fleet", part: "fleetAt" },
+};
+
+function useNow(intervalMs: number) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+function SnapshotBanner({ health, refreshing, onRetry }: { health: SnapshotHealth; refreshing: boolean; onRetry: () => void }) {
+  const now = useNow(30_000);
+  const failed = health.errors.map((error) => SNAPSHOT_SOURCES[error.source]);
+  const what = [...new Set(failed.map((source) => source?.label ?? "this home"))].join(" and ");
+  const shownAt = failed.map((source) => source && health[source.part]).filter((at): at is number => typeof at === "number");
+  const age = shownAt.length === failed.length && shownAt.length > 0
+    ? `What's on screen was read at ${formatTime(new Date(Math.min(...shownAt)).toISOString())}, ${timeAgo(now - Math.min(...shownAt))}.`
+    : `Nothing from ${what} to show until a read works.`;
+  const details = health.errors.map((error) => `${error.source}: ${error.error}`).join("\n\n");
+  return <section className="offline-banner snapshot-banner" role="alert"><CircleAlert size={18} /><div><strong>Couldn't refresh {what}.</strong><span>{age}</span><small className="snapshot-error" title={details}>{details}</small></div><div className="banner-actions"><button onClick={() => window.alert(details)}>Show details</button><button disabled={refreshing} onClick={onRetry}>{refreshing ? "Trying…" : "Try again"}</button></div></section>;
+}
+
+function ApprovalBanner({ count, onOpen }: { count: number; onOpen: () => void }) {
+  return <section className="offline-banner approval-banner"><ShieldQuestion size={18} /><div><strong>The first mate is waiting for your OK on {count === 1 ? "one thing" : `${count} things`}.</strong><span>It won't go on with that until you answer.</span></div><button onClick={onOpen}>Open chat</button></section>;
+}
+
+function timeAgo(ms: number) {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "less than a minute ago";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} hour${hours === 1 ? "" : "s"} ago`;
 }
 
 function DashboardSection({ title, icon, tone, count, children }: { title: string; icon: React.ReactNode; tone: string; count: number; children: React.ReactNode }) {
@@ -330,10 +399,73 @@ function ProjectView({ project, onOpenTask }: { project: { name: string; posture
   return <div className="content-scroll project-page"><div className="posture-line"><Anchor size={15} /><span>{project.posture}</span></div><section className="project-summary"><div><span>Project</span><h2>{project.name}</h2><p>The first mate keeps this work within the project's standing delivery posture.</p></div><div className="project-stat"><strong>{project.tasks.length}</strong><span>Underway</span></div></section><DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={project.tasks.length}><div className="task-list">{project.tasks.map((task) => <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className="task-state warning"><CircleAlert size={16} /></span><span className="task-copy"><strong>{task.id}</strong><small>{task.kind} · {task.harness}</small></span><span className="task-chip warning">{stateLabel(task.current_state.state)}</span><ChevronRight size={17} /></button>)}</div></DashboardSection></div>;
 }
 
-function ChatView({ messages, outbox, draft, runtime, refusalReason, hostLabel, storm, healthWarning, onDraft, onSend, onResend, onStart, onRestart }: { messages: ChatMessage[]; outbox: Record<string, OutboxView>; draft: string; runtime: HostRuntimeState; refusalReason?: string; hostLabel: string; storm: RewakeStorm | null; healthWarning: string | null; onDraft: (value: string) => void; onSend: () => void; onResend: (text: string) => void; onStart: () => void; onRestart: () => void }) {
+type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[] };
+
+/** Consecutive steps read as one group between the first mate's messages. */
+function chatItems(messages: ChatMessage[]) {
+  const items: ChatItem[] = [];
+  for (const message of messages) {
+    const last = items.at(-1);
+    if (message.who !== "step") items.push({ type: "message", message });
+    else if (last?.type === "steps") last.steps.push(message);
+    else items.push({ type: "steps", id: `steps-${message.id}`, steps: [message] });
+  }
+  return items;
+}
+
+/** Paths inside the home read better relative to it. */
+function stripHome(text: string, home: string) {
+  return text.replaceAll(`${home}/`, "").trim();
+}
+
+/** For one-line step titles: the first line only, since the full text is in the tooltip. */
+function relativeToHome(text: string, home: string) {
+  return stripHome(text.split("\n")[0], home);
+}
+
+const STEP_VERBS: Record<string, string> = { Read: "Read", Edit: "Edited", Write: "Wrote", Fetch: "Opened" };
+
+function describeStep(step: ChatMessage, home: string) {
+  const title = relativeToHome(step.text, home) || "A step";
+  if (step.kind === "execute") return { verb: "Ran", detail: title, code: true };
+  if (step.kind === "search") return { verb: "Searched", detail: title, code: true };
+  const [, word, rest] = title.match(/^(Read|Edit|Write|Fetch)\s+(.+)$/) ?? [];
+  if (word && rest) return { verb: STEP_VERBS[word], detail: rest, code: false };
+  return { verb: "", detail: title, code: false };
+}
+
+/** While the turn is on, show the latest steps as they happen; afterwards fold them into one line. */
+const LIVE_STEPS = 6;
+
+function StepGroup({ steps, live, home }: { steps: ChatMessage[]; live: boolean; home: string }) {
+  const [open, setOpen] = useState(false);
+  const failed = steps.filter((step) => step.status === "failed").length;
+  const visible = live && !open ? steps.slice(-LIVE_STEPS) : steps;
+  const hidden = steps.length - visible.length;
+  const summary = `${steps.length === 1 ? "1 step" : `${steps.length} steps`}${failed ? ` · ${failed} didn't work` : ""}`;
+  return <div className={`step-group ${live ? "live" : ""}`}>{!live && <button className="step-summary" aria-expanded={open} onClick={() => setOpen((current) => !current)}><ChevronRight size={13} className={open ? "rotated" : ""} /><span>{summary}</span></button>}{live && hidden > 0 && <button className="step-summary" onClick={() => setOpen(true)}><ChevronRight size={13} /><span>{hidden} earlier {hidden === 1 ? "step" : "steps"}</span></button>}{(live || open) && <ol className="step-lines">{visible.map((step) => <StepLine key={step.id} step={step} live={live} home={home} />)}</ol>}</div>;
+}
+
+function StepLine({ step, live, home }: { step: ChatMessage; live: boolean; home: string }) {
+  const { verb, detail, code } = describeStep(step, home);
+  const failed = step.status === "failed";
+  const done = step.status === "completed";
+  const icon = failed ? <X size={12} /> : done ? <Check size={12} /> : live ? <span className="step-spinner" aria-label="In progress" /> : <CircleDot size={12} />;
+  return <li className={`step-line ${failed ? "failed" : ""}`} title={step.text}><span className="step-icon">{icon}</span>{verb && <span className="step-verb">{verb}</span>}<span className={`step-detail ${code ? "code" : ""}`}>{detail}</span></li>;
+}
+
+const APPROVAL_LABELS: Record<string, string> = { allow_once: "Allow once", allow_always: "Always allow", reject_once: "Don't allow", reject_always: "Never allow" };
+
+function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; home: string; onAnswer: (optionId: string) => void }) {
+  return <section className="approval-card" aria-label="The first mate is asking for your OK"><span className="approval-mark"><ShieldQuestion size={17} /></span><div className="approval-copy"><strong>The first mate wants to:</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on with this.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
+}
+
+function ChatView({ messages, outbox, draft, runtime, refusalReason, offlineDetail, hostLabel, home, sendReady, storm, healthWarning, approvals, onAnswer, onDraft, onSend, onResend, onStart, onRestart }: { messages: ChatMessage[]; outbox: Record<string, OutboxView>; draft: string; runtime: HostRuntimeState; refusalReason?: string; offlineDetail?: string; hostLabel: string; home: string; sendReady: boolean; storm: RewakeStorm | null; healthWarning: string | null; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (text: string) => void; onStart: () => void; onRestart: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
-  const placeholder = runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
-  return <div className="chat-view">{(runtime === "dead" || runtime === "stopped") && <OfflineBanner onStart={onStart} />}{runtime === "locked_by_other" && <LockedBanner onCheck={onStart} />}{runtime === "refused" && <RefusedBanner reason={refusalReason} onRetry={onStart} />}{storm && <StormBanner storm={storm} onAsk={() => onDraft(stormQuestion(storm))} onRestart={onRestart} />}{healthWarning && <HostHealthBanner message={healthWarning} onRetry={onStart} />}<div className="chat-status"><span className="avatar">FM</span><div><strong>First Mate</strong><span><i className={`state-${runtime}`} /> {hostLabel}</span></div><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={16} /></button></div><div className="chat-messages"><div className="day-label">Today</div>{messages.length === 0 && <div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div>}{messages.map((message) => <ChatMessageView key={message.id} message={message} outbox={outbox[message.id]} running={running} onResend={() => onResend(message.text)} />)}</div><div className="composer"><textarea value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><button className="icon-button" title="Attach a file"><FileText size={17} /></button><button className="send-button" onClick={onSend} disabled={!draft.trim()} title="Send message"><Send size={16} /></button></div></div></div>;
+  const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
+  const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
+  const items = chatItems(messages);
+  return <div className="chat-view">{(runtime === "dead" || runtime === "stopped") && <OfflineBanner detail={offlineDetail} onStart={onStart} />}{runtime === "locked_by_other" && <LockedBanner onCheck={onStart} />}{runtime === "refused" && <RefusedBanner reason={refusalReason} onRetry={onStart} />}{storm && <StormBanner storm={storm} onAsk={() => onDraft(stormQuestion(storm))} onRestart={onRestart} />}{healthWarning && <HostHealthBanner message={healthWarning} onRetry={onStart} />}<div className="chat-status"><span className="avatar">FM</span><div><strong>First Mate</strong><span><i className={`state-${runtime}`} /> {hostLabel}</span></div><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={16} /></button></div><div className="chat-messages"><div className="day-label">Today</div>{messages.length === 0 && <div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div>}{items.map((item, index) => item.type === "steps" ? <StepGroup key={item.id} steps={item.steps} live={turnLive && index === items.length - 1} home={home} /> : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.text)} />)}</div>{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}<div className="composer"><textarea value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><button className="icon-button" title="Attach a file"><FileText size={17} /></button><button className="send-button" onClick={onSend} disabled={!draft.trim() || !sendReady} title={sendReady ? "Send message" : "Start the first mate to send messages"}><Send size={16} /></button></div></div></div>;
 }
 
 function ChatMessageView({ message, outbox, running, onResend }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void }) {
@@ -346,7 +478,7 @@ function ChatMessageView({ message, outbox, running, onResend }: { message: Chat
       : outbox.status === "picked_up"
         ? `Read by ${formatTime(outbox.readAt ?? message.createdAt)}`
         : "Queued";
-  const tooltip = !outbox ? undefined : outbox.resentAfterRestart
+  const tooltip = !outbox ? undefined : outbox.errorKind === "not_sent" ? outbox.error : outbox.resentAfterRestart
     ? "The app stopped before the first mate finished with this, so it sent it again. If the first mate had already started on it, it may mention it twice."
     : outbox.status === "picked_up"
       ? `The first mate had read this by ${formatTime(outbox.readAt ?? message.createdAt)}, when it finished replying.`
@@ -354,8 +486,8 @@ function ChatMessageView({ message, outbox, running, onResend }: { message: Chat
   return <article className={message.who === "mate" ? "mate-message" : "captain-message"}>{message.who === "mate" && <span className="avatar small">FM</span>}<div><strong>{message.who === "mate" ? "First Mate" : "You"}</strong><p>{message.text}</p>{status ? <div className={`message-state ${outbox?.error ? "message-error" : ""}`} title={tooltip}><time>{status}</time>{outbox?.error && <button onClick={onResend}>{outbox.errorKind === "not_sent" ? "Retry" : "Send again"}</button>}</div> : <time>{formatTime(message.createdAt)}</time>}</div></article>;
 }
 
-function OfflineBanner({ onStart }: { onStart: () => void }) {
-  return <section className="offline-banner"><CircleAlert size={18} /><div><strong>The first mate isn't running, so nothing gets checked, merged or answered.</strong><span>Work already underway keeps going.</span></div><button onClick={onStart}>Start the first mate</button></section>;
+function OfflineBanner({ detail, onStart }: { detail?: string; onStart: () => void }) {
+  return <section className="offline-banner"><CircleAlert size={18} /><div><strong>The first mate isn't running, so nothing gets checked, merged or answered.</strong><span>Work already underway keeps going.</span>{detail && <small className="offline-detail" title={detail}>{detail}</small>}</div><button onClick={onStart}>Start the first mate</button></section>;
 }
 
 function LockedBanner({ holder, onCheck }: { holder?: string; onCheck: () => void }) {

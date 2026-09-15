@@ -71,30 +71,56 @@ export type SnapshotProject = { name: string; mode: string; yolo: boolean; descr
 export type HostRuntimeState = "stopped" | "starting" | "idle" | "prompt_turn" | "agent_turn" | "restarting" | "dead" | "locked_by_other" | "refused";
 export type OutboxStatus = "queued" | "sent" | "likely_started" | "picked_up" | "requeued";
 
+export type PermissionOption = { option_id: string; name: string; kind: "allow_once" | "allow_always" | "reject_once" | "reject_always" | string };
+/** An approval the first mate is waiting on, in a home whose permission mode is `auto`. */
+export type PermissionRequest = { id: string; title: string; options: PermissionOption[] };
+
+/** One step the first mate takes, from an ACP `tool_call` or `tool_call_update`. Updates carry only what changed. */
+export type ToolStep = { id: string; title?: string; kind?: string; status?: string };
+
 export type HostEvent =
   | { type: "session"; payload: { mode: "new" | "loaded"; session_id: string; can_load: boolean; prompt_queueing: boolean } }
-  | { type: "state"; payload: { state: HostRuntimeState; origin?: string; derived?: boolean; holder?: string; holder_command?: string; reason?: string } }
+  | { type: "state"; payload: { state: HostRuntimeState; origin?: string; derived?: boolean; holder?: string; holder_command?: string; reason?: string; /** Set on `starting`: the home the host is starting in. */ home?: string } }
   | { type: "text"; payload: { chunk: string; origin: "prompt" | "agent" | "prompt_or_agent" } }
-  | { type: "tool_call"; payload: { title: string } }
+  | { type: "tool_call"; payload: ToolStep }
+  | { type: "tool_update"; payload: ToolStep }
   | { type: "outbox"; payload: { id: string; status: OutboxStatus; resent_after_restart?: boolean } }
   | { type: "prompt_result"; payload: { id: string; stop_reason?: string; error?: string | null; usage?: Record<string, number> } }
   | { type: "usage"; payload: Record<string, number> }
   | { type: "permission"; payload: Record<string, unknown> }
+  | { type: "permission_request"; payload: PermissionRequest }
+  | { type: "permission_resolved"; payload: { id: string; option_id: string } }
   | { type: "host_health"; payload: { warning?: string; rewake_storm?: boolean; [key: string]: unknown } }
   | { type: "snapshot"; payload: SnapshotEvent };
+
+export type SnapshotError = { source: string; error: string };
 
 export type SnapshotEvent = {
   phase?: "refreshing" | "ready";
   refreshing?: boolean;
-  bearings?: BearingsSnapshot;
-  fleet?: FleetSnapshot;
+  /** The home the snapshot was read from; absent in the mock. */
+  home?: string;
+  generated_at_ms?: number;
+  /** In the cached snapshot: when each projection was last read, which is earlier than `generated_at_ms` after a failed read. */
+  bearings_at_ms?: number;
+  fleet_at_ms?: number;
+  /** A script that failed leaves its projection `null` and says why here. */
+  bearings?: BearingsSnapshot | null;
+  fleet?: FleetSnapshot | null;
   projects?: SnapshotProject[];
+  errors?: SnapshotError[];
 };
 
 export type HostStateSnapshot = {
   state: { state: HostRuntimeState; holder?: string; reason?: string };
-  snapshot?: { bearings: BearingsSnapshot; fleet: FleetSnapshot };
+  /** The home the host last started in, which messages and restarts go to; `null` before any Start. */
+  home: string | null;
+  /** Approvals still waiting, so a relaunched window can show them again. */
+  permissionRequests?: PermissionRequest[];
 };
+
+/** The captain's firstmate home: `home` once chosen and still valid, `problem` when a choice doesn't check out. */
+export type HomeStatus = { home: string | null; problem: string | null };
 
 export type PaneCapture = { text: string; observed_at?: string };
 export type HostEventListener = (event: HostEvent) => void;
@@ -108,4 +134,11 @@ export interface HostAdapter {
   cancelTurn(): Promise<void>;
   getState(): Promise<HostStateSnapshot>;
   paneCapture(taskId: string): Promise<PaneCapture>;
+  getHome(): Promise<HomeStatus>;
+  /** Asks the captain for the folder; `null` when they cancel. */
+  chooseHome(): Promise<HomeStatus | null>;
+  refreshSnapshot(): Promise<void>;
+  /** The last finished snapshot, for a window that subscribed after it was emitted. Waits for a read in progress. */
+  latestSnapshot(): Promise<SnapshotEvent | null>;
+  answerPermission(id: string, optionId: string): Promise<void>;
 }

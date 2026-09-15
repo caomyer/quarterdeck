@@ -4,6 +4,7 @@ import recordedStream from "./mock-event-stream.json";
 import type {
   BearingsSnapshot,
   FleetSnapshot,
+  HomeStatus,
   HostAdapter,
   HostEvent,
   HostEventListener,
@@ -11,19 +12,26 @@ import type {
   HostStateSnapshot,
   OutboxStatus,
   PaneCapture,
+  SnapshotEvent,
 } from "./types";
 
 type RecordedEvent = { t_ms: number; type: HostEvent["type"]; payload: Record<string, unknown> };
 
-const TIMING_SCALE = recordedStream.source.timing_scale;
+/** `?slow` replays at recorded speed, so a turn stays on screen long enough to review. */
+const TIMING_SCALE = reviewFlag("slow") ? 1 : recordedStream.source.timing_scale;
+
+function reviewFlag(name: string) {
+  return new URLSearchParams(window.location.search).has(name);
+}
 
 export class MockHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
   private timers = new Set<number>();
   private outstanding = new Set<string>();
-  private state: HostRuntimeState = "idle";
+  private state: HostRuntimeState = reviewFlag("not-started") ? "stopped" : "idle";
   private sequence = 0;
   private startupPlayed = false;
+  private homeChosen = false;
   private readonly snapshot = {
     bearings: bearingsFixture as unknown as BearingsSnapshot,
     fleet: fleetFixture as unknown as FleetSnapshot,
@@ -31,7 +39,8 @@ export class MockHostAdapter implements HostAdapter {
 
   subscribe(listener: HostEventListener) {
     this.listeners.add(listener);
-    if (!this.startupPlayed) {
+    // The recorded startup starts the first mate, which `?not-started` must not do.
+    if (!this.startupPlayed && !reviewFlag("not-started")) {
       this.startupPlayed = true;
       this.play(recordedStream.startup as RecordedEvent[]);
     }
@@ -58,6 +67,19 @@ export class MockHostAdapter implements HostAdapter {
     this.outstanding.add(id);
     this.emit({ type: "outbox", payload: { id, status: "queued" } });
     this.play(recordedStream.send as RecordedEvent[], id);
+    if (reviewFlag("ask")) {
+      // `?ask`: the first mate asks for an approval partway through the turn.
+      const timer = window.setTimeout(() => this.emit({ type: "permission_request", payload: {
+        id: `ask-${id}`,
+        title: "cd /Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/projects/resonance && \\\n  git push origin fm/res-ai-titles",
+        options: [
+          { option_id: "allow", name: "Allow", kind: "allow_once" },
+          { option_id: "allow_always", name: "Always Allow", kind: "allow_always" },
+          { option_id: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      } }), 400);
+      this.timers.add(timer);
+    }
     return id;
   }
 
@@ -67,7 +89,40 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   async getState(): Promise<HostStateSnapshot> {
-    return { state: { state: this.state }, snapshot: this.snapshot };
+    // `?not-started`: the first mate has not started in any home since launch.
+    return { state: { state: this.state }, home: reviewFlag("not-started") ? null : this.snapshot.fleet.fm_home };
+  }
+
+  async latestSnapshot(): Promise<SnapshotEvent> {
+    if (reviewFlag("snapshot-error")) {
+      // `?snapshot-error`: the last Bearings read failed, so what's on screen is from an earlier one.
+      return {
+        phase: "ready",
+        generated_at_ms: Date.now() - 12 * 60_000,
+        ...this.snapshot,
+        errors: [{ source: "fm-bearings-snapshot.sh", error: "fm-bearings-snapshot.sh exited with exit status: 1: jq: error (at data/backlog.md:0): Cannot iterate over null" }],
+      };
+    }
+    return { phase: "ready", ...this.snapshot };
+  }
+
+  /** The browser review path keeps the fixtures, so it reports the fixture's home. `?first-launch` shows the folder question instead. */
+  async getHome(): Promise<HomeStatus> {
+    if (reviewFlag("first-launch") && !this.homeChosen) return { home: null, problem: null };
+    return { home: this.snapshot.fleet.fm_home, problem: null };
+  }
+
+  async chooseHome(): Promise<HomeStatus | null> {
+    this.homeChosen = true;
+    return this.getHome();
+  }
+
+  async answerPermission(id: string, optionId: string) {
+    this.emit({ type: "permission_resolved", payload: { id, option_id: optionId } });
+  }
+
+  async refreshSnapshot() {
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
   }
 
   async paneCapture(taskId: string): Promise<PaneCapture> {
@@ -105,8 +160,8 @@ export class MockHostAdapter implements HostAdapter {
     if (type === "outbox") {
       return { type, payload: { id: String(raw.id), status: (raw.state ?? raw.status) as OutboxStatus, resent_after_restart: raw.resent_after_restart === true } };
     }
-    if (type === "snapshot") {
-      return { type, payload: raw } as HostEvent;
+    if (type === "tool_call" || type === "tool_update") {
+      return { type, payload: { id: String(raw.toolCallId), title: raw.title as string | undefined, kind: raw.kind as string | undefined, status: raw.status as string | undefined } };
     }
     return { type, payload: raw } as HostEvent;
   }
