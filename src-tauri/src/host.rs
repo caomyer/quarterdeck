@@ -768,8 +768,69 @@ async fn session_start_input(home: &Path) -> String {
 
 enum LockClaim {
     Ours,
-    Other { pid: u32, command: String },
+    Other { pid: u32, command: String, facts: Value },
     Unclaimed(String),
+}
+
+/// A process's parent, process group, and command, as `ps` reports them.
+fn process_facts(pid: u32) -> Option<(u32, u32, String)> {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-o", "ppid=,pgid=,command=", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let mut fields = line.split_whitespace();
+    let ppid = fields.next()?.parse().ok()?;
+    let group = fields.next()?.parse().ok()?;
+    Some((ppid, group, fields.collect::<Vec<_>>().join(" ")))
+}
+
+/// Whether the process holding the home's lock is this first mate, and the evidence
+/// either way. firstmate writes whichever process in the hook's ancestry it reads as
+/// the harness, which is not always the group leader we track, so ownership is read
+/// three ways: the same process group, a live member of it, or a descendant of its
+/// leader. The evidence rides along so a refusal can be explained afterwards.
+fn holder_is_ours(holder: u32, pgid: u32) -> (bool, Value) {
+    let facts = process_facts(holder);
+    let members = group_members(pgid);
+    let holder_text = holder.to_string();
+    let in_group = members
+        .as_ref()
+        .is_ok_and(|members| members.iter().any(|line| line.split_whitespace().next() == Some(holder_text.as_str())));
+    let same_group = facts.as_ref().is_some_and(|(_, group, _)| *group == pgid);
+    let mut ancestry: Vec<u32> = Vec::new();
+    let mut descends = false;
+    let mut walk = holder;
+    for _ in 0..8 {
+        let Some((parent, _, _)) = process_facts(walk) else { break };
+        ancestry.push(parent);
+        if parent == pgid {
+            descends = true;
+            break;
+        }
+        if parent <= 1 {
+            break;
+        }
+        walk = parent;
+    }
+    let evidence = json!({
+        "holder_pid": holder,
+        "holder_ppid": facts.as_ref().map(|(ppid, _, _)| *ppid),
+        "holder_pgid": facts.as_ref().map(|(_, group, _)| *group),
+        "holder_command": facts.as_ref().map(|(_, _, command)| command.clone()),
+        "our_pgid": pgid,
+        "our_group": match &members {
+            Ok(members) => json!(members),
+            Err(error) => json!({"error": error}),
+        },
+        "holder_ancestry": ancestry,
+        "in_group": in_group,
+        "same_group": same_group,
+        "descends_from_ours": descends,
+    });
+    (in_group || same_group || descends, evidence)
 }
 
 /// Wait for the hosted first mate to claim the home's lock, and say whose it
@@ -779,15 +840,10 @@ async fn wait_for_lock_claim(home: &Path, pgid: u32, limit: Duration) -> LockCla
     loop {
         let last = match lock_status(home).await {
             Lock::HeldBy { pid, command } => {
-                let holder = pid.to_string();
-                let ours = tokio::task::spawn_blocking(move || group_members(pgid))
+                let (ours, facts) = tokio::task::spawn_blocking(move || holder_is_ours(pid, pgid))
                     .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .is_some_and(|members| {
-                        members.iter().any(|line| line.split_whitespace().next() == Some(holder.as_str()))
-                    });
-                return if ours { LockClaim::Ours } else { LockClaim::Other { pid, command } };
+                    .unwrap_or_else(|error| (false, json!({"error": error.to_string()})));
+                return if ours { LockClaim::Ours } else { LockClaim::Other { pid, command, facts } };
             }
             Lock::Free => "lock: free".to_string(),
             Lock::Unknown(text) => text,
@@ -1283,12 +1339,14 @@ impl Host {
         }
         match claim {
             LockClaim::Ours => {}
-            LockClaim::Other { pid, command } => {
+            LockClaim::Other { pid, command, facts } => {
                 let report = adapter.kill_tree().await;
                 self.report_kill(report, "lock_taken");
+                // The evidence rides along: a first mate wrongly read as someone else's
+                // has to be explainable from the recording alone.
                 self.set_state(
                     State::LockedByOther,
-                    json!({"holder_pid": pid, "holder_command": command}),
+                    json!({"holder_pid": pid, "holder_command": command, "holder_facts": facts}),
                 );
                 return Ok(());
             }
@@ -1915,6 +1973,29 @@ mod tests {
         );
         assert_eq!(session_limit_message(r#"{"code":-32603,"message":"Internal error: boom"}"#), None);
         assert_eq!(session_limit_message("the adapter exited"), None);
+    }
+
+    #[test]
+    fn a_lock_holder_is_ours_by_its_process_group_with_the_evidence_kept() {
+        let (mut child, pgid) = spawn_stubborn_group();
+        let member: u32 = group_members(pgid).unwrap()[1].split_whitespace().next().unwrap().parse().unwrap();
+
+        let (ours, evidence) = holder_is_ours(member, pgid);
+        assert!(ours, "{evidence}");
+        assert_eq!(evidence["holder_pgid"], json!(pgid), "{evidence}");
+        assert_eq!(evidence["same_group"], json!(true), "{evidence}");
+
+        // This test's own process is a live harness-shaped holder that is not ours.
+        let (theirs, evidence) = holder_is_ours(std::process::id(), pgid);
+        assert!(!theirs, "{evidence}");
+        assert_eq!(evidence["in_group"], json!(false), "{evidence}");
+        assert_eq!(evidence["same_group"], json!(false), "{evidence}");
+        assert_eq!(evidence["descends_from_ours"], json!(false), "{evidence}");
+        assert!(evidence["holder_command"].as_str().is_some(), "{evidence}");
+        assert!(!evidence["holder_ancestry"].as_array().unwrap().is_empty(), "{evidence}");
+
+        kill_group_blocking(pgid);
+        let _ = child.wait();
     }
 
     #[tokio::test]
