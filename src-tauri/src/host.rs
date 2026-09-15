@@ -51,9 +51,15 @@ const LOAD_WAIT: Duration = Duration::from_secs(180);
 const SET_MODE_WAIT: Duration = Duration::from_secs(30);
 const LOCK_WAIT: Duration = Duration::from_secs(15);
 const REAP_WAIT: Duration = Duration::from_secs(5);
-/// How long firstmate's own session-start hook gets to claim the home's lock.
-/// A live probe saw it claimed before session/new returned, about 4s after spawn.
-const LOCK_CLAIM_WAIT: Duration = Duration::from_secs(30);
+/// How long firstmate's own session-start hook gets to claim the home's lock on
+/// its own. A live probe saw a new session claim it before session/new returned,
+/// about 4s after spawn; a resumed session only nudges and claims it on a turn.
+const CLAIM_WAIT_BEFORE_NUDGE: Duration = Duration::from_secs(10);
+/// How long the session-start turn gets to claim the lock after it is sent.
+const CLAIM_WAIT_AFTER_NUDGE: Duration = Duration::from_secs(180);
+/// firstmate's own session-start instruction, as `bin/fm-sessionstart-nudge.sh` words it.
+const SESSION_START_BODY: &str =
+    "Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.";
 
 const PERMISSION_UNREADABLE: &str =
     "error: config/claude-permission-mode must be a readable regular file holding one of: bypass, auto";
@@ -665,6 +671,35 @@ async fn lock_status(home: &Path) -> Lock {
     Lock::Unknown(format!("fm-lock.sh status printed an unrecognised answer: '{text}'"))
 }
 
+/// firstmate's session-start instruction in its own operational wire form, built by
+/// `bin/fm-operational-input.sh`. Falls back to the plain text firstmate still
+/// recognizes when the encoder is missing or does not answer.
+async fn session_start_input(home: &Path) -> String {
+    let encoded = async {
+        let mut child = envpath::command(home.join("bin").join("fm-operational-input.sh"))
+            .args(["encode", "session-start"])
+            .env("FM_HOME", home)
+            .current_dir(home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .ok()?;
+        let mut stdin = child.stdin.take()?;
+        stdin.write_all(SESSION_START_BODY.as_bytes()).await.ok()?;
+        drop(stdin);
+        let output = child.wait_with_output().await.ok()?;
+        let text = String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string();
+        (output.status.success() && !text.is_empty()).then_some(text)
+    };
+    tokio::time::timeout(LOCK_WAIT, encoded)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| SESSION_START_BODY.to_string())
+}
+
 enum LockClaim {
     Ours,
     Other { pid: u32, command: String },
@@ -1133,10 +1168,25 @@ impl Host {
             return Err(reason);
         }
 
-        // firstmate's session-start hook claims the home's lock as the session opens.
-        // Only call this first mate running once the lock is confirmed to be its own:
-        // a terminal session that won the race keeps the home, and ours stops.
-        match wait_for_lock_claim(&home, adapter.pgid, LOCK_CLAIM_WAIT).await {
+        // Only call this first mate running once the home's lock is confirmed to be its
+        // own: a terminal session that won the race keeps the home, and ours stops.
+        // A new session's hook claims the lock as the session opens. A resumed one only
+        // nudges, and firstmate claims the lock on its next turn, so when nothing claims
+        // it the host hands the first mate that same session-start instruction as a turn.
+        let mut claim = wait_for_lock_claim(&home, adapter.pgid, CLAIM_WAIT_BEFORE_NUDGE).await;
+        if matches!(claim, LockClaim::Unclaimed(_)) {
+            let input = session_start_input(&home).await;
+            let rpc = adapter.rpc.clone();
+            let session_id = adapter.session_id.clone();
+            tauri::async_runtime::spawn(async move {
+                // The claim below is the authority on whether this turn worked.
+                let _ = rpc
+                    .request("session/prompt", json!({"sessionId": session_id, "prompt": [{"type": "text", "text": input}]}))
+                    .await;
+            });
+            claim = wait_for_lock_claim(&home, adapter.pgid, CLAIM_WAIT_AFTER_NUDGE).await;
+        }
+        match claim {
             LockClaim::Ours => {}
             LockClaim::Other { pid, command } => {
                 let report = adapter.kill_tree().await;
@@ -1151,8 +1201,8 @@ impl Host {
                 let report = adapter.kill_tree().await;
                 self.report_kill(report, "lock_unclaimed");
                 let reason = format!(
-                    "the first mate did not claim this home's session lock within {}s, so it was stopped. {text}",
-                    LOCK_CLAIM_WAIT.as_secs()
+                    "the first mate did not claim this home's session lock within {}s of being asked to start its session, so it was stopped. {text}",
+                    CLAIM_WAIT_AFTER_NUDGE.as_secs()
                 );
                 self.set_state(State::Refused, json!({"reason": reason, "lock_status": text}));
                 return Err(reason);
@@ -1647,7 +1697,13 @@ mod tests {
     /// replies with the option it was given.
     const FAKE_ADAPTER: &str = r#"#!/usr/bin/env python3
 import json, os, sys
-open(os.path.join(os.environ["FM_HOME"], "adapter.pid"), "w").write(str(os.getpid()))
+home = os.environ["FM_HOME"]
+def claim():
+    open(os.path.join(home, "adapter.pid"), "w").write(str(os.getpid()))
+# A resumed firstmate session claims the lock only on a turn; the flag mimics that.
+claim_on_prompt = os.path.exists(os.path.join(home, "claim-on-prompt"))
+if not claim_on_prompt:
+    claim()
 def send(message):
     sys.stdout.write(json.dumps(message) + "\n")
     sys.stdout.flush()
@@ -1665,6 +1721,12 @@ while True:
     elif method == "session/set_mode":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
     elif method == "session/prompt":
+        text = "".join(part.get("text", "") for part in m["params"]["prompt"])
+        open(os.path.join(home, "prompts.log"), "a").write(text + "\n")
+        if "fm-session-start.sh" in text:
+            claim()
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
+            continue
         prompt = m["id"]
         send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {"sessionId": "s1", "toolCall": {"title": "Delete the build folder"}, "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]}})
     elif method is None and m.get("id") == 9001:
@@ -1745,6 +1807,35 @@ while True:
             .collect();
         let _ = std::fs::remove_dir_all(&home);
         (events, text)
+    }
+
+    /// A resumed session whose hook only nudged: the host sends firstmate's
+    /// session-start instruction as a turn, and starts once that claims the lock.
+    #[tokio::test]
+    async fn unclaimed_lock_gets_the_session_start_turn() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = home_with_lock_script(
+            "claim-on-prompt",
+            Some(r#"if [ -f "$FM_HOME/adapter.pid" ]; then echo "lock: held by live harness pid $(cat "$FM_HOME/adapter.pid")"; else echo 'lock: free'; fi"#),
+        );
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        std::fs::write(home.join("claim-on-prompt"), "").unwrap();
+        let adapter = home.join("fake-adapter.py");
+        std::fs::write(&adapter, FAKE_ADAPTER).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        let started = host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap();
+        let prompts = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default();
+        let idle = wait_for(&log, Duration::from_secs(2), |e, b| e == "state" && b["state"] == "idle").await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(started.is_ok(), "{started:?}");
+        assert!(prompts.contains("fm-session-start.sh"), "no session-start turn was sent: {prompts:?}");
+        assert!(idle.is_some(), "the first mate never became ready");
     }
 
     #[tokio::test]
