@@ -2,6 +2,7 @@ mod envpath;
 mod host;
 #[cfg(test)]
 mod host_e2e;
+mod settings;
 mod snapshot;
 
 use tauri::Manager;
@@ -9,6 +10,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .plugin(tauri_plugin_dialog::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -23,6 +25,7 @@ pub fn run() {
       });
       app.manage(snapshot::SnapshotHandle::spawn(app.handle().clone()));
       app.manage(host::HostHandle::spawn(app.handle().clone()));
+      settings::load_saved_home(app.handle().clone());
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -33,7 +36,10 @@ pub fn run() {
       host::cancel_turn,
       host::get_state,
       host::answer_permission,
+      settings::home_get,
+      settings::home_choose,
       snapshot::snapshot_refresh,
+      snapshot::snapshot_latest,
       snapshot::pane_capture,
     ])
     .build(tauri::generate_context!())

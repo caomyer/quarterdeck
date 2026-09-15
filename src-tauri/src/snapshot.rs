@@ -6,7 +6,11 @@
 //! project registry. Also serves the worker's read-only screen through
 //! `bin/fm-peek.sh`.
 //!
-//! Commands: `snapshot_refresh`, `pane_capture`. Event: `snapshot`.
+//! The last finished snapshot is kept, so a window that subscribes after it
+//! was emitted can still show it.
+//!
+//! Commands: `snapshot_refresh`, `snapshot_latest`, `pane_capture`.
+//! Event: `snapshot`.
 
 use crate::envpath;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -36,6 +40,7 @@ fn now_ms() -> u64 {
 enum SnapCmd {
     SetHome { home: PathBuf, reply: oneshot::Sender<Result<(), String>> },
     Refresh,
+    Latest { reply: oneshot::Sender<Value> },
     Capture { task_id: String, reply: oneshot::Sender<Result<Value, String>> },
 }
 
@@ -59,6 +64,16 @@ impl SnapshotHandle {
         rx.await
             .map_err(|_| "the snapshot reader stopped before answering".to_string())?
     }
+
+    /// Points the reader at `home` without waiting for its answer: it may be
+    /// busy reading the previous home for a while. `home` must already be
+    /// resolved, since a folder that can't be opened is reported nowhere.
+    pub fn point_at(&self, home: PathBuf) -> Result<(), String> {
+        let (reply, _) = oneshot::channel();
+        self.tx
+            .send(SnapCmd::SetHome { home, reply })
+            .map_err(|_| "the snapshot reader is not running".to_string())
+    }
 }
 
 #[tauri::command]
@@ -67,6 +82,20 @@ pub async fn snapshot_refresh(snapshots: TauriState<'_, SnapshotHandle>) -> Resu
         .tx
         .send(SnapCmd::Refresh)
         .map_err(|_| "the snapshot reader is not running".to_string())
+}
+
+/// `{home, snapshot}`: `snapshot` is the last finished `snapshot` event for
+/// the current home, or `null` before the first one. A run in progress is
+/// awaited, since the reader handles one command at a time.
+#[tauri::command]
+pub async fn snapshot_latest(snapshots: TauriState<'_, SnapshotHandle>) -> Result<Value, String> {
+    let (reply, rx) = oneshot::channel();
+    snapshots
+        .tx
+        .send(SnapCmd::Latest { reply })
+        .map_err(|_| "the snapshot reader is not running".to_string())?;
+    rx.await
+        .map_err(|_| "the snapshot reader stopped before answering".to_string())
 }
 
 #[tauri::command]
@@ -89,6 +118,7 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
     let mut watcher: Option<RecommendedWatcher> = None;
     let mut deadline: Option<Instant> = None;
     let mut last_run: Option<Instant> = None;
+    let mut latest: Option<Value> = None;
 
     loop {
         let wake_at = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
@@ -98,6 +128,9 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
                 Some(SnapCmd::SetHome { home: requested, reply }) => {
                     match std::fs::canonicalize(&requested) {
                         Ok(resolved) => {
+                            if home.as_ref() != Some(&resolved) {
+                                latest = None;
+                            }
                             watcher = watch_home(&resolved, fs_tx.clone());
                             home = Some(resolved);
                             deadline = Some(Instant::now());
@@ -109,6 +142,12 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
                     }
                 }
                 Some(SnapCmd::Refresh) => deadline = Some(Instant::now()),
+                Some(SnapCmd::Latest { reply }) => {
+                    let _ = reply.send(json!({
+                        "home": home.as_ref().map(|root| root.to_string_lossy()),
+                        "snapshot": latest,
+                    }));
+                }
                 Some(SnapCmd::Capture { task_id, reply }) => {
                     let home = home.clone();
                     tauri::async_runtime::spawn(async move {
@@ -146,11 +185,29 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
                         json!({"phase": "refreshing", "home": root.to_string_lossy(), "started_at_ms": now_ms()}),
                     );
                     let payload = build_snapshot(&root).await;
+                    latest = Some(merge_latest(latest.take(), payload.clone()));
                     let _ = app.emit("snapshot", payload);
                 }
             }
         }
     }
+}
+
+/// The cached snapshot keeps the last good projection when a read fails, with
+/// the time each projection was read (`bearings_at_ms`, `fleet_at_ms`), so a
+/// window that opens later still has the data and knows how old it is.
+fn merge_latest(previous: Option<Value>, mut next: Value) -> Value {
+    let at = next.get("generated_at_ms").cloned().unwrap_or(Value::Null);
+    for part in ["bearings", "fleet"] {
+        let stamp = format!("{part}_at_ms");
+        if next.get(part).is_some_and(|value| !value.is_null()) {
+            next[stamp.as_str()] = at.clone();
+        } else if let Some(old) = previous.as_ref().filter(|old| old.get(part).is_some_and(|value| !value.is_null())) {
+            next[part] = old[part].clone();
+            next[stamp.as_str()] = old[stamp.as_str()].clone();
+        }
+    }
+    next
 }
 
 fn watch_home(home: &Path, fs_tx: mpsc::UnboundedSender<PathBuf>) -> Option<RecommendedWatcher> {
@@ -288,4 +345,30 @@ async fn capture(home: Option<PathBuf>, task_id: String) -> Result<Value, String
     }
     let text = run_script(&home, "fm-peek.sh", &[&task_id, CAPTURE_LINES], CAPTURE_TIMEOUT).await?;
     Ok(json!({"task_id": task_id, "text": text, "captured_at_ms": now_ms()}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_read_keeps_the_last_good_projection() {
+        let good = merge_latest(None, json!({"generated_at_ms": 100, "bearings": {"b": 1}, "fleet": {"f": 1}, "errors": []}));
+        assert_eq!(good["bearings_at_ms"], 100);
+        assert_eq!(good["fleet_at_ms"], 100);
+
+        let failed = merge_latest(
+            Some(good),
+            json!({"generated_at_ms": 200, "bearings": null, "fleet": {"f": 2}, "errors": [{"source": "fm-bearings-snapshot.sh"}]}),
+        );
+        assert_eq!(failed["bearings"], json!({"b": 1}));
+        assert_eq!(failed["bearings_at_ms"], 100);
+        assert_eq!(failed["fleet"], json!({"f": 2}));
+        assert_eq!(failed["fleet_at_ms"], 200);
+        assert_eq!(failed["errors"][0]["source"], "fm-bearings-snapshot.sh");
+
+        let never = merge_latest(None, json!({"generated_at_ms": 300, "bearings": null, "fleet": null}));
+        assert!(never["bearings"].is_null());
+        assert!(never.get("bearings_at_ms").is_none());
+    }
 }
