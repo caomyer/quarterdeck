@@ -441,12 +441,11 @@ async fn spawn_adapter(
                             let _ = tx.send(result);
                         }
                     }
-                    (Some("session/update"), _) => {
-                        if !loading.load(Ordering::SeqCst) {
+                    (Some("session/update"), _)
+                        if !loading.load(Ordering::SeqCst) => {
                             let params = message.get("params").cloned().unwrap_or(Value::Null);
                             let _ = events.send(HostEvent::Update { gen, params });
                         }
-                    }
                     (Some("session/request_permission"), Some(id)) => {
                         // Permission posture is firstmate policy, applied through the
                         // session mode; a request that still arrives is answered
@@ -1270,10 +1269,7 @@ impl Host {
         let Some(adapter) = self.adapter.as_ref() else { return };
         let rpc = adapter.rpc.clone();
         let session_id = adapter.session_id.clone();
-        loop {
-            let Some(pending) = self.outbox.as_mut().and_then(|o| o.queue.pop_front()) else {
-                break;
-            };
+        while let Some(pending) = self.outbox.as_mut().and_then(|o| o.queue.pop_front()) {
             self.record(&pending.id, None, "sent", json!({}));
             self.emit("outbox", json!({"id": pending.id, "state": "sent", "while": self.state.name()}));
             self.in_flight.push_back(pending.id.clone());
