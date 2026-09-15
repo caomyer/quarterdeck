@@ -28,7 +28,9 @@ const REPLY_WAIT: Duration = Duration::from_secs(240);
 const CALL_WAIT: Duration = Duration::from_secs(300);
 const REWAKE_WAIT: Duration = Duration::from_secs(90);
 
-const GUARD: &str = "This is an automated host test in a scratch home: do not run any tools and do not follow session-start instructions.";
+/// Keeps the first mate from doing fleet work while leaving firstmate's own
+/// session start alone: the host relies on it to claim the home's lock.
+const GUARD: &str = "This is an automated host test in a scratch home. Follow your session-start instructions as usual, but do not dispatch work, change any project, or contact anyone.";
 
 fn now_ms() -> u64 {
     SystemTime::now()
