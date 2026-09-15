@@ -346,6 +346,61 @@ fn kill_group_blocking(pgid: u32) -> Value {
     })
 }
 
+/// A process's start time as `ps` prints it, which with its pid identifies it.
+fn process_started(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    let started = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!started.is_empty()).then_some(started)
+}
+
+/// Remember which process group this app started for a home, and which app
+/// started it, so a later start can stop it if the app dies without stopping it.
+fn record_adapter(host_dir: &Path, pgid: u32) {
+    let app = std::process::id();
+    let (Some(started), Some(app_started)) = (process_started(pgid), process_started(app)) else {
+        return;
+    };
+    let body = json!({"pgid": pgid, "started": started, "app_pid": app, "app_started": app_started});
+    let _ = std::fs::write(host_dir.join("adapter.json"), body.to_string());
+}
+
+/// Stop the process group a previous app left running for this home. Only when it
+/// is provably that group: the recording app is gone, and the group's leader is the
+/// same process (same start time) or has exited while the group lives on, since a
+/// group id cannot be reused while any member remains. Returns the kill report.
+async fn stop_leftover(host_dir: &Path, groups: &Groups) -> Option<Value> {
+    let path = host_dir.join("adapter.json");
+    let record: Value = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    let pgid = u32::try_from(record["pgid"].as_u64()?).ok()?;
+    let started = record["started"].as_str()?.to_string();
+    let app = u32::try_from(record["app_pid"].as_u64()?).ok()?;
+    let app_started = record["app_started"].as_str()?.to_string();
+    if groups.all().contains(&pgid) {
+        return None;
+    }
+    let ours = tokio::task::spawn_blocking(move || {
+        if process_started(app).as_deref() == Some(app_started.as_str()) {
+            return false; // the app that started it is still running and owns it
+        }
+        match process_started(pgid) {
+            Some(now) => now == started,
+            None => group_members(pgid).is_ok_and(|members| !members.is_empty()),
+        }
+    })
+    .await
+    .unwrap_or(false);
+    let _ = std::fs::remove_file(&path);
+    if !ours {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || kill_group_blocking(pgid)).await.ok()
+}
+
 /// Whether a kill report shows processes that may still be running.
 fn has_survivors(report: &Value) -> bool {
     match report.get("survivors") {
@@ -1113,6 +1168,11 @@ impl Host {
         self.set_state(State::Starting, json!({"home": home.to_string_lossy()}));
 
         let host_dir = self.host_dir_for(&home)?;
+        // A first mate left behind by a crashed or force-quit app still holds this
+        // home and would read as running elsewhere; stop it first if it is provably ours.
+        if let Some(report) = stop_leftover(&host_dir, &self.groups).await {
+            self.report_kill(report, "leftover");
+        }
         let outbox = Outbox::load(&host_dir.join("outbox.jsonl"));
         self.home = Some(home.clone());
         self.host_dir = Some(host_dir.clone());
@@ -1164,6 +1224,7 @@ impl Host {
             }
         };
         let Spawned { mut adapter, mode, session, history } = spawned;
+        record_adapter(&host_dir, adapter.pgid);
 
         // Apply firstmate's permission posture; never approximate a missing mode.
         let offered = session
@@ -1734,6 +1795,55 @@ mod tests {
         assert_eq!(report["survivors"], json!([]), "{report}");
         assert!(!has_survivors(&report));
         assert!(group_members(pgid).unwrap().is_empty());
+    }
+
+    fn leftover_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fm-desktop-test-leftover-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A record as a crashed app would have left it: a group this test started,
+    /// and an app pid that has exited.
+    fn write_leftover_record(dir: &Path, pgid: u32, started: &str) {
+        let mut gone = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let app = gone.id();
+        gone.wait().unwrap();
+        let body = json!({"pgid": pgid, "started": started, "app_pid": app, "app_started": "Thu Jan  1 00:00:00 1970"});
+        std::fs::write(dir.join("adapter.json"), body.to_string()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_leftover_first_mate_from_a_crashed_app_is_stopped() {
+        let (mut child, pgid) = spawn_stubborn_group();
+        let dir = leftover_dir("ours");
+        write_leftover_record(&dir, pgid, &process_started(pgid).unwrap());
+        let report = stop_leftover(&dir, &Groups::default()).await;
+        let _ = child.wait();
+        let report = report.expect("the leftover group was stopped");
+        assert!(!has_survivors(&report), "{report}");
+        assert!(group_members(pgid).unwrap().is_empty());
+        assert!(!dir.join("adapter.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_group_that_is_not_provably_ours_is_left_alone() {
+        let (mut child, pgid) = spawn_stubborn_group();
+        let dir = leftover_dir("reused");
+        write_leftover_record(&dir, pgid, "Thu Jan  1 00:00:00 1970");
+        assert!(stop_leftover(&dir, &Groups::default()).await.is_none(), "a different process with that id");
+
+        let started = process_started(pgid).unwrap();
+        let body = json!({"pgid": pgid, "started": started, "app_pid": std::process::id(), "app_started": process_started(std::process::id()).unwrap()});
+        std::fs::write(dir.join("adapter.json"), body.to_string()).unwrap();
+        assert!(stop_leftover(&dir, &Groups::default()).await.is_none(), "the recording app is still running");
+
+        assert_eq!(group_members(pgid).unwrap().len(), 3, "the group must still be running");
+        kill_group_blocking(pgid);
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
