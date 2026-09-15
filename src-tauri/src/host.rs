@@ -1336,7 +1336,8 @@ impl Host {
         Ok(dir)
     }
 
-    /// Report what the outbox holds from before this start.
+    /// Report what the outbox holds from before this start. The text comes along
+    /// because after a relaunch the UI has no other copy of it.
     fn announce_loaded(&self) {
         let Some(outbox) = &self.outbox else { return };
         for pending in &outbox.queue {
@@ -1344,10 +1345,10 @@ impl Host {
                 self.record(&pending.id, None, "requeued", json!({"resent_after_restart": true}));
                 self.emit(
                     "outbox",
-                    json!({"id": pending.id, "state": "requeued", "resent_after_restart": true}),
+                    json!({"id": pending.id, "state": "requeued", "resent_after_restart": true, "text": pending.text}),
                 );
             } else {
-                self.emit("outbox", json!({"id": pending.id, "state": "queued"}));
+                self.emit("outbox", json!({"id": pending.id, "state": "queued", "text": pending.text}));
             }
         }
     }
@@ -1363,10 +1364,18 @@ impl Host {
             return;
         };
         outbox.queue = Outbox::load(&host_dir.join("outbox.jsonl")).queue;
-        let resent: Vec<String> = outbox.queue.iter().filter(|p| p.ever_sent).map(|p| p.id.clone()).collect();
-        for id in resent {
+        let resent: Vec<(String, String)> = outbox
+            .queue
+            .iter()
+            .filter(|p| p.ever_sent)
+            .map(|p| (p.id.clone(), p.text.clone()))
+            .collect();
+        for (id, text) in resent {
             self.record(&id, None, "requeued", json!({"resent_after_restart": true}));
-            self.emit("outbox", json!({"id": id, "state": "requeued", "resent_after_restart": true}));
+            self.emit(
+                "outbox",
+                json!({"id": id, "state": "requeued", "resent_after_restart": true, "text": text}),
+            );
         }
     }
 
