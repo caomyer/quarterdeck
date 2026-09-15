@@ -27,7 +27,8 @@ export type BearingsSnapshot = {
   decisions_open: Decision[];
   landed: Landed[];
   gates: Gate[];
-  unhealthy_endpoints: { id: string; backend: string; target: string; exists: boolean; agent: string }[];
+  /** fm-bearings-snapshot.sh omits this key entirely when no endpoint is unhealthy. */
+  unhealthy_endpoints?: { id: string; backend: string; target: string; exists: boolean; agent: string }[];
 };
 
 export type BacklogRecord = {

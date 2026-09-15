@@ -2,7 +2,7 @@ import { chromium } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 
 const baseUrl = process.env.FIRSTMATE_URL ?? "http://127.0.0.1:4178";
-const output = "/Users/mingyucao_1/.buzz/.scratch/firstmate-phase3-review";
+const output = process.env.FIRSTMATE_REVIEW_OUT ?? "/Users/mingyucao_1/.buzz/.scratch/firstmate-phase3-review";
 await mkdir(output, { recursive: true });
 
 const browser = await chromium.launch();
@@ -45,12 +45,13 @@ await page.getByTitle("Restart the first mate").click();
 await page.getByText("Re-sent after a restart", { exact: true }).waitFor();
 await page.screenshot({ path: `${output}/04-chat-requeued.png`, fullPage: true });
 
+// The scratch home has no underway task since its fake probe task was removed,
+// so this step checks the honest empty state and that no probe or dash leaks in.
 await page.getByRole("button", { name: /Bearings/ }).click();
-await page.locator(".task-row").filter({ hasText: "probe-task" }).click();
-await page.locator(".worker-screen pre").filter({ hasText: "source: mock pane capture" }).waitFor();
-await page.screenshot({ path: `${output}/05-pane-capture.png`, fullPage: true });
-
-await page.getByTitle("Close task details").click();
+await page.getByText("Nothing is underway.", { exact: true }).waitFor();
+if (await page.getByText(/fm-probe-nonexistent|probe-task/).count()) throw new Error("The removed probe task leaked into the app");
+if (await page.locator(".compact-row small").filter({ hasText: /^\s*-\s*$/ }).count()) throw new Error("A placeholder dash is shown as row detail");
+await page.screenshot({ path: `${output}/05-bearings-after-answer.png`, fullPage: true });
 await page.setViewportSize({ width: 390, height: 844 });
 await page.reload({ waitUntil: "domcontentloaded" });
 await page.locator('[data-decision-id="res-model-download"]').waitFor();

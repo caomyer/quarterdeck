@@ -250,10 +250,10 @@ export function App() {
               {bearings.in_flight.length === 0 && <EmptyState label="Nothing is underway." />}
             </DashboardSection>
 
-            <DashboardSection title="Charted Next" icon={<Clock3 size={17} />} tone="amber" count={bearings.gates.length + bearings.unhealthy_endpoints.length}>
+            <DashboardSection title="Charted Next" icon={<Clock3 size={17} />} tone="amber" count={bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length}>
               {bearings.gates.map((item) => <CompactRow key={item.id} title={item.title} detail={item.reason} icon={<Clock3 size={15} />} badge="waiting" />)}
-              {bearings.unhealthy_endpoints.map((item) => <CompactRow key={`health-${item.id}`} title={`The first mate's records for ${projectName(fleet.tasks.find((task) => task.id === item.id)?.project ?? item.id)} don't match.`} detail="Nothing to do on your side." icon={<CircleAlert size={15} />} badge="needs repair" />)}
-              {bearings.gates.length + bearings.unhealthy_endpoints.length === 0 && <EmptyState label="Nothing is queued." />}
+              {(bearings.unhealthy_endpoints ?? []).map((item) => <CompactRow key={`health-${item.id}`} title={`The first mate's records for ${projectName(fleet.tasks.find((task) => task.id === item.id)?.project ?? item.id)} don't match.`} detail="Nothing to do on your side." icon={<CircleAlert size={15} />} badge="needs repair" />)}
+              {bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length === 0 && <EmptyState label="Nothing is queued." />}
             </DashboardSection>
           </div>
         )}
@@ -282,7 +282,9 @@ function EmptyState({ label }: { label: string }) {
 }
 
 function CompactRow({ title, detail, icon, badge }: { title: string; detail: string; icon: React.ReactNode; badge?: string }) {
-  return <div className="compact-row"><span>{icon}</span><div><strong>{title}</strong><small>{detail}</small></div>{badge && <em>{badge}</em>}</div>;
+  // firstmate's snapshots write "-" for an empty field; show nothing rather than a dash.
+  const shown = detail.trim() === "-" ? "" : detail.trim();
+  return <div className="compact-row"><span>{icon}</span><div><strong>{title}</strong>{shown && <small>{shown}</small>}</div>{badge && <em>{badge}</em>}</div>;
 }
 
 function DecisionCard({ decision, state, runtime, onSend, onStart }: { decision: Decision & { title: string }; state: CallState; runtime: HostRuntimeState; onSend: (text: string) => void; onStart: () => void }) {
