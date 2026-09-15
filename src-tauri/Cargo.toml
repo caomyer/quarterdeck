@@ -26,3 +26,4 @@ tauri-plugin-log = "2"
 tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros", "rt"] }
 notify = "8"
 sha2 = "0.10"
+libc = "0.2"

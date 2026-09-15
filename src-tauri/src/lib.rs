@@ -32,6 +32,15 @@ pub fn run() {
       snapshot::snapshot_refresh,
       snapshot::pane_capture,
     ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|app, event| {
+      // Closing the last window or quitting ends here: stop the first mate's
+      // whole process group so nothing it started outlives the app.
+      if let tauri::RunEvent::Exit = event {
+        if let Some(host) = app.try_state::<host::HostHandle>() {
+          host.kill_on_exit();
+        }
+      }
+    });
 }

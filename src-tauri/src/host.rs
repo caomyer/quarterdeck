@@ -67,15 +67,31 @@ pub enum Cmd {
 /// Tauri-managed handle to the host task.
 pub struct HostHandle {
     tx: mpsc::UnboundedSender<Cmd>,
+    groups: Groups,
 }
 
 impl HostHandle {
     pub fn spawn(app: AppHandle) -> Self {
         let (tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
-        let host = Host::new(app, ev_tx);
+        let groups = Groups::default();
+        let host = Host::new(app, ev_tx, groups.clone());
         tauri::async_runtime::spawn(host.run(cmd_rx, ev_rx));
-        HostHandle { tx }
+        HostHandle { tx, groups }
+    }
+
+    /// For the app's exit handler: kill every first mate process group still
+    /// alive, synchronously, without depending on the host loop being free.
+    pub fn kill_on_exit(&self) {
+        for pgid in self.groups.all() {
+            let report = kill_group_blocking(pgid);
+            if has_survivors(&report) {
+                log::warn!("first mate processes survived app exit: {report}");
+            } else {
+                log::info!("stopped the first mate process group on app exit: {report}");
+            }
+            self.groups.remove(pgid);
+        }
     }
 
     async fn call<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> Cmd) -> Result<T, String> {
@@ -159,42 +175,145 @@ impl Rpc {
     }
 }
 
+// ------------------------------------------------------- process groups ---
+
+/// How long a group gets to exit after TERM before it is KILLed.
+const KILL_GRACE: Duration = Duration::from_secs(2);
+
+/// Process groups of adapters this app started and has not killed yet. Shared
+/// with the app's exit handler, so no first mate outlives the app.
+#[derive(Clone, Default)]
+struct Groups(Arc<std::sync::Mutex<Vec<u32>>>);
+
+impl Groups {
+    fn with<T>(&self, f: impl FnOnce(&mut Vec<u32>) -> T) -> T {
+        f(&mut self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+    fn add(&self, pgid: u32) {
+        self.with(|groups| groups.push(pgid));
+    }
+    fn remove(&self, pgid: u32) {
+        self.with(|groups| groups.retain(|g| *g != pgid));
+    }
+    fn all(&self) -> Vec<u32> {
+        self.with(|groups| groups.clone())
+    }
+}
+
+/// Live members of a process group, as `pid pgid stat command` lines.
+/// Zombies are left out: they are already dead and cannot be signalled.
+fn group_members(pgid: u32) -> Result<Vec<String>, String> {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-A", "-o", "pid=,pgid=,stat=,comm="])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run ps: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("ps exited with {}", out.status));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| {
+            let mut fields = line.split_whitespace().skip(1);
+            let group = fields.next().and_then(|g| g.parse::<u32>().ok());
+            let stat = fields.next().unwrap_or("");
+            group == Some(pgid) && !stat.starts_with('Z')
+        })
+        .map(|line| line.trim().to_string())
+        .collect())
+}
+
+/// Signal a whole process group. A group that is already gone is not an error.
+fn signal_group(pgid: u32, signal: libc::c_int) -> Result<(), String> {
+    let Ok(group) = libc::pid_t::try_from(pgid) else {
+        return Err(format!("{pgid} is not a process group id"));
+    };
+    // SAFETY: killpg only sends a signal; it has no memory-safety preconditions.
+    if unsafe { libc::killpg(group, signal) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(error.to_string())
+}
+
+/// TERM the group, give it `KILL_GRACE`, KILL whatever is left, then list the
+/// group again and report who survived. Blocking; runs off the async loop.
+fn kill_group_blocking(pgid: u32) -> Value {
+    let listed = |members: &Result<Vec<String>, String>| match members {
+        Ok(lines) => json!(lines),
+        Err(error) => json!({"error": error}),
+    };
+    let gone = |members: &Result<Vec<String>, String>| matches!(members, Ok(lines) if lines.is_empty());
+
+    let members = group_members(pgid);
+    let term = signal_group(pgid, libc::SIGTERM);
+    let deadline = Instant::now() + KILL_GRACE;
+    let mut remaining = group_members(pgid);
+    while !gone(&remaining) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        remaining = group_members(pgid);
+    }
+    let mut kill = None;
+    if !gone(&remaining) {
+        kill = Some(signal_group(pgid, libc::SIGKILL));
+        std::thread::sleep(Duration::from_millis(250));
+        remaining = group_members(pgid);
+    }
+    json!({
+        "pgid": pgid,
+        "members": listed(&members),
+        "term_refused": term.err(),
+        "killed": kill.is_some(),
+        "kill_refused": kill.and_then(Result::err),
+        "survivors": listed(&remaining),
+    })
+}
+
+/// Whether a kill report shows processes that may still be running.
+fn has_survivors(report: &Value) -> bool {
+    match report.get("survivors") {
+        None => false,
+        Some(Value::Array(lines)) => !lines.is_empty(),
+        // The group could not be listed, so it may still be running.
+        Some(_) => true,
+    }
+}
+
 struct Adapter {
     child: Child,
     rpc: Rpc,
     session_id: String,
+    pgid: u32,
+    groups: Groups,
+    killed: bool,
 }
 
 impl Adapter {
     /// Kill the adapter's whole process group, so the Claude CLI and any hook
-    /// processes it started do not outlive it. Returns the members seen first.
+    /// processes it started do not outlive it, and report any survivors.
     async fn kill_tree(&mut self) -> Value {
-        let mut report = json!({});
-        if let Some(pid) = self.child.id() {
-            let members = envpath::command("ps")
-                .args(["-o", "pid=,stat=,comm=", "-g", &pid.to_string()])
-                .output()
-                .await
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            let members: Vec<String> = members
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect();
-            let group = format!("-{pid}");
-            let term = envpath::command("kill").args(["-TERM", &group]).output().await;
-            let refused = term
-                .as_ref()
-                .ok()
-                .filter(|o| !o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string());
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            let _ = envpath::command("kill").args(["-KILL", &group]).output().await;
-            report = json!({"pgid": pid, "members": members, "term_refused": refused});
-        }
+        let pgid = self.pgid;
+        let report = tokio::task::spawn_blocking(move || kill_group_blocking(pgid))
+            .await
+            .unwrap_or_else(|e| json!({"pgid": pgid, "survivors": {"error": e.to_string()}}));
         let _ = self.child.wait().await;
+        self.killed = true;
+        self.groups.remove(pgid);
         report
+    }
+}
+
+impl Drop for Adapter {
+    /// Last resort for an adapter dropped without `kill_tree`: KILL the group
+    /// at once rather than leave it running.
+    fn drop(&mut self) {
+        if !self.killed {
+            let _ = signal_group(self.pgid, libc::SIGKILL);
+            self.groups.remove(self.pgid);
+        }
     }
 }
 
@@ -209,6 +328,7 @@ async fn spawn_adapter(
     events: mpsc::UnboundedSender<HostEvent>,
     gen: u64,
     resume: Option<String>,
+    groups: &Groups,
 ) -> Result<Spawned, String> {
     let name = std::env::var("ACP_ADAPTER").unwrap_or_else(|_| "claude-agent-acp".to_string());
     let program = envpath::resolve(&name)
@@ -223,6 +343,9 @@ async fn spawn_adapter(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", program.display()))?;
+    // process_group(0) makes the adapter its group's leader: its pid is the pgid.
+    let pgid = child.id().ok_or("the adapter exited as soon as it started")?;
+    groups.add(pgid);
 
     let stdin = child.stdin.take().ok_or("the adapter has no stdin")?;
     let stdout = child.stdout.take().ok_or("the adapter has no stdout")?;
@@ -310,6 +433,36 @@ async fn spawn_adapter(
         });
     }
 
+    let mut adapter = Adapter {
+        child,
+        rpc: rpc.clone(),
+        session_id: String::new(),
+        pgid,
+        groups: groups.clone(),
+        killed: false,
+    };
+    match open_session(&rpc, &loading, home, resume).await {
+        Ok((session_id, mode, session)) => {
+            adapter.session_id = session_id;
+            Ok(Spawned { adapter, mode, session })
+        }
+        Err(reason) => {
+            let report = adapter.kill_tree().await;
+            if has_survivors(&report) {
+                return Err(format!("{reason} (and its processes did not all stop: {})", report["survivors"]));
+            }
+            Err(reason)
+        }
+    }
+}
+
+/// The ACP handshake: initialize, then resume the previous session or open a new one.
+async fn open_session(
+    rpc: &Rpc,
+    loading: &AtomicBool,
+    home: &Path,
+    resume: Option<String>,
+) -> Result<(String, &'static str, Value), String> {
     let init = rpc
         .request(
             "initialize",
@@ -330,11 +483,7 @@ async fn spawn_adapter(
             .await;
         loading.store(false, Ordering::SeqCst);
         if let Ok(session) = loaded {
-            return Ok(Spawned {
-                adapter: Adapter { child, rpc, session_id: previous },
-                mode: "loaded",
-                session,
-            });
+            return Ok((previous, "loaded", session));
         }
     }
     let session = rpc
@@ -346,7 +495,7 @@ async fn spawn_adapter(
         .and_then(Value::as_str)
         .ok_or("session/new returned no sessionId")?
         .to_string();
-    Ok(Spawned { adapter: Adapter { child, rpc, session_id }, mode: "new", session })
+    Ok((session_id, "new", session))
 }
 
 // ---------------------------------------------------------------- policy ---
@@ -555,13 +704,15 @@ struct Host {
     agent_turns: u64,
     agent_turn_starts: VecDeque<Instant>,
     storm_active: bool,
+    groups: Groups,
 }
 
 impl Host {
-    fn new(app: AppHandle, ev_tx: mpsc::UnboundedSender<HostEvent>) -> Self {
+    fn new(app: AppHandle, ev_tx: mpsc::UnboundedSender<HostEvent>, groups: Groups) -> Self {
         Host {
             app,
             ev_tx,
+            groups,
             home: None,
             host_dir: None,
             outbox: None,
@@ -736,7 +887,7 @@ impl Host {
 
         let resume = read_session_id(&host_dir);
         self.gen += 1;
-        let spawned = match spawn_adapter(&home, self.ev_tx.clone(), self.gen, resume).await {
+        let spawned = match spawn_adapter(&home, self.ev_tx.clone(), self.gen, resume, &self.groups).await {
             Ok(spawned) => spawned,
             Err(reason) => {
                 self.set_state(State::Dead, json!({"reason": reason}));
@@ -762,7 +913,7 @@ impl Host {
         };
         if let Err(error) = applied {
             let report = adapter.kill_tree().await;
-            self.emit("host_health", json!({"kind": "kill_group", "report": report}));
+            self.report_kill(report, "mode_refused");
             let reason = format!("could not apply config/claude-permission-mode ({config_mode}): {error}");
             self.set_state(State::Refused, json!({"reason": reason}));
             return Err(reason);
@@ -827,10 +978,14 @@ impl Host {
     async fn stop_adapter(&mut self) {
         if let Some(mut adapter) = self.adapter.take() {
             let report = adapter.kill_tree().await;
-            if report.get("term_refused").is_some_and(|v| !v.is_null()) {
-                self.emit("host_health", json!({"kind": "kill_refused", "report": report}));
-            }
+            self.report_kill(report, "stop");
         }
+    }
+
+    /// `kill_refused` means processes may still be running; anything else is a
+    /// routine `kill_group` record.
+    fn report_kill(&self, report: Value, after: &str) {
+        report_kill(&self.app, report, after);
     }
 
     fn handle_event(&mut self, event: HostEvent) {
@@ -845,7 +1000,15 @@ impl Host {
                 self.emit("host_health", json!({"kind": "adapter_stderr", "line": short}));
             }
             HostEvent::Exited { gen } if gen == self.gen && self.state.live() => {
-                self.adapter = None;
+                // The adapter is gone, but the Claude CLI and hook processes it
+                // started may not be: kill the group off the loop.
+                if let Some(mut adapter) = self.adapter.take() {
+                    let app = self.app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let report = adapter.kill_tree().await;
+                        report_kill(&app, report, "exit");
+                    });
+                }
                 self.set_state(State::Dead, json!({"reason": "the first mate process exited"}));
             }
             HostEvent::PromptDone { gen, outbox_id, result } if gen == self.gen => {
@@ -1002,6 +1165,11 @@ impl Host {
     }
 }
 
+fn report_kill(app: &AppHandle, report: Value, after: &str) {
+    let kind = if has_survivors(&report) { "kill_refused" } else { "kill_group" };
+    let _ = app.emit("host_health", json!({"kind": kind, "after": after, "report": report, "at_ms": now_ms()}));
+}
+
 fn read_session_id(host_dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(host_dir.join("session.json")).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
@@ -1066,6 +1234,52 @@ mod tests {
 
         let empty = lock_for("empty", Some("true")).await;
         assert!(matches!(empty, Lock::Unknown(_)));
+    }
+
+    /// A process group whose shell and two children ignore TERM, like a stuck hook.
+    fn spawn_stubborn_group() -> (std::process::Child, u32) {
+        use std::os::unix::process::CommandExt;
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; sleep 30 & sleep 30 & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pgid = child.id();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while group_members(pgid).unwrap().len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        (child, pgid)
+    }
+
+    #[test]
+    fn kill_group_escalates_and_relists_survivors() {
+        let (mut child, pgid) = spawn_stubborn_group();
+        assert_eq!(group_members(pgid).unwrap().len(), 3);
+        let report = kill_group_blocking(pgid);
+        let _ = child.wait();
+        assert_eq!(report["killed"], json!(true), "{report}");
+        assert_eq!(report["survivors"], json!([]), "{report}");
+        assert!(!has_survivors(&report));
+        assert!(group_members(pgid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn kill_group_of_a_gone_group_is_quiet() {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        let report = kill_group_blocking(pid);
+        assert_eq!(report["term_refused"], Value::Null, "{report}");
+        assert_eq!(report["killed"], json!(false), "{report}");
+        assert!(!has_survivors(&report));
+    }
+
+    #[test]
+    fn has_survivors_treats_an_unlisted_group_as_possibly_alive() {
+        assert!(has_survivors(&json!({"survivors": ["123 123 S sleep"]})));
+        assert!(has_survivors(&json!({"survivors": {"error": "could not run ps"}})));
+        assert!(!has_survivors(&json!({"survivors": []})));
     }
 
     #[test]
