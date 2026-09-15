@@ -57,12 +57,15 @@ const EARLIER_CONVERSATION: HistoryItem[] = [
   { who: "mate", text: "Two calls: the resonance titles PR is ready to merge, and foreman wants a yes or no on Wi-Fi only uploads." },
 ];
 
+/** `?relaunch`: the message the first mate was answering when the app went away. It is the last thing said, so the crash cut its reply off. */
+const CUT_OFF_MESSAGE = "Ship the titles branch when CI is green.";
+
 export class MockHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
   private timers = new Set<number>();
   private outstanding = new Set<string>();
   /** Like the real host, a refused or dead start only shows once the captain presses Start. */
-  private state: HostRuntimeState = reviewFlag("not-started") || reviewFlag("replay") || this.problem() ? "stopped" : "idle";
+  private state: HostRuntimeState = reviewFlag("not-started") || reviewFlag("replay") || reviewFlag("relaunch") || this.problem() ? "stopped" : "idle";
   /** `?slow-start`: messages sent while starting, handed over once the first mate is ready. */
   private deferred: (() => void)[] = [];
   /** `?replay`: resolves the recorded send the replay is waiting on, with the id the host gave it. */
@@ -89,8 +92,8 @@ export class MockHostAdapter implements HostAdapter {
       this.startupPlayed = true;
       return () => this.listeners.delete(listener);
     }
-    // The recorded startup starts the first mate, which `?not-started` and a refused or dead start must not do.
-    if (!this.startupPlayed && !reviewFlag("not-started") && !this.problem()) {
+    // The recorded startup starts the first mate, which `?not-started`, `?relaunch` and a refused or dead start must not do.
+    if (!this.startupPlayed && !reviewFlag("not-started") && !reviewFlag("relaunch") && !this.problem()) {
       this.startupPlayed = true;
       this.play(recordedStream.startup as RecordedEvent[]);
       const health = reviewValue("health");
@@ -111,6 +114,21 @@ export class MockHostAdapter implements HostAdapter {
     if (reviewFlag("start-throws") && !this.startThrown) {
       this.startThrown = true;
       throw new Error("host_start: the host is still shutting down the previous first mate");
+    }
+    // `?relaunch`: the app was closed with messages still waiting, so the host reports them, with their words, before the session resumes.
+    // With `?session-lost` the earlier conversation couldn't be resumed, so there is no history to pair them with.
+    if (reviewFlag("relaunch")) {
+      this.emit({ type: "state", payload: { state: "starting", home: this.snapshot.fleet.fm_home } });
+      this.later(400, () => {
+        const lost = reviewFlag("session-lost");
+        // Oldest first, as the durable outbox holds them: the cut-off message was handed over before, the other never was.
+        this.emit({ type: "outbox", payload: { id: "m-1", status: "requeued", resent_after_restart: true, text: CUT_OFF_MESSAGE } });
+        this.emit({ type: "outbox", payload: { id: "m-2", status: "queued", text: "Also merge the foreman PR." } });
+        this.emit({ type: "session", payload: { mode: lost ? "new" : "loaded", session_id: "79f27945-68cf-4639-899d-49576d4668e4", previous_session_lost: lost } });
+        if (!lost) this.emit({ type: "history", payload: { items: [...EARLIER_CONVERSATION, { who: "captain", text: CUT_OFF_MESSAGE }] } });
+        this.emit({ type: "state", payload: { state: "idle" } });
+      });
+      return;
     }
     // `?slow-start`: starting takes a while, so the captain can send first; with `?history` it resumes the recorded session.
     if (reviewFlag("slow-start")) {
@@ -192,7 +210,8 @@ export class MockHostAdapter implements HostAdapter {
     // `?not-started`: the first mate has not started in any home since launch.
     return {
       state: { state: this.state, reason: problem?.reason, reasonKind: problem?.kind },
-      home: reviewFlag("not-started") || problem ? null : this.snapshot.fleet.fm_home,
+      // The host only knows a home once it has started in one, so before a Start there is none to report.
+      home: reviewFlag("not-started") || problem || (reviewFlag("relaunch") && this.state === "stopped") ? null : this.snapshot.fleet.fm_home,
     };
   }
 
@@ -250,13 +269,14 @@ export class MockHostAdapter implements HostAdapter {
    */
   private async replay(events: NonNullable<Window["__FM_REPLAY__"]>) {
     const queued = new Set<string>();
-    this.replayIds = events.filter((item) => item.type === "outbox" && item.payload.state === "queued").map((item) => String(item.payload.id));
+    // Only a live send waits for the captain. A `queued` that carries its text comes from the durable outbox, which the UI restores on its own.
+    this.replayIds = events.filter((item) => item.type === "outbox" && item.payload.state === "queued" && !item.payload.text).map((item) => String(item.payload.id));
     let previous = events.at(0)?.t_ms ?? 0;
     for (const item of events) {
       await new Promise((resolve) => this.later(Math.min(400, Math.round((item.t_ms - previous) / 50)), () => resolve(null)));
       previous = item.t_ms;
       const raw = item.payload;
-      if (item.type === "outbox" && raw.state === "queued" && !queued.has(String(raw.id))) {
+      if (item.type === "outbox" && raw.state === "queued" && !raw.text && !queued.has(String(raw.id))) {
         queued.add(String(raw.id));
         if (!this.replaySent.has(String(raw.id))) await new Promise<string>((resolve) => { this.awaitingSend = resolve; });
       }
@@ -303,7 +323,7 @@ export class MockHostAdapter implements HostAdapter {
       return { type, payload: { chunk: String(raw.text ?? raw.chunk ?? ""), origin: (raw.origin ?? "prompt_or_agent") as "prompt" | "agent" | "prompt_or_agent" } };
     }
     if (type === "outbox") {
-      return { type, payload: { id: String(raw.id), status: (raw.state ?? raw.status) as OutboxStatus, resent_after_restart: raw.resent_after_restart === true, error: raw.error as string | undefined } };
+      return { type, payload: { id: String(raw.id), status: (raw.state ?? raw.status) as OutboxStatus, resent_after_restart: raw.resent_after_restart === true, error: raw.error as string | undefined, text: raw.text as string | undefined } };
     }
     if (type === "tool_call" || type === "tool_update") {
       return { type, payload: { id: String(raw.toolCallId), title: raw.title as string | undefined, kind: raw.kind as string | undefined, status: raw.status as string | undefined } };

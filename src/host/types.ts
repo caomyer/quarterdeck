@@ -93,7 +93,7 @@ export type HostEvent =
   | { type: "text"; payload: { chunk: string; origin: "prompt" | "agent" | "prompt_or_agent" } }
   | { type: "tool_call"; payload: ToolStep }
   | { type: "tool_update"; payload: ToolStep }
-  | { type: "outbox"; payload: { id: string; status: OutboxStatus; resent_after_restart?: boolean; /** Set on `failed`. */ error?: string } }
+  | { type: "outbox"; payload: { id: string; status: OutboxStatus; resent_after_restart?: boolean; /** Set on `failed`. */ error?: string; /** Set on `queued` and `requeued` from the durable outbox, which is the only copy of the words after a relaunch. */ text?: string } }
   | { type: "prompt_result"; payload: { id: string; stop_reason?: string; error?: string | null; usage?: Record<string, number> } }
   | { type: "usage"; payload: Record<string, number> }
   | { type: "permission"; payload: Record<string, unknown> }

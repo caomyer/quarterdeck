@@ -63,6 +63,9 @@ export const NOT_STARTED_HERE = "The first mate hasn't started in this folder ye
 
 export const FRESH_CONVERSATION = "The first mate started a fresh conversation.";
 
+/** Ids the app makes up for a message the host never took, which no first mate will ever read. */
+const NOT_SENT = "not-sent-";
+
 const READY_STATES: HostRuntimeState[] = ["idle", "prompt_turn", "agent_turn"];
 
 function errorText(error: unknown) {
@@ -229,7 +232,14 @@ export function useHost(adapter: HostAdapter) {
       setMessages((current) => {
         onScreenAtSession.current = new Set(current.map((message) => message.id));
         if (mode !== "new" || !lost) return current;
-        return [...current, { id: `notice-${id}`, who: "notice", text: FRESH_CONVERSATION, createdAt: new Date().toISOString(), session: id }];
+        // Messages still waiting are handed to this new conversation, so the notice belongs above them, where the old one ended.
+        const waiting = (message: ChatMessage) => message.who === "captain"
+          && !message.id.startsWith(NOT_SENT)
+          && outboxStatuses.current.get(message.id) !== "picked_up";
+        let at = current.length;
+        while (at > 0 && waiting(current[at - 1])) at -= 1;
+        const notice: ChatMessage = { id: `notice-${id}`, who: "notice", text: FRESH_CONVERSATION, createdAt: new Date().toISOString(), session: id };
+        return [...current.slice(0, at), notice, ...current.slice(at)];
       });
       return;
     }
@@ -264,8 +274,16 @@ export function useHost(adapter: HostAdapter) {
     }
 
     if (event.type === "outbox") {
-      const { id, status } = event.payload;
+      const { id, status, text: words } = event.payload;
       outboxStatuses.current.set(id, status);
+      // After a relaunch the host's durable outbox holds the only copy of a waiting message's words.
+      // It arrives before the session and its history, so the history still pairs with it rather than repeating it.
+      if (words && (status === "queued" || status === "requeued")) {
+        const at = session.current;
+        setMessages((current) => current.some((message) => message.id === id)
+          ? current
+          : [...current, { id, who: "captain", text: words, createdAt: new Date().toISOString(), session: at }]);
+      }
       // A message belongs to the session it's delivered into, which may not be the one it was typed in.
       if (status === "sent") {
         const into = session.current;
@@ -370,7 +388,7 @@ export function useHost(adapter: HostAdapter) {
       if (!homeRef.current || hostHomeRef.current !== homeRef.current) throw new Error(NOT_STARTED_HERE);
       id = await adapter.send(text);
     } catch (error) {
-      id = `not-sent-${crypto.randomUUID()}`;
+      id = `${NOT_SENT}${crypto.randomUUID()}`;
       outboxStatuses.current.set(id, "queued");
       setOutbox((current) => ({
         ...current,

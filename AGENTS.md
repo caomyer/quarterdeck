@@ -25,5 +25,10 @@ The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
 - Backend: `cd src-tauri && cargo clippy --all-targets && cargo test`.
 - Live end-to-end test, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e -- --ignored --nocapture`.
   It writes a summary and a replayable event recording to `~/.buzz/.scratch/firstmate-desktop-e2e/`.
+- Replay that recording through the UI, which spends no tokens: start Vite on your own port, then
+  `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm replay`.
+  It plays the recorded host events into the real UI and checks the resumed conversation, the crash banner, the re-sent message and the messages restored from the outbox.
+  Run it after a change to the host's events.
+  It refuses a recording that predates the fields it checks rather than passing over code it never reached, so record a fresh run when the event shapes change.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   Stop it by the PIDs you started, never with a `pkill` pattern: other agents run servers from this checkout.

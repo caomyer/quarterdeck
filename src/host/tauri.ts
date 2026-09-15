@@ -140,7 +140,7 @@ function normalizeEvent(name: (typeof EVENT_NAMES)[number], raw: Record<string, 
     };
   }
   if (name === "outbox") {
-    return { type: name, payload: { id: String(raw.id), status: raw.state as OutboxStatus, resent_after_restart: raw.resent_after_restart === true, error: text(raw.error) } };
+    return { type: name, payload: { id: String(raw.id), status: raw.state as OutboxStatus, resent_after_restart: raw.resent_after_restart === true, error: text(raw.error), text: text(raw.text) } };
   }
   if (name === "history") {
     const items = (Array.isArray(raw.items) ? raw.items : []).flatMap((item: Record<string, unknown>): HistoryItem[] => {
