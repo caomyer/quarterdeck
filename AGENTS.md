@@ -48,6 +48,9 @@ Agents do not work there and do not branch from it: each agent clones the remote
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm replay`.
   It plays the recorded host events into the real UI and checks the resumed conversation, the crash banner, the re-sent message and the messages restored from the outbox.
   Run it after a change to the host's events.
+- Check that status colour and icon follow the status, in both themes: start Vite on your own port, then
+  `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm tones`.
+  It feeds the mock a task in each state `fm-fleet-snapshot.sh` reports, so run it after changing how a state, an answer or the first mate's health is drawn.
   It refuses a recording that predates the fields it checks rather than passing over code it never reached, so record a fresh run when the event shapes change.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   Stop it by the PIDs you started, never with a `pkill` pattern: other agents run their own servers on this machine, and a pattern kill takes theirs down with yours.

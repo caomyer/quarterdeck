@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "capture": "node scripts/capture.mjs",
     "replay": "node scripts/replay-recording.mjs",
+    "tones": "node scripts/status-tones.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri"
   },

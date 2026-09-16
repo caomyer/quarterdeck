@@ -321,3 +321,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+/* Status tones: the colour and icon follow the state, so a warning only ever means one. */
+.task-state.tone-blue, .task-chip.tone-blue, .compact-row > span.tone-blue { color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.task-state.tone-green, .task-chip.tone-green, .compact-row > span.tone-green { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.task-state.tone-coral, .task-chip.tone-coral, .compact-row > span.tone-coral { color: var(--coral); background: color-mix(in srgb, var(--coral) 12%, transparent); }
+.task-state.tone-amber, .task-chip.tone-amber, .compact-row > span.tone-amber { color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); }
+.task-state.tone-muted, .task-chip.tone-muted, .compact-row > span.tone-muted { color: var(--muted); background: var(--surface-2); }
+.drawer-status strong.tone-blue, .call-state.tone-blue { color: var(--blue); }
+.drawer-status strong.tone-green, .call-state.tone-green { color: var(--green); }
+.drawer-status strong.tone-coral, .call-state.tone-coral { color: var(--coral); }
+.drawer-status strong.tone-amber, .call-state.tone-amber { color: var(--amber); }
+.drawer-status strong.tone-muted, .call-state.tone-muted { color: var(--muted); }
+/* A call's urgent outline is for a question still waiting on the captain; an answer that went through drops it. */
+.decision-card.call-tone-green, .decision-card.call-tone-amber { border-color: var(--border); }
+/* Running, but degraded: a usage limit or a rewake storm is never a green "Ready". */
+.live-dot.degraded { background: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 14%, transparent); }
+.chat-status i.degraded { background: var(--amber); }
