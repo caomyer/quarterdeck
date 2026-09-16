@@ -67,6 +67,9 @@ function colourOf(locator, property = "color") {
   return locator.evaluate((element, prop) => getComputedStyle(element)[prop], property);
 }
 async function tokenColour(page, token) {
+  // A token that doesn't exist makes both sides inherit the same ink, so they'd match while comparing nothing.
+  const declared = await page.evaluate((name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(), token);
+  if (!declared) throw new Error(`${token} is not declared in this theme, so nothing painted with it can be checked. Was it renamed?`);
   return page.evaluate((name) => {
     const probe = document.createElement("span");
     probe.style.color = `var(${name})`;
