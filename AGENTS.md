@@ -3,7 +3,8 @@
 A desktop app that hosts the firstmate first mate over ACP and renders its state natively.
 Quarterdeck is the code name: the deck a captain commands from.
 The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
-The checkout lives at `~/Documents/projects/quarterdeck`.
+James's checkout lives at `~/Documents/projects/quarterdeck`, inside iCloud Drive.
+Agents do not work there and do not branch from it: each agent clones the remote to `~/.buzz/REPOS/quarterdeck-<agent>` on local disk.
 
 ## Repository rules
 
@@ -24,8 +25,14 @@ The checkout lives at `~/Documents/projects/quarterdeck`.
 ## Build and test
 
 - Rust is pinned by `rust-toolchain.toml`, and `cargo` lives in `~/.cargo/bin`.
-- Agent worktrees live outside iCloud, under `~/.buzz/REPOS/quarterdeck-wt/<name>`, and build normally into their own `target/`.
-  Only this checkout sits in iCloud, so the rule below applies to it alone.
+- Agents work from their own clone of the remote at `~/.buzz/REPOS/quarterdeck-<agent>`, on local disk, building normally into its own `target/`.
+  Not a worktree of James's checkout.
+  A worktree holds only a `gitdir:` pointer into its parent's `.git`, so every git command in it reads `~/Documents/projects/quarterdeck/.git`.
+  When iCloud denies that path, the worktree dies with `fatal: not a git repository`, no matter where the worktree itself lives.
+  One clone per agent: sessions run concurrently, and a shared clone puts two agents on one working tree and one branch.
+  `origin` is the shared truth.
+  Run `git fetch origin && git rebase origin/main` before starting and again before handing work over, and push your branch so it is visible to everyone else.
+  Only James's checkout sits in iCloud, so the rule below applies to it alone.
 - This checkout is inside iCloud Drive, which adds sync attributes that make codesign fail, so the build output is kept outside it.
   `src-tauri/.cargo/config.toml` points Cargo at `~/Library/Caches/quarterdeck/target`; it holds a machine-specific path and is not committed.
   Never commit that file, and never let a build write `src-tauri/target` inside the checkout.
@@ -41,4 +48,4 @@ The checkout lives at `~/Documents/projects/quarterdeck`.
   Run it after a change to the host's events.
   It refuses a recording that predates the fields it checks rather than passing over code it never reached, so record a fresh run when the event shapes change.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
-  Stop it by the PIDs you started, never with a `pkill` pattern: other agents run servers from this checkout.
+  Stop it by the PIDs you started, never with a `pkill` pattern: other agents run their own servers on this machine, and a pattern kill takes theirs down with yours.
