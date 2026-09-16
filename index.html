@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark" data-buzz-sidebar>
+<html lang="en" data-buzz-sidebar>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,6 +8,21 @@
       content="A fixture-only desktop prototype for supervising an agent crew."
     />
     <title>First Mate Desktop</title>
+    <script>
+      // Runs before the first paint, so the window never shows one theme and then switches.
+      // The captain's own choice wins; with no choice yet, follow the Mac's setting.
+      (function () {
+        var system = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        var dark = system;
+        try {
+          var saved = localStorage.getItem("quarterdeck.theme");
+          if (saved) dark = saved === "dark";
+        } catch (error) {
+          // A webview can refuse storage. The app must still render, so keep the system setting.
+        }
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

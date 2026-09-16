@@ -97,7 +97,9 @@ export function App() {
   const [activeTask, setActiveTask] = useState<FleetTask | null>(null);
   const [showEverything, setShowEverything] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [dark, setDark] = useState(true);
+  // The inline script in index.html has already decided and applied the theme.
+  // Read it back rather than keeping a second default here, which could disagree with the markup.
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   const [ahoyVisible, setAhoyVisible] = useState(true);
   const [callMessageIds, setCallMessageIds] = useState<Record<string, string>>({});
   const [chatDraft, setChatDraft] = useState("");
@@ -179,6 +181,13 @@ export function App() {
     const next = !dark;
     setDark(next);
     document.documentElement.classList.toggle("dark", next);
+    // Remember it: without this the window goes back to the system setting on the next launch,
+    // and a captain who prefers the other theme has to change it every time.
+    try {
+      localStorage.setItem("quarterdeck.theme", next ? "dark" : "light");
+    } catch (error) {
+      // Storage refused. The theme still applies for this session, it just will not be remembered.
+    }
   }
 
   async function sendChat() {
