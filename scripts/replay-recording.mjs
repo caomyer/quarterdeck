@@ -85,6 +85,11 @@ for (const item of restored) {
 check(await page.getByRole("button", { name: "Send again" }).count() === 0, "a message cut off by a crash offers no Send again");
 const labels = await page.locator(".day-label").allInnerTexts();
 check(labels.join(",").toLowerCase() === "earlier,today", `one Earlier and one Today label (${labels.join(",")})`);
+// The offline banner renders about half a second after the "Read by" anchor above.
+// Without this wait the assertion is a coin flip: when the banner has not arrived yet
+// it passes by finding no banner, rather than by finding a banner with no Stop button.
+// Measured: 0 banners at the anchor, 1 from half a second later onward.
+await page.locator(".offline-banner").waitFor({ timeout: 30_000 });
 check(await page.locator(".offline-banner").getByRole("button", { name: "Stop" }).count() === 0, "no banner offers Stop");
 const gap = await page.getByTestId("chat-messages").evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
 check(gap < 2, `chat follows to the newest message (${gap}px from the bottom)`);
