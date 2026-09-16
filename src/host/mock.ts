@@ -57,6 +57,42 @@ const EARLIER_CONVERSATION: HistoryItem[] = [
   { who: "mate", text: "Two calls: the resonance titles PR is ready to merge, and foreman wants a yes or no on Wi-Fi only uploads." },
 ];
 
+/** `?markdown`: one reply in the shapes a first mate actually writes, for reviewing chat formatting. */
+const MARKDOWN_SAMPLE: HistoryItem[] = [
+  { who: "captain", text: "Where are we on the titles work?" },
+  { who: "step", text: "bin/fm-fleet-snapshot.sh --json" },
+  {
+    who: "mate",
+    text: [
+      "Captain, **the titles branch is ready for you** and one call needs your word.",
+      "",
+      "### Ready to merge",
+      "",
+      "- `res-ai-titles` passed its checks on the third run; the first two failed on a flaky fixture.",
+      "- PR: https://github.com/caomyer/resonance/pull/41",
+      "",
+      "### Waiting on you",
+      "",
+      "1. Whether the app may download the 150 MB speech model on cellular.",
+      "2. Whether `foreman` keeps merging its own PRs while you are away.",
+      "",
+      "| Project | Under way | Posture |",
+      "| --- | --- | --- |",
+      "| resonance | 1 | Fully checked before a PR |",
+      "| foreman | 0 | Opens a PR directly |",
+      "",
+      "The worker left this in its notes:",
+      "",
+      "```",
+      "titles: painted 412 of 412 episodes",
+      "skipped: 0",
+      "```",
+      "",
+      "> Nothing else is under way, so the fleet is quiet.",
+    ].join("\n"),
+  },
+];
+
 /** `?relaunch`: the message the first mate was answering when the app went away. It is the last thing said, so the crash cut its reply off. */
 const CUT_OFF_MESSAGE = "Ship the titles branch when CI is green.";
 
@@ -78,7 +114,11 @@ export class MockHostAdapter implements HostAdapter {
   private homeChosen = false;
   private startThrown = false;
   /** The session's conversation so far, which a resumed session sends back as `history`. */
-  private transcript: HistoryItem[] = reviewFlag("history") ? [...EARLIER_CONVERSATION] : [];
+  private transcript: HistoryItem[] = reviewFlag("markdown")
+    ? [...MARKDOWN_SAMPLE]
+    : reviewFlag("history")
+      ? [...EARLIER_CONVERSATION]
+      : [];
   private streaming = false;
   private readonly snapshot = {
     bearings: bearingsFixture as unknown as BearingsSnapshot,
@@ -96,6 +136,8 @@ export class MockHostAdapter implements HostAdapter {
     if (!this.startupPlayed && !reviewFlag("not-started") && !reviewFlag("relaunch") && !this.problem()) {
       this.startupPlayed = true;
       this.play(recordedStream.startup as RecordedEvent[]);
+      // `?markdown`: one reply in the shapes a first mate writes, for judging chat formatting by eye.
+      if (reviewFlag("markdown")) this.later(900, () => this.emit({ type: "history", payload: { items: [...MARKDOWN_SAMPLE] } }));
       const health = reviewValue("health");
       if (health) this.later(700, () => this.emit({ type: "host_health", payload: health === "session_limit"
         ? { kind: "session_limit", id: "mock-0", warning: "You've hit your session limit · resets 1:50pm (America/Los_Angeles)" }

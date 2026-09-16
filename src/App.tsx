@@ -30,6 +30,8 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind } from "./host";
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
@@ -517,6 +519,29 @@ function ChatView({ messages, outbox, draft, runtime, hostLabel, home, sendReady
         : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}<div className="composer"><textarea value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><button className="icon-button" title="Attach a file"><FileText size={17} /></button><button className="send-button" onClick={onSend} disabled={!draft.trim() || !sendReady} title={sendReady ? "Send message" : "Start the first mate to send messages"}><Send size={16} /></button></div></div></div>;
 }
 
+/**
+ * The first mate writes markdown, so render it rather than showing the marks.
+ * Raw HTML is never rendered, and a link opens outside the app instead of
+ * navigating the window away from the first mate.
+ */
+function MateText({ text }: { text: string }) {
+  return <div className="markdown"><ReactMarkdown
+    remarkPlugins={[remarkGfm]}
+    components={{
+      a: ({ href, children }) => <a
+        href={href}
+        title={href}
+        target="_blank"
+        rel="noreferrer noopener"
+        onClick={(event) => {
+          event.preventDefault();
+          if (href) window.open(href, "_blank", "noreferrer");
+        }}
+      >{children}</a>,
+    }}
+  >{text}</ReactMarkdown></div>;
+}
+
 function ChatMessageView({ message, outbox, running, onResend }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void }) {
   const status = !outbox ? null : outbox.errorKind === "not_sent"
     ? "Not sent"
@@ -539,7 +564,7 @@ function ChatMessageView({ message, outbox, running, onResend }: { message: Chat
   const footer = status
     ? <><div className={`message-state ${outbox?.error ? "message-error" : ""}`} title={tooltip}><time>{status}</time>{resendAction}</div>{outbox?.error && <small className="message-reason">{outbox.error}</small>}</>
     : !message.past && <time>{formatTime(message.createdAt)}</time>;
-  return <article className={`${message.who === "mate" ? "mate-message" : "captain-message"} ${message.past ? "past" : ""}`}>{message.who === "mate" && <span className="avatar small">FM</span>}<div><strong>{message.who === "mate" ? "First Mate" : "You"}</strong><p>{message.text}</p>{footer}</div></article>;
+  return <article className={`${message.who === "mate" ? "mate-message" : "captain-message"} ${message.past ? "past" : ""}`}>{message.who === "mate" && <span className="avatar small">FM</span>}<div><strong>{message.who === "mate" ? "First Mate" : "You"}</strong>{message.who === "mate" ? <MateText text={message.text} /> : <p>{message.text}</p>}{footer}</div></article>;
 }
 
 function OfflineBanner({ onStart }: { onStart: () => void }) {
