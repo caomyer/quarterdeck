@@ -70,6 +70,11 @@ check(
 );
 check(await page.locator(".problem-banner").count() === 0, "the crash banner cleared once the first mate was back");
 await page.getByText("Re-sent after a restart", { exact: false }).waitFor({ timeout: 30_000 });
+// That text appears as soon as the message is re-sent, while its reply is still streaming in.
+// The host records picked_up after the last chunk of that reply, so waiting for the footer to
+// say it was read is what proves the whole reply is on screen. Without it the checks below race
+// the stream, and whether they pass depends on how quickly the first mate happened to answer.
+await page.getByText(/Re-sent after a restart.*Read by/).waitFor({ timeout: 30_000 });
 
 const captains = await page.locator(".captain-message p").allInnerTexts();
 const expected = history.filter((item) => item.who === "captain").map((item) => item.text);
