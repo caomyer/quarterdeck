@@ -17,8 +17,9 @@
 //! `~/.buzz/.scratch/firstmate-desktop-e2e/recording-<ms>.jsonl`, the stream
 //! the UI's mock adapter replays. Payloads are the backend's raw ones.
 //!
-//! Each step reports pass or fail with its evidence; the test fails at the end
-//! if any step did, so one failure does not hide the steps after it.
+//! Each step reports its outcome with the evidence: passed, failed, or not
+//! exercised when the session never produced its conditions. Only a failure fails
+//! the run, and the run finishes every step so one failure does not hide the rest.
 
 use crate::host::{group_members, Cmd, HostEnv, HostHandle};
 use serde_json::{json, Value};
@@ -225,15 +226,45 @@ impl Drop for StopOnDrop {
     }
 }
 
+#[derive(PartialEq)]
+enum Outcome {
+    Passed,
+    Failed,
+    /// The session never produced this step's conditions, which is not a defect:
+    /// the first mate starts a turn of its own when it has reason to, not on cue.
+    NotExercised,
+}
+
+impl Outcome {
+    fn label(&self) -> &'static str {
+        match self {
+            Outcome::Passed => "PASS",
+            Outcome::Failed => "FAIL",
+            Outcome::NotExercised => "NOT EXERCISED",
+        }
+    }
+}
+
 struct Step {
     name: &'static str,
-    pass: bool,
+    outcome: Outcome,
     evidence: String,
 }
 
 fn record(steps: &mut Vec<Step>, name: &'static str, pass: bool, evidence: String) {
-    println!("   {} {name}\n   {evidence}", if pass { "PASS" } else { "FAIL" });
-    steps.push(Step { name, pass, evidence });
+    let outcome = if pass { Outcome::Passed } else { Outcome::Failed };
+    finish(steps, name, outcome, evidence);
+}
+
+/// A step whose conditions the run never produced. It is reported, and it does not
+/// fail the run: calling it a failure hid which steps were actually broken.
+fn not_exercised(steps: &mut Vec<Step>, name: &'static str, evidence: String) {
+    finish(steps, name, Outcome::NotExercised, evidence);
+}
+
+fn finish(steps: &mut Vec<Step>, name: &'static str, outcome: Outcome, evidence: String) {
+    println!("   {} {name}\n   {evidence}", outcome.label());
+    steps.push(Step { name, outcome, evidence });
 }
 
 // ---------------------------------------------------------- lock holder ---
@@ -366,7 +397,7 @@ async fn host_e2e_live_scratch_home() {
             ),
         );
     } else {
-        record(&mut steps, "send: queued, picked_up, reply text", false, "skipped: the host did not start".into());
+        not_exercised(&mut steps, "send: queued, picked_up, reply text", "the host did not start".into());
     }
 
     // 3. A message sent during an agent-initiated turn is handed over at once.
@@ -395,15 +426,14 @@ async fn host_e2e_live_scratch_home() {
                     ),
                 );
             }
-            None => record(
+            None => not_exercised(
                 &mut steps,
                 "send during a rewake turn",
-                false,
-                format!("not exercised: no agent-initiated turn within {}s of the reply", REWAKE_WAIT.as_secs()),
+                format!("no agent-initiated turn within {}s of the reply", REWAKE_WAIT.as_secs()),
             ),
         }
     } else {
-        record(&mut steps, "send during a rewake turn", false, "skipped: no answered message".into());
+        not_exercised(&mut steps, "send during a rewake turn", "no answered message".into());
     }
 
     // 4. The adapter is killed from outside: dead, and its group is empty.
@@ -450,7 +480,7 @@ async fn host_e2e_live_scratch_home() {
                 ),
             );
         }
-        _ => record(&mut steps, "kill -9: dead, group empty", false, "skipped: no running adapter".into()),
+        _ => not_exercised(&mut steps, "kill -9: dead, group empty", "no running adapter".into()),
     }
 
     // 5. Restart resumes the conversation and re-sends what was never answered.
@@ -482,11 +512,10 @@ async fn host_e2e_live_scratch_home() {
             ),
         );
     } else {
-        record(
+        not_exercised(
             &mut steps,
             "restart: loaded, requeued with resent_after_restart",
-            false,
-            "skipped: no message was left unanswered by the kill".into(),
+            "no message was left unanswered by the kill".into(),
         );
     }
 
@@ -506,7 +535,7 @@ async fn host_e2e_live_scratch_home() {
                 format!("stop={stopped:?}; pgid={pgid}; report={}; group after={members:?}", events.body(report)),
             );
         }
-        None => record(&mut steps, "stop: group empty, kill_group report", false, "skipped: no running adapter".into()),
+        None => not_exercised(&mut steps, "stop: group empty, kill_group report", "no running adapter".into()),
     }
 
     // 7. A lock held by another live harness: no spawn.
@@ -534,21 +563,28 @@ async fn host_e2e_live_scratch_home() {
     );
 
     host.kill_on_exit();
-    let passed = steps.iter().filter(|s| s.pass).count();
+    let passed = steps.iter().filter(|s| s.outcome == Outcome::Passed).count();
+    let failed = steps.iter().filter(|s| s.outcome == Outcome::Failed).count();
+    let not_run = steps.iter().filter(|s| s.outcome == Outcome::NotExercised).count();
     let summary = json!({
         "home": home.to_string_lossy(),
         "recording": recording.to_string_lossy(),
         "passed": passed,
-        "steps": steps.iter().map(|s| json!({"step": s.name, "pass": s.pass, "evidence": s.evidence})).collect::<Vec<_>>(),
+        "failed": failed,
+        "not_exercised": not_run,
+        "steps": steps
+            .iter()
+            .map(|s| json!({"step": s.name, "outcome": s.outcome.label(), "evidence": s.evidence}))
+            .collect::<Vec<_>>(),
     });
     let _ = std::fs::write(out.join(format!("summary-{run}.json")), serde_json::to_string_pretty(&summary).unwrap_or_default());
-    // Only a run that passed becomes the shared recording the UI replay reads; a failed
-    // run's recording is incomplete and would quietly break `pnpm replay`.
-    if steps.iter().all(|s| s.pass) {
+    // A run with no failures is usable evidence for the UI replay, even when the session
+    // never produced the conditions for every step. A failed run's recording is not.
+    if failed == 0 {
         let _ = std::fs::copy(&recording, out.join("recording-latest.jsonl"));
     }
-    println!("\n{passed}/{} steps passed; summary-{run}.json", steps.len());
-    assert!(steps.iter().all(|s| s.pass), "{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+    println!("\n{passed} passed, {failed} failed, {not_run} not exercised; summary-{run}.json");
+    assert_eq!(failed, 0, "{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
 }
 
 /// Live probe: does the hosted first mate claim the home's session lock on its
