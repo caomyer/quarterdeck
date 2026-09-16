@@ -24,6 +24,8 @@ The checkout lives at `~/Documents/projects/quarterdeck`.
 ## Build and test
 
 - Rust is pinned by `rust-toolchain.toml`, and `cargo` lives in `~/.cargo/bin`.
+- Agent worktrees live outside iCloud, under `~/.buzz/REPOS/quarterdeck-wt/<name>`, and build normally into their own `target/`.
+  Only this checkout sits in iCloud, so the rule below applies to it alone.
 - This checkout is inside iCloud Drive, which adds sync attributes that make codesign fail, so the build output is kept outside it.
   `src-tauri/.cargo/config.toml` points Cargo at `~/Library/Caches/quarterdeck/target`; it holds a machine-specific path and is not committed.
   Never commit that file, and never let a build write `src-tauri/target` inside the checkout.
