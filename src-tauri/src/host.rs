@@ -1359,12 +1359,15 @@ impl Host {
                 );
                 return Ok(());
             }
+            // Diagnostics, not a banner: firstmate may record an owner for this home
+            // well after the start, and a captain should not be greeted with the app's
+            // own bookkeeping when the first mate is running and nothing else holds it.
             LockClaim::Unclaimed(text) => self.emit(
                 "host_health",
                 json!({
                     "kind": "lock_unclaimed",
                     "lock_status": text,
-                    "warning": "This first mate has not claimed the folder yet. Nothing else is using it, so it is running.",
+                    "detail": "firstmate has not recorded a session owner for this home yet",
                 }),
             ),
         }
