@@ -464,8 +464,11 @@ async fn spawn_adapter(
     auto_allow: bool,
 ) -> Result<Spawned, String> {
     let name = std::env::var("ACP_ADAPTER").unwrap_or_else(|_| "claude-agent-acp".to_string());
-    let program = envpath::resolve(&name)
-        .ok_or_else(|| format!("{name} was not found on the login shell PATH"))?;
+    let program = envpath::resolve(&name).ok_or_else(|| {
+        format!(
+            "{name} was not found on PATH or where these tools are installed. Install it with `npm i -g @agentclientprotocol/claude-agent-acp`, or start the app with its folder on PATH."
+        )
+    })?;
     let mut child = envpath::command(&program)
         .current_dir(home)
         .env("FM_HOME", home)
@@ -1756,7 +1759,7 @@ fn is_operational_input(text: &str) -> bool {
 /// The kind of a failure to start the adapter, read from the host's own messages,
 /// so the UI can choose its words and action without matching text.
 fn adapter_failure_kind(reason: &str) -> &'static str {
-    if reason.contains("was not found on the login shell PATH") || reason.starts_with("could not start") {
+    if reason.contains("was not found on PATH") || reason.starts_with("could not start") {
         "adapter_missing"
     } else if reason.contains("no answer to") {
         "timeout"
@@ -2240,7 +2243,10 @@ while True:
 
     #[test]
     fn start_failures_are_classified_without_the_ui_matching_text() {
-        assert_eq!(adapter_failure_kind("claude-agent-acp was not found on the login shell PATH"), "adapter_missing");
+        assert_eq!(
+            adapter_failure_kind("claude-agent-acp was not found on PATH or where these tools are installed. Install it with `npm i -g @agentclientprotocol/claude-agent-acp`, or start the app with its folder on PATH."),
+            "adapter_missing"
+        );
         assert_eq!(adapter_failure_kind("could not start /x/claude-agent-acp: No such file or directory"), "adapter_missing");
         assert_eq!(adapter_failure_kind("initialize failed: no answer to initialize within 60s"), "timeout");
         assert_eq!(adapter_failure_kind("initialize failed: the adapter exited before responding"), "adapter_crashed");
