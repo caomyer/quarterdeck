@@ -1,6 +1,6 @@
 {
   "schema": "fm-fleet-snapshot.v1",
-  "generated": "2026-09-15T07:25:36Z",
+  "generated": "2026-09-15T15:54:17Z",
   "fm_home": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate",
   "roots": {
     "fm_root": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate",
@@ -9,7 +9,133 @@
     "config": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/config",
     "projects": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/projects"
   },
-  "backlog": { "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/backlog.md", "present": false, "records": [] },
+  "backlog": {
+    "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/backlog.md",
+    "present": true,
+    "records": [
+      {
+        "order": 1,
+        "state": "queued",
+        "structured": true,
+        "id": "res-ai-titles",
+        "checked": false,
+        "title": "Resonance: AI titles and notes for snips",
+        "repo": "resonance",
+        "kind": "ship",
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "hold_until": null,
+        "hold_set": null,
+        "blocked_by": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "since": "2026-09-15",
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "completion": {
+          "verb": null,
+          "date": null
+        },
+        "links": [],
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "raw": "- [ ] res-ai-titles - Resonance: AI titles and notes for snips (repo: resonance) (kind: ship) (since 2026-09-15)",
+        "body_lines": [],
+        "body_excerpt": null,
+        "unresolved_blocker_ids": [],
+        "current_role": "queued",
+        "requires_child_metadata": false,
+        "hold_age_days": 0,
+        "hold_bucket": null,
+        "captain_actionable": false
+      },
+      {
+        "order": 2,
+        "state": "queued",
+        "structured": true,
+        "id": "res-model-download",
+        "checked": false,
+        "title": "Resonance: when may the app download the 150 MB speech model?",
+        "repo": "resonance",
+        "kind": "captain",
+        "priority": null,
+        "hold_reason": "Only 2 of 9281 sampled episodes have a publisher transcript, so the download is the normal path, and today it starts on every episode open with no Wi-Fi check. Options: Wi-Fi only with visible progress, recommended; ask on the first snip that needs it; keep downloading eagerly.",
+        "hold_kind": "captain",
+        "hold_until": null,
+        "hold_set": "2026-09-15T15:54:15Z",
+        "blocked_by": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "since": "2026-09-15",
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "completion": {
+          "verb": null,
+          "date": null
+        },
+        "links": [],
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "raw": "- [ ] res-model-download - Resonance: when may the app download the 150 MB speech model? (repo: resonance) (kind: captain) (since 2026-09-15) (hold: Only 2 of 9281 sampled episodes have a publisher transcript, so the download is the normal path, and today it starts on every episode open with no Wi-Fi check. Options: Wi-Fi only with visible progress, recommended; ask on the first snip that needs it; keep downloading eagerly.) (hold-kind: captain)",
+        "body_lines": [
+          "Captain hold set: 2026-09-15T15:54:15Z"
+        ],
+        "body_excerpt": "Captain hold set: 2026-09-15T15:54:15Z",
+        "unresolved_blocker_ids": [],
+        "current_role": "queued",
+        "requires_child_metadata": false,
+        "hold_age_days": 0,
+        "hold_bucket": "live",
+        "captain_actionable": true
+      },
+      {
+        "order": 3,
+        "state": "done",
+        "structured": true,
+        "id": "foreman-rebase-before-review",
+        "checked": true,
+        "title": "Foreman: rebase the subject before anybody reads it",
+        "repo": "foreman",
+        "kind": "ship",
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "hold_until": null,
+        "hold_set": null,
+        "blocked_by": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "since": null,
+        "merged": "2026-09-15",
+        "reported": null,
+        "done": null,
+        "completion": {
+          "verb": "merged",
+          "date": "2026-09-15"
+        },
+        "links": [
+          "https://github.com/caomyer/foreman/pull/24"
+        ],
+        "pr_url": "https://github.com/caomyer/foreman/pull/24",
+        "report_path": null,
+        "local_note": null,
+        "raw": "- [x] foreman-rebase-before-review - Foreman: rebase the subject before anybody reads it https://github.com/caomyer/foreman/pull/24 (repo: foreman) (kind: ship) (merged 2026-09-15)",
+        "body_lines": [],
+        "body_excerpt": null,
+        "unresolved_blocker_ids": [],
+        "current_role": "done",
+        "requires_child_metadata": false,
+        "hold_age_days": null,
+        "hold_bucket": null,
+        "captain_actionable": false
+      }
+    ]
+  },
   "tasks": [
     {
       "id": "probe-task",
@@ -22,16 +148,32 @@
       "backend": "tmux",
       "remote": null,
       "paths": {
-        "meta": { "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/state/probe-task.meta", "present": true },
+        "meta": {
+          "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/state/probe-task.meta",
+          "present": true
+        },
         "status_log": {
           "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/state/probe-task.status",
           "present": true,
           "kind": "event_history",
-          "last_event": { "state": "working", "note": "probe placeholder task, not real work", "raw": "working: probe placeholder task, not real work" }
+          "last_event": {
+            "state": "working",
+            "note": "probe placeholder task, not real work",
+            "raw": "working: probe placeholder task, not real work"
+          }
         },
-        "worktree": { "path": "/tmp/fm-probe-nonexistent", "present": false },
-        "home": { "path": null, "present": false },
-        "report": { "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/probe-task/report.md", "present": false }
+        "worktree": {
+          "path": "/tmp/fm-probe-nonexistent",
+          "present": false
+        },
+        "home": {
+          "path": null,
+          "present": false
+        },
+        "report": {
+          "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/probe-task/report.md",
+          "present": false
+        }
       },
       "secondmate_projects": [],
       "current_state": {
@@ -39,7 +181,7 @@
         "source": "none",
         "detail": "worktree gone (torn down?)",
         "raw": "state: unknown · source: none · worktree gone (torn down?)",
-        "observed_at": "2026-09-15T07:25:36Z",
+        "observed_at": "2026-09-15T15:54:17Z",
         "freshness": "fresh"
       },
       "endpoint": {
@@ -47,10 +189,13 @@
         "exists": false,
         "agent_alive": "not_checked",
         "status": "absent",
-        "observed_at": "2026-09-15T07:25:36Z",
+        "observed_at": "2026-09-15T15:54:17Z",
         "freshness": "fresh"
       },
-      "pr": { "url": null, "source": "absent" },
+      "pr": {
+        "url": null,
+        "source": "absent"
+      },
       "hints": {
         "pending_decision": false,
         "blocked_event": false,
@@ -66,7 +211,12 @@
       "backlog": null
     }
   ],
-  "main_inventory": { "valid": true, "reason": null, "orphan_in_flight": [], "unstructured_current_count": 0 },
+  "main_inventory": {
+    "valid": true,
+    "reason": null,
+    "orphan_in_flight": [],
+    "unstructured_current_count": 0
+  },
   "scout_reports": [],
   "secondmate_current": {
     "registry": {
@@ -76,7 +226,10 @@
       "reason": null,
       "provenance": "registered-table",
       "path": "/Users/mingyucao_1/.buzz/.scratch/fm-probe/firstmate/data/secondmates.md",
-      "freshness": { "status": "fresh", "observed_at": "2026-09-15T07:25:36Z" },
+      "freshness": {
+        "status": "fresh",
+        "observed_at": "2026-09-15T15:54:17Z"
+      },
       "records": [],
       "input_truncated": false,
       "records_truncated": false,
@@ -90,7 +243,12 @@
     "shown": 0,
     "truncated": 0
   },
-  "secondmate_landed": { "records": [], "truncated": [], "unreadable": [], "partial": [] },
+  "secondmate_landed": {
+    "records": [],
+    "truncated": [],
+    "unreadable": [],
+    "partial": []
+  },
   "secondmate_guidance": {
     "note": "For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
   }
