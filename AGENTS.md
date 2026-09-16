@@ -1,7 +1,9 @@
-# firstmate desktop MVP
+# Quarterdeck
 
 A desktop app that hosts the firstmate first mate over ACP and renders its state natively.
+Quarterdeck is the code name: the deck a captain commands from.
 The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
+The checkout lives at `~/Documents/projects/quarterdeck`.
 
 ## Repository rules
 
@@ -9,8 +11,8 @@ The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
   James is the author of record for all work, including agent work.
 - Never add agent names, `Co-Authored-By` lines, or other agent trailers.
   The #firstmate Buzz thread is the provenance.
-- The repo is local only, with no remote.
-  Do not create or push to a remote without James's say-so.
+- The remote is `https://github.com/caomyer/quarterdeck`, private, under James's account.
+  Push `main` and any branch worth keeping; do not make the repository public or add another remote without James's say-so.
 - Never use em dashes in code, docs, or commit messages.
 
 ## Firstmate homes
@@ -22,6 +24,10 @@ The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
 ## Build and test
 
 - Rust is pinned by `rust-toolchain.toml`, and `cargo` lives in `~/.cargo/bin`.
+- This checkout is inside iCloud Drive, which adds sync attributes that make codesign fail, so the build output is kept outside it.
+  `src-tauri/.cargo/config.toml` points Cargo at `~/Library/Caches/quarterdeck/target`; it holds a machine-specific path and is not committed.
+  Never commit that file, and never let a build write `src-tauri/target` inside the checkout.
+  A build cache cannot be moved between checkout paths: Tauri bakes absolute paths into it, so after a move, delete the cache and rebuild.
 - Backend: `cd src-tauri && cargo clippy --all-targets && cargo test`.
 - Live end-to-end test, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e_live_scratch_home -- --ignored --nocapture`.
   It writes a summary and a replayable event recording to `~/.buzz/.scratch/firstmate-desktop-e2e/`.
