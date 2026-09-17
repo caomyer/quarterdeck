@@ -9,7 +9,7 @@
 # Usage:
 #   fm-artifact.sh present (--task <id> | --chat) <html-file>
 #                  [--name <name>] [--title <title>] [--note <text>] [--assets <dir>]
-#                  [--accept-layout]
+#                  [--accept-layout] [--addressed <t1,t2>] [--reply <t3>=<text>]
 #   fm-artifact.sh list [--json]
 #   fm-artifact.sh mode
 #
@@ -23,6 +23,13 @@
 #   [a-z0-9][a-z0-9-]{0,63}.
 #   --title defaults to the document's <title>, then to the name.
 #   --note says what changed since the previous revision.
+#   --addressed names the review comments this revision answers, and --reply
+#   answers one in words without changing the page (repeat it per comment).
+#   Both take the comment ids the captain's review carries (t1, t2, ...), and
+#   naming one twice, or an id that is not one, is refused. They are recorded on
+#   the revision, so the review screen can show each comment as answered next to
+#   what the captain asked. Answering is a claim about this revision only:
+#   whether a comment is settled stays the captain's call.
 #   --assets copies that directory's contents beside the HTML so relative
 #   references keep working; the HTML file wins a name clash. Symbolic links
 #   are refused, and the whole revision is capped at FM_ARTIFACT_MAX_BYTES
@@ -52,7 +59,8 @@
 # revision.json fields: schema, scope ("task"|"chat"), task (null for chat),
 # name, rev, title, note, entry (file name under files/), sha256 (over every
 # file's path and content), bytes, presented_at (UTC), presented_by
-# ({role:"crew",task:<FM_TASK_ID>} or {role:"firstmate"}), layout
+# ({role:"crew",task:<FM_TASK_ID>} or {role:"firstmate"}),
+# answers ({addressed:[<comment id>], replies:[{thread,body}]}), layout
 # ({status:"clean"|"accepted"|"skipped", reason (skipped only),
 # issues:[{viewport:"wide"|"narrow", rule, selector, detail}]}).
 #
@@ -121,6 +129,11 @@ tree_digest() {  # <dir>
 
 normalize_name() {  # <raw>
   printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-*//' -e 's/-*$//'
+}
+
+# A comment id from the captain's review: t1, t2, ...
+comment_id_valid() {  # <id>
+  printf '%s' "$1" | LC_ALL=C grep -Eq '^t[1-9][0-9]{0,4}$'
 }
 
 name_valid() {  # <name>
@@ -246,7 +259,7 @@ cmd_mode() {
 
 cmd_present() {
   local task='' chat=0 file='' name='' title='' note='' assets='' accept_layout=0 scope art_dir stage digest latest latest_sha
-  local n tries entry bytes presented_by rev_dir now layout
+  local n tries entry bytes presented_by rev_dir now layout answered='' replies='[]' reply_id reply_body id
   while [ $# -gt 0 ]; do
     case "$1" in
       --task) [ $# -ge 2 ] || usage; task=$2; shift 2 ;;
@@ -256,6 +269,26 @@ cmd_present() {
       --note) [ $# -ge 2 ] || usage; note=$2; shift 2 ;;
       --assets) [ $# -ge 2 ] || usage; assets=$2; shift 2 ;;
       --accept-layout) accept_layout=1; shift ;;
+      --addressed)
+        [ $# -ge 2 ] || usage
+        for id in $(printf '%s' "$2" | tr ',' ' '); do
+          comment_id_valid "$id" || die "'$id' is not a review comment id (expected t1, t2, ...)"
+          case " $answered " in *" $id "*) die "--addressed names '$id' twice" ;; esac
+          answered="$answered $id"
+        done
+        shift 2
+        ;;
+      --reply)
+        [ $# -ge 2 ] || usage
+        case "$2" in *=*) ;; *) die "--reply takes <comment id>=<text>, got '$2'" ;; esac
+        reply_id=${2%%=*}
+        reply_body=${2#*=}
+        comment_id_valid "$reply_id" || die "'$reply_id' is not a review comment id (expected t1, t2, ...)"
+        [ -n "$reply_body" ] || die "--reply to '$reply_id' says nothing"
+        printf '%s' "$replies" | jq -e --arg id "$reply_id" 'any(.[]; .thread == $id)' >/dev/null 2>&1 && die "--reply answers '$reply_id' twice"
+        replies=$(printf '%s' "$replies" | jq -c --arg id "$reply_id" --arg body "$reply_body" '. + [{thread:$id, body:$body}]')
+        shift 2
+        ;;
       -h|--help) usage ;;
       -*) die "unknown option '$1'" ;;
       *) [ -z "$file" ] || die "only one HTML file may be presented at a time"; file=$1; shift ;;
@@ -344,6 +377,10 @@ cmd_present() {
   rev_dir="$art_dir/rev-$n"
   mv "$stage/files" "$rev_dir/files" || die "cannot place revision $n"
 
+  local answers
+  answers=$(jq -cn --arg addressed "$answered" --argjson replies "$replies" \
+    '{addressed:($addressed | split(" ") | map(select(length > 0))), replies:$replies}')
+
   if [ -n "${FM_TASK_ID:-}" ]; then
     presented_by=$(jq -cn --arg task "$FM_TASK_ID" '{role:"crew",task:$task}')
   else
@@ -362,13 +399,14 @@ cmd_present() {
     --argjson bytes "$bytes" \
     --arg presented_at "$now" \
     --argjson presented_by "$presented_by" \
+    --argjson answers "$answers" \
     --argjson layout "$layout" \
     '{schema:"fm-artifact-revision.v1", scope:$scope,
       task:(if $scope == "task" then $task else null end),
       name:$name, rev:$rev, title:$title,
       note:(if $note == "" then null else $note end),
       entry:$entry, sha256:$sha256, bytes:$bytes,
-      presented_at:$presented_at, presented_by:$presented_by, layout:$layout}' \
+      presented_at:$presented_at, presented_by:$presented_by, answers:$answers, layout:$layout}' \
     > "$rev_dir/.revision.json.tmp" || die "cannot write revision $n"
   mv "$rev_dir/.revision.json.tmp" "$rev_dir/revision.json" || die "cannot publish revision $n"
 

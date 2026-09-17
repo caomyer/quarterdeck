@@ -3,7 +3,8 @@
 # Covers presenting task and chat artifacts as immutable revisions, idempotent
 # re-presents, assets and their symlink and size refusals, input refusals,
 # concurrent presents claiming distinct revision numbers, listing that ignores
-# incomplete or misplaced revisions, the presentation-mode decision, the fleet
+# incomplete or misplaced revisions, answering review comments on a revision,
+# the presentation-mode decision, the fleet
 # snapshot carrying the listing, and the pre-present layout check through a fake
 # Chrome (refuse, accept, clean, fail-open) plus one real headless Chrome run
 # that skips when no Chrome is installed.
@@ -161,6 +162,36 @@ test_list_ignores_incomplete_and_misplaced_revisions() {
   pass "fm-artifact.sh: list reports complete revisions only"
 }
 
+# A revision records which review comments it answers, so the review screen can
+# show each one as answered. A malformed or repeated id is refused rather than
+# recorded, because a wrong id claims an answer to a comment nobody wrote.
+test_answers_are_recorded_on_the_revision() {
+  local home src out rc
+  home=$(new_home answers)
+  src="$TMP_ROOT/answers/page.html"
+  write_page "$src" Page one
+  FM_HOME="$home" "$ARTIFACT" present --task t1 "$src" >/dev/null || fail "first present failed"
+  assert_equals "[]|[]" "$(jq -r '[(.answers.addressed | tostring), (.answers.replies | tostring)] | join("|")' "$home/data/t1/artifacts/page/rev-1/revision.json")" \
+    "a revision that answers nothing still carries the field"
+  write_page "$src" Page two
+  out=$(FM_HOME="$home" "$ARTIFACT" present --task t1 "$src" --addressed t1,t3 --reply 't2=Kept it: the wide image is the point.' 2>&1); rc=$?
+  expect_code 0 "$rc" "present with answers: $out"
+  assert_equals 't1,t3|t2|Kept it: the wide image is the point.' \
+    "$(jq -r '[(.answers.addressed | join(",")), .answers.replies[0].thread, .answers.replies[0].body] | join("|")' "$home/data/t1/artifacts/page/rev-2/revision.json")" \
+    "the revision records what it answers and what it replies"
+  write_page "$src" Page three
+  for bad in "--addressed bogus" "--addressed t1,t1" "--reply t2"; do
+    # shellcheck disable=SC2086 # each case is a flag and its value
+    out=$(FM_HOME="$home" "$ARTIFACT" present --task t1 "$src" $bad 2>&1); rc=$?
+    expect_code 1 "$rc" "refused: $bad"
+    assert_absent "$home/data/t1/artifacts/page/rev-3" "a refused answer left a revision ($bad)"
+  done
+  out=$(FM_HOME="$home" "$ARTIFACT" present --task t1 "$src" --reply 't2=a' --reply 't2=b' 2>&1); rc=$?
+  expect_code 1 "$rc" "refused: two replies to one comment"
+  assert_contains "$out" "answers 't2' twice" "a repeated reply is named"
+  pass "fm-artifact.sh: a revision records the review comments it answers"
+}
+
 test_mode_resolution() {
   local home out rc
   home=$(new_home mode)
@@ -301,3 +332,4 @@ test_fleet_snapshot_lists_artifacts
 test_layout_findings_refuse_until_fixed_or_accepted
 test_layout_check_fails_open
 test_layout_check_with_real_chrome
+test_answers_are_recorded_on_the_revision
