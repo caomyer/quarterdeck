@@ -454,6 +454,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .decision-sent { display: block; margin-top: 7px; color: var(--green); font-size: .59rem; font-weight: 640; }
 .decision-missing { display: block; color: var(--muted); font-size: .61rem; line-height: 1.45; }
 
+.newer-revision { display: flex; flex: none; align-items: center; gap: 5px; min-height: 30px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--blue) 50%, var(--border)); border-radius: 6px; color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, var(--surface)); font-size: .61rem; font-weight: 700; }
+
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 255px; transform: translateX(-102%); transition: transform .18s ease; box-shadow: var(--shadow); }

@@ -207,6 +207,7 @@ export function App() {
     return () => { active = false; };
   }, [artifactRef?.scope, artifactRef?.task, artifactRef?.name]);
   const shownArtifact = openArtifact ? artifacts.find((artifact) => sameArtifact(artifact, openArtifact)) : undefined;
+  // A pinned revision that is no longer in the home (rewritten history) falls back to the latest.
   const shownRevision = shownArtifact && (shownArtifact.revisions.find((revision) => revision.rev === openArtifact?.rev) ?? shownArtifact.latest);
 
   const selectedProjectData = projects.find((project) => project.name === selectedProject);
@@ -247,7 +248,9 @@ export function App() {
   function showArtifact(artifact: Artifact, rev?: number) {
     // Back returns to wherever the page was opened from; opening another revision keeps that place.
     if (view !== "artifact") setArtifactReturn(view);
-    setOpenArtifact({ scope: artifact.scope, task: artifact.task, name: artifact.name, rev });
+    // Pin the revision being read. A revision presented while the captain is reading is announced,
+    // never swapped in underneath them, which would lose their place and what they were comparing.
+    setOpenArtifact({ scope: artifact.scope, task: artifact.task, name: artifact.name, rev: rev ?? artifact.latest.rev });
     setActiveTask(null);
     setShowEverything(false);
     setView("artifact");
@@ -1015,6 +1018,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
     <div className="artifact-toolbar">
       <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""}${seen !== null && item.rev > seen ? " · new" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
       {revision.note ? <p className="revision-note" title={revision.note}><strong>What changed</strong> {revision.note}</p> : <span className="revision-note" />}
+      {artifact.latest.rev > revision.rev && <button className="newer-revision" onClick={() => onRevision(artifact.latest.rev)} title={artifact.latest.note ?? undefined}>Rev {artifact.latest.rev} is new · Open</button>}
       {note && <button className={`layout-flag ${findingsOpen ? "open" : ""}`} aria-expanded={findingsOpen} onClick={() => setFindingsOpen((current) => !current)}><CircleAlert size={14} /> {note.label}</button>}
       <button className={`comment-toggle ${commenting ? "selected" : ""}`} aria-pressed={commenting} onClick={() => { setCommenting((current) => !current); setPending(null); }} title="Comment on a part of the page"><MessageSquarePlus size={15} /> Comment</button>
       <div className="width-toggle" role="group" aria-label="Window width"><button className={narrow ? "" : "selected"} aria-pressed={!narrow} onClick={() => setNarrow(false)} title="Wide"><Monitor size={15} /></button><button className={narrow ? "selected" : ""} aria-pressed={narrow} onClick={() => setNarrow(true)} title="Narrow"><Smartphone size={15} /></button></div>

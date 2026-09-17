@@ -93,6 +93,10 @@ await frame.locator(".eyebrow", { hasText: "scout report" }).waitFor();
 check(!(await frame.locator(".eyebrow").textContent()).includes("revised"), "picking Rev 1 shows Rev 1");
 check(await page.locator(".page-heading span").innerText() === "resonance · res-titles-scout · Rev 1 of 3", "the subtitle follows the picked revision");
 check(await page.locator(".layout-flag").count() === 0, "a revision with a clean check has no flag");
+check((await page.locator(".newer-revision").innerText()) === "Rev 3 is new · Open", "a newer revision is announced, not swapped in");
+await page.locator(".newer-revision").click();
+await frame.locator(".eyebrow", { hasText: "revised twice" }).waitFor();
+check(await page.locator(".newer-revision").count() === 0, "opening the newest revision clears the announcement");
 
 // Back to where it was opened from.
 await page.locator(".back-button").click();
