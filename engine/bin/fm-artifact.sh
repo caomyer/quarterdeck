@@ -35,7 +35,13 @@
 #   what the captain asked. Answering is a claim about this revision only:
 #   whether a comment is settled stays the captain's call.
 #   --assets copies that directory's contents beside the HTML so relative
-#   references keep working; the HTML file wins a name clash. Symbolic links
+#   references keep working; the HTML file wins a name clash. A diagram the page
+#   owns ships this way too: include the Excalidraw scene file, show a picture of
+#   it in the page, and mark that picture
+#   `data-quarterdeck-scene="<scene file>"` with an optional
+#   `data-quarterdeck-scene-label="<name>"`. The page stays a plain picture
+#   wherever it is opened, and the review screen opens the real scene, so the
+#   captain can change it and send the change back with their review. Symbolic links
 #   are refused, and the whole revision is capped at FM_ARTIFACT_MAX_BYTES
 #   (default 52428800, 50 MiB).
 #   Presenting content identical to the latest revision creates nothing and
