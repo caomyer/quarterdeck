@@ -13,3 +13,4 @@ export function createHostAdapter(): HostAdapter {
 }
 
 export type * from "./types";
+export { artifactPath } from "./types";

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI titles for snips</title>
+<style>
+  :root { color-scheme: light; --ink: #1f2430; --muted: #5d6475; --line: #dde1e8; --accent: #3b5bdb; --soft: #f4f6fb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: #fff; }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 28px 64px; }
+  .eyebrow { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  h1 { margin: 6px 0 10px; font-size: 30px; line-height: 1.15; }
+  h2 { margin: 36px 0 10px; font-size: 19px; }
+  p.lead { margin: 0; color: var(--muted); font-size: 17px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .card { padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .tag { display: inline-block; margin-bottom: 8px; padding: 2px 8px; border-radius: 99px; background: #e5ebff; color: var(--accent); font-size: 12px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .rec { border-color: var(--accent); background: #eef2ff; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } h1 { font-size: 24px; } }
+  .compare img { display: block; width: 560px; max-width: none; }
+</style>
+</head>
+<body><main>
+<div class="eyebrow">resonance · scout report · revised</div>
+<h1>AI titles for snips</h1>
+<p class="lead">Snips are titled with the first eight words of the transcript today. Three ways to do better, what each costs, and what it looks like on a phone.</p>
+<h2>What people see now</h2>
+<table><tr><th>Snip</th><th>Title today</th><th>On-device title</th></tr>
+<tr><td>Hard Fork #214, 12:04</td><td>so I think the the thing about</td><td>On-device models reshape the App Store</td></tr>
+<tr><td>Acquired: TSMC, 1:41:10</td><td>and you know when they first</td><td>TSMC bets on foundry-only in 1987</td></tr></table>
+<h2>Options</h2>
+<div class="grid">
+<div class="card rec"><span class="tag">Recommended</span><h3>On-device summary model</h3><p>Runs after transcription, free, private. Measured 1.2s per snip on an iPhone 15 and 2.9s on an iPhone 12.</p></div>
+<div class="card"><h3>Cloud model</h3><p>Best titles, but every snip leaves the device and costs about $0.002.</p></div>
+<div class="card"><h3>Keyword extraction</h3><p>Instant and free, but titles read like tag lists.</p></div>
+</div>
+<h2>Snip list, before and after</h2>
+<div class="compare"><img alt="Snip list today" src="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22560%22 height=%22220%22%3E%3Crect width=%22560%22 height=%22220%22 rx=%2212%22 fill=%22%23f4f6fb%22/%3E%3Ctext x=%2224%22 y=%2248%22 font-family=%22sans-serif%22 font-size=%2216%22 fill=%22%235d6475%22%3Eso I think the the thing about%3C/text%3E%3Ctext x=%2224%22 y=%2292%22 font-family=%22sans-serif%22 font-size=%2216%22 fill=%22%235d6475%22%3Eand you know when they first%3C/text%3E%3C/svg%3E"></div>
+</main></body>
+</html>

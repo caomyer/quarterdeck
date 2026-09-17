@@ -52,5 +52,12 @@ Agents do not work there and do not branch from it: each agent clones the remote
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm tones`.
   It feeds the mock a task in each state `fm-fleet-snapshot.sh` reports, so run it after changing how a state, an answer or the first mate's health is drawn.
   It refuses a recording that predates the fields it checks rather than passing over code it never reached, so record a fresh run when the event shapes change.
+- Check the artifact review flow, in both themes: start Vite on your own port, then
+  `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm artifacts`.
+  It opens the mock with `?artifacts`, whose pages live in `src/fixtures/review-pages` and are served only by the dev server, and checks the list, the review screen, revisions, the narrow width, accepted layout findings, the frame's sandbox, and the ways in from chat and the task drawer.
+  Set `ARTIFACT_SHOTS=<folder>` to also save screenshots.
+  Run it after changing how artifacts are listed, opened or framed.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
+  The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
+  Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.
   Stop it by the PIDs you started, never with a `pkill` pattern: other agents run their own servers on this machine, and a pattern kill takes theirs down with yours.

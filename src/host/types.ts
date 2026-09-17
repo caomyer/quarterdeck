@@ -58,12 +58,45 @@ export type FleetTask = {
   actions: { watch: string; steer: string; return_channel_note: string | null };
 };
 
+/** A layout problem firstmate's pre-present check found in a page, at its wide (1280px) or narrow (500px) window. */
+export type ArtifactLayoutIssue = { viewport: "wide" | "narrow"; rule: string; selector: string; detail: string };
+
+/** One presented revision, as `bin/fm-artifact.sh list --json` reports it. Revisions never change once presented. */
+export type ArtifactRevision = {
+  scope: "task" | "chat";
+  task: string | null;
+  name: string;
+  rev: number;
+  title: string;
+  /** What changed since the previous revision, in the presenter's words. */
+  note: string | null;
+  /** The page's file name inside the revision. */
+  entry: string;
+  bytes: number;
+  presented_at: string;
+  presented_by: { role: "crew"; task: string } | { role: "firstmate" };
+  /** `accepted`: presented despite findings the presenter said were intentional. `skipped`: no browser was there to check. */
+  layout?: { status: "clean" | "accepted" | "skipped"; reason?: string; issues: ArtifactLayoutIssue[] };
+};
+
+/** A page the first mate or a worker presented for review, with every revision oldest first. */
+export type Artifact = {
+  scope: "task" | "chat";
+  task: string | null;
+  name: string;
+  title: string;
+  latest: ArtifactRevision;
+  revisions: ArtifactRevision[];
+};
+
 export type FleetSnapshot = {
   schema: string;
   generated: string;
   fm_home: string;
   backlog?: { records: BacklogRecord[] };
   tasks: FleetTask[];
+  /** Absent from homes whose firstmate predates `bin/fm-artifact.sh`. */
+  artifacts?: Artifact[];
 };
 
 export type SnapshotProject = { name: string; mode: string; yolo: boolean; description?: string; added?: string | null };
@@ -150,4 +183,12 @@ export interface HostAdapter {
   /** The last finished snapshot, for a window that subscribed after it was emitted. Waits for a read in progress. */
   latestSnapshot(): Promise<SnapshotEvent | null>;
   answerPermission(id: string, optionId: string): Promise<void>;
+  /** Where the review frame loads a revision's page from. Its relative links resolve inside the same revision. */
+  artifactUrl(revision: ArtifactRevision): string;
+}
+
+/** The path both adapters serve a revision's page under: `task/<id>/<name>/rev-<n>/<entry>` or `chat/<name>/rev-<n>/<entry>`. */
+export function artifactPath(revision: ArtifactRevision) {
+  const owner = revision.scope === "task" && revision.task ? `task/${encodeURIComponent(revision.task)}` : "chat";
+  return `${owner}/${encodeURIComponent(revision.name)}/rev-${revision.rev}/${encodeURIComponent(revision.entry)}`;
 }

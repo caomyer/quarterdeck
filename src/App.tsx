@@ -20,7 +20,9 @@ import {
   Inbox,
   Menu,
   MessageSquareText,
+  Monitor,
   Moon,
+  PanelsTopLeft,
   Radio,
   RefreshCw,
   Search,
@@ -28,6 +30,7 @@ import {
   Settings,
   ShieldQuestion,
   ShipWheel,
+  Smartphone,
   Sparkles,
   Sun,
   TerminalSquare,
@@ -37,10 +40,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind } from "./host";
+import { type Artifact, type ArtifactRevision, createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind } from "./host";
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
 
-type View = "bearings" | "chat" | "projects" | "project";
+type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
+/** Which page the review screen shows: the artifact, and the revision picked (the latest when none is). */
+type ArtifactRef = { scope: Artifact["scope"]; task: string | null; name: string; rev?: number };
 type CallState = OutboxView | undefined;
 
 const host = createHostAdapter();
@@ -124,6 +129,8 @@ export function App() {
   const [callMessageIds, setCallMessageIds] = useState<Record<string, string>>({});
   const [chatDraft, setChatDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openArtifact, setOpenArtifact] = useState<ArtifactRef | null>(null);
+  const [artifactReturn, setArtifactReturn] = useState<View>("artifacts");
 
   const projects = useMemo(() => {
     const byName = new Map<string, { tasks: FleetTask[]; mode?: string; yolo?: boolean }>();
@@ -172,9 +179,23 @@ export function App() {
     });
   }, [callAnswers]);
 
+  const artifacts = useMemo(() => fleet?.artifacts ?? [], [fleet]);
+  const shownArtifact = openArtifact ? artifacts.find((artifact) => sameArtifact(artifact, openArtifact)) : undefined;
+  const shownRevision = shownArtifact && (shownArtifact.revisions.find((revision) => revision.rev === openArtifact?.rev) ?? shownArtifact.latest);
+
   const selectedProjectData = projects.find((project) => project.name === selectedProject);
-  const title = view === "bearings" ? "Bearings" : view === "chat" ? "Chat" : view === "projects" ? "Projects" : selectedProject ?? "Project";
-  const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture : view === "chat" ? "The first mate" : view === "bearings" ? (bearings ? `As of ${formatTime(bearings.generated)}` : "") : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
+  const title = view === "bearings" ? "Bearings"
+    : view === "chat" ? "Chat"
+    : view === "projects" ? "Projects"
+    : view === "artifacts" ? "Artifacts"
+    : view === "artifact" ? shownRevision?.title ?? "Artifact"
+    : selectedProject ?? "Project";
+  const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture
+    : view === "chat" ? "The first mate"
+    : view === "bearings" ? (bearings ? `As of ${formatTime(bearings.generated)}` : "")
+    : view === "artifacts" ? `${artifacts.length} page${artifacts.length === 1 ? "" : "s"} shared with you`
+    : view === "artifact" ? (shownArtifact && shownRevision ? `${artifactOwner(shownArtifact, fleet?.tasks ?? [])} · Rev ${shownRevision.rev} of ${shownArtifact.revisions.length}` : "")
+    : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
   const openCallCount = bearings?.decisions_open.length ?? 0;
   const approvalCount = bridge.permissionRequests.length;
   // Failed and not-sent messages aren't being worked on.
@@ -194,6 +215,16 @@ export function App() {
 
   function navigate(next: View) {
     setView(next);
+    setMobileNavOpen(false);
+  }
+
+  function showArtifact(artifact: Artifact, rev?: number) {
+    // Back returns to wherever the page was opened from; opening another revision keeps that place.
+    if (view !== "artifact") setArtifactReturn(view);
+    setOpenArtifact({ scope: artifact.scope, task: artifact.task, name: artifact.name, rev });
+    setActiveTask(null);
+    setShowEverything(false);
+    setView("artifact");
     setMobileNavOpen(false);
   }
 
@@ -274,6 +305,7 @@ export function App() {
           <NavButton active={view === "bearings"} icon={<Gauge size={18} />} label="Bearings" count={openCallCount || undefined} onClick={() => navigate("bearings")} />
           <NavButton active={view === "chat"} icon={<MessageSquareText size={18} />} label="Chat" detail="First Mate" count={approvalCount || undefined} countTitle={approvalCount ? `The first mate is waiting for your OK on ${approvalCount === 1 ? "one thing" : `${approvalCount} things`}` : undefined} onClick={() => navigate("chat")} />
           <NavButton active={view === "projects" || view === "project"} icon={<FolderGit2 size={18} />} label="Projects" count={projects.length} onClick={() => navigate("projects")} />
+          <NavButton active={view === "artifacts" || view === "artifact"} icon={<PanelsTopLeft size={18} />} label="Artifacts" onClick={() => navigate("artifacts")} />
         </nav>
         <div className="sidebar-rule" />
         <div className="project-shortcuts">
@@ -295,6 +327,7 @@ export function App() {
         <header className="topbar">
           <button className="icon-button mobile-menu" onClick={() => setMobileNavOpen(true)} title="Open navigation"><Menu size={19} /></button>
           {view === "project" && <button className="icon-button back-button" onClick={() => navigate("projects")} title="Back to projects"><ArrowLeft size={18} /></button>}
+          {view === "artifact" && <button className="icon-button back-button" onClick={() => navigate(artifactReturn)} title="Back"><ArrowLeft size={18} /></button>}
           <div className="page-heading"><h1>{title}</h1><span>{subtitle}</span></div>
           <div className="top-actions">
             {view === "bearings" && <button className="ahoy-button" onClick={runAhoy} title="Catch up on what happened since your last message"><Sparkles size={15} /> Ahoy</button>}
@@ -349,14 +382,18 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} onOpenTask={setActiveTask} />}
+        {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpen={showArtifact} />}
+        {view === "artifact" && (shownArtifact && shownRevision
+          ? <ArtifactReview key={`${shownArtifact.scope}/${shownArtifact.task}/${shownArtifact.name}/${shownRevision.rev}`} artifact={shownArtifact} revision={shownRevision} url={host.artifactUrl(shownRevision)} onRevision={(rev) => showArtifact(shownArtifact, rev)} />
+          : <div className="content-scroll"><EmptyState label="This page isn't in the home's records anymore." /></div>)}
       </main>
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
       {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} onClose={() => setSettingsOpen(false)} />}
-      {activeTask && fleet && <TaskDrawer task={activeTask} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
+      {activeTask && fleet && <TaskDrawer task={activeTask} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
     </div>
   );
 }
@@ -502,24 +539,43 @@ function ProjectView({ project, onOpenTask }: { project: { name: string; posture
   })}</div></DashboardSection></div>;
 }
 
-type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string };
+type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision };
 
 /**
  * Consecutive steps read as one group between the first mate's messages.
  * A resumed session's history reads as "Earlier", and "Today" starts after its last item.
  * A message still waiting keeps its place inside the history, so it stays under "Earlier".
+ * A page presented in the last day shows where it happened among this window's messages, and after a resumed
+ * session's history, whose items carry no time. A day rather than the calendar date, so a page shared just before
+ * midnight does not drop out of the conversation a minute later.
  */
-function chatItems(messages: ChatMessage[]) {
+const CHAT_PAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
   const lastPast = messages.reduce((found, message, index) => message.past ? index : found, -1);
   const items: ChatItem[] = [{ type: "label", id: "label-top", text: lastPast >= 0 ? "Earlier" : "Today" }];
+  const since = Date.now() - CHAT_PAGE_WINDOW_MS;
+  const pages = artifacts
+    .flatMap((artifact) => artifact.revisions.map((revision) => ({ artifact, revision })))
+    .filter(({ revision }) => Date.parse(revision.presented_at) >= since)
+    .sort((a, b) => a.revision.presented_at.localeCompare(b.revision.presented_at));
+  const pushPages = (before?: string) => {
+    while (pages.length && (before === undefined || pages[0].revision.presented_at < before)) {
+      const { artifact, revision } = pages.shift()!;
+      items.push({ type: "artifact", id: `artifact-${artifact.scope}-${artifact.task}-${artifact.name}-${revision.rev}`, artifact, revision });
+    }
+  };
   messages.forEach((message, index) => {
     if (lastPast >= 0 && index === lastPast + 1) items.push({ type: "label", id: `label-${message.id}`, text: "Today" });
+    if (!message.past) pushPages(message.createdAt);
     const past = message.past === true;
     const last = items.at(-1);
     if (message.who !== "step") items.push({ type: "message", message });
     else if (last?.type === "steps" && last.past === past) last.steps.push(message);
     else items.push({ type: "steps", id: `steps-${message.id}`, steps: [message], past });
   });
+  if (pages.length && lastPast >= 0 && lastPast === messages.length - 1) items.push({ type: "label", id: "label-today-pages", text: "Today" });
+  pushPages();
   return items;
 }
 
@@ -570,18 +626,18 @@ function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; ho
   return <section className="approval-card" aria-label="The first mate is asking for your OK"><span className="approval-mark"><ShieldQuestion size={17} /></span><div className="approval-copy"><strong>The first mate wants to:</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on with this.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
 }
 
-function ChatView({ messages, outbox, draft, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; outbox: Record<string, OutboxView>; draft: string; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
+function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
-  const items = chatItems(messages);
+  const items = chatItems(messages, artifacts);
   const scroller = useRef<HTMLDivElement>(null);
   // Follow the conversation, including a resumed session's history, unless the captain has scrolled up to read.
   const following = useRef(true);
   useLayoutEffect(() => {
     const element = scroller.current;
     if (element && following.current) element.scrollTop = element.scrollHeight;
-  }, [messages, outbox, approvals]);
+  }, [messages, outbox, approvals, artifacts]);
   // A banner or approval card appearing shrinks the list without a scroll event, so stay pinned through resizes too.
   useEffect(() => {
     const element = scroller.current;
@@ -594,8 +650,10 @@ function ChatView({ messages, outbox, draft, runtime, hostLabel, degraded, home,
     const element = scroller.current;
     if (element) following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
   };
-  return <div className="chat-view">{banners}<div className="chat-status"><span className="avatar">FM</span><div><strong>First Mate</strong><span><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /> {hostLabel}</span></div><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={16} /></button></div><div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{messages.length > 0 && items.map((item, index) => item.type === "label"
+  return <div className="chat-view">{banners}<div className="chat-status"><span className="avatar">FM</span><div><strong>First Mate</strong><span><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /> {hostLabel}</span></div><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={16} /></button></div><div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
     ? <div key={item.id} className={`day-label ${index > 0 ? "later" : ""}`}>{item.text}</div>
+    : item.type === "artifact"
+      ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
     : item.type === "steps"
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
@@ -700,7 +758,7 @@ function HostHealthBanner({ warning, onRestart }: { warning: HealthWarning; onRe
   return <section className="offline-banner health-banner" role="alert" data-health-kind={warning.kind}><CircleAlert size={18} /><div><strong>{warning.message}</strong>{hint && <span>{hint}</span>}{open && warning.details && <pre className="banner-details">{warning.details}</pre>}</div>{hasActions && <div className="banner-actions">{warning.details && <button aria-expanded={open} onClick={() => setOpen((current) => !current)}>{open ? "Hide details" : "Show details"}</button>}{warning.kind === "kill_refused" && <button onClick={onRestart}>Restart</button>}</div>}</section>;
 }
 
-function TaskDrawer({ task, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose }: { task: FleetTask; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void }) {
+function TaskDrawer({ task, artifacts, onOpenArtifact, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose }: { task: FleetTask; artifacts: Artifact[]; onOpenArtifact: (artifact: Artifact) => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void }) {
   const [capture, setCapture] = useState<{ text: string; observed_at?: string } | null>(null);
   useEffect(() => {
     let active = true;
@@ -716,11 +774,85 @@ function TaskDrawer({ task, fleetSchema, fleetGenerated, expanded, onCapture, on
     { title: stateLabel(task.current_state.state), detail: statusDetail, time: formatTime(task.current_state.observed_at), icon: taskStatus(task.current_state.state, 15).icon },
   ];
   const captureText = capture?.text ?? `status: ${task.endpoint.status}\nbackend: ${task.backend}\nworker: ${task.endpoint.agent_alive}\nworktree: ${task.paths.worktree.present ? task.paths.worktree.path : "missing"}\nobserved: ${task.endpoint.observed_at}`;
-  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="task-drawer" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>{projectName(task.project)}</span><h2>{task.id}</h2></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header><div className="drawer-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{stateLabel(task.current_state.state)}</strong>{statusDetail && <span>{statusDetail}</span>}</div></div><div className="drawer-scroll"><DrawerSection title="Instructions"><div className="brief-block"><p>{task.paths.status_log.last_event.note}</p></div></DrawerSection><DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.time}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection><DrawerSection title="PR"><div className="pr-block">{task.pr.url ? <a href={task.pr.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {task.pr.url}</a> : <span><GitBranch size={15} /> No PR recorded</span>}</div></DrawerSection><DrawerSection title="Worker's screen"><p className="worker-caption">Read-only. To change anything, tell the first mate.</p><div className="worker-screen"><header><TerminalSquare size={14} /><span>{task.endpoint.target}</span><em>{capture?.observed_at ? `Updated ${formatTime(capture.observed_at)}` : "Updating…"}</em></header><pre>{captureText}</pre></div></DrawerSection><button className="show-everything" onClick={onToggle}><ChevronDown size={16} className={expanded ? "rotated" : ""} /><span>Show everything</span></button>{expanded && <div className="machine-details"><dl><dt>Branch</dt><dd>none recorded</dd><dt>Isolated copy</dt><dd>{task.paths.worktree.present ? task.paths.worktree.path : "missing"}</dd><dt>Worker runtime</dt><dd>{task.harness} on {task.backend}</dd><dt>Status line</dt><dd>{task.current_state.raw}</dd><dt>Log</dt><dd>{task.paths.status_log.last_event.raw}</dd></dl><div className="step-chips"><span>Registered</span><span>{task.current_state.freshness}</span><span>Endpoint {task.endpoint.status}</span><span>PR {task.pr.source}</span><span>Report {task.paths.report.present ? "ready" : "none"}</span></div></div>}</div><footer className="drawer-footer">From {fleetSchema} · {formatTime(fleetGenerated)}</footer></aside></div>;
+  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="task-drawer" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>{projectName(task.project)}</span><h2>{task.id}</h2></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header><div className="drawer-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{stateLabel(task.current_state.state)}</strong>{statusDetail && <span>{statusDetail}</span>}</div></div><div className="drawer-scroll"><DrawerSection title="Instructions"><div className="brief-block"><p>{task.paths.status_log.last_event.note}</p></div></DrawerSection><DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.time}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection>{artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}<DrawerSection title="PR"><div className="pr-block">{task.pr.url ? <a href={task.pr.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {task.pr.url}</a> : <span><GitBranch size={15} /> No PR recorded</span>}</div></DrawerSection><DrawerSection title="Worker's screen"><p className="worker-caption">Read-only. To change anything, tell the first mate.</p><div className="worker-screen"><header><TerminalSquare size={14} /><span>{task.endpoint.target}</span><em>{capture?.observed_at ? `Updated ${formatTime(capture.observed_at)}` : "Updating…"}</em></header><pre>{captureText}</pre></div></DrawerSection><button className="show-everything" onClick={onToggle}><ChevronDown size={16} className={expanded ? "rotated" : ""} /><span>Show everything</span></button>{expanded && <div className="machine-details"><dl><dt>Branch</dt><dd>none recorded</dd><dt>Isolated copy</dt><dd>{task.paths.worktree.present ? task.paths.worktree.path : "missing"}</dd><dt>Worker runtime</dt><dd>{task.harness} on {task.backend}</dd><dt>Status line</dt><dd>{task.current_state.raw}</dd><dt>Log</dt><dd>{task.paths.status_log.last_event.raw}</dd></dl><div className="step-chips"><span>Registered</span><span>{task.current_state.freshness}</span><span>Endpoint {task.endpoint.status}</span><span>PR {task.pr.source}</span><span>Report {task.paths.report.present ? "ready" : "none"}</span></div></div>}</div><footer className="drawer-footer">From {fleetSchema} · {formatTime(fleetGenerated)}</footer></aside></div>;
+}
+
+function sameArtifact(artifact: Artifact, ref: ArtifactRef) {
+  return artifact.scope === ref.scope && artifact.task === ref.task && artifact.name === ref.name;
+}
+
+/** Who a page belongs to, in the captain's nouns: the project and task, or the conversation. */
+function artifactOwner(artifact: Artifact, tasks: FleetTask[]) {
+  if (artifact.scope === "chat" || !artifact.task) return "Shared in chat";
+  const task = tasks.find((candidate) => candidate.id === artifact.task);
+  return task ? `${projectName(task.project)} · ${artifact.task}` : artifact.task;
+}
+
+function revisionLine(artifact: Artifact) {
+  const count = artifact.revisions.length;
+  return `${count === 1 ? "Presented" : `Rev ${artifact.latest.rev}`} · ${formatWhen(artifact.latest.presented_at)}`;
+}
+
+/** Findings the presenter accepted are the page's own business until the captain looks; a skipped check is only a note. */
+function layoutNote(revision: ArtifactRevision) {
+  const issues = revision.layout?.status === "accepted" ? revision.layout.issues : [];
+  if (issues.length === 0) return null;
+  const narrowOnly = issues.every((issue) => issue.viewport === "narrow");
+  return { issues, label: narrowOnly ? "May look off in a narrow window" : "May look off", narrowOnly };
+}
+
+function ArtifactRow({ artifact, detail, onOpen }: { artifact: Artifact; detail: string; onOpen: () => void }) {
+  const note = layoutNote(artifact.latest);
+  return <button className="artifact-row" onClick={onOpen}><span className="artifact-icon"><PanelsTopLeft size={16} /></span><span className="artifact-copy"><strong>{artifact.title}</strong><small>{detail}</small></span>{note ? <span className="artifact-flag" title={note.issues.map((issue) => issue.detail).join("\n")}>{note.label}</span> : <span />}<ChevronRight size={17} /></button>;
+}
+
+function ArtifactsView({ artifacts, tasks, onOpen }: { artifacts: Artifact[]; tasks: FleetTask[]; onOpen: (artifact: Artifact) => void }) {
+  return <div className="content-scroll artifacts-page" data-screen="artifacts">
+    {artifacts.length === 0
+      ? <EmptyState label="Nothing to look at yet. When the first mate or a worker shares a page, it shows up here." />
+      : <div className="task-list artifact-list">{artifacts.map((artifact) => <ArtifactRow key={`${artifact.scope}/${artifact.task}/${artifact.name}`} artifact={artifact} detail={`${artifactOwner(artifact, tasks)} · ${revisionLine(artifact)}`} onOpen={() => onOpen(artifact)} />)}</div>}
+  </div>;
+}
+
+function ArtifactChatCard({ artifact, revision, tasks, onOpen }: { artifact: Artifact; revision: ArtifactRevision; tasks: FleetTask[]; onOpen: () => void }) {
+  const from = revision.presented_by.role === "firstmate" ? "The first mate shared a page" : `${artifactOwner(artifact, tasks)} ${revision.rev === 1 ? "shared a page" : `revised a page · Rev ${revision.rev}`}`;
+  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-icon"><PanelsTopLeft size={16} /></span><div><small>{from}</small><strong>{revision.title}</strong>{revision.note && <p>{revision.note}</p>}<time>{formatWhen(revision.presented_at)}</time></div><button onClick={onOpen}>Open</button></article>;
+}
+
+/**
+ * The page itself, in a frame that can run its scripts and reach the network but never the app or the home.
+ * Narrow shows it at the width firstmate's layout check calls narrow.
+ */
+function ArtifactReview({ artifact, revision, url, onRevision }: { artifact: Artifact; revision: ArtifactRevision; url: string; onRevision: (rev: number) => void }) {
+  const [narrow, setNarrow] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [findingsOpen, setFindingsOpen] = useState(false);
+  const note = layoutNote(revision);
+  const newest = [...artifact.revisions].reverse();
+  return <div className="artifact-review" data-screen="artifact">
+    <div className="artifact-toolbar">
+      <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
+      {revision.note ? <p className="revision-note" title={revision.note}><strong>What changed</strong> {revision.note}</p> : <span className="revision-note" />}
+      {note && <button className={`layout-flag ${findingsOpen ? "open" : ""}`} aria-expanded={findingsOpen} onClick={() => setFindingsOpen((current) => !current)}><CircleAlert size={14} /> {note.label}</button>}
+      <div className="width-toggle" role="group" aria-label="Window width"><button className={narrow ? "" : "selected"} aria-pressed={!narrow} onClick={() => setNarrow(false)} title="Wide"><Monitor size={15} /></button><button className={narrow ? "selected" : ""} aria-pressed={narrow} onClick={() => setNarrow(true)} title="Narrow"><Smartphone size={15} /></button></div>
+    </div>
+    {note && findingsOpen && <div className="layout-findings" role="note"><p>When it was presented, firstmate's check found {note.issues.length === 1 ? "this" : "these"}, and the presenter kept the page as it is.</p><ul>{note.issues.map((issue, index) => <li key={index}><strong>{issue.viewport === "narrow" ? "Narrow" : "Wide"}</strong> {issue.detail}<code>{issue.selector}</code></li>)}</ul></div>}
+    <div className={`artifact-stage ${narrow ? "narrow" : ""}`}>
+      {!loaded && <div className="artifact-loading">Opening the page…</div>}
+      <iframe title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => setLoaded(true)} />
+    </div>
+  </div>;
 }
 
 function DrawerSection({ title, children }: { title: string; children: React.ReactNode }) {
   return <section className="drawer-section"><h3>{title}</h3>{children}</section>;
+}
+
+/** A time today, otherwise the date too. */
+function formatWhen(value: string) {
+  const date = new Date(value);
+  if (date.toDateString() === new Date().toDateString()) return formatTime(value);
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
 }
 
 function formatTime(value: string) {

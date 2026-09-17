@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ReasonKind, SnapshotEvent } from "./types";
+import { artifactPath } from "./types";
+import type { ArtifactRevision, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ReasonKind, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -30,6 +31,12 @@ export class TauriHostAdapter implements HostAdapter {
     this.listeners.add(listener);
     void this.ensureListening();
     return () => this.listeners.delete(listener);
+  }
+
+  /** Served by the host's `artifact` scheme, which Windows' webview reaches as an http host instead. */
+  artifactUrl(revision: ArtifactRevision) {
+    const base = navigator.userAgent.includes("Windows") ? "http://artifact.localhost" : "artifact://localhost";
+    return `${base}/${artifactPath(revision)}`;
   }
 
   hostStart(home: string) {

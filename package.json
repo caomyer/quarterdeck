@@ -10,7 +10,8 @@
     "replay": "node scripts/replay-recording.mjs",
     "tones": "node scripts/status-tones.mjs",
     "preview": "vite preview --host 127.0.0.1",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "artifacts": "node scripts/artifact-review.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",

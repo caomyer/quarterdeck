@@ -162,6 +162,12 @@ pub async fn host_start(
 ) -> Result<(), String> {
     let home = PathBuf::from(home);
     snapshots.set_home(home.clone()).await?;
+    // Scouts in this home present their pages here rather than in a browser. Not being able to
+    // record that never stops the first mate: they fall back to the home's existing review loop.
+    match crate::artifact::claim_presentation(&home) {
+        Ok(outcome) => log::info!("presentation mode for {}: {outcome:?}", home.display()),
+        Err(error) => log::warn!("could not record the presentation mode: {error}"),
+    }
     host.call(|reply| Cmd::Start { home, reply }).await?
 }
 

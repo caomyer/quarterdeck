@@ -5,6 +5,9 @@
 //! saved home that still checks out is handed to the snapshot reader at
 //! launch, so Bearings shows real data before the first mate starts.
 //!
+//! `QUARTERDECK_SETTINGS_DIR` replaces the app data folder for this file, so a
+//! test run can use a scratch home without touching the captain's saved one.
+//!
 //! Commands: `home_get`, `home_choose`.
 
 use crate::host::{Cmd, HostHandle};
@@ -61,8 +64,17 @@ pub(crate) fn save_home(dir: &Path, home: &Path) -> Result<(), String> {
         .map_err(|e| format!("could not save {}: {e}", dir.join(SETTINGS_FILE).display()))
 }
 
-fn settings_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn settings_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var_os("QUARTERDECK_SETTINGS_DIR").filter(|dir| !dir.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
     app.path().app_data_dir().map_err(|e| format!("no app data folder: {e}"))
+}
+
+/// The saved home when it still checks out.
+pub(crate) fn saved_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    let saved = read_saved_home(&settings_dir(app).ok()?)?;
+    check_home(&saved).ok()
 }
 
 /// The saved home and whether it still checks out.

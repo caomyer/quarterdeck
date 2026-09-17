@@ -1,3 +1,4 @@
+mod artifact;
 mod envpath;
 mod host;
 #[cfg(test)]
@@ -11,6 +12,7 @@ use tauri::Manager;
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
+    .register_asynchronous_uri_scheme_protocol(artifact::SCHEME, artifact::handle)
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

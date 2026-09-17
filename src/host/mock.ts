@@ -1,9 +1,13 @@
 import bearingsFixture from "../fixtures/bearings-snapshot.json";
 import fleetFixture from "../fixtures/fleet-snapshot.json";
 import recordedStream from "./mock-event-stream.json";
+import { artifactPath } from "./types";
 import type {
+  Artifact,
+  ArtifactRevision,
   BearingsSnapshot,
   FleetSnapshot,
+  FleetTask,
   HistoryItem,
   HomeStatus,
   HostAdapter,
@@ -35,6 +39,50 @@ function reviewFlag(name: string) {
 
 function reviewValue(name: string) {
   return new URLSearchParams(window.location.search).get(name);
+}
+
+/**
+ * `?artifacts`: a scout's plan in two revisions (the second presented with a narrow-window finding the scout accepted)
+ * and a page the first mate shared in chat, all presented moments ago so they also show in the conversation.
+ * The pages live in src/fixtures/review-pages, which only the dev server serves.
+ */
+const ARTIFACT_TASK = "res-titles-scout";
+
+function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; inFlight: BearingsSnapshot["in_flight"][number] } {
+  const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const plan = (rev: number, minutesAgo: number, note: string | null, layout: ArtifactRevision["layout"]): ArtifactRevision => ({
+    scope: "task", task: ARTIFACT_TASK, name: "titles-plan", rev, title: "AI titles for snips", note, entry: "titles-plan.html",
+    bytes: 3100 + rev * 600, presented_at: at(minutesAgo), presented_by: { role: "crew", task: ARTIFACT_TASK }, layout,
+  });
+  const planRevisions = [
+    plan(1, 42, null, { status: "clean", issues: [] }),
+    plan(2, 3, "Measured the on-device model on an iPhone 12 and added before-and-after titles.", {
+      status: "accepted",
+      issues: [{ viewport: "narrow", rule: "page-scrolls-sideways", selector: "div.compare > img", detail: "the page is 116px wider than the window" }],
+    }),
+  ];
+  const board: ArtifactRevision = {
+    scope: "chat", task: null, name: "model-download", rev: 1, title: "When may the app download the speech model?", note: null,
+    entry: "model-download.html", bytes: 2400, presented_at: at(1), presented_by: { role: "firstmate" }, layout: { status: "clean", issues: [] },
+  };
+  const artifacts: Artifact[] = [
+    { scope: "chat", task: null, name: "model-download", title: board.title, latest: board, revisions: [board] },
+    { scope: "task", task: ARTIFACT_TASK, name: "titles-plan", title: "AI titles for snips", latest: planRevisions[1], revisions: planRevisions },
+  ];
+  const task: FleetTask = {
+    id: ARTIFACT_TASK, kind: "scout", harness: "claude", mode: "no-mistakes", yolo: "off", project: `${home}/projects/resonance`, backend: "tmux",
+    paths: {
+      status_log: { present: true, last_event: { state: "working", note: "Compare ways to title snips and show what each looks like.", raw: "working: comparing title options" } },
+      worktree: { path: `${home}/worktrees/${ARTIFACT_TASK}`, present: true },
+      report: { path: `${home}/data/${ARTIFACT_TASK}/report.md`, present: false },
+    },
+    current_state: { state: "working", source: "status", detail: "Revising the titles plan.", raw: "working: revising the titles plan", observed_at: at(2), freshness: "fresh" },
+    endpoint: { target: `fm:${ARTIFACT_TASK}`, exists: true, agent_alive: "yes", status: "alive", observed_at: at(2), freshness: "fresh" },
+    pr: { url: null, source: "none" },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "" },
+    actions: { watch: "", steer: "", return_channel_note: null },
+  };
+  return { artifacts, task, inFlight: { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: task.project, name: "AI titles for snips", doing: "Revising the titles plan." } };
 }
 
 /** What the host says for each `reason_kind`, so the review shows the details a captain would see. */
@@ -125,10 +173,23 @@ export class MockHostAdapter implements HostAdapter {
       ? [...EARLIER_CONVERSATION]
       : [];
   private streaming = false;
-  private readonly snapshot = {
-    bearings: bearingsFixture as unknown as BearingsSnapshot,
-    fleet: fleetFixture as unknown as FleetSnapshot,
-  };
+  private readonly snapshot = MockHostAdapter.fixtureSnapshot();
+
+  private static fixtureSnapshot() {
+    const bearings = bearingsFixture as unknown as BearingsSnapshot;
+    const fleet = fleetFixture as unknown as FleetSnapshot;
+    if (!reviewFlag("artifacts")) return { bearings, fleet };
+    const { artifacts, task, inFlight } = mockArtifacts(fleet.fm_home);
+    return {
+      bearings: { ...bearings, in_flight: [...bearings.in_flight, inFlight] },
+      fleet: { ...fleet, tasks: [...fleet.tasks, task], artifacts },
+    };
+  }
+
+  /** The dev server serves the review pages at the same paths the app's `artifact` scheme does. */
+  artifactUrl(revision: ArtifactRevision) {
+    return `/artifacts/${artifactPath(revision)}`;
+  }
 
   subscribe(listener: HostEventListener) {
     this.listeners.add(listener);
