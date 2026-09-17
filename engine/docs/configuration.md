@@ -173,6 +173,14 @@ The caller-facing label remains `fm-<id>`, but the actual cmux workspace title i
 Test cleanup must use the guarded path in [`docs/cmux-backend.md`](cmux-backend.md#current-operation-and-safety), never enumerate-and-close every workspace.
 `config/backend` is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 
+## Presentation mode (config/presentation / FM_PRESENTATION)
+
+A home presents visual decisions and reports either through `lavish-axi`, the default, or natively in the Quarterdeck desktop app.
+Put `quarterdeck` on the first non-empty line of local gitignored `config/presentation`, or export `FM_PRESENTATION=quarterdeck`, when Quarterdeck runs the home; the environment wins.
+In that mode firstmate and scouts present HTML with [`bin/fm-artifact.sh`](../bin/fm-artifact.sh) `present`, which checks the page's layout in headless Chrome when one is available, stores an immutable revision under the task's data directory, and returns without waiting for review; the fleet snapshot lists presented artifacts for the app.
+Any value other than `lavish` or `quarterdeck` is refused, and scout briefs refuse to scaffold until it is fixed.
+The script's header owns the store layout, the revision and listing schemas, and the exact flags.
+
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
 The `/afk` sub-supervisor injects escalation digests into firstmate's own pane independently of where new task endpoints are spawned.

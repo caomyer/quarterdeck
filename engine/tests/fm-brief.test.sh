@@ -855,7 +855,7 @@ test_scout_lavish_line_follows_presentation_floor() {
     mkdir -p "$case_dir/home/data"
     fakebin=$(fm_fakebin "$case_dir")
     [ "$version" = absent ] || fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION "$version"
-    PATH="$fakebin:$base" FM_HOME="$case_dir/home" \
+    PATH="$fakebin:$base" FM_HOME="$case_dir/home" FM_PRESENTATION='' \
       "$ROOT/bin/fm-brief.sh" scout-lavish alpha --scout >/dev/null \
       || fail "$label: scout scaffold failed"
     brief="$case_dir/home/data/scout-lavish/brief.md"
@@ -873,6 +873,35 @@ lavish-axi just below the floor^0.1.45^text
 absent lavish-axi^absent^text
 ROWS
   pass "fm-brief.sh: scout Lavish hosting follows the bootstrap lavish-axi floor"
+}
+
+# In a quarterdeck home the scout presents through fm-artifact.sh whatever
+# lavish-axi reports, and an invalid presentation mode refuses the scaffold
+# rather than silently picking a review channel.
+test_scout_presentation_mode_selects_native_review() {
+  local base case_dir fakebin brief out rc
+  local native='fm-artifact.sh'"'"' present --task scout-qd'
+  local hosting='you may host the Lavish review loop yourself'
+  base=$(fm_test_base_path_sans "${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" lavish-axi)
+  case_dir="$TMP_ROOT/scout-quarterdeck"
+  mkdir -p "$case_dir/home/data" "$case_dir/home/config"
+  fakebin=$(fm_fakebin "$case_dir")
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.2.0
+  printf 'quarterdeck\n' > "$case_dir/home/config/presentation"
+  PATH="$fakebin:$base" FM_HOME="$case_dir/home" FM_PRESENTATION='' \
+    "$ROOT/bin/fm-brief.sh" scout-qd alpha --scout >/dev/null \
+    || fail "quarterdeck scout scaffold failed"
+  brief="$case_dir/home/data/scout-qd/brief.md"
+  assert_grep "$native" "$brief" "quarterdeck scout brief did not present through fm-artifact.sh"
+  assert_grep "never poll" "$brief" "quarterdeck scout brief did not forbid polling"
+  assert_no_grep "$hosting" "$brief" "quarterdeck scout brief still offered the Lavish loop"
+  printf 'quarterdek\n' > "$case_dir/home/config/presentation"
+  out=$(PATH="$fakebin:$base" FM_HOME="$case_dir/home" FM_PRESENTATION='' \
+    "$ROOT/bin/fm-brief.sh" scout-typo alpha --scout 2>&1); rc=$?
+  expect_code 1 "$rc" "invalid presentation mode"
+  assert_contains "$out" "quarterdek" "invalid presentation mode is named"
+  assert_absent "$case_dir/home/data/scout-typo/brief.md" "invalid presentation mode still wrote a brief"
+  pass "fm-brief.sh: scout visual review follows the presentation mode"
 }
 
 # Scout and secondmate paths still scaffold well-formed briefs.
@@ -949,3 +978,4 @@ test_ship_and_scout_teach_validation_round_pause
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_scout_lavish_line_follows_presentation_floor
+test_scout_presentation_mode_selects_native_review

@@ -19,8 +19,11 @@
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
-#   It offers the Lavish review loop only when `fm-bootstrap.sh lavish-compatible`
-#   confirms the supported lavish-axi floor; otherwise it asks for a text report.
+#   Visual review follows `fm-artifact.sh mode`: in a quarterdeck home it tells the
+#   scout to present with `fm-artifact.sh present` and keep working; otherwise it
+#   offers the Lavish review loop only when `fm-bootstrap.sh lavish-compatible`
+#   confirms the supported lavish-axi floor, and asks for a text report when not.
+#   An invalid presentation mode refuses the scaffold.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -359,7 +362,10 @@ EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
 
 if [ "$KIND" = scout ]; then
-if "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
+PRESENTATION=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-artifact.sh" mode) || { echo "error: cannot resolve the presentation mode; fix config/presentation or FM_PRESENTATION" >&2; exit 1; }
+if [ "$PRESENTATION" = quarterdeck ]; then
+  LAVISH_LINE="If your deliverable is a visual artifact the captain will review, write it as HTML and run \`FM_HOME='$FM_HOME' '$FM_ROOT/bin/fm-artifact.sh' present --task $ID <file.html>\` (add \`--assets <dir>\` for local images or scripts it references). It checks the page layout first: fix any \`layout:\` findings it refuses with and present again, adding \`--accept-layout\` only when a finding is intentional. It never waits for review, so never poll. The captain reviews it in Quarterdeck, and any feedback reaches you as a message from firstmate: revise the file and present it again with \`--note\` saying what changed."
+elif "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
   LAVISH_LINE='If your deliverable is a visual artifact the captain will review and iterate on, you may host the Lavish review loop yourself (poll, revise, re-serve, staying alive) instead of handing it back to firstmate.'
 else
   LAVISH_LINE='Lavish is unavailable (lavish-axi is missing or below its supported version floor), so deliver your findings as a text report without Lavish, even for a visual deliverable.'
