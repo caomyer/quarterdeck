@@ -54,6 +54,8 @@ function reviewValue(name: string) {
  * The pages live in src/fixtures/review-pages, which only the dev server serves.
  */
 const ARTIFACT_TASK = "res-titles-scout";
+/** A task the fixture backlog records as done, so its page has somewhere settled to sit. */
+const LANDED_TASK = "foreman-rebase-before-review";
 
 function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; decisionOptions: DecisionOptions[]; inFlight: BearingsSnapshot["in_flight"][number] } {
   const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
@@ -88,9 +90,15 @@ function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; 
       { key: "eager", label: "Keep downloading eagerly", recommended: false },
     ],
   }];
+  // A page whose task has landed: the list files it away on the backlog's word alone.
+  const shipped: ArtifactRevision = {
+    scope: "task", task: LANDED_TASK, name: "rebase-plan", rev: 1, title: "Rebase the subject before anybody reads it", note: null,
+    entry: "rebase-plan.html", bytes: 1900, presented_at: at(2880), presented_by: { role: "crew", task: LANDED_TASK }, layout: { status: "clean", issues: [] },
+  };
   const artifacts: Artifact[] = [
     { scope: "chat", task: null, name: "model-download", title: board.title, latest: board, revisions: [board] },
     { scope: "task", task: ARTIFACT_TASK, name: "titles-plan", title: "AI titles for snips", latest: planRevisions[2], revisions: planRevisions },
+    { scope: "task", task: LANDED_TASK, name: "rebase-plan", title: shipped.title, latest: shipped, revisions: [shipped] },
   ];
   const task: FleetTask = {
     id: ARTIFACT_TASK, kind: "scout", harness: "claude", mode: "no-mistakes", yolo: "off", project: `${home}/projects/resonance`, backend: "tmux",

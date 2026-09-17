@@ -36,6 +36,10 @@ export type BacklogRecord = {
   title: string;
   hold_reason: string | null;
   current_role: string;
+  /** Where the row sits in the backlog: `in_flight`, `queued`, or `done`. */
+  state?: string;
+  /** firstmate's own read of "waiting on the captain now"; exactly a live captain hold. */
+  captain_actionable?: boolean;
 };
 
 export type FleetTask = {

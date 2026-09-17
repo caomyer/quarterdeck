@@ -42,7 +42,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, createHostAdapter, type Decision, type DecisionOptions, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, createHostAdapter, type Decision, type DecisionOptions, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 
@@ -418,7 +418,7 @@ export function App() {
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} onOpenTask={setActiveTask} />}
-        {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} onOpen={showArtifact} />}
+        {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} backlog={fleet?.backlog?.records ?? []} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
           ? <ArtifactReview
               key={`${shownArtifact.scope}/${shownArtifact.task}/${shownArtifact.name}/${shownRevision.rev}`}
@@ -859,10 +859,16 @@ function layoutNote(revision: ArtifactRevision) {
   return { issues, label: narrowOnly ? "May look off in a narrow window" : "May look off", narrowOnly };
 }
 
-/** What a page's review says about it in one chip: unsent work first, then what is new, then what is waiting. */
-function reviewChip(review?: ReviewSummary[string], artifact?: Artifact) {
+/**
+ * What a page's review says about it in one chip: unsent work first, then what
+ * is new, then what is waiting. A landed page says none of that, since nothing
+ * on it is waiting on anyone any more; your own unsent words still show, because
+ * they are yours and would otherwise disappear without being read.
+ */
+function reviewChip(review?: ReviewSummary[string], artifact?: Artifact, landed = false) {
   if (!artifact) return null;
   if (review && review.draft_count > 0) return { label: review.draft_count === 1 ? "1 comment not sent" : `${review.draft_count} comments not sent`, tone: "draft" };
+  if (landed) return null;
   const seen = review?.seen_rev ?? null;
   if (seen === null) return { label: "Not looked at yet", tone: "new" };
   if (artifact.latest.rev > seen) return { label: `Rev ${artifact.latest.rev} is new`, tone: "new" };
@@ -870,9 +876,9 @@ function reviewChip(review?: ReviewSummary[string], artifact?: Artifact) {
   return null;
 }
 
-function ArtifactRow({ artifact, detail, review, onOpen }: { artifact: Artifact; detail: string; review?: ReviewSummary[string]; onOpen: () => void }) {
+function ArtifactRow({ artifact, detail, review, landed, onOpen }: { artifact: Artifact; detail: string; review?: ReviewSummary[string]; landed?: boolean; onOpen: () => void }) {
   const note = layoutNote(artifact.latest);
-  const chip = reviewChip(review, artifact);
+  const chip = reviewChip(review, artifact, landed);
   return <button className="artifact-row" onClick={onOpen}><span className="artifact-icon"><PanelsTopLeft size={16} /></span><span className="artifact-copy"><strong>{artifact.title}</strong><small>{detail}</small></span><span className="artifact-chips">{chip && <span className={`review-chip ${chip.tone}`}>{chip.label}</span>}{note && <span className="artifact-flag" title={note.issues.map((issue) => issue.detail).join("\n")}>{note.label}</span>}</span><ChevronRight size={17} /></button>;
 }
 
@@ -880,11 +886,75 @@ function artifactKey(artifact: Artifact) {
   return artifact.scope === "chat" ? `chat/${artifact.name}` : `task/${artifact.task}/${artifact.name}`;
 }
 
-function ArtifactsView({ artifacts, tasks, reviews, onOpen }: { artifacts: Artifact[]; tasks: FleetTask[]; reviews: ReviewSummary; onOpen: (artifact: Artifact) => void }) {
+/** Where a page stands: who the next move belongs to. */
+export type ArtifactStanding = "needs-you" | "discussion" | "settled";
+
+/**
+ * Which of the three the page belongs in.
+ *
+ * The backlog owns whether a task landed, so a page files itself away when its
+ * work is done rather than waiting for anyone to archive it. Everything before
+ * that is a question of whose move it is: unread, revised, half-written, or
+ * arguing a call still waiting on the captain means the move is yours; anything
+ * else that is still going belongs with its author.
+ */
+export function artifactStanding(artifact: Artifact, review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>): ArtifactStanding {
+  const task = artifact.scope === "task" ? artifact.task : null;
+  if (task && backlog.get(task)?.state === "done") return "settled";
+  if (review && review.draft_count > 0) return "needs-you";
+  const seen = review?.seen_rev ?? null;
+  if (seen === null || artifact.latest.rev > seen) return "needs-you";
+  const answered = review?.answered ?? [];
+  // A call this page argues: yours until you answer it, then the first mate's until it records it.
+  const calls = (artifact.latest.covers ?? []).filter((call) => backlog.get(call)?.captain_actionable);
+  if (calls.some((call) => !answered.includes(call))) return "needs-you";
+  if (calls.length > 0) return "discussion";
+  if (review && review.open_count > 0) return "discussion";
+  // A chat page has no work to finish, so once it is read and quiet it is done.
+  return task ? "discussion" : "settled";
+}
+
+const STANDINGS: { id: ArtifactStanding; title: string; blank: string }[] = [
+  { id: "needs-you", title: "Needs you", blank: "Nothing needs you right now." },
+  { id: "discussion", title: "In discussion", blank: "" },
+  { id: "settled", title: "Settled", blank: "" },
+];
+
+function ArtifactsView({ artifacts, tasks, reviews, backlog, onOpen }: { artifacts: Artifact[]; tasks: FleetTask[]; reviews: ReviewSummary; backlog: BacklogRecord[]; onOpen: (artifact: Artifact) => void }) {
+  const [openSettled, setOpenSettled] = useState(false);
+  const rows = useMemo(() => new Map(backlog.map((record) => [record.id, record])), [backlog]);
+  const groups = useMemo(() => {
+    const out = new Map<ArtifactStanding, Artifact[]>(STANDINGS.map((standing) => [standing.id, []]));
+    for (const artifact of artifacts) out.get(artifactStanding(artifact, reviews[artifactKey(artifact)], rows))!.push(artifact);
+    return out;
+  }, [artifacts, reviews, rows]);
+
+  const row = (artifact: Artifact, landed: boolean) => <ArtifactRow
+    key={`${artifact.scope}/${artifact.task}/${artifact.name}`}
+    artifact={artifact}
+    detail={`${artifactOwner(artifact, tasks)} · ${revisionLine(artifact)}`}
+    review={reviews[artifactKey(artifact)]}
+    landed={landed}
+    onOpen={() => onOpen(artifact)}
+  />;
+
   return <div className="content-scroll artifacts-page" data-screen="artifacts">
     {artifacts.length === 0
       ? <EmptyState label="Nothing to look at yet. When the first mate or a worker shares a page, it shows up here." />
-      : <div className="task-list artifact-list">{artifacts.map((artifact) => <ArtifactRow key={`${artifact.scope}/${artifact.task}/${artifact.name}`} artifact={artifact} detail={`${artifactOwner(artifact, tasks)} · ${revisionLine(artifact)}`} review={reviews[artifactKey(artifact)]} onOpen={() => onOpen(artifact)} />)}</div>}
+      : STANDINGS.map((standing) => {
+        const pages = groups.get(standing.id) ?? [];
+        if (pages.length === 0) return standing.blank ? <EmptyState key={standing.id} label={standing.blank} /> : null;
+        // Settled pages keep piling up, so they stay folded away until asked for.
+        const folded = standing.id === "settled" && !openSettled;
+        return <section key={standing.id} className="artifact-group" data-standing={standing.id}>
+          {standing.id === "settled"
+            ? <button className="artifact-group-heading" aria-expanded={openSettled} onClick={() => setOpenSettled((open) => !open)}>
+                <h2>{standing.title}</h2><span className="section-count">{pages.length}</span>{openSettled ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+              </button>
+            : <div className="artifact-group-heading static"><h2>{standing.title}</h2><span className="section-count">{pages.length}</span></div>}
+          {!folded && <div className="task-list artifact-list">{pages.map((artifact) => row(artifact, standing.id === "settled"))}</div>}
+        </section>;
+      })}
   </div>;
 }
 

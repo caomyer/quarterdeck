@@ -46,14 +46,32 @@ await page.waitForFunction(() => !document.querySelector(".app-loading"));
 // The list.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
 const rows = page.locator(".artifact-list .artifact-row");
-// Each page is addressed by name, never by position.
+// Rows move between groups as a review goes on, so each page is addressed by name, never by position.
 const plan = page.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" });
 const callPage = page.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" });
-check(await rows.count() === 2, "the list shows both presented pages");
+check(await rows.count() === 2, "the list shows the pages still in play");
 check((await rows.nth(0).innerText()).includes("When may the app download the speech model?"), "the newest page comes first");
 check((await plan.innerText()).includes("resonance · res-titles-scout · Rev 3"), "a task page names its project, task and revision");
 check((await plan.locator(".review-chip").innerText()) === "Not looked at yet", "a page nobody has opened says so");
 check(await callPage.locator(".artifact-flag").count() === 0, "a clean page carries no flag");
+
+// The list groups by whose move it is, and files away pages whose task landed.
+const groups = page.locator(".artifact-group");
+check(await groups.count() === 2, "only the groups with pages in them show");
+check((await groups.nth(0).locator("h2").innerText()) === "Needs you", "pages waiting on the captain come first");
+check(await groups.nth(0).locator(".artifact-row").count() === 2, "both unread pages need the captain");
+const settled = groups.nth(1);
+check((await settled.locator("h2").innerText()) === "Settled", "a page whose task landed is settled");
+check((await settled.locator(".section-count").innerText()) === "1", "the settled group says how many it holds");
+check(await settled.locator(".artifact-row").count() === 0, "settled pages stay folded away");
+await settled.locator(".artifact-group-heading").click();
+const landed = settled.locator(".artifact-row");
+check(await landed.count() === 1, "the settled group opens on its own");
+check((await landed.first().innerText()).includes("Rebase the subject before anybody reads it"), "the landed page is the one that landed");
+check(await landed.first().locator(".review-chip").count() === 0, "a landed page says nothing is waiting on it");
+await shot(page, "01b-list-groups");
+await settled.locator(".artifact-group-heading").click();
+check(await settled.locator(".artifact-row").count() === 0, "the settled group folds again");
 
 await noSidewaysScroll(page, "list");
 await shot(page, "01-list");
@@ -219,6 +237,7 @@ await page.locator(".settled-toggle").waitFor();
 // What the list says once the newest revision has been looked at.
 await page.locator(".back-button").click();
 check(await plan.locator(".review-chip").count() === 0, "a page with nothing waiting carries no chip");
+check((await page.locator(".artifact-group").nth(1).locator("h2").innerText()) === "In discussion", "a read page with live work moves to its author");
 await plan.click();
 await frame.locator("h1").waitFor();
 await page.locator(".comment-toggle").click();
