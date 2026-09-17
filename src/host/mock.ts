@@ -314,7 +314,7 @@ export class MockHostAdapter implements HostAdapter {
     const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
     const text = [
       `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
-      ...(staged.length ? ["Answers, to record with bin/fm-captain-hold.sh:", ...staged.map((answer) => `${answer.decision}: ${answer.label}`)] : []),
+      ...(staged.length ? ["Answers, to record with bin/fm-captain-hold.sh:", ...staged.map((answer) => `${answer.option ? `${answer.decision} = ${answer.option}` : answer.decision}: ${answer.label}`)] : []),
       // The same shape the app's own composer writes, so the browser review sees what a first mate would.
       ...draft.flatMap((thread) => {
         const anchor = thread.anchor as { quote?: string; scene?: string; scene_file?: string; picture?: string | null } | null;

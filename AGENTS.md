@@ -44,6 +44,11 @@ Agents do not work there and do not branch from it: each agent clones the remote
   It writes a summary and a replayable event recording to `~/.buzz/.scratch/firstmate-desktop-e2e/`.
   Name the test exactly: `host_e2e` also matches the lock probe, and two first mates in one home make the loser report the other as another session.
   Only one live run per home runs at a time; a second one waits in the same binary and refuses across processes, naming the run that holds it.
+- Live test of a captain's call answered in the page that argues it, which also spends model tokens:
+  `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test review_e2e_live_decision -- --ignored --nocapture`.
+  It answers a call the home is already carrying, or asks the first mate to put one up, sends the review the app would send, and waits for the call to stop waiting in the backlog.
+  Nothing in it is hand-built: a hold written by the test would prove nothing about the path it tests.
+  It runs the same lock and one-run-per-home rules as the test above, so give it the same care.
 - Replay that recording through the UI, which spends no tokens: start Vite on your own port, then
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm replay`.
   It plays the recorded host events into the real UI and checks the resumed conversation, the crash banner, the re-sent message and the messages restored from the outbox.

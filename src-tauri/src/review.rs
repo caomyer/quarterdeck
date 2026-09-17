@@ -269,7 +269,11 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Va
         for answer in answers {
             let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
             let label = answer.get("label").and_then(Value::as_str).unwrap_or_default();
-            lines.push(format!("{decision}: {}", shorten(label, 200)));
+            // The option's own key, which is what the keyed intake takes: without it
+            // the first mate has to work back from the label to the key it recorded.
+            let key = answer.get("option").and_then(Value::as_str).unwrap_or_default();
+            let named = if key.is_empty() { decision.to_string() } else { format!("{decision} = {key}") };
+            lines.push(format!("{named}: {}", shorten(label, 200)));
         }
     }
     if threads.is_empty() {
@@ -341,8 +345,28 @@ pub async fn review_get(app: AppHandle, page: Ref) -> Result<Value, String> {
     Ok(view(&log_path(&app, &page)?))
 }
 
-/// Opens a thread on the page, or adds a comment to one. Local and reversible
-/// until the review is sent.
+/// Opens a thread on the page, or adds a comment to one, in the review at `log`.
+/// Local and reversible until the review is sent.
+pub fn add_comment(log: &Path, rev: u64, body: &str, anchor: Option<Value>, thread: Option<&str>) -> Result<Value, String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("a comment needs something in it".to_string());
+    }
+    let event = match thread {
+        Some(id) => json!({"at": now_ms(), "kind": "comment", "id": id, "body": body}),
+        None => json!({
+            "at": now_ms(),
+            "kind": "opened",
+            "id": next_thread_id(log),
+            "rev": rev,
+            "anchor": anchor.unwrap_or(Value::Null),
+            "body": body,
+        }),
+    };
+    append(log, &event)?;
+    Ok(view(log))
+}
+
 #[tauri::command]
 pub async fn review_comment(
     app: AppHandle,
@@ -352,24 +376,7 @@ pub async fn review_comment(
     anchor: Option<Value>,
     thread: Option<String>,
 ) -> Result<Value, String> {
-    let body = body.trim().to_string();
-    if body.is_empty() {
-        return Err("a comment needs something in it".to_string());
-    }
-    let path = log_path(&app, &page)?;
-    let event = match &thread {
-        Some(id) => json!({"at": now_ms(), "kind": "comment", "id": id, "body": body}),
-        None => json!({
-            "at": now_ms(),
-            "kind": "opened",
-            "id": next_thread_id(&path),
-            "rev": rev,
-            "anchor": anchor.unwrap_or(Value::Null),
-            "body": body,
-        }),
-    };
-    append(&path, &event)?;
-    Ok(view(&path))
+    add_comment(&log_path(&app, &page)?, rev, &body, anchor, thread.as_deref())
 }
 
 #[tauri::command]
@@ -386,6 +393,37 @@ pub async fn review_discard(app: AppHandle, page: Ref, thread: String) -> Result
     Ok(view(&path))
 }
 
+/// The one message a review sends, with the draft comments and staged answers
+/// it is made of, so what goes out and what is recorded cannot drift apart.
+pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>, Vec<Value>), String> {
+    let log = dir.join("review.jsonl");
+    let current = view(&log);
+    let threads: Vec<Value> = current["threads"]
+        .as_array()
+        .map(|threads| threads.iter().filter(|thread| thread["sent_at"].is_null()).cloned().collect())
+        .unwrap_or_default();
+    let answers: Vec<Value> = current["answers"]
+        .as_array()
+        .map(|answers| answers.iter().filter(|answer| answer["sent_at"].is_null()).cloned().collect())
+        .unwrap_or_default();
+    let revision = revision_record(dir, rev)?;
+    let text = compose(&revision, verdict, &threads, &answers, &log)?;
+    Ok((text, threads, answers))
+}
+
+/// Records that the draft went, under the id the host gave the message.
+pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answers: &[Value], message: &str) -> Result<Value, String> {
+    append(
+        log,
+        &json!({
+            "at": now_ms(), "kind": "sent", "verdict": verdict, "rev": rev, "message": message,
+            "threads": threads.iter().filter_map(|thread| thread["id"].as_str()).collect::<Vec<_>>(),
+            "answers": answers.iter().filter_map(|answer| answer["decision"].as_str()).collect::<Vec<_>>(),
+        }),
+    )?;
+    Ok(view(log))
+}
+
 /// Sends the whole draft as one message to the first mate, then records that it went.
 #[tauri::command]
 pub async fn review_submit(
@@ -396,28 +434,10 @@ pub async fn review_submit(
     verdict: String,
 ) -> Result<Value, String> {
     let dir = dir_for(&app, &page)?;
-    let path = dir.join("review.jsonl");
-    let current = view(&path);
-    let draft: Vec<Value> = current["threads"]
-        .as_array()
-        .map(|threads| threads.iter().filter(|thread| thread["sent_at"].is_null()).cloned().collect())
-        .unwrap_or_default();
-    let staged: Vec<Value> = current["answers"]
-        .as_array()
-        .map(|answers| answers.iter().filter(|answer| answer["sent_at"].is_null()).cloned().collect())
-        .unwrap_or_default();
-    let revision = revision_record(&dir, rev)?;
-    let text = compose(&revision, &verdict, &draft, &staged, &path)?;
+    let (text, threads, answers) = draft(&dir, rev, &verdict)?;
     let message = host.call(|reply| Cmd::Send { text: text.clone(), reply }).await??;
-    let ids: Vec<&str> = draft.iter().filter_map(|thread| thread["id"].as_str()).collect();
-    append(
-        &path,
-        &json!({
-            "at": now_ms(), "kind": "sent", "verdict": verdict, "rev": rev, "threads": ids, "message": message,
-            "answers": staged.iter().filter_map(|answer| answer["decision"].as_str()).collect::<Vec<_>>(),
-        }),
-    )?;
-    Ok(json!({"message": message, "text": text, "review": view(&path)}))
+    let review = record_sent(&dir.join("review.jsonl"), &verdict, rev, &threads, &answers, &message)?;
+    Ok(json!({"message": message, "text": text, "review": review}))
 }
 
 /// Every page's review at a glance, keyed `task/<id>/<name>` or `chat/<name>`:
@@ -477,17 +497,20 @@ pub async fn review_summary(app: AppHandle) -> Result<Value, String> {
 /// Stages the captain's choice on a held task this page argues, or takes it
 /// back when `option` is absent. Nothing reaches the first mate until the
 /// review is sent.
-#[tauri::command]
-pub async fn review_answer(app: AppHandle, page: Ref, decision: String, option: Option<String>, label: Option<String>) -> Result<Value, String> {
-    if !artifact::valid_task_id(&decision) {
+pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Option<&str>) -> Result<Value, String> {
+    if !artifact::valid_task_id(decision) {
         return Err("that is not a task".to_string());
     }
-    let path = log_path(&app, &page)?;
     append(
-        &path,
+        log,
         &json!({"at": now_ms(), "kind": "answer", "decision": decision, "option": option, "label": label}),
     )?;
-    Ok(view(&path))
+    Ok(view(log))
+}
+
+#[tauri::command]
+pub async fn review_answer(app: AppHandle, page: Ref, decision: String, option: Option<String>, label: Option<String>) -> Result<Value, String> {
+    stage_answer(&log_path(&app, &page)?, &decision, option.as_deref(), label.as_deref())
 }
 
 /// Files a proposed diagram beside the review and opens a thread for it. The
@@ -735,6 +758,11 @@ mod tests {
         let answers = vec![json!({"decision": "res-model-download", "option": "wifi-only", "label": "Wi-Fi only, with visible progress"})];
         let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
         assert!(text.contains("Answers, to record with bin/fm-captain-hold.sh:"), "{text}");
+        assert!(text.contains("res-model-download = wifi-only: Wi-Fi only, with visible progress"), "{text}");
+
+        // Without a recorded key there is nothing to name, so the task alone carries it.
+        let unkeyed = vec![json!({"decision": "res-model-download", "option": null, "label": "Wi-Fi only, with visible progress"})];
+        let text = compose(&chat, "approve", &[], &unkeyed, Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
         assert!(text.contains("res-model-download: Wi-Fi only, with visible progress"), "{text}");
     }
 

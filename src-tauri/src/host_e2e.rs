@@ -22,6 +22,7 @@
 //! the run, and the run finishes every step so one failure does not hide the rest.
 
 use crate::host::{group_members, Cmd, HostEnv, HostHandle};
+use crate::review;
 use serde_json::{json, Value};
 use std::io::Write as _;
 use std::os::unix::process::CommandExt;
@@ -628,4 +629,215 @@ async fn host_lock_claim_probe() {
     }
     let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
     println!("lock after stop: {}", lock_status(&home));
+}
+
+// ------------------------------------------------- the review of a call ---
+
+/// Reads the home's snapshot once, for the rows the review screen reads.
+fn snapshot_json(home: &Path) -> Value {
+    let out = std::process::Command::new(home.join("bin").join("fm-fleet-snapshot.sh"))
+        .arg("--json")
+        .env("FM_HOME", home)
+        .current_dir(home)
+        .output()
+        .expect("run fm-fleet-snapshot.sh");
+    serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
+}
+
+/// Whether the backlog still says this task is waiting on the captain.
+fn still_waiting(home: &Path, task: &str) -> bool {
+    snapshot_json(home)["backlog"]["records"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .any(|row| row["id"] == task && row["captain_actionable"] == Value::Bool(true))
+        })
+        .unwrap_or(false)
+}
+
+/// A call the home is carrying, whole: the held task, the option to pick, and
+/// the page that argues it. Any piece missing means there is no call to answer.
+fn call_on_offer(home: &Path) -> Option<(String, Value, String, String)> {
+    let snapshot = snapshot_json(home);
+    let call = snapshot["backlog"]["records"]
+        .as_array()?
+        .iter()
+        .find(|row| row["captain_actionable"] == Value::Bool(true))?["id"]
+        .as_str()?
+        .to_string();
+    let options = snapshot["decision_options"].as_array()?.iter().find(|row| row["task"] == call.as_str())?.clone();
+    let page = snapshot["artifacts"]
+        .as_array()?
+        .iter()
+        .find(|row| {
+            row["latest"]["covers"]
+                .as_array()
+                .is_some_and(|covers| covers.iter().any(|task| task == call.as_str()))
+        })?
+        .clone();
+    let list = options["options"].as_array()?;
+    let pick = list.iter().find(|option| option["recommended"] == Value::Bool(true)).or_else(|| list.first())?;
+    let key = pick["key"].as_str()?.to_string();
+    let label = pick["label"].as_str()?.to_string();
+    Some((call, page, key, label))
+}
+
+/// What the first mate is asked for when the home is carrying no call. It is a
+/// captain's request in the captain's own words, so what comes back is whatever
+/// the first mate would really do, not a shape the test dictated.
+const ASK_FOR_A_CALL: &str = "Captain here. This is an automated host test in a scratch home, so keep it to this one thing: do not dispatch work, change any project, or contact anyone. I need one decision from you. Pick something small and real about the demo project that genuinely needs my call, put it to me the way you would any call - hold the task for me with its options recorded - and present a page that argues it so I can decide from the page itself.";
+
+/// A live run of the one path the mock cannot prove: a call the first mate is
+/// really holding, answered from the page that argues it, sent as one review,
+/// and recorded by the first mate so the call stops waiting.
+///
+/// ```sh
+/// cd src-tauri && FM_E2E_HOME=<scratch home> \
+///   cargo test review_e2e_live_decision -- --ignored --nocapture
+/// ```
+///
+/// The run needs the home to be carrying a call: a captain-held task with
+/// recorded options and a presented page that `--covers` it. If the home has one
+/// already it is used; otherwise the first mate is asked for one and produces it
+/// the way it would for a real captain. Nothing here is hand-built, because a
+/// hold written by the test would prove nothing about the path it is testing.
+#[tokio::test]
+#[ignore = "live: runs the real claude-agent-acp against a firstmate scratch home"]
+async fn review_e2e_live_decision() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
+    let run = now_ms();
+    let data_dir = out.join(format!("appdata-decision-{run}"));
+    std::fs::create_dir_all(&data_dir).expect("create the app data folder");
+    let recording = out.join(format!("decision-{run}.jsonl"));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).expect("create the recording")),
+        data_dir,
+        tx,
+    });
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
+    let mut events = Events { rx, seen: Vec::new() };
+    let mut steps = Vec::new();
+
+    // 1. The first mate is up.
+    recorder.mark("1", "host_start against the home carrying the call");
+    let from = events.now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
+    let ready = match session {
+        Some(i) => events.find(i, Duration::from_secs(30), host_state(&["idle", "agent_turn"])).await,
+        None => None,
+    };
+    let running = started.is_ok() && ready.is_some();
+    record(&mut steps, "start: the first mate is running", running, format!("start={started:?}; state={}", events.body(ready)["state"]));
+
+    // 2. A call to answer: the one the home already carries, or one the first mate puts up.
+    let mut offer = call_on_offer(&home);
+    if running && offer.is_none() {
+        recorder.mark("2", "ask the first mate to put a call to the captain");
+        println!("no call is waiting; asking the first mate for one");
+        let asked = send(&host, ASK_FOR_A_CALL.to_string()).await;
+        let deadline = Instant::now() + Duration::from_secs(900);
+        while Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            offer = call_on_offer(&home);
+            if offer.is_some() {
+                break;
+            }
+        }
+        record(
+            &mut steps,
+            "the first mate puts a call up: held, with options and a page",
+            offer.is_some(),
+            format!("ask={asked:?}; call={:?}", offer.as_ref().map(|(call, ..)| call.clone())),
+        );
+    }
+    let Some((call, page, key, label)) = offer else {
+        not_exercised(&mut steps, "the review carries the answer and reaches the first mate", "no call to answer".into());
+        not_exercised(&mut steps, "the first mate records the answer and the call clears", "no call to answer".into());
+        let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+        let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+        assert!(failed.is_empty(), "failed: {failed:?}");
+        return;
+    };
+    println!("call: {call}\npage: {}\npicking: {key}", page["name"].as_str().unwrap_or_default());
+
+    // 3. The review the app would send: the captain's answer, a comment, one message.
+    let dir = review::artifact_dir(
+        &home.join("data"),
+        page["scope"].as_str().unwrap_or_default(),
+        page["task"].as_str(),
+        page["name"].as_str().unwrap_or_default(),
+    )
+    .expect("the page's own folder");
+    let log = dir.join("review.jsonl");
+    let rev = page["latest"]["rev"].as_u64().unwrap_or(1);
+    let sent = if running {
+        recorder.mark("3", "answer the call in the page, and send the review");
+        review::stage_answer(&log, &call, Some(&key), Some(&label)).expect("stage the answer");
+        review::add_comment(&log, rev, "Say in the page what this costs us if we change our minds later.", None, None)
+            .expect("write the comment");
+        let (text, threads, answers) = review::draft(&dir, rev, "approve").expect("compose the review");
+        println!("--- the message ---\n{text}\n-------------------");
+        let carries = text.contains(&format!("{call} = {key}")) && text.contains("fm-captain-hold.sh");
+        let from = events.now();
+        let id = send(&host, text.clone()).await;
+        let message = id.clone().unwrap_or_default();
+        let picked = events.find(from, REPLY_WAIT, outbox(&message, "picked_up")).await;
+        if picked.is_some() {
+            review::record_sent(&log, "approve", rev, &threads, &answers, &message).expect("record that it went");
+        }
+        record(
+            &mut steps,
+            "the review carries the answer and reaches the first mate",
+            carries && picked.is_some(),
+            format!("names the call, the option and the intake={carries}; send={id:?}; picked_up={}", picked.is_some()),
+        );
+        picked.is_some()
+    } else {
+        not_exercised(&mut steps, "the review carries the answer and reaches the first mate", "the host did not start".into());
+        false
+    };
+
+    // 4. The first mate records the answer, and the call stops waiting.
+    if sent {
+        recorder.mark("4", "the call clears in the backlog");
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let mut cleared = false;
+        while Instant::now() < deadline {
+            if !still_waiting(&home, &call) {
+                cleared = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+        let row = snapshot_json(&home)["backlog"]["records"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == call.as_str()).cloned())
+            .unwrap_or(Value::Null);
+        record(
+            &mut steps,
+            "the first mate records the answer and the call clears",
+            cleared,
+            format!("state={}; captain_actionable={}; hold={}", row["state"], row["captain_actionable"], row["hold_reason"]),
+        );
+    } else {
+        not_exercised(&mut steps, "the first mate records the answer and the call clears", "the review never went".into());
+    }
+
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    println!("\nrecording: {}", recording.display());
+    let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+    assert!(failed.is_empty(), "failed: {failed:?}");
 }

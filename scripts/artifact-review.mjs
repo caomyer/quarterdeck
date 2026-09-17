@@ -46,16 +46,20 @@ await page.waitForFunction(() => !document.querySelector(".app-loading"));
 // The list.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
 const rows = page.locator(".artifact-list .artifact-row");
+// Each page is addressed by name, never by position.
+const plan = page.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" });
+const callPage = page.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" });
 check(await rows.count() === 2, "the list shows both presented pages");
 check((await rows.nth(0).innerText()).includes("When may the app download the speech model?"), "the newest page comes first");
-check((await rows.nth(1).innerText()).includes("resonance · res-titles-scout · Rev 3"), "a task page names its project, task and revision");
-check((await rows.nth(1).locator(".review-chip").innerText()) === "Not looked at yet", "a page nobody has opened says so");
-check(await rows.nth(0).locator(".artifact-flag").count() === 0, "a clean page carries no flag");
+check((await plan.innerText()).includes("resonance · res-titles-scout · Rev 3"), "a task page names its project, task and revision");
+check((await plan.locator(".review-chip").innerText()) === "Not looked at yet", "a page nobody has opened says so");
+check(await callPage.locator(".artifact-flag").count() === 0, "a clean page carries no flag");
+
 await noSidewaysScroll(page, "list");
 await shot(page, "01-list");
 
 // The review screen.
-await rows.nth(1).click();
+await plan.click();
 const frame = page.frameLocator(".artifact-stage iframe");
 await frame.locator("h1").waitFor();
 check(await page.locator(".page-heading h1").innerText() === "AI titles for snips", "the review screen is titled by the page");
@@ -133,7 +137,7 @@ check(await page.locator("[data-screen='bearings']").count() === 1, "back return
 
 // Commenting on the page.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
-await rows.nth(1).click();
+await plan.click();
 await frame.locator("h1").waitFor();
 check(await page.locator(".review-empty").count() === 1, "a page with no review says so");
 // Written on rev 2, so rev 3's answer is about a comment that already existed.
@@ -169,7 +173,7 @@ check((await page.locator(".send-review").innerText()).includes("Send review · 
 
 // The draft is kept, not held in the screen.
 await page.locator(".back-button").click();
-await rows.nth(1).click();
+await plan.click();
 await frame.locator("h1").waitFor();
 await threads.first().waitFor();
 check(await threads.count() === 1, "leaving the page and coming back keeps the draft");
@@ -195,7 +199,7 @@ await shot(page, "10-sent-message");
 
 // What the author says about a comment, and settling it.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
-await rows.nth(1).click();
+await plan.click();
 await frame.locator("h1").waitFor();
 await threads.first().waitFor();
 check((await threads.first().innerText()).includes("Changed in rev 3"), "the rail shows the revision that answered the comment");
@@ -214,15 +218,15 @@ await page.locator(".settled-toggle").waitFor();
 
 // What the list says once the newest revision has been looked at.
 await page.locator(".back-button").click();
-check(await rows.nth(1).locator(".review-chip").count() === 0, "a page with nothing waiting carries no chip");
-await rows.nth(1).click();
+check(await plan.locator(".review-chip").count() === 0, "a page with nothing waiting carries no chip");
+await plan.click();
 await frame.locator("h1").waitFor();
 await page.locator(".comment-toggle").click();
 await frame.locator("h2", { hasText: "Options" }).click();
 await composer.locator("textarea").fill("Name the phone models this was measured on.");
 await composer.locator("button", { hasText: "Comment" }).click();
 await page.locator(".back-button").click();
-check((await rows.nth(1).locator(".review-chip").innerText()) === "1 comment not sent", "the list says a comment is still unsent");
+check((await plan.locator(".review-chip").innerText()) === "1 comment not sent", "the list says a comment is still unsent");
 await shot(page, "12-list-state");
 
 // A call that a page argues is answered in that page.
@@ -260,7 +264,7 @@ const review = page.locator(".captain-message").last();
 await review.waitFor();
 const reviewText = await review.innerText();
 check(reviewText.includes("Answers, to record with bin/fm-captain-hold.sh:"), "the first mate is told to record the answer");
-check(reviewText.includes("res-model-download: Wi-Fi only, with visible progress"), "the answer names the task and the option");
+check(reviewText.includes("res-model-download = wifi-only: Wi-Fi only, with visible progress"), "the answer names the task, the option key and what it says");
 check(reviewText.includes("Say what happens on a metered hotspot."), "the comment goes in the same message");
 await shot(page, "15-answer-sent");
 
@@ -273,7 +277,7 @@ await shot(page, "16-call-answered");
 
 // A diagram the page owns: opened for real, changed, and proposed with the review.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
-await rows.nth(1).click();
+await plan.click();
 await frame.locator("h1").waitFor();
 await page.locator(".scene-open").waitFor();
 check((await page.locator(".scene-open").innerText()).includes("Diagram"), "a page with a diagram offers to open it");
@@ -315,7 +319,7 @@ check(proposalMessage.includes("proposed scene:"), "the message points at the sc
 await page.setViewportSize({ width: 700, height: 900 });
 await page.locator(".mobile-menu").click();
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
-await rows.nth(1).click();
+await plan.click();
 await frame.locator("h1").waitFor();
 await noSidewaysScroll(page, "review in a narrow window");
 await shot(page, "07-review-small-window");
