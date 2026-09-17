@@ -79,6 +79,18 @@ export type ArtifactRevision = {
   layout?: { status: "clean" | "accepted" | "skipped"; reason?: string; issues: ArtifactLayoutIssue[] };
 };
 
+/** Where a comment sits on the page: the words themselves, a little text either side, and a fallback path. */
+export type ReviewAnchor = { quote: string; prefix: string; suffix: string; path: string };
+export type ReviewComment = { body: string; at: number };
+/** One place on the page the captain wrote about. `sent_at` is null while it is still a draft. */
+export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | null; at: number; sent_at: number | null; comments: ReviewComment[] };
+export type ReviewVerdict = "approve" | "changes" | "comment";
+export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[] };
+/** The whole review of one page, as the app stores it beside the revisions. */
+export type ReviewView = { threads: ReviewThread[]; draft_count: number; sent: ReviewSent[]; log: string };
+/** Which page a review belongs to. */
+export type ArtifactRef = { scope: "task" | "chat"; task: string | null; name: string };
+
 /** A page the first mate or a worker presented for review, with every revision oldest first. */
 export type Artifact = {
   scope: "task" | "chat";
@@ -185,6 +197,14 @@ export interface HostAdapter {
   answerPermission(id: string, optionId: string): Promise<void>;
   /** Where the review frame loads a revision's page from. Its relative links resolve inside the same revision. */
   artifactUrl(revision: ArtifactRevision): string;
+  /** The review of one page: every thread, and what has been sent. */
+  reviewGet(ref: ArtifactRef): Promise<ReviewView>;
+  /** Opens a thread on the page, or adds to one. Local until the review is sent. */
+  reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: ReviewAnchor, thread?: string): Promise<ReviewView>;
+  /** Takes back a thread that has not been sent. */
+  reviewDiscard(ref: ArtifactRef, thread: string): Promise<ReviewView>;
+  /** Sends the whole draft to the first mate as one message. */
+  reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict): Promise<{ message: string; text: string; review: ReviewView }>;
 }
 
 /** The path both adapters serve a revision's page under: `task/<id>/<name>/rev-<n>/<entry>` or `chat/<name>/rev-<n>/<entry>`. */

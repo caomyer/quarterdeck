@@ -408,6 +408,16 @@ export function useHost(adapter: HostAdapter) {
     return id;
   }, [adapter]);
 
+  /**
+   * Records a message the app sent through another path, such as a review, so the conversation shows it.
+   * Idempotent: the host's own outbox event for the same id adds nothing twice.
+   */
+  const noteSent = useCallback((id: string, text: string) => {
+    setMessages((current) => current.some((message) => message.id === id)
+      ? current
+      : [...current, { id, who: "captain", text, createdAt: new Date().toISOString(), session: session.current }]);
+  }, []);
+
   /** Sends a message that didn't go through again, as a new message, once: the old one stops offering it. */
   const resend = useCallback(async (id: string, text: string) => {
     setOutbox((current) => current[id] ? { ...current, [id]: { ...current[id], resent: true } } : current);
@@ -503,6 +513,7 @@ export function useHost(adapter: HostAdapter) {
     permissionRequests,
     answerPermission,
     send,
+    noteSent,
     resend,
     start,
     stop,

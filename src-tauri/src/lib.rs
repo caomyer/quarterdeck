@@ -3,6 +3,7 @@ mod envpath;
 mod host;
 #[cfg(test)]
 mod host_e2e;
+mod review;
 mod settings;
 mod snapshot;
 
@@ -43,6 +44,10 @@ pub fn run() {
       snapshot::snapshot_refresh,
       snapshot::snapshot_latest,
       snapshot::pane_capture,
+      review::review_get,
+      review::review_comment,
+      review::review_discard,
+      review::review_submit,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")

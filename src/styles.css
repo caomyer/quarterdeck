@@ -387,6 +387,42 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .artifact-stage.narrow iframe { width: 500px; max-width: 100%; }
 .artifact-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: .66rem; pointer-events: none; }
 
+/* The review rail: what the captain has written, and the one button that sends it. */
+.artifact-body { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
+.comment-toggle { display: flex; flex: none; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .63rem; font-weight: 680; }
+.comment-toggle.selected { border-color: var(--sea); color: var(--on-accent); background: var(--sea); }
+.comment-hint { margin: 0; padding: 7px 20px; border-bottom: 1px solid var(--border); color: var(--sea); background: color-mix(in srgb, var(--sea) 7%, var(--surface)); font-size: .63rem; font-weight: 640; }
+.review-rail { display: flex; min-height: 0; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); }
+.review-threads { min-height: 0; flex: 1; overflow: auto; padding: 12px; }
+.review-empty { margin: 0; color: var(--muted); font-size: .64rem; line-height: 1.5; }
+.review-thread { margin-bottom: 9px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); cursor: pointer; }
+.review-thread.draft { border-color: color-mix(in srgb, var(--sea) 45%, var(--border)); }
+.review-thread:hover { border-color: var(--sea); }
+.review-thread header { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.thread-id { color: var(--muted); font: .58rem ui-monospace, "SFMono-Regular", monospace; }
+.thread-state { flex: 1; color: var(--muted); font-size: .58rem; font-style: normal; }
+.thread-state.draft { color: var(--sea); font-weight: 700; }
+.review-thread header .icon-button { width: 24px; height: 24px; }
+.review-thread blockquote { margin: 0 0 6px; padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--sea) 50%, var(--border)); color: var(--muted); font-size: .62rem; line-height: 1.45; }
+.review-thread p { margin: 0 0 4px; color: var(--ink); font-size: .68rem; line-height: 1.5; }
+.review-thread p:last-child { margin-bottom: 0; }
+.thread-missing { display: block; margin-top: 4px; color: var(--amber); font-size: .58rem; font-weight: 640; }
+.thread-rev { display: block; margin-top: 3px; color: var(--muted); font-size: .58rem; }
+.comment-composer { padding: 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.comment-composer blockquote { margin: 0 0 7px; padding-left: 8px; border-left: 2px solid var(--sea); color: var(--muted); font-size: .62rem; line-height: 1.45; }
+.comment-composer textarea { width: 100%; min-height: 74px; resize: vertical; padding: 8px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: .68rem; }
+.comment-composer > div { display: flex; justify-content: flex-end; gap: 6px; margin-top: 7px; }
+.comment-composer button { min-height: 30px; padding: 0 11px; border: 0; border-radius: 6px; color: var(--on-accent); background: var(--sea); font-size: .63rem; font-weight: 700; }
+.comment-composer button.ghost { border: 1px solid var(--border); color: var(--ink); background: var(--surface); font-weight: 640; }
+.review-send { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 11px 12px; border-top: 1px solid var(--border); }
+.verdict-picker { position: relative; display: flex; flex: 1; align-items: center; }
+.verdict-picker select { width: 100%; min-height: 32px; padding: 0 26px 0 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font: inherit; font-size: .64rem; font-weight: 650; appearance: none; }
+.verdict-picker svg { position: absolute; right: 8px; color: var(--muted); pointer-events: none; }
+.send-review { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border: 0; border-radius: 6px; color: var(--on-accent); background: var(--sea); font-size: .65rem; font-weight: 720; }
+.review-send small { width: 100%; color: var(--muted); font-size: .58rem; line-height: 1.4; }
+.review-send .review-last { width: 100%; margin: 0; color: var(--green); font-size: .6rem; font-weight: 640; }
+.review-send .review-problem { width: 100%; margin: 0; color: var(--coral); font-size: .6rem; line-height: 1.45; }
+
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 255px; transform: translateX(-102%); transition: transform .18s ease; box-shadow: var(--shadow); }
@@ -400,6 +436,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .chat-status { margin: 14px 13px 0; }.chat-messages { padding: 18px 13px; }.composer { margin: 0 13px 13px; }
   .project-grid { grid-template-columns: 1fr; }.project-summary { align-items: flex-start; gap: 16px; }.project-summary p { max-width: 250px; }
   .task-drawer { inset: 0; width: 100%; max-width: none; border-radius: 0; }.decision-actions { align-items: flex-end; }.decision-actions > span { white-space: normal; }
+  .artifact-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .review-rail { max-height: 45%; border-top: 1px solid var(--border); border-left: 0; }
   .artifact-toolbar { flex-wrap: wrap; padding: 8px 12px; }.revision-note { flex-basis: 100%; order: 3; white-space: normal; }.artifact-stage { padding: 8px; }
   .artifact-row { grid-template-columns: 28px minmax(0, 1fr) 18px; }.artifact-row > .artifact-flag { grid-column: 2; justify-self: start; }.artifact-row > span:empty { display: none; }.artifact-row > svg { grid-column: 3; grid-row: 1; }
   .artifact-card { margin-left: 0; }

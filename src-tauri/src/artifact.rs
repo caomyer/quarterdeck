@@ -15,6 +15,11 @@
 //! review screen loads these pages in a sandboxed frame without same-origin
 //! access, so a page can reach the network but never the app.
 //!
+//! Every HTML document it serves also carries `review-frame.js`, which lets the
+//! captain comment on the page. The file on disk is never changed, and the
+//! script stays inert until the review screen speaks to it, so the page still
+//! opens the same way anywhere else.
+//!
 //! Starting the first mate in a home that can present artifacts also records
 //! `quarterdeck` in its `config/presentation`, unless the home already names a
 //! mode, so its scouts present here instead of in a browser.
@@ -25,6 +30,28 @@ use tauri::{Runtime, UriSchemeContext, UriSchemeResponder};
 
 pub const SCHEME: &str = "artifact";
 
+/// Injected into every HTML document served; the script's own header owns what it does.
+const REVIEW_FRAME: &str = include_str!("review-frame.js");
+
+/// Appends the review script to an HTML document, inside `</body>` when there is one.
+fn with_review_frame(body: Vec<u8>) -> Vec<u8> {
+    let script = format!("\n<script data-quarterdeck-review>\n{REVIEW_FRAME}\n</script>\n");
+    let Ok(text) = String::from_utf8(body) else {
+        // Not UTF-8, so leave the bytes exactly as they are rather than guessing.
+        return Vec::new();
+    };
+    let insert_at = text
+        .rfind("</body>")
+        .or_else(|| text.rfind("</BODY>"))
+        .or_else(|| text.rfind("</html>"))
+        .unwrap_or(text.len());
+    let mut out = String::with_capacity(text.len() + script.len());
+    out.push_str(&text[..insert_at]);
+    out.push_str(&script);
+    out.push_str(&text[insert_at..]);
+    out.into_bytes()
+}
+
 /// Why a request was refused; only ever logged, never shown to the page.
 #[derive(Debug, PartialEq)]
 pub enum Refusal {
@@ -33,14 +60,14 @@ pub enum Refusal {
     Missing,
 }
 
-fn valid_task_id(id: &str) -> bool {
+pub fn valid_task_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && !id.starts_with('.')
         && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-fn valid_name(name: &str) -> bool {
+pub fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 64
         && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
@@ -151,15 +178,26 @@ fn serve(data: Option<PathBuf>, request_path: &str) -> Response<Vec<u8>> {
         }
     };
     match std::fs::read(&path) {
-        Ok(body) => Response::builder()
+        Ok(body) => {
+            let kind = content_type(&path);
+            let body = if kind.starts_with("text/html") {
+                match with_review_frame(body.clone()) {
+                    injected if injected.is_empty() => body,
+                    injected => injected,
+                }
+            } else {
+                body
+            };
+            Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, content_type(&path))
+            .header(header::CONTENT_TYPE, kind)
             // The page runs in an opaque origin, so its own module scripts and fonts are cross-origin requests.
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
             // A revision never changes once presented.
             .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable")
             .body(body)
-            .unwrap_or_else(|_| not_found()),
+            .unwrap_or_else(|_| not_found())
+        }
         Err(error) => {
             log::warn!("could not read artifact file {}: {error}", path.display());
             not_found()
@@ -242,8 +280,26 @@ mod tests {
         let response = serve(Some(data.clone()), "/task/t1/plan/rev-2/My%20Plan.html");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
-        assert_eq!(response.body(), b"<h1>Plan</h1>");
+        let served = String::from_utf8(response.body().clone()).unwrap();
+        assert!(served.starts_with("<h1>Plan</h1>"), "{served}");
+        assert!(served.contains("data-quarterdeck-review"), "an HTML page carries the review script");
+        assert!(served.contains("qd:picked"), "the review script is the whole file");
+        assert_eq!(std::fs::read_to_string(files.join("My Plan.html")).unwrap(), "<h1>Plan</h1>", "the file on disk is untouched");
+        let image = serve(Some(data.clone()), "/task/t1/plan/rev-2/img/a.png");
+        assert_eq!(image.body(), b"png", "only HTML carries the script");
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn the_review_script_goes_inside_the_body_and_never_mangles_a_page() {
+        let inside = String::from_utf8(with_review_frame(b"<html><body><p>hi</p></body></html>".to_vec())).unwrap();
+        assert!(inside.contains("<p>hi</p>\n<script data-quarterdeck-review>"), "{inside}");
+        assert!(inside.ends_with("</script>\n</body></html>"), "{inside}");
+        let fragment = String::from_utf8(with_review_frame(b"<p>no body tag</p>".to_vec())).unwrap();
+        assert!(fragment.starts_with("<p>no body tag</p>"), "{fragment}");
+        assert!(fragment.contains("data-quarterdeck-review"), "{fragment}");
+        // Bytes that are not text are left to the caller, which serves them unchanged.
+        assert!(with_review_frame(vec![0xff, 0xfe, 0x00]).is_empty());
     }
 
     #[test]

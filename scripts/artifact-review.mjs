@@ -1,6 +1,7 @@
 // Checks the artifact review flow on the browser mock: the Artifacts list, the review screen,
-// revisions, the narrow width, accepted layout findings, the sandbox, and the ways in from chat,
-// the task drawer and back.
+// revisions, the narrow width, accepted layout findings, the sandbox, the ways in from chat,
+// the task drawer and back, and reviewing itself: commenting on a part of the page, the draft
+// surviving a reload, taking a comment back, and sending the review with a verdict.
 //
 //   pnpm dev --port 4191 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
@@ -119,6 +120,64 @@ await frame.locator("h1").waitFor();
 check(await page.locator(".task-drawer").count() === 0, "opening a page closes the drawer");
 await page.locator(".back-button").click();
 check(await page.locator("[data-screen='bearings']").count() === 1, "back returns to Bearings");
+
+// Commenting on the page.
+await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+await rows.nth(1).click();
+await frame.locator("h1").waitFor();
+check(await page.locator(".review-empty").count() === 1, "a page with no review says so");
+await page.locator(".comment-toggle").click();
+check((await page.locator(".comment-hint").innerText()).includes("Select the words you mean"), "comment mode says what to do");
+await frame.locator(".card.rec p").click();
+const composer = page.locator(".comment-composer");
+await composer.waitFor();
+check((await composer.locator("blockquote").innerText()).includes("Runs after transcription"), "the composer quotes what was clicked");
+check(await page.locator(".comment-hint").count() === 0, "picking a place leaves comment mode");
+await composer.locator("textarea").fill("Say what happens on an older phone.");
+await composer.locator("button", { hasText: "Comment" }).click();
+const threads = page.locator("[data-testid='review-thread']");
+await threads.first().waitFor();
+check(await threads.count() === 1, "the comment joins the review");
+check((await threads.first().innerText()).includes("Not sent yet"), "a new comment is a draft, not a message");
+check((await page.locator(".send-review").innerText()).includes("Send review · 1"), "the send button counts the draft");
+await frame.locator("#__qd_layer__ div").first().waitFor({ timeout: 5000 }).catch(() => {});
+check(await frame.locator("#__qd_layer__ div").count() > 0, "the page highlights where the comment sits");
+await shot(page, "08-comment");
+
+// A second comment, then taking one back.
+await page.locator(".comment-toggle").click();
+await frame.locator("h2", { hasText: "What people see now" }).click();
+await composer.locator("textarea").fill("Add the on-device title for a third episode.");
+await composer.locator("button", { hasText: "Comment" }).click();
+check(await threads.count() === 2, "a second comment joins the same review");
+await threads.nth(1).locator("button[title='Take this comment back']").click();
+check(await threads.count() === 1, "a draft comment can be taken back");
+check((await page.locator(".send-review").innerText()).includes("Send review · 1"), "the count follows what is left");
+
+// The draft is kept, not held in the screen.
+await page.locator(".back-button").click();
+await rows.nth(1).click();
+await frame.locator("h1").waitFor();
+await threads.first().waitFor();
+check(await threads.count() === 1, "leaving the page and coming back keeps the draft");
+
+// Sending the whole review as one message.
+await page.locator(".verdict-picker select").selectOption("changes");
+await page.locator(".send-review").click();
+await page.locator(".review-last").waitFor();
+check((await threads.first().innerText()).includes("Sent"), "a sent comment says so");
+check((await page.locator(".review-last").innerText()).includes("Request changes"), "the review records its verdict");
+check((await page.locator(".send-review").innerText()) === "Send review", "the draft count clears once it is sent");
+check(await threads.first().locator("button[title='Take this comment back']").count() === 0, "a sent comment cannot be taken back");
+await shot(page, "09-sent");
+await page.locator(".nav-item", { hasText: "Chat" }).click();
+const lastMessage = page.locator(".captain-message").last();
+await lastMessage.waitFor();
+const sentText = await lastMessage.innerText();
+check(sentText.includes("Requests changes."), "the first mate is told the verdict");
+check(sentText.includes("Say what happens on an older phone."), "the review's comments reach the first mate");
+check(!sentText.includes("Add the on-device title"), "a comment taken back is never sent");
+await shot(page, "10-sent-message");
 
 // Narrow window: the review toolbar wraps instead of pushing the page sideways.
 await page.setViewportSize({ width: 700, height: 900 });

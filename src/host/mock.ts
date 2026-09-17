@@ -4,6 +4,7 @@ import recordedStream from "./mock-event-stream.json";
 import { artifactPath } from "./types";
 import type {
   Artifact,
+  ArtifactRef,
   ArtifactRevision,
   BearingsSnapshot,
   FleetSnapshot,
@@ -18,6 +19,10 @@ import type {
   OutboxStatus,
   PaneCapture,
   ReasonKind,
+  ReviewAnchor,
+  ReviewThread,
+  ReviewVerdict,
+  ReviewView,
   SnapshotEvent,
 } from "./types";
 
@@ -189,6 +194,56 @@ export class MockHostAdapter implements HostAdapter {
   /** The dev server serves the review pages at the same paths the app's `artifact` scheme does. */
   artifactUrl(revision: ArtifactRevision) {
     return `/artifacts/${artifactPath(revision)}`;
+  }
+
+  /** Reviews live in memory here; the app keeps them in the home beside the revisions. */
+  private readonly reviews = new Map<string, ReviewView>();
+
+  private review(ref: ArtifactRef): ReviewView {
+    const key = `${ref.scope}/${ref.task}/${ref.name}`;
+    const current = this.reviews.get(key) ?? { threads: [], draft_count: 0, sent: [], log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
+    this.reviews.set(key, current);
+    return current;
+  }
+
+  private settle(ref: ArtifactRef, threads: ReviewThread[], sent = this.review(ref).sent) {
+    const next: ReviewView = { ...this.review(ref), threads, sent, draft_count: threads.filter((thread) => thread.sent_at === null).length };
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, next);
+    return next;
+  }
+
+  async reviewGet(ref: ArtifactRef) {
+    return this.review(ref);
+  }
+
+  async reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: ReviewAnchor, thread?: string) {
+    const current = this.review(ref);
+    const at = Date.now();
+    if (thread) {
+      return this.settle(ref, current.threads.map((item) => item.id === thread ? { ...item, comments: [...item.comments, { body, at }] } : item));
+    }
+    const id = `t${current.threads.length + 1}`;
+    return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, comments: [{ body, at }] }]);
+  }
+
+  async reviewDiscard(ref: ArtifactRef, thread: string) {
+    const current = this.review(ref);
+    return this.settle(ref, current.threads.filter((item) => item.id !== thread || item.sent_at !== null));
+  }
+
+  async reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict) {
+    const current = this.review(ref);
+    const draft = current.threads.filter((thread) => thread.sent_at === null);
+    const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
+    const text = [`Captain's review of "${ref.name}" (rev ${rev}): ${said}`, ...draft.map((thread) => `${thread.id} on "${thread.anchor?.quote ?? ""}": ${thread.comments.map((comment) => comment.body).join(" ")}`)].join("\n");
+    const message = await this.send(text);
+    const at = Date.now();
+    const review = this.settle(
+      ref,
+      current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at } : thread),
+      [...current.sent, { at, verdict, rev, message, threads: draft.map((thread) => thread.id) }],
+    );
+    return { message, text, review };
   }
 
   subscribe(listener: HostEventListener) {

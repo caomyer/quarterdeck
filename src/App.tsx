@@ -19,6 +19,7 @@ import {
   GitBranch,
   Inbox,
   Menu,
+  MessageSquarePlus,
   MessageSquareText,
   Monitor,
   Moon,
@@ -32,6 +33,7 @@ import {
   ShipWheel,
   Smartphone,
   Sparkles,
+  Trash2,
   Sun,
   TerminalSquare,
   X,
@@ -40,12 +42,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRevision, createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
 
 type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
 /** Which page the review screen shows: the artifact, and the revision picked (the latest when none is). */
-type ArtifactRef = { scope: Artifact["scope"]; task: string | null; name: string; rev?: number };
+type OpenArtifact = ArtifactRef & { rev?: number };
 type CallState = OutboxView | undefined;
 
 const host = createHostAdapter();
@@ -129,8 +131,9 @@ export function App() {
   const [callMessageIds, setCallMessageIds] = useState<Record<string, string>>({});
   const [chatDraft, setChatDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [openArtifact, setOpenArtifact] = useState<ArtifactRef | null>(null);
+  const [openArtifact, setOpenArtifact] = useState<OpenArtifact | null>(null);
   const [artifactReturn, setArtifactReturn] = useState<View>("artifacts");
+  const [review, setReview] = useState<ReviewView | null>(null);
 
   const projects = useMemo(() => {
     const byName = new Map<string, { tasks: FleetTask[]; mode?: string; yolo?: boolean }>();
@@ -180,6 +183,16 @@ export function App() {
   }, [callAnswers]);
 
   const artifacts = useMemo(() => fleet?.artifacts ?? [], [fleet]);
+  const artifactRef = useMemo<ArtifactRef | null>(() => openArtifact ? { scope: openArtifact.scope, task: openArtifact.task, name: openArtifact.name } : null, [openArtifact]);
+
+  // The review is read from the home when a page opens, so a draft written before a relaunch is still there.
+  useEffect(() => {
+    if (!artifactRef) return setReview(null);
+    let active = true;
+    setReview(null);
+    void host.reviewGet(artifactRef).then((next) => { if (active) setReview(next); }).catch(() => { if (active) setReview(null); });
+    return () => { active = false; };
+  }, [artifactRef?.scope, artifactRef?.task, artifactRef?.name]);
   const shownArtifact = openArtifact ? artifacts.find((artifact) => sameArtifact(artifact, openArtifact)) : undefined;
   const shownRevision = shownArtifact && (shownArtifact.revisions.find((revision) => revision.rev === openArtifact?.rev) ?? shownArtifact.latest);
 
@@ -387,7 +400,19 @@ export function App() {
         {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} onOpenTask={setActiveTask} />}
         {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
-          ? <ArtifactReview key={`${shownArtifact.scope}/${shownArtifact.task}/${shownArtifact.name}/${shownRevision.rev}`} artifact={shownArtifact} revision={shownRevision} url={host.artifactUrl(shownRevision)} onRevision={(rev) => showArtifact(shownArtifact, rev)} />
+          ? <ArtifactReview
+              key={`${shownArtifact.scope}/${shownArtifact.task}/${shownArtifact.name}/${shownRevision.rev}`}
+              artifact={shownArtifact}
+              revision={shownRevision}
+              url={host.artifactUrl(shownRevision)}
+              review={review}
+              sendReady={bridge.sendReady}
+              runtime={runtime.state}
+              onRevision={(rev) => showArtifact(shownArtifact, rev)}
+              onComment={(body, anchor, thread) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread).then(setReview)}
+              onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
+              onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => { bridge.noteSent(sent.message, sent.text); setReview(sent.review); })}
+            />
           : <div className="content-scroll"><EmptyState label="This page isn't in the home's records anymore." /></div>)}
       </main>
 
@@ -819,27 +844,148 @@ function ArtifactChatCard({ artifact, revision, tasks, onOpen }: { artifact: Art
   return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-icon"><PanelsTopLeft size={16} /></span><div><small>{from}</small><strong>{revision.title}</strong>{revision.note && <p>{revision.note}</p>}<time>{formatWhen(revision.presented_at)}</time></div><button onClick={onOpen}>Open</button></article>;
 }
 
+const VERDICTS: { id: ReviewVerdict; label: string; hint: string }[] = [
+  { id: "changes", label: "Request changes", hint: "The task keeps waiting on this page." },
+  { id: "approve", label: "Approve", hint: "The work on this page can go ahead." },
+  { id: "comment", label: "Comment", hint: "Thoughts only; nothing is blocked." },
+];
+
+/** The words a thread is pinned to, for the rail. */
+function threadQuote(thread: ReviewThread) {
+  const quote = thread.anchor?.quote?.trim();
+  return quote ? (quote.length > 140 ? `${quote.slice(0, 140)}…` : quote) : "the page";
+}
+
 /**
  * The page itself, in a frame that can run its scripts and reach the network but never the app or the home.
- * Narrow shows it at the width firstmate's layout check calls narrow.
+ * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
+ * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, onRevision }: { artifact: Artifact; revision: ArtifactRevision; url: string; onRevision: (rev: number) => void }) {
+function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, onRevision, onComment, onDiscard, onSubmit }: {
+  artifact: Artifact;
+  revision: ArtifactRevision;
+  url: string;
+  review: ReviewView | null;
+  sendReady: boolean;
+  runtime: HostRuntimeState;
+  onRevision: (rev: number) => void;
+  onComment: (body: string, anchor?: ReviewAnchor, thread?: string) => Promise<unknown>;
+  onDiscard: (thread: string) => Promise<unknown>;
+  onSubmit: (verdict: ReviewVerdict) => Promise<unknown>;
+}) {
   const [narrow, setNarrow] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [findingsOpen, setFindingsOpen] = useState(false);
+  const [commenting, setCommenting] = useState(false);
+  const [pending, setPending] = useState<ReviewAnchor | null>(null);
+  const [draft, setDraft] = useState("");
+  const [missing, setMissing] = useState<string[]>([]);
+  const [verdict, setVerdict] = useState<ReviewVerdict>("changes");
+  const [sending, setSending] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const frame = useRef<HTMLIFrameElement>(null);
   const note = layoutNote(revision);
   const newest = [...artifact.revisions].reverse();
+  const threads = review?.threads ?? [];
+  const draftCount = review?.draft_count ?? 0;
+  const lastSent = review?.sent.at(-1);
+
+  const tell = (message: Record<string, unknown>) => frame.current?.contentWindow?.postMessage(message, "*");
+
+  // Everything the page needs to draw: which threads to highlight, and whether a click picks a place.
+  useEffect(() => {
+    if (!loaded) return;
+    tell({ type: "qd:threads", threads: threads.map((thread) => ({ id: thread.id, anchor: thread.anchor, draft: thread.sent_at === null })) });
+  }, [loaded, threads]);
+  useEffect(() => {
+    if (loaded) tell({ type: "qd:mode", mode: commenting ? "comment" : "read" });
+  }, [loaded, commenting]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== frame.current?.contentWindow) return;
+      const data = event.data as { type?: string; anchor?: ReviewAnchor; missing?: string[] };
+      if (data?.type === "qd:picked" && data.anchor) {
+        setPending(data.anchor);
+        setCommenting(false);
+      } else if (data?.type === "qd:located") {
+        setMissing(data.missing ?? []);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  async function save() {
+    const body = draft.trim();
+    if (!body || !pending) return;
+    setProblem(null);
+    try {
+      await onComment(body, pending);
+      setDraft("");
+      setPending(null);
+    } catch (error) {
+      setProblem(String(error));
+    }
+  }
+
+  async function send() {
+    setSending(true);
+    setProblem(null);
+    try {
+      await onSubmit(verdict);
+    } catch (error) {
+      setProblem(String(error));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const sendHint = !sendReady
+    ? "Start the first mate to send your review."
+    : runtime === "locked_by_other"
+      ? "The first mate is running somewhere else. Your review waits until it runs here."
+      : VERDICTS.find((item) => item.id === verdict)?.hint;
+
   return <div className="artifact-review" data-screen="artifact">
     <div className="artifact-toolbar">
       <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
       {revision.note ? <p className="revision-note" title={revision.note}><strong>What changed</strong> {revision.note}</p> : <span className="revision-note" />}
       {note && <button className={`layout-flag ${findingsOpen ? "open" : ""}`} aria-expanded={findingsOpen} onClick={() => setFindingsOpen((current) => !current)}><CircleAlert size={14} /> {note.label}</button>}
+      <button className={`comment-toggle ${commenting ? "selected" : ""}`} aria-pressed={commenting} onClick={() => { setCommenting((current) => !current); setPending(null); }} title="Comment on a part of the page"><MessageSquarePlus size={15} /> Comment</button>
       <div className="width-toggle" role="group" aria-label="Window width"><button className={narrow ? "" : "selected"} aria-pressed={!narrow} onClick={() => setNarrow(false)} title="Wide"><Monitor size={15} /></button><button className={narrow ? "selected" : ""} aria-pressed={narrow} onClick={() => setNarrow(true)} title="Narrow"><Smartphone size={15} /></button></div>
     </div>
     {note && findingsOpen && <div className="layout-findings" role="note"><p>When it was presented, firstmate's check found {note.issues.length === 1 ? "this" : "these"}, and the presenter kept the page as it is.</p><ul>{note.issues.map((issue, index) => <li key={index}><strong>{issue.viewport === "narrow" ? "Narrow" : "Wide"}</strong> {issue.detail}<code>{issue.selector}</code></li>)}</ul></div>}
-    <div className={`artifact-stage ${narrow ? "narrow" : ""}`}>
-      {!loaded && <div className="artifact-loading">Opening the page…</div>}
-      <iframe title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => setLoaded(true)} />
+    {commenting && <div className="comment-hint" role="status">Select the words you mean, or click a part of the page.</div>}
+    <div className="artifact-body">
+      <div className={`artifact-stage ${narrow ? "narrow" : ""}`}>
+        {!loaded && <div className="artifact-loading">Opening the page…</div>}
+        <iframe ref={frame} title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => { setLoaded(true); setMissing([]); }} />
+      </div>
+      <aside className="review-rail" aria-label="Your review">
+        {pending && <section className="comment-composer">
+          <blockquote>{pending.quote.length > 160 ? `${pending.quote.slice(0, 160)}…` : pending.quote}</blockquote>
+          <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setDraft(""); } }} />
+          <div><button className="ghost" onClick={() => { setPending(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim()} onClick={() => void save()}>Comment</button></div>
+        </section>}
+        <div className="review-threads">
+          {threads.length === 0 && !pending && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
+          {threads.map((thread) => <article key={thread.id} className={`review-thread ${thread.sent_at === null ? "draft" : "sent"}`} data-testid="review-thread" onClick={() => tell({ type: "qd:focus", id: thread.id })}>
+            <header><span className="thread-id">{thread.id}</span>{thread.sent_at === null ? <em className="thread-state draft">Not sent yet</em> : <em className="thread-state">Sent {formatWhen(new Date(thread.sent_at).toISOString())}</em>}{thread.sent_at === null && <button className="icon-button" title="Take this comment back" onClick={(event) => { event.stopPropagation(); void onDiscard(thread.id); }}><Trash2 size={14} /></button>}</header>
+            <blockquote>{threadQuote(thread)}</blockquote>
+            {thread.comments.map((comment, index) => <p key={index}>{comment.body}</p>)}
+            {missing.includes(thread.id) && <small className="thread-missing">Not found in this revision.</small>}
+            {thread.rev !== revision.rev && <small className="thread-rev">Written on rev {thread.rev}</small>}
+          </article>)}
+        </div>
+        <div className="review-send">
+          {problem && <p className="review-problem" role="alert">{problem}</p>}
+          {lastSent && draftCount === 0 && <p className="review-last">Sent {formatWhen(new Date(lastSent.at).toISOString())} · {VERDICTS.find((item) => item.id === lastSent.verdict)?.label ?? lastSent.verdict}</p>}
+          <label className="verdict-picker"><span className="sr-only">Verdict</span><select value={verdict} onChange={(event) => setVerdict(event.target.value as ReviewVerdict)}>{VERDICTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown size={14} /></label>
+          <button className="send-review" disabled={!sendReady || sending} title={sendHint} onClick={() => void send()}><Send size={15} /> {sending ? "Sending…" : draftCount > 0 ? `Send review · ${draftCount}` : "Send review"}</button>
+          <small>{sendHint}</small>
+        </div>
+      </aside>
     </div>
   </div>;
 }

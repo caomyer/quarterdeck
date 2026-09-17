@@ -54,7 +54,8 @@ Agents do not work there and do not branch from it: each agent clones the remote
   It refuses a recording that predates the fields it checks rather than passing over code it never reached, so record a fresh run when the event shapes change.
 - Check the artifact review flow, in both themes: start Vite on your own port, then
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm artifacts`.
-  It opens the mock with `?artifacts`, whose pages live in `src/fixtures/review-pages` and are served only by the dev server, and checks the list, the review screen, revisions, the narrow width, accepted layout findings, the frame's sandbox, and the ways in from chat and the task drawer.
+  It opens the mock with `?artifacts`, whose pages live in `src/fixtures/review-pages` and are served only by the dev server, and checks the list, the review screen, revisions, the narrow width, accepted layout findings, the frame's sandbox, the ways in from chat and the task drawer, and reviewing itself: commenting on part of a page, the draft surviving a reload, taking a comment back, and sending the review with a verdict.
+  The dev server appends `src-tauri/src/review-frame.js` to those pages exactly as the app's own scheme does, so commenting behaves the same in both.
   Set `ARTIFACT_SHOTS=<folder>` to also save screenshots.
   Run it after changing how artifacts are listed, opened or framed.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
