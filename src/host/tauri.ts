@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { artifactPath } from "./types";
-import type { ArtifactRef, ArtifactRevision, HistoryItem, HomeStatus, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ReasonKind, SnapshotEvent } from "./types";
+import type { ArtifactRef, ArtifactRevision, HistoryItem, HomeStatus, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ReasonKind, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -53,6 +53,18 @@ export class TauriHostAdapter implements HostAdapter {
 
   reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict) {
     return invoke<{ message: string; text: string; review: ReviewView }>("review_submit", { page: ref, rev, verdict });
+  }
+
+  reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
+    return invoke<ReviewView>("review_settle", { page: ref, thread, resolved });
+  }
+
+  reviewSeen(ref: ArtifactRef, rev: number) {
+    return invoke<ReviewView>("review_seen", { page: ref, rev });
+  }
+
+  reviewSummary() {
+    return invoke<ReviewSummary>("review_summary");
   }
 
   hostStart(home: string) {

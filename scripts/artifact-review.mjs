@@ -1,7 +1,8 @@
 // Checks the artifact review flow on the browser mock: the Artifacts list, the review screen,
 // revisions, the narrow width, accepted layout findings, the sandbox, the ways in from chat,
-// the task drawer and back, and reviewing itself: commenting on a part of the page, the draft
-// surviving a reload, taking a comment back, and sending the review with a verdict.
+// the task drawer and back, reviewing itself: commenting on a part of the page, the draft
+// surviving a reload, taking a comment back, and sending the review with a verdict, and
+// iterating: what the author answers, settling a comment, and what the list says is new.
 //
 //   pnpm dev --port 4191 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
@@ -45,8 +46,8 @@ await page.locator(".nav-item", { hasText: "Artifacts" }).click();
 const rows = page.locator(".artifact-list .artifact-row");
 check(await rows.count() === 2, "the list shows both presented pages");
 check((await rows.nth(0).innerText()).includes("When may the app download the speech model?"), "the newest page comes first");
-check((await rows.nth(1).innerText()).includes("resonance · res-titles-scout · Rev 2"), "a task page names its project, task and revision");
-check(await rows.nth(1).locator(".artifact-flag").innerText() === "May look off in a narrow window", "a page presented with narrow findings says so quietly");
+check((await rows.nth(1).innerText()).includes("resonance · res-titles-scout · Rev 3"), "a task page names its project, task and revision");
+check((await rows.nth(1).locator(".review-chip").innerText()) === "Not looked at yet", "a page nobody has opened says so");
 check(await rows.nth(0).locator(".artifact-flag").count() === 0, "a clean page carries no flag");
 await noSidewaysScroll(page, "list");
 await shot(page, "01-list");
@@ -56,9 +57,9 @@ await rows.nth(1).click();
 const frame = page.frameLocator(".artifact-stage iframe");
 await frame.locator("h1").waitFor();
 check(await page.locator(".page-heading h1").innerText() === "AI titles for snips", "the review screen is titled by the page");
-check(await page.locator(".page-heading span").innerText() === "resonance · res-titles-scout · Rev 2 of 2", "the subtitle names the owner and revision");
-check((await frame.locator(".eyebrow").textContent()).includes("revised"), "the latest revision opens by default");
-check((await page.locator(".revision-note").innerText()).includes("Measured the on-device model"), "the revision says what changed");
+check(await page.locator(".page-heading span").innerText() === "resonance · res-titles-scout · Rev 3 of 3", "the subtitle names the owner and revision");
+check((await frame.locator(".eyebrow").textContent()).includes("revised twice"), "the latest revision opens by default");
+check((await page.locator(".revision-note").innerText()).includes("no room for the model"), "the revision says what changed");
 const sandbox = await page.locator(".artifact-stage iframe").getAttribute("sandbox");
 check(sandbox === "allow-scripts allow-forms allow-downloads", `the frame is sandboxed without same-origin or top navigation (${sandbox})`);
 const reachesApp = await page.frames().find((candidate) => candidate.url().includes("/artifacts/"))
@@ -68,7 +69,10 @@ check(await page.locator(".artifact-loading").count() === 0, "the loading note c
 await noSidewaysScroll(page, "review");
 await shot(page, "02-review");
 
-// Accepted layout findings.
+// Accepted layout findings, on the revision that carries them.
+await page.locator(".revision-picker select").selectOption("2");
+await frame.locator(".eyebrow", { hasText: "revised" }).waitFor();
+check(await page.locator(".layout-flag").count() === 1, "a revision presented with findings carries the flag");
 await page.locator(".layout-flag").click();
 check((await page.locator(".layout-findings").innerText()).includes("the page is 116px wider than the window"), "the flag opens the findings the presenter accepted");
 await shot(page, "03-findings");
@@ -86,7 +90,7 @@ await page.locator(".width-toggle button[title='Wide']").click();
 await page.locator(".revision-picker select").selectOption("1");
 await frame.locator(".eyebrow", { hasText: "scout report" }).waitFor();
 check(!(await frame.locator(".eyebrow").textContent()).includes("revised"), "picking Rev 1 shows Rev 1");
-check(await page.locator(".page-heading span").innerText() === "resonance · res-titles-scout · Rev 1 of 2", "the subtitle follows the picked revision");
+check(await page.locator(".page-heading span").innerText() === "resonance · res-titles-scout · Rev 1 of 3", "the subtitle follows the picked revision");
 check(await page.locator(".layout-flag").count() === 0, "a revision with a clean check has no flag");
 
 // Back to where it was opened from.
@@ -97,15 +101,15 @@ check(await page.locator("[data-screen='artifacts']").count() === 1, "back retur
 await page.locator(".nav-item", { hasText: "Chat" }).click();
 const cards = page.locator("[data-testid='artifact-card']");
 await cards.first().waitFor();
-check(await cards.count() === 3, `chat shows each revision presented in the last day (${await cards.count()})`);
+check(await cards.count() === 4, `chat shows each revision presented in the last day (${await cards.count()})`);
 check((await cards.nth(0).innerText()).includes("shared a page"), "the first revision reads as a shared page");
 check((await cards.nth(1).innerText()).includes("revised a page · Rev 2"), "a later revision reads as a revision");
-check((await cards.nth(2).innerText()).includes("The first mate shared a page"), "a first mate page says who shared it");
+check((await cards.nth(3).innerText()).includes("The first mate shared a page"), "a first mate page says who shared it");
 await noSidewaysScroll(page, "chat");
 await shot(page, "05-chat");
 await cards.nth(0).locator("button").click();
 await frame.locator("h1").waitFor();
-check(await page.locator(".page-heading span").innerText() === "resonance · res-titles-scout · Rev 1 of 2", "a chat card opens the revision it announced");
+check(await page.locator(".page-heading span").innerText() === "resonance · res-titles-scout · Rev 1 of 3", "a chat card opens the revision it announced");
 await page.locator(".back-button").click();
 check(await page.locator(".chat-view").count() === 1, "back returns to chat");
 
@@ -126,6 +130,9 @@ await page.locator(".nav-item", { hasText: "Artifacts" }).click();
 await rows.nth(1).click();
 await frame.locator("h1").waitFor();
 check(await page.locator(".review-empty").count() === 1, "a page with no review says so");
+// Written on rev 2, so rev 3's answer is about a comment that already existed.
+await page.locator(".revision-picker select").selectOption("2");
+await frame.locator(".eyebrow", { hasText: "revised" }).waitFor();
 await page.locator(".comment-toggle").click();
 check((await page.locator(".comment-hint").innerText()).includes("Select the words you mean"), "comment mode says what to do");
 await frame.locator(".card.rec p").click();
@@ -160,6 +167,7 @@ await rows.nth(1).click();
 await frame.locator("h1").waitFor();
 await threads.first().waitFor();
 check(await threads.count() === 1, "leaving the page and coming back keeps the draft");
+check((await threads.first().innerText()).includes("Written on rev 2"), "a comment says which revision it was written on");
 
 // Sending the whole review as one message.
 await page.locator(".verdict-picker select").selectOption("changes");
@@ -178,6 +186,38 @@ check(sentText.includes("Requests changes."), "the first mate is told the verdic
 check(sentText.includes("Say what happens on an older phone."), "the review's comments reach the first mate");
 check(!sentText.includes("Add the on-device title"), "a comment taken back is never sent");
 await shot(page, "10-sent-message");
+
+// What the author says about a comment, and settling it.
+await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+await rows.nth(1).click();
+await frame.locator("h1").waitFor();
+await threads.first().waitFor();
+check((await threads.first().innerText()).includes("Changed in rev 3"), "the rail shows the revision that answered the comment");
+check(!(await threads.first().innerText()).includes("Not sent yet"), "a sent comment is not a draft");
+await shot(page, "11-answered");
+await threads.first().locator("button[title='Settle this']").click();
+await page.locator(".settled-toggle").waitFor();
+check(await threads.count() === 0, "a settled comment leaves the waiting list");
+check((await page.locator(".settled-toggle").innerText()).includes("1 settled"), "settled comments are kept, out of the way");
+await page.locator(".settled-toggle").click();
+check((await threads.first().innerText()).includes("Settled"), "a settled comment says so");
+await threads.first().locator("button[title='Open this again']").click();
+check((await threads.first().innerText()).includes("Sent"), "settling can be undone");
+await threads.first().locator("button[title='Settle this']").click();
+await page.locator(".settled-toggle").waitFor();
+
+// What the list says once the newest revision has been looked at.
+await page.locator(".back-button").click();
+check(await rows.nth(1).locator(".review-chip").count() === 0, "a page with nothing waiting carries no chip");
+await rows.nth(1).click();
+await frame.locator("h1").waitFor();
+await page.locator(".comment-toggle").click();
+await frame.locator("h2", { hasText: "Options" }).click();
+await composer.locator("textarea").fill("Name the phone models this was measured on.");
+await composer.locator("button", { hasText: "Comment" }).click();
+await page.locator(".back-button").click();
+check((await rows.nth(1).locator(".review-chip").innerText()) === "1 comment not sent", "the list says a comment is still unsent");
+await shot(page, "12-list-state");
 
 // Narrow window: the review toolbar wraps instead of pushing the page sideways.
 await page.setViewportSize({ width: 700, height: 900 });

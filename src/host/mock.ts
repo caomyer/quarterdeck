@@ -20,6 +20,7 @@ import type {
   PaneCapture,
   ReasonKind,
   ReviewAnchor,
+  ReviewSummary,
   ReviewThread,
   ReviewVerdict,
   ReviewView,
@@ -65,6 +66,11 @@ function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; 
       status: "accepted",
       issues: [{ viewport: "narrow", rule: "page-scrolls-sideways", selector: "div.compare > img", detail: "the page is 116px wider than the window" }],
     }),
+    // A revision the scout presented answering the captain's first two comments, as `--addressed` and `--reply` record it.
+    {
+      ...plan(3, 2, "Said what happens when the phone has no room for the model.", { status: "clean", issues: [] }),
+      answers: { addressed: ["t1"], replies: [{ thread: "t2", body: "Kept the wide image: seeing both titles side by side is the point." }] },
+    },
   ];
   const board: ArtifactRevision = {
     scope: "chat", task: null, name: "model-download", rev: 1, title: "When may the app download the speech model?", note: null,
@@ -72,7 +78,7 @@ function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; 
   };
   const artifacts: Artifact[] = [
     { scope: "chat", task: null, name: "model-download", title: board.title, latest: board, revisions: [board] },
-    { scope: "task", task: ARTIFACT_TASK, name: "titles-plan", title: "AI titles for snips", latest: planRevisions[1], revisions: planRevisions },
+    { scope: "task", task: ARTIFACT_TASK, name: "titles-plan", title: "AI titles for snips", latest: planRevisions[2], revisions: planRevisions },
   ];
   const task: FleetTask = {
     id: ARTIFACT_TASK, kind: "scout", harness: "claude", mode: "no-mistakes", yolo: "off", project: `${home}/projects/resonance`, backend: "tmux",
@@ -201,13 +207,19 @@ export class MockHostAdapter implements HostAdapter {
 
   private review(ref: ArtifactRef): ReviewView {
     const key = `${ref.scope}/${ref.task}/${ref.name}`;
-    const current = this.reviews.get(key) ?? { threads: [], draft_count: 0, sent: [], log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
+    const current = this.reviews.get(key) ?? { threads: [], draft_count: 0, open_count: 0, sent: [], seen_rev: null, log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
     this.reviews.set(key, current);
     return current;
   }
 
   private settle(ref: ArtifactRef, threads: ReviewThread[], sent = this.review(ref).sent) {
-    const next: ReviewView = { ...this.review(ref), threads, sent, draft_count: threads.filter((thread) => thread.sent_at === null).length };
+    const next: ReviewView = {
+      ...this.review(ref),
+      threads,
+      sent,
+      draft_count: threads.filter((thread) => thread.sent_at === null).length,
+      open_count: threads.filter((thread) => thread.state === "open").length,
+    };
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, next);
     return next;
   }
@@ -223,7 +235,31 @@ export class MockHostAdapter implements HostAdapter {
       return this.settle(ref, current.threads.map((item) => item.id === thread ? { ...item, comments: [...item.comments, { body, at }] } : item));
     }
     const id = `t${current.threads.length + 1}`;
-    return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, comments: [{ body, at }] }]);
+    return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, resolved_at: null, state: "draft", comments: [{ body, at }] }]);
+  }
+
+  async reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
+    const current = this.review(ref);
+    return this.settle(ref, current.threads.map((item) => item.id === thread && item.sent_at !== null
+      ? { ...item, state: resolved ? "resolved" as const : "open" as const, resolved_at: resolved ? Date.now() : null }
+      : item));
+  }
+
+  async reviewSeen(ref: ArtifactRef, rev: number) {
+    const current = this.review(ref);
+    const key = `${ref.scope}/${ref.task}/${ref.name}`;
+    const next = { ...current, seen_rev: Math.max(current.seen_rev ?? 0, rev) };
+    this.reviews.set(key, next);
+    return next;
+  }
+
+  async reviewSummary() {
+    const pages: ReviewSummary = {};
+    for (const [key, review] of this.reviews) {
+      const [scope, task, name] = key.split("/");
+      pages[scope === "chat" ? `chat/${name}` : `task/${task}/${name}`] = { seen_rev: review.seen_rev, draft_count: review.draft_count, open_count: review.open_count };
+    }
+    return pages;
   }
 
   async reviewDiscard(ref: ArtifactRef, thread: string) {
@@ -240,7 +276,7 @@ export class MockHostAdapter implements HostAdapter {
     const at = Date.now();
     const review = this.settle(
       ref,
-      current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at } : thread),
+      current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
       [...current.sent, { at, verdict, rev, message, threads: draft.map((thread) => thread.id) }],
     );
     return { message, text, review };

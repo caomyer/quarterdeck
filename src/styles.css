@@ -423,6 +423,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .review-send .review-last { width: 100%; margin: 0; color: var(--green); font-size: .6rem; font-weight: 640; }
 .review-send .review-problem { width: 100%; margin: 0; color: var(--coral); font-size: .6rem; line-height: 1.45; }
 
+.artifact-chips { display: flex; align-items: center; gap: 6px; }
+.review-chip { padding: 4px 7px; border-radius: 5px; font-size: .58rem; font-weight: 700; white-space: nowrap; }
+.review-chip.new { color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.review-chip.draft { color: var(--sea); background: color-mix(in srgb, var(--sea) 13%, transparent); }
+.review-chip.open { color: var(--muted); background: var(--surface-2); }
+.review-thread.resolved { opacity: .72; }
+.thread-state.settled { color: var(--green); font-weight: 700; }
+.thread-answer { margin: 6px 0 2px; padding: 7px 8px; border-radius: 6px; background: color-mix(in srgb, var(--green) 9%, var(--surface)); }
+.thread-answer strong { color: var(--green); font-size: .59rem; font-weight: 720; }
+.thread-answer p { margin: 3px 0 0; color: var(--ink); font-size: .65rem; line-height: 1.45; }
+.settled-toggle { display: flex; align-items: center; gap: 5px; width: 100%; min-height: 28px; padding: 0 6px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-size: .6rem; }
+.settled-toggle:hover { color: var(--ink); background: var(--surface-2); }
+.settled-toggle svg { transition: transform .16s ease; }.settled-toggle svg.rotated { transform: rotate(90deg); }
+
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 255px; transform: translateX(-102%); transition: transform .18s ease; box-shadow: var(--shadow); }

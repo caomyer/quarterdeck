@@ -42,7 +42,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { CheckCheck, RotateCcw } from "lucide-react";
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
 
 type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
@@ -134,6 +135,7 @@ export function App() {
   const [openArtifact, setOpenArtifact] = useState<OpenArtifact | null>(null);
   const [artifactReturn, setArtifactReturn] = useState<View>("artifacts");
   const [review, setReview] = useState<ReviewView | null>(null);
+  const [reviews, setReviews] = useState<ReviewSummary>({});
 
   const projects = useMemo(() => {
     const byName = new Map<string, { tasks: FleetTask[]; mode?: string; yolo?: boolean }>();
@@ -183,6 +185,10 @@ export function App() {
   }, [callAnswers]);
 
   const artifacts = useMemo(() => fleet?.artifacts ?? [], [fleet]);
+  // Which pages have been looked at, and what is still waiting, for the list. Re-read whenever a review changes.
+  useEffect(() => {
+    void host.reviewSummary().then(setReviews).catch(() => setReviews({}));
+  }, [artifacts, review]);
   const artifactRef = useMemo<ArtifactRef | null>(() => openArtifact ? { scope: openArtifact.scope, task: openArtifact.task, name: openArtifact.name } : null, [openArtifact]);
 
   // The review is read from the home when a page opens, so a draft written before a relaunch is still there.
@@ -398,7 +404,7 @@ export function App() {
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} onOpenTask={setActiveTask} />}
-        {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpen={showArtifact} />}
+        {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
           ? <ArtifactReview
               key={`${shownArtifact.scope}/${shownArtifact.task}/${shownArtifact.name}/${shownRevision.rev}`}
@@ -412,6 +418,8 @@ export function App() {
               onComment={(body, anchor, thread) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread).then(setReview)}
               onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
               onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => { bridge.noteSent(sent.message, sent.text); setReview(sent.review); })}
+              onSettle={(thread, resolved) => host.reviewSettle(artifactRef!, thread, resolved).then(setReview)}
+              onSeen={(rev) => host.reviewSeen(artifactRef!, rev).then(setReview)}
             />
           : <div className="content-scroll"><EmptyState label="This page isn't in the home's records anymore." /></div>)}
       </main>
@@ -826,16 +834,32 @@ function layoutNote(revision: ArtifactRevision) {
   return { issues, label: narrowOnly ? "May look off in a narrow window" : "May look off", narrowOnly };
 }
 
-function ArtifactRow({ artifact, detail, onOpen }: { artifact: Artifact; detail: string; onOpen: () => void }) {
-  const note = layoutNote(artifact.latest);
-  return <button className="artifact-row" onClick={onOpen}><span className="artifact-icon"><PanelsTopLeft size={16} /></span><span className="artifact-copy"><strong>{artifact.title}</strong><small>{detail}</small></span>{note ? <span className="artifact-flag" title={note.issues.map((issue) => issue.detail).join("\n")}>{note.label}</span> : <span />}<ChevronRight size={17} /></button>;
+/** What a page's review says about it in one chip: unsent work first, then what is new, then what is waiting. */
+function reviewChip(review?: ReviewSummary[string], artifact?: Artifact) {
+  if (!artifact) return null;
+  if (review && review.draft_count > 0) return { label: review.draft_count === 1 ? "1 comment not sent" : `${review.draft_count} comments not sent`, tone: "draft" };
+  const seen = review?.seen_rev ?? null;
+  if (seen === null) return { label: "Not looked at yet", tone: "new" };
+  if (artifact.latest.rev > seen) return { label: `Rev ${artifact.latest.rev} is new`, tone: "new" };
+  if (review && review.open_count > 0) return { label: review.open_count === 1 ? "1 comment waiting" : `${review.open_count} comments waiting`, tone: "open" };
+  return null;
 }
 
-function ArtifactsView({ artifacts, tasks, onOpen }: { artifacts: Artifact[]; tasks: FleetTask[]; onOpen: (artifact: Artifact) => void }) {
+function ArtifactRow({ artifact, detail, review, onOpen }: { artifact: Artifact; detail: string; review?: ReviewSummary[string]; onOpen: () => void }) {
+  const note = layoutNote(artifact.latest);
+  const chip = reviewChip(review, artifact);
+  return <button className="artifact-row" onClick={onOpen}><span className="artifact-icon"><PanelsTopLeft size={16} /></span><span className="artifact-copy"><strong>{artifact.title}</strong><small>{detail}</small></span><span className="artifact-chips">{chip && <span className={`review-chip ${chip.tone}`}>{chip.label}</span>}{note && <span className="artifact-flag" title={note.issues.map((issue) => issue.detail).join("\n")}>{note.label}</span>}</span><ChevronRight size={17} /></button>;
+}
+
+function artifactKey(artifact: Artifact) {
+  return artifact.scope === "chat" ? `chat/${artifact.name}` : `task/${artifact.task}/${artifact.name}`;
+}
+
+function ArtifactsView({ artifacts, tasks, reviews, onOpen }: { artifacts: Artifact[]; tasks: FleetTask[]; reviews: ReviewSummary; onOpen: (artifact: Artifact) => void }) {
   return <div className="content-scroll artifacts-page" data-screen="artifacts">
     {artifacts.length === 0
       ? <EmptyState label="Nothing to look at yet. When the first mate or a worker shares a page, it shows up here." />
-      : <div className="task-list artifact-list">{artifacts.map((artifact) => <ArtifactRow key={`${artifact.scope}/${artifact.task}/${artifact.name}`} artifact={artifact} detail={`${artifactOwner(artifact, tasks)} · ${revisionLine(artifact)}`} onOpen={() => onOpen(artifact)} />)}</div>}
+      : <div className="task-list artifact-list">{artifacts.map((artifact) => <ArtifactRow key={`${artifact.scope}/${artifact.task}/${artifact.name}`} artifact={artifact} detail={`${artifactOwner(artifact, tasks)} · ${revisionLine(artifact)}`} review={reviews[artifactKey(artifact)]} onOpen={() => onOpen(artifact)} />)}</div>}
   </div>;
 }
 
@@ -861,7 +885,7 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, onRevision, onComment, onDiscard, onSubmit }: {
+function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen }: {
   artifact: Artifact;
   revision: ArtifactRevision;
   url: string;
@@ -872,6 +896,8 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, o
   onComment: (body: string, anchor?: ReviewAnchor, thread?: string) => Promise<unknown>;
   onDiscard: (thread: string) => Promise<unknown>;
   onSubmit: (verdict: ReviewVerdict) => Promise<unknown>;
+  onSettle: (thread: string, resolved: boolean) => Promise<unknown>;
+  onSeen: (rev: number) => Promise<unknown>;
 }) {
   const [narrow, setNarrow] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -889,6 +915,25 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, o
   const threads = review?.threads ?? [];
   const draftCount = review?.draft_count ?? 0;
   const lastSent = review?.sent.at(-1);
+  const seen = review?.seen_rev ?? null;
+
+  // Looking at a revision is what makes a later one read as new.
+  useEffect(() => {
+    if (review && (seen === null || seen < revision.rev)) void onSeen(revision.rev);
+  }, [review, seen, revision.rev]);
+
+  // What the author says a later revision does about each comment. Their claim, shown as theirs.
+  const answers = useMemo(() => {
+    const found: Record<string, { rev: number; reply?: string }> = {};
+    for (const item of artifact.revisions) {
+      for (const id of item.answers?.addressed ?? []) found[id] = { ...found[id], rev: item.rev };
+      for (const reply of item.answers?.replies ?? []) found[reply.thread] = { rev: item.rev, reply: reply.body };
+    }
+    return found;
+  }, [artifact.revisions]);
+  const settled = threads.filter((thread) => thread.state === "resolved");
+  const live = threads.filter((thread) => thread.state !== "resolved");
+  const [showSettled, setShowSettled] = useState(false);
 
   const tell = (message: Record<string, unknown>) => frame.current?.contentWindow?.postMessage(message, "*");
 
@@ -949,7 +994,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, o
 
   return <div className="artifact-review" data-screen="artifact">
     <div className="artifact-toolbar">
-      <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
+      <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""}${seen !== null && item.rev > seen ? " · new" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
       {revision.note ? <p className="revision-note" title={revision.note}><strong>What changed</strong> {revision.note}</p> : <span className="revision-note" />}
       {note && <button className={`layout-flag ${findingsOpen ? "open" : ""}`} aria-expanded={findingsOpen} onClick={() => setFindingsOpen((current) => !current)}><CircleAlert size={14} /> {note.label}</button>}
       <button className={`comment-toggle ${commenting ? "selected" : ""}`} aria-pressed={commenting} onClick={() => { setCommenting((current) => !current); setPending(null); }} title="Comment on a part of the page"><MessageSquarePlus size={15} /> Comment</button>
@@ -970,13 +1015,9 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, o
         </section>}
         <div className="review-threads">
           {threads.length === 0 && !pending && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
-          {threads.map((thread) => <article key={thread.id} className={`review-thread ${thread.sent_at === null ? "draft" : "sent"}`} data-testid="review-thread" onClick={() => tell({ type: "qd:focus", id: thread.id })}>
-            <header><span className="thread-id">{thread.id}</span>{thread.sent_at === null ? <em className="thread-state draft">Not sent yet</em> : <em className="thread-state">Sent {formatWhen(new Date(thread.sent_at).toISOString())}</em>}{thread.sent_at === null && <button className="icon-button" title="Take this comment back" onClick={(event) => { event.stopPropagation(); void onDiscard(thread.id); }}><Trash2 size={14} /></button>}</header>
-            <blockquote>{threadQuote(thread)}</blockquote>
-            {thread.comments.map((comment, index) => <p key={index}>{comment.body}</p>)}
-            {missing.includes(thread.id) && <small className="thread-missing">Not found in this revision.</small>}
-            {thread.rev !== revision.rev && <small className="thread-rev">Written on rev {thread.rev}</small>}
-          </article>)}
+          {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
+          {settled.length > 0 && <button className="settled-toggle" aria-expanded={showSettled} onClick={() => setShowSettled((current) => !current)}><ChevronRight size={13} className={showSettled ? "rotated" : ""} /> {settled.length} settled</button>}
+          {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
         </div>
         <div className="review-send">
           {problem && <p className="review-problem" role="alert">{problem}</p>}
@@ -988,6 +1029,34 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, o
       </aside>
     </div>
   </div>;
+}
+
+/**
+ * One place on the page the captain wrote about, with what the author says about it.
+ * The author's answer is their claim; settling it is the captain's, and stays reversible.
+ */
+function ReviewThreadCard({ thread, answer, rev, missing, onFocus, onDiscard, onSettle }: { thread: ReviewThread; answer?: { rev: number; reply?: string }; rev: number; missing: boolean; onFocus: () => void; onDiscard: () => void; onSettle: (resolved: boolean) => void }) {
+  const draft = thread.sent_at === null;
+  // An author can only answer a comment they were sent, so a draft never shows one.
+  const answered = answer && !draft && answer.rev > thread.rev;
+  return <article className={`review-thread ${draft ? "draft" : thread.state}`} data-testid="review-thread" data-state={thread.state} onClick={onFocus}>
+    <header>
+      <span className="thread-id">{thread.id}</span>
+      {draft
+        ? <em className="thread-state draft">Not sent yet</em>
+        : thread.state === "resolved"
+          ? <em className="thread-state settled">Settled</em>
+          : <em className="thread-state">Sent {formatWhen(new Date(thread.sent_at!).toISOString())}</em>}
+      {draft
+        ? <button className="icon-button" title="Take this comment back" onClick={(event) => { event.stopPropagation(); onDiscard(); }}><Trash2 size={14} /></button>
+        : <button className="icon-button" title={thread.state === "resolved" ? "Open this again" : "Settle this"} onClick={(event) => { event.stopPropagation(); onSettle(thread.state !== "resolved"); }}>{thread.state === "resolved" ? <RotateCcw size={14} /> : <CheckCheck size={14} />}</button>}
+    </header>
+    <blockquote>{threadQuote(thread)}</blockquote>
+    {thread.comments.map((comment, index) => <p key={index}>{comment.body}</p>)}
+    {answered && <div className="thread-answer"><strong>{answer.reply ? `Answered in rev ${answer.rev}` : `Changed in rev ${answer.rev}`}</strong>{answer.reply && <p>{answer.reply}</p>}</div>}
+    {missing && <small className="thread-missing">Not found in this revision.</small>}
+    {thread.rev !== rev && <small className="thread-rev">Written on rev {thread.rev}</small>}
+  </article>;
 }
 
 function DrawerSection({ title, children }: { title: string; children: React.ReactNode }) {

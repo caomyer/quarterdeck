@@ -12,11 +12,19 @@
 //!   {at, kind: "comment", id, body}               another comment on a thread
 //!   {at, kind: "discarded", id}                   an unsent thread taken back
 //!   {at, kind: "sent", verdict, rev, threads[], message}  one review, sent
+//!   {at, kind: "resolved" | "reopened", id}       the captain settles a thread
+//!   {at, kind: "seen", rev}                       the captain looked at a revision
 //! A thread is a draft until a `sent` event names it. Sending is the only
 //! thing that reaches the first mate; everything before it is local and
 //! reversible.
 //!
-//! Commands: `review_get`, `review_comment`, `review_discard`, `review_submit`.
+//! A thread's state follows from those events: `draft` until it is sent, then
+//! `open` until the captain resolves it, and `resolved` after. Whether the
+//! author says a revision answers it is the author's claim, recorded on the
+//! revision itself; settling a thread stays the captain's.
+//!
+//! Commands: `review_get`, `review_comment`, `review_discard`, `review_submit`,
+//! `review_settle`, `review_seen`, `review_summary`.
 
 use crate::artifact;
 use crate::host::{Cmd, HostHandle};
@@ -96,6 +104,7 @@ pub fn view(path: &Path) -> Value {
     let events = read_events(path);
     let mut threads: Vec<Value> = Vec::new();
     let mut sent: Vec<Value> = Vec::new();
+    let mut seen: Option<u64> = None;
     for event in &events {
         let kind = event.get("kind").and_then(Value::as_str).unwrap_or_default();
         let id = event.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -106,6 +115,8 @@ pub fn view(path: &Path) -> Value {
                 "anchor": event.get("anchor").cloned().unwrap_or(Value::Null),
                 "at": event.get("at").cloned().unwrap_or(Value::Null),
                 "sent_at": Value::Null,
+                "state": "draft",
+                "resolved_at": Value::Null,
                 "comments": [{"body": event.get("body").cloned().unwrap_or(Value::Null), "at": event.get("at").cloned().unwrap_or(Value::Null)}],
             })),
             "comment" => {
@@ -116,11 +127,25 @@ pub fn view(path: &Path) -> Value {
                 }
             }
             "discarded" => threads.retain(|thread| thread["id"] != id.as_str()),
+            "resolved" | "reopened" => {
+                if let Some(thread) = threads.iter_mut().find(|thread| thread["id"] == id.as_str()) {
+                    // A thread nobody has sent yet is still a draft; settling waits for it to go.
+                    if !thread["sent_at"].is_null() {
+                        let settled = kind == "resolved";
+                        thread["state"] = json!(if settled { "resolved" } else { "open" });
+                        thread["resolved_at"] = if settled { event.get("at").cloned().unwrap_or(Value::Null) } else { Value::Null };
+                    }
+                }
+            }
+            "seen" => seen = event.get("rev").and_then(Value::as_u64).max(seen),
             "sent" => {
                 let at = event.get("at").cloned().unwrap_or(Value::Null);
                 for named in event.get("threads").and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(thread) = threads.iter_mut().find(|thread| thread["id"] == named) {
                         thread["sent_at"] = at.clone();
+                        if thread["state"] == "draft" {
+                            thread["state"] = json!("open");
+                        }
                     }
                 }
                 sent.push(json!({
@@ -135,7 +160,15 @@ pub fn view(path: &Path) -> Value {
         }
     }
     let draft: Vec<&Value> = threads.iter().filter(|thread| thread["sent_at"].is_null()).collect();
-    json!({"threads": threads, "draft_count": draft.len(), "sent": sent, "log": path.to_string_lossy()})
+    let open = threads.iter().filter(|thread| thread["state"] == "open").count();
+    json!({
+        "threads": threads,
+        "draft_count": draft.len(),
+        "open_count": open,
+        "sent": sent,
+        "seen_rev": seen,
+        "log": path.to_string_lossy(),
+    })
 }
 
 fn next_thread_id(path: &Path) -> String {
@@ -312,6 +345,77 @@ pub async fn review_submit(
     Ok(json!({"message": message, "text": text, "review": view(&path)}))
 }
 
+/// Every page's review at a glance, keyed `task/<id>/<name>` or `chat/<name>`:
+/// the newest revision looked at, and how many comments are waiting or unsent.
+/// Only what the list needs, so it stays one cheap read per page.
+pub fn summary(data: &Path) -> Value {
+    let mut pages = serde_json::Map::new();
+    let mut add = |key: String, log: PathBuf| {
+        if !log.is_file() {
+            return;
+        }
+        let current = view(&log);
+        pages.insert(
+            key,
+            json!({
+                "seen_rev": current["seen_rev"],
+                "draft_count": current["draft_count"],
+                "open_count": current["open_count"],
+            }),
+        );
+    };
+    let Ok(entries) = std::fs::read_dir(data) else { return Value::Object(pages) };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".artifacts" {
+            for page in std::fs::read_dir(entry.path()).into_iter().flatten().flatten() {
+                let page_name = page.file_name().to_string_lossy().to_string();
+                add(format!("chat/{page_name}"), page.path().join("review.jsonl"));
+            }
+        } else if artifact::valid_task_id(&name) {
+            for page in std::fs::read_dir(entry.path().join("artifacts")).into_iter().flatten().flatten() {
+                let page_name = page.file_name().to_string_lossy().to_string();
+                add(format!("task/{name}/{page_name}"), page.path().join("review.jsonl"));
+            }
+        }
+    }
+    Value::Object(pages)
+}
+
+#[tauri::command]
+pub async fn review_summary(app: AppHandle) -> Result<Value, String> {
+    Ok(summary(&data_dir(&app)?))
+}
+
+/// The captain settles a thread, or opens it again. Only a sent thread can be
+/// settled: a draft is still theirs to change.
+#[tauri::command]
+pub async fn review_settle(app: AppHandle, page: Ref, thread: String, resolved: bool) -> Result<Value, String> {
+    let path = log_path(&app, &page)?;
+    let current = view(&path);
+    let sent = current["threads"]
+        .as_array()
+        .is_some_and(|threads| threads.iter().any(|item| item["id"] == thread.as_str() && !item["sent_at"].is_null()));
+    if !sent {
+        return Err("that comment has not been sent yet".to_string());
+    }
+    let kind = if resolved { "resolved" } else { "reopened" };
+    append(&path, &json!({"at": now_ms(), "kind": kind, "id": thread}))?;
+    Ok(view(&path))
+}
+
+/// Records that the captain has looked at a revision, so a later one can be
+/// marked as new. Looking at an older revision never unsees a newer one.
+#[tauri::command]
+pub async fn review_seen(app: AppHandle, page: Ref, rev: u64) -> Result<Value, String> {
+    let path = log_path(&app, &page)?;
+    if view(&path)["seen_rev"].as_u64().is_some_and(|already| already >= rev) {
+        return Ok(view(&path));
+    }
+    append(&path, &json!({"at": now_ms(), "kind": "seen", "rev": rev}))?;
+    Ok(view(&path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,10 +453,50 @@ mod tests {
         append(&path, &json!({"at": 5, "kind": "sent", "verdict": "changes", "rev": 2, "threads": ["t1"], "message": "out-7"})).unwrap();
         let current = view(&path);
         assert_eq!(current["draft_count"], 0);
+        assert_eq!(current["open_count"], 1);
         assert_eq!(current["threads"][0]["sent_at"], 5);
+        assert_eq!(current["threads"][0]["state"], "open");
         assert_eq!(current["sent"][0]["verdict"], "changes");
         // A discarded id is never reused, so a sent review and the log always name the same thread.
         assert_eq!(next_thread_id(&path), "t3");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settling_is_the_captains_and_only_after_a_comment_has_gone() {
+        let dir = scratch("settle");
+        let path = dir.join("review.jsonl");
+        append(&path, &json!({"at": 1, "kind": "opened", "id": "t1", "rev": 1, "anchor": anchor("a"), "body": "one"})).unwrap();
+        append(&path, &json!({"at": 2, "kind": "opened", "id": "t2", "rev": 1, "anchor": anchor("b"), "body": "two"})).unwrap();
+        // A draft cannot be settled, so its state never jumps ahead of the first mate hearing it.
+        append(&path, &json!({"at": 3, "kind": "resolved", "id": "t1"})).unwrap();
+        assert_eq!(view(&path)["threads"][0]["state"], "draft");
+
+        append(&path, &json!({"at": 4, "kind": "sent", "verdict": "changes", "rev": 1, "threads": ["t1", "t2"], "message": "out-1"})).unwrap();
+        assert_eq!(view(&path)["open_count"], 2);
+        append(&path, &json!({"at": 5, "kind": "resolved", "id": "t1"})).unwrap();
+        let current = view(&path);
+        assert_eq!(current["threads"][0]["state"], "resolved");
+        assert_eq!(current["threads"][0]["resolved_at"], 5);
+        assert_eq!(current["open_count"], 1);
+        append(&path, &json!({"at": 6, "kind": "reopened", "id": "t1"})).unwrap();
+        let current = view(&path);
+        assert_eq!(current["threads"][0]["state"], "open");
+        assert!(current["threads"][0]["resolved_at"].is_null());
+        assert_eq!(current["open_count"], 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_newest_revision_looked_at_is_remembered() {
+        let dir = scratch("seen");
+        let path = dir.join("review.jsonl");
+        assert!(view(&path)["seen_rev"].is_null());
+        append(&path, &json!({"at": 1, "kind": "seen", "rev": 2})).unwrap();
+        assert_eq!(view(&path)["seen_rev"], 2);
+        // Looking back at an older revision does not unsee the newer one.
+        append(&path, &json!({"at": 2, "kind": "seen", "rev": 1})).unwrap();
+        assert_eq!(view(&path)["seen_rev"], 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -393,6 +537,29 @@ mod tests {
         assert!(text.contains("Written by you."), "{text}");
         assert!(text.contains("No comments on the page itself."), "{text}");
         assert!(compose(&chat, "merge", &[], Path::new("/x")).is_err());
+    }
+
+    #[test]
+    fn the_summary_covers_every_page_with_a_review() {
+        let data = scratch("summary");
+        let task = data.join("res-titles-scout/artifacts/titles-plan");
+        std::fs::create_dir_all(&task).unwrap();
+        append(&task.join("review.jsonl"), &json!({"at": 1, "kind": "opened", "id": "t1", "rev": 2, "anchor": anchor("q"), "body": "b"})).unwrap();
+        append(&task.join("review.jsonl"), &json!({"at": 2, "kind": "seen", "rev": 2})).unwrap();
+        let chat = data.join(".artifacts/board");
+        std::fs::create_dir_all(&chat).unwrap();
+        append(&chat.join("review.jsonl"), &json!({"at": 1, "kind": "seen", "rev": 1})).unwrap();
+        // A page nobody has reviewed has no row, and neither does a stray folder.
+        std::fs::create_dir_all(data.join("res-titles-scout/artifacts/unread")).unwrap();
+        std::fs::create_dir_all(data.join("notes")).unwrap();
+
+        let pages = summary(&data);
+        assert_eq!(pages["task/res-titles-scout/titles-plan"]["seen_rev"], 2);
+        assert_eq!(pages["task/res-titles-scout/titles-plan"]["draft_count"], 1);
+        assert_eq!(pages["chat/board"]["seen_rev"], 1);
+        assert_eq!(pages["chat/board"]["draft_count"], 0);
+        assert_eq!(pages.as_object().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]

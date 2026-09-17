@@ -77,17 +77,24 @@ export type ArtifactRevision = {
   presented_by: { role: "crew"; task: string } | { role: "firstmate" };
   /** `accepted`: presented despite findings the presenter said were intentional. `skipped`: no browser was there to check. */
   layout?: { status: "clean" | "accepted" | "skipped"; reason?: string; issues: ArtifactLayoutIssue[] };
+  /** What the author says this revision does about the captain's comments. Whether one is settled stays the captain's call. */
+  answers?: { addressed: string[]; replies: { thread: string; body: string }[] };
 };
 
 /** Where a comment sits on the page: the words themselves, a little text either side, and a fallback path. */
 export type ReviewAnchor = { quote: string; prefix: string; suffix: string; path: string };
 export type ReviewComment = { body: string; at: number };
 /** One place on the page the captain wrote about. `sent_at` is null while it is still a draft. */
-export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | null; at: number; sent_at: number | null; comments: ReviewComment[] };
+/** `draft` until the review goes, then `open` until the captain settles it. */
+export type ReviewThreadState = "draft" | "open" | "resolved";
+export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[] };
 export type ReviewVerdict = "approve" | "changes" | "comment";
 export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[] };
+/** What the list needs about a page's review, keyed `task/<id>/<name>` or `chat/<name>`. */
+export type ReviewSummary = Record<string, { seen_rev: number | null; draft_count: number; open_count: number }>;
+
 /** The whole review of one page, as the app stores it beside the revisions. */
-export type ReviewView = { threads: ReviewThread[]; draft_count: number; sent: ReviewSent[]; log: string };
+export type ReviewView = { threads: ReviewThread[]; draft_count: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
 /** Which page a review belongs to. */
 export type ArtifactRef = { scope: "task" | "chat"; task: string | null; name: string };
 
@@ -205,6 +212,12 @@ export interface HostAdapter {
   reviewDiscard(ref: ArtifactRef, thread: string): Promise<ReviewView>;
   /** Sends the whole draft to the first mate as one message. */
   reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict): Promise<{ message: string; text: string; review: ReviewView }>;
+  /** Settles a sent comment, or opens it again. */
+  reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean): Promise<ReviewView>;
+  /** Remembers that the captain has looked at a revision, so a later one reads as new. */
+  reviewSeen(ref: ArtifactRef, rev: number): Promise<ReviewView>;
+  /** Every page's review at a glance, for the list. */
+  reviewSummary(): Promise<ReviewSummary>;
 }
 
 /** The path both adapters serve a revision's page under: `task/<id>/<name>/rev-<n>/<entry>` or `chat/<name>/rev-<n>/<entry>`. */
