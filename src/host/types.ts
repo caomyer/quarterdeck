@@ -85,11 +85,13 @@ export type ArtifactRevision = {
 
 /** Where a comment sits on the page: the words themselves, a little text either side, and a fallback path. */
 export type ReviewAnchor = { quote: string; prefix: string; suffix: string; path: string };
+/** A thread on a diagram the page owns: the scene is the thing being changed, not a quote. */
+export type SceneAnchor = { scene: string; label: string; path: string; quote: string; scene_file: string; picture: string | null; /** Only the browser mock, which has no home to serve the picture from. */ preview?: string };
 export type ReviewComment = { body: string; at: number };
 /** One place on the page the captain wrote about. `sent_at` is null while it is still a draft. */
 /** `draft` until the review goes, then `open` until the captain settles it. */
 export type ReviewThreadState = "draft" | "open" | "resolved";
-export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[] };
+export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | SceneAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[] };
 export type ReviewVerdict = "approve" | "changes" | "comment";
 export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[] };
 /** The captain's choice on a held task the page argues. Staged until the review is sent. */
@@ -220,6 +222,8 @@ export interface HostAdapter {
   reviewDiscard(ref: ArtifactRef, thread: string): Promise<ReviewView>;
   /** Sends the whole draft to the first mate as one message. */
   reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict): Promise<{ message: string; text: string; review: ReviewView }>;
+  /** Files a proposed diagram beside the review and opens a thread for it. */
+  reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string): Promise<ReviewView>;
   /** Stages the captain's choice on a held task, or takes it back with no option. */
   reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string): Promise<ReviewView>;
   /** Settles a sent comment, or opens it again. */

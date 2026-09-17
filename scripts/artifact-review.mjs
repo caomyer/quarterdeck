@@ -3,7 +3,8 @@
 // the task drawer and back, reviewing itself: commenting on a part of the page, the draft
 // surviving a reload, taking a comment back, and sending the review with a verdict, and
 // iterating: what the author answers, settling a comment, what the list says is new, and
-// deciding: a call answered inside the page that argues it, in one review with the comments.
+// deciding: a call answered inside the page that argues it, in one review with the comments,
+// and a diagram the page owns: opening it, proposing changes, and how they reach the author.
 //
 //   pnpm dev --port 4191 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
@@ -269,6 +270,46 @@ await call.waitFor();
 check(await call.getAttribute("data-answered-in-review") === "true", "the call shows the answer has gone");
 check((await call.innerText()).includes("This stays here until the first mate records it."), "the call is honest about not being closed");
 await shot(page, "16-call-answered");
+
+// A diagram the page owns: opened for real, changed, and proposed with the review.
+await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+await rows.nth(1).click();
+await frame.locator("h1").waitFor();
+await page.locator(".scene-open").waitFor();
+check((await page.locator(".scene-open").innerText()).includes("Diagram"), "a page with a diagram offers to open it");
+await page.locator(".scene-open").click();
+const editor = page.locator(".scene-editor");
+await editor.waitFor();
+check((await editor.locator("> header h2").innerText()) === "Snip pipeline", "the editor opens the page's own diagram");
+await page.waitForTimeout(6000);
+check(await editor.locator("canvas").count() > 0, "the scene draws on a canvas");
+await shot(page, "17-diagram");
+await editor.getByRole("button", { name: "Propose these changes" }).click();
+await page.waitForTimeout(1500);
+check((await editor.innerText()).includes("Nothing has changed"), "an unchanged diagram is not filed as a change");
+const canvas = await editor.locator("canvas").first().boundingBox();
+await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
+await page.keyboard.press("Meta+a");
+await page.waitForTimeout(400);
+for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowDown");
+await page.waitForTimeout(600);
+await editor.getByRole("button", { name: "Propose these changes" }).click();
+await page.waitForTimeout(4000);
+check(await page.locator(".scene-editor").count() === 0, "proposing closes the editor");
+const proposal = threads.last();
+const proposalText = await proposal.innerText();
+check(proposalText.includes("Snip pipeline"), "the proposal reads as a thread on that diagram");
+check(/change(s)? to Snip pipeline/.test(proposalText), "the thread says what changed, in the diagram's own terms");
+check(proposalText.includes("Not sent yet"), "a proposal is a draft like any comment");
+check(await proposal.locator("img.thread-picture").count() === 1, "the rail shows what was proposed");
+await shot(page, "18-proposed");
+await page.locator(".verdict-picker select").selectOption("changes");
+await page.locator(".send-review").click();
+await page.locator(".review-last").waitFor();
+await page.locator(".nav-item", { hasText: "Chat" }).click();
+const proposalMessage = await page.locator(".captain-message").last().innerText();
+check(proposalMessage.includes("on the diagram \"Snip pipeline\""), "the message names the diagram");
+check(proposalMessage.includes("proposed scene:"), "the message points at the scene the author can take up");
 
 // Narrow window: the review toolbar wraps instead of pushing the page sideways.
 await page.setViewportSize({ width: 700, height: 900 });

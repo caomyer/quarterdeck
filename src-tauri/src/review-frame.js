@@ -10,13 +10,21 @@
 //   in   qd:mode      {mode: "read" | "comment"}
 //   in   qd:threads   {threads: [{id, anchor, draft}]}  draw these, newest last
 //   in   qd:focus     {id}                              scroll one into view
+//   out  qd:scenes    {scenes: [{id, file, label, rect}]} diagrams the page owns
 //   out  qd:ready     the page is listening
 //   out  qd:picked    {anchor}                          the captain picked a place
 //   out  qd:located   {found: [id], missing: [id]}      where the threads landed
 //
 // An anchor is {quote, prefix, suffix, path}: the words themselves plus a little
 // text either side, so it can be found again after the page is revised, and a CSS
-// path as a fallback for a whole block.
+// path as a fallback for a whole block. An anchor on a diagram the page owns is
+// {scene, label, path} instead: the scene file is the thing being talked about.
+//
+// A page says a picture is a diagram it owns by marking it
+// `data-quarterdeck-scene="<file>"`, optionally with
+// `data-quarterdeck-scene-label="<name>"`. The file ships beside the page, so the
+// page stays a plain picture anywhere else and the review screen can open the real
+// thing.
 (function () {
   var CONTEXT = 40;
   var QUOTE_LIMIT = 300;
@@ -196,6 +204,7 @@
       }
     }
     post("qd:located", { found: found, missing: missing });
+    post("qd:scenes", { scenes: scenes() });
   }
 
   var pending = null;
@@ -242,10 +251,48 @@
     };
   }
 
+  // The diagrams this page owns, and where they sit right now.
+  function scenes() {
+    var found = [];
+    var marked = document.querySelectorAll("[data-quarterdeck-scene]");
+    for (var i = 0; i < marked.length; i++) {
+      var element = marked[i];
+      var rect = element.getBoundingClientRect();
+      found.push({
+        id: "scene-" + i,
+        file: element.getAttribute("data-quarterdeck-scene"),
+        label: element.getAttribute("data-quarterdeck-scene-label") || "Diagram " + (i + 1),
+        path: cssPath(element),
+        rect: { top: rect.top + window.scrollY, left: rect.left + window.scrollX, width: rect.width, height: rect.height },
+      });
+    }
+    return found;
+  }
+
+  function sceneAt(target) {
+    var element = target;
+    while (element && element.nodeType === 1) {
+      if (element.hasAttribute && element.hasAttribute("data-quarterdeck-scene")) {
+        var all = scenes();
+        for (var i = 0; i < all.length; i++) {
+          if (all[i].path === cssPath(element)) return all[i];
+        }
+      }
+      element = element.parentElement;
+    }
+    return null;
+  }
+
   function onClick(event) {
     if (mode !== "comment") return;
     event.preventDefault();
     event.stopPropagation();
+    // A diagram the page owns is edited rather than quoted: the scene is the thing being changed.
+    var scene = sceneAt(event.target);
+    if (scene) {
+      post("qd:scene-open", { scene: scene });
+      return;
+    }
     var anchor = anchorFromSelection() || anchorFromPoint(event.target);
     if (anchor) post("qd:picked", { anchor: anchor });
   }

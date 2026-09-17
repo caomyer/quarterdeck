@@ -38,12 +38,16 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { type Artifact, type ArtifactRef, type ArtifactRevision, createHostAdapter, type Decision, type DecisionOptions, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
-import { CheckCheck, RotateCcw } from "lucide-react";
+import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
+import type { ScenePlace, SceneProposal } from "./SceneEditor";
+
+/** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
+const SceneEditor = lazy(() => import("./SceneEditor").then((module) => ({ default: module.SceneEditor })));
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
 
 type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
@@ -430,6 +434,7 @@ export function App() {
               onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => { bridge.noteSent(sent.message, sent.text); setReview(sent.review); })}
               decisions={(shownRevision.covers ?? []).map((task) => (fleet?.decision_options ?? []).find((item) => item.task === task) ?? { task, question: "", options: [] })}
               onAnswer={(decision, option, label) => host.reviewAnswer(artifactRef!, decision, option, label).then(setReview)}
+              onScene={(place, proposal) => host.reviewScene(artifactRef!, shownRevision.rev, place.file, place.label, place.path, proposal.summary, proposal.scene, proposal.png).then(setReview)}
               onSettle={(thread, resolved) => host.reviewSettle(artifactRef!, thread, resolved).then(setReview)}
               onSeen={(rev) => host.reviewSeen(artifactRef!, rev).then(setReview)}
             />
@@ -894,6 +899,19 @@ const VERDICTS: { id: ReviewVerdict; label: string; hint: string }[] = [
   { id: "comment", label: "Comment", hint: "Thoughts only; nothing is blocked." },
 ];
 
+/**
+ * The picture a proposal made of a diagram, served from beside the review rather
+ * than from inside a revision, since the captain drew it rather than the author.
+ */
+function proposalPicture(thread: ReviewThread, url: string) {
+  const anchor = thread.anchor as { scene?: string; picture?: string | null; preview?: string } | null;
+  if (!anchor?.scene || !anchor.picture) return undefined;
+  // The browser mock has no home to serve from, so it carries the picture itself.
+  if (anchor.preview) return anchor.preview;
+  const base = url.slice(0, url.lastIndexOf("/rev-"));
+  return `${base}/review-files/${encodeURIComponent(anchor.picture.split("/").at(-1) ?? "")}`;
+}
+
 /** The words a thread is pinned to, for the rail. */
 function threadQuote(thread: ReviewThread) {
   const quote = thread.anchor?.quote?.trim();
@@ -905,7 +923,7 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, decisions, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer }: {
+function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, decisions, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onScene }: {
   artifact: Artifact;
   revision: ArtifactRevision;
   url: string;
@@ -920,6 +938,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
   onSeen: (rev: number) => Promise<unknown>;
   decisions: DecisionOptions[];
   onAnswer: (decision: string, option?: string, label?: string) => Promise<unknown>;
+  onScene: (place: ScenePlace, proposal: SceneProposal) => Promise<unknown>;
 }) {
   const [narrow, setNarrow] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -928,6 +947,9 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
   const [pending, setPending] = useState<ReviewAnchor | null>(null);
   const [draft, setDraft] = useState("");
   const [missing, setMissing] = useState<string[]>([]);
+  const [scenes, setScenes] = useState<ScenePlace[]>([]);
+  const [openScene, setOpenScene] = useState<{ place: ScenePlace; scene: { elements: never[] } } | null>(null);
+  const [sceneProblem, setSceneProblem] = useState<string | null>(null);
   const [verdict, setVerdict] = useState<ReviewVerdict>("changes");
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -977,11 +999,30 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
         setCommenting(false);
       } else if (data?.type === "qd:located") {
         setMissing(data.missing ?? []);
+      } else if (data?.type === "qd:scenes") {
+        setScenes((data as { scenes?: ScenePlace[] }).scenes ?? []);
+      } else if (data?.type === "qd:scene-open") {
+        void openDiagram((data as { scene?: ScenePlace }).scene);
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  /** The page's own scene file, read through the same scheme that serves the page. */
+  async function openDiagram(place?: ScenePlace) {
+    if (!place) return;
+    setCommenting(false);
+    setSceneProblem(null);
+    try {
+      const base = url.slice(0, url.lastIndexOf("/") + 1);
+      const response = await fetch(base + place.file.split("/").map(encodeURIComponent).join("/"));
+      if (!response.ok) throw new Error(`the diagram file is not in this revision (${response.status})`);
+      setOpenScene({ place, scene: await response.json() });
+    } catch (error) {
+      setSceneProblem(`That diagram could not be opened: ${String(error)}`);
+    }
+  }
 
   async function save() {
     const body = draft.trim();
@@ -1021,10 +1062,12 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
       {artifact.latest.rev > revision.rev && <button className="newer-revision" onClick={() => onRevision(artifact.latest.rev)} title={artifact.latest.note ?? undefined}>Rev {artifact.latest.rev} is new · Open</button>}
       {note && <button className={`layout-flag ${findingsOpen ? "open" : ""}`} aria-expanded={findingsOpen} onClick={() => setFindingsOpen((current) => !current)}><CircleAlert size={14} /> {note.label}</button>}
       <button className={`comment-toggle ${commenting ? "selected" : ""}`} aria-pressed={commenting} onClick={() => { setCommenting((current) => !current); setPending(null); }} title="Comment on a part of the page"><MessageSquarePlus size={15} /> Comment</button>
+      {scenes.length > 0 && <button className="scene-open" onClick={() => void openDiagram(scenes[0])} title={`Change ${scenes[0].label}`}><Shapes size={15} /> {scenes.length === 1 ? "Diagram" : `${scenes.length} diagrams`}</button>}
       <div className="width-toggle" role="group" aria-label="Window width"><button className={narrow ? "" : "selected"} aria-pressed={!narrow} onClick={() => setNarrow(false)} title="Wide"><Monitor size={15} /></button><button className={narrow ? "selected" : ""} aria-pressed={narrow} onClick={() => setNarrow(true)} title="Narrow"><Smartphone size={15} /></button></div>
     </div>
     {note && findingsOpen && <div className="layout-findings" role="note"><p>When it was presented, firstmate's check found {note.issues.length === 1 ? "this" : "these"}, and the presenter kept the page as it is.</p><ul>{note.issues.map((issue, index) => <li key={index}><strong>{issue.viewport === "narrow" ? "Narrow" : "Wide"}</strong> {issue.detail}<code>{issue.selector}</code></li>)}</ul></div>}
-    {commenting && <div className="comment-hint" role="status">Select the words you mean, or click a part of the page.</div>}
+    {commenting && <div className="comment-hint" role="status">Select the words you mean, or click a part of the page{scenes.length > 0 ? ". A diagram opens for you to change" : ""}.</div>}
+    {sceneProblem && <div className="comment-hint problem" role="alert">{sceneProblem}</div>}
     <div className="artifact-body">
       <div className={`artifact-stage ${narrow ? "narrow" : ""}`}>
         {!loaded && <div className="artifact-loading">Opening the page…</div>}
@@ -1056,9 +1099,9 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
         </div>}
         <div className="review-threads">
           {threads.length === 0 && !pending && decisions.length === 0 && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
-          {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
+          {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
           {settled.length > 0 && <button className="settled-toggle" aria-expanded={showSettled} onClick={() => setShowSettled((current) => !current)}><ChevronRight size={13} className={showSettled ? "rotated" : ""} /> {settled.length} settled</button>}
-          {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
+          {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
         </div>
         <div className="review-send">
           {problem && <p className="review-problem" role="alert">{problem}</p>}
@@ -1069,6 +1112,9 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
         </div>
       </aside>
     </div>
+    {openScene && <Suspense fallback={<div className="scene-backdrop"><div className="scene-loading">Opening the diagram…</div></div>}>
+      <SceneEditor place={openScene.place} scene={openScene.scene} onClose={() => setOpenScene(null)} onPropose={(proposal) => onScene(openScene.place, proposal)} />
+    </Suspense>}
   </div>;
 }
 
@@ -1076,7 +1122,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
  * One place on the page the captain wrote about, with what the author says about it.
  * The author's answer is their claim; settling it is the captain's, and stays reversible.
  */
-function ReviewThreadCard({ thread, answer, rev, missing, onFocus, onDiscard, onSettle }: { thread: ReviewThread; answer?: { rev: number; reply?: string }; rev: number; missing: boolean; onFocus: () => void; onDiscard: () => void; onSettle: (resolved: boolean) => void }) {
+function ReviewThreadCard({ thread, answer, rev, missing, picture, onFocus, onDiscard, onSettle }: { thread: ReviewThread; answer?: { rev: number; reply?: string }; rev: number; missing: boolean; picture?: string; onFocus: () => void; onDiscard: () => void; onSettle: (resolved: boolean) => void }) {
   const draft = thread.sent_at === null;
   // An author can only answer a comment they were sent, so a draft never shows one.
   const answered = answer && !draft && answer.rev > thread.rev;
@@ -1093,6 +1139,7 @@ function ReviewThreadCard({ thread, answer, rev, missing, onFocus, onDiscard, on
         : <button className="icon-button" title={thread.state === "resolved" ? "Open this again" : "Settle this"} onClick={(event) => { event.stopPropagation(); onSettle(thread.state !== "resolved"); }}>{thread.state === "resolved" ? <RotateCcw size={14} /> : <CheckCheck size={14} />}</button>}
     </header>
     <blockquote>{threadQuote(thread)}</blockquote>
+    {picture && <img className="thread-picture" src={picture} alt={`The diagram as you proposed it: ${threadQuote(thread)}`} />}
     {thread.comments.map((comment, index) => <p key={index}>{comment.body}</p>)}
     {answered && <div className="thread-answer"><strong>{answer.reply ? `Answered in rev ${answer.rev}` : `Changed in rev ${answer.rev}`}</strong>{answer.reply && <p>{answer.reply}</p>}</div>}
     {missing && <small className="thread-missing">Not found in this revision.</small>}

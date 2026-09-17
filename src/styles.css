@@ -406,6 +406,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .review-thread blockquote { margin: 0 0 6px; padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--sea) 50%, var(--border)); color: var(--muted); font-size: .62rem; line-height: 1.45; }
 .review-thread p { margin: 0 0 4px; color: var(--ink); font-size: .68rem; line-height: 1.5; }
 .review-thread p:last-child { margin-bottom: 0; }
+.thread-picture { display: block; width: 100%; margin: 0 0 6px; border: 1px solid var(--border); border-radius: 5px; background: #fff; }
 .thread-missing { display: block; margin-top: 4px; color: var(--amber); font-size: .58rem; font-weight: 640; }
 .thread-rev { display: block; margin-top: 3px; color: var(--muted); font-size: .58rem; }
 .comment-composer { padding: 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
@@ -455,6 +456,26 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .decision-missing { display: block; color: var(--muted); font-size: .61rem; line-height: 1.45; }
 
 .newer-revision { display: flex; flex: none; align-items: center; gap: 5px; min-height: 30px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--blue) 50%, var(--border)); border-radius: 6px; color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, var(--surface)); font-size: .61rem; font-weight: 700; }
+
+/* A diagram the page owns, opened for real. */
+.scene-open { display: flex; flex: none; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .63rem; font-weight: 680; }
+.scene-open:hover { border-color: var(--sea); }
+.comment-hint.problem { color: var(--coral); background: color-mix(in srgb, var(--coral) 8%, var(--surface)); }
+.scene-backdrop { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 24px; background: rgb(12 20 19 / 42%); }
+.scene-editor { display: flex; width: min(1180px, 100%); height: min(820px, 100%); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow); }
+.scene-editor header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+.scene-editor header > div { display: flex; flex-direction: column; gap: 2px; }
+.scene-editor header span { color: var(--sea); font-size: .58rem; font-weight: 800; text-transform: uppercase; }
+.scene-editor header h2 { margin: 0; font-size: .85rem; letter-spacing: 0; }
+.scene-editor header p { margin: 0; color: var(--muted); font-size: .63rem; }
+/* Excalidraw positions its own UI inside this box, so it has to be the containing block. */
+.scene-canvas { position: relative; min-height: 0; flex: 1; overflow: hidden; background: #fff; contain: layout paint; }
+.scene-canvas .excalidraw { --zIndex-popup: 30; }
+.scene-loading { display: grid; height: 100%; place-items: center; color: var(--muted); font-size: .68rem; }
+.scene-editor footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 11px 16px; border-top: 1px solid var(--border); }
+.scene-editor footer button { min-height: 33px; padding: 0 13px; border: 0; border-radius: 6px; color: var(--on-accent); background: var(--sea); font-size: .66rem; font-weight: 700; }
+.scene-editor footer button.ghost { border: 1px solid var(--border); color: var(--ink); background: var(--surface); font-weight: 640; }
+.scene-problem { margin: 0 auto 0 0; color: var(--coral); font-size: .62rem; }
 
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }

@@ -251,6 +251,20 @@ export class MockHostAdapter implements HostAdapter {
     return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, resolved_at: null, state: "draft", comments: [{ body, at }] }]);
   }
 
+  async reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string) {
+    const current = this.review(ref);
+    const id = `t${current.threads.length + 1}`;
+    const at = Date.now();
+    const folder = `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review-files`;
+    void sceneJson;
+    return this.settle(ref, [...current.threads, {
+      id, rev, at, sent_at: null, resolved_at: null, state: "draft" as const,
+      // The app writes these beside the review; the mock keeps the picture inline so the rail can show it.
+      anchor: { scene, label, path, quote: label, scene_file: `${folder}/${id}.excalidraw`, picture: png ? `${folder}/${id}.png` : null, preview: png },
+      comments: [{ body: summary, at }],
+    }]);
+  }
+
   async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string) {
     const current = this.review(ref);
     const kept = current.answers.filter((answer) => answer.decision !== decision || answer.sent_at !== null);
@@ -301,7 +315,15 @@ export class MockHostAdapter implements HostAdapter {
     const text = [
       `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
       ...(staged.length ? ["Answers, to record with bin/fm-captain-hold.sh:", ...staged.map((answer) => `${answer.decision}: ${answer.label}`)] : []),
-      ...draft.map((thread) => `${thread.id} on "${thread.anchor?.quote ?? ""}": ${thread.comments.map((comment) => comment.body).join(" ")}`),
+      // The same shape the app's own composer writes, so the browser review sees what a first mate would.
+      ...draft.flatMap((thread) => {
+        const anchor = thread.anchor as { quote?: string; scene?: string; scene_file?: string; picture?: string | null } | null;
+        const place = anchor?.scene ? `on the diagram "${anchor.quote ?? ""}"` : `on "${anchor?.quote ?? ""}"`;
+        const said = thread.comments.map((comment) => comment.body).join(" ");
+        return anchor?.scene
+          ? [`${thread.id} ${place}: ${said}`, `  proposed scene: ${anchor.scene_file ?? ""}`, ...(anchor.picture ? [`  picture of it: ${anchor.picture}`] : [])]
+          : [`${thread.id} ${place}: ${said}`];
+      }),
     ].join("\n");
     const message = await this.send(text);
     const at = Date.now();

@@ -55,6 +55,10 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<{ message: string; text: string; review: ReviewView }>("review_submit", { page: ref, rev, verdict });
   }
 
+  reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string) {
+    return invoke<ReviewView>("review_scene", { page: ref, rev, proposal: { scene, label, path, summary, sceneJson, pngBase64: png } });
+  }
+
   reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string) {
     return invoke<ReviewView>("review_answer", { page: ref, decision, option, label });
   }

@@ -29,8 +29,15 @@
 //! task is the first mate's, through its own intake, so the app never settles a
 //! hold itself.
 //!
+//! A change the captain makes to a diagram the page owns is a thread like any
+//! other: its anchor names the scene instead of quoting words, its body says
+//! what changed, and the proposed scene and a picture of it are written beside
+//! the review for the author to pick up. The author's next revision is still
+//! the only thing that changes the page.
+//!
 //! Commands: `review_get`, `review_comment`, `review_discard`, `review_submit`,
-//! `review_settle`, `review_seen`, `review_summary`, `review_answer`.
+//! `review_settle`, `review_seen`, `review_summary`, `review_answer`,
+//! `review_scene`.
 
 use crate::artifact;
 use crate::host::{Cmd, HostHandle};
@@ -49,6 +56,19 @@ pub struct Ref {
     scope: String,
     task: Option<String>,
     name: String,
+}
+
+/// A diagram as the captain left it: which diagram, what changed, and the scene
+/// and picture to hand the author.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Proposal {
+    scene: String,
+    label: String,
+    path: String,
+    summary: String,
+    scene_json: String,
+    png_base64: String,
 }
 
 /// What the captain says about the page as a whole, and what it does to the task.
@@ -274,13 +294,23 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Va
                     .join(" ")
             })
             .unwrap_or_default();
-        let place = if quote.is_empty() {
-            String::new()
-        } else {
-            format!(" on \"{}\"", shorten(quote, QUOTE_LIMIT))
+        let scene = thread.get("anchor").and_then(|anchor| anchor.get("scene")).and_then(Value::as_str);
+        let place = match (scene, quote.is_empty()) {
+            (Some(_), _) => format!(" on the diagram \"{}\"", shorten(quote, QUOTE_LIMIT)),
+            (None, true) => String::new(),
+            (None, false) => format!(" on \"{}\"", shorten(quote, QUOTE_LIMIT)),
         };
         let older = if on_rev == rev { String::new() } else { format!(" (rev {on_rev})") };
         lines.push(format!("{id}{place}{older}: {}", shorten(&said, 600)));
+        if scene.is_some() {
+            let anchor = thread.get("anchor");
+            let file = anchor.and_then(|anchor| anchor.get("scene_file")).and_then(Value::as_str).unwrap_or("");
+            let picture = anchor.and_then(|anchor| anchor.get("picture")).and_then(Value::as_str).unwrap_or("");
+            lines.push(format!("  proposed scene: {file}"));
+            if !picture.is_empty() {
+                lines.push(format!("  picture of it: {picture}"));
+            }
+        }
     }
     Ok(lines.join("\n"))
 }
@@ -458,6 +488,67 @@ pub async fn review_answer(app: AppHandle, page: Ref, decision: String, option: 
         &json!({"at": now_ms(), "kind": "answer", "decision": decision, "option": option, "label": label}),
     )?;
     Ok(view(&path))
+}
+
+/// Files a proposed diagram beside the review and opens a thread for it. The
+/// scene is written as the captain left it, with a picture, so the author can
+/// see it and take it up in the next revision.
+#[tauri::command]
+pub async fn review_scene(app: AppHandle, page: Ref, rev: u64, proposal: Proposal) -> Result<Value, String> {
+    let Proposal { scene, label, path, summary, scene_json, png_base64 } = proposal;
+    if scene.contains('/') || scene.contains('\\') || scene.starts_with('.') || scene.is_empty() {
+        return Err("that is not a diagram this page owns".to_string());
+    }
+    serde_json::from_str::<Value>(&scene_json).map_err(|_| "the diagram could not be read".to_string())?;
+    let summary = summary.trim().to_string();
+    if summary.is_empty() {
+        return Err("a proposal needs to say what changed".to_string());
+    }
+    let log = log_path(&app, &page)?;
+    let id = next_thread_id(&log);
+    let folder = log.parent().ok_or("the review has nowhere to live")?.join("review-files");
+    std::fs::create_dir_all(&folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
+    let scene_file = folder.join(format!("{id}.excalidraw"));
+    std::fs::write(&scene_file, scene_json).map_err(|e| format!("could not write {}: {e}", scene_file.display()))?;
+    let picture = folder.join(format!("{id}.png"));
+    match decode_base64(&png_base64) {
+        Some(bytes) => std::fs::write(&picture, bytes).map_err(|e| format!("could not write {}: {e}", picture.display()))?,
+        None => log::warn!("a proposed diagram came without a readable picture"),
+    }
+    append(
+        &log,
+        &json!({
+            "at": now_ms(), "kind": "opened", "id": id, "rev": rev, "body": summary,
+            "anchor": {
+                "scene": scene, "label": label, "path": path, "quote": label,
+                "scene_file": scene_file.to_string_lossy(),
+                "picture": if picture.is_file() { Value::String(picture.to_string_lossy().to_string()) } else { Value::Null },
+            },
+        }),
+    )?;
+    Ok(view(&log))
+}
+
+/// Just enough base64 for the picture a proposal carries.
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let body = text.rsplit(',').next()?;
+    let mut out = Vec::with_capacity(body.len() / 4 * 3);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in body.bytes() {
+        if byte == b'=' || byte.is_ascii_whitespace() {
+            continue;
+        }
+        let value = ALPHABET.iter().position(|candidate| *candidate == byte)? as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 /// The captain settles a thread, or opens it again. Only a sent thread can be
@@ -672,6 +763,30 @@ mod tests {
         assert_eq!(pages["chat/board"]["draft_count"], 0);
         assert_eq!(pages.as_object().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_proposed_diagram_reads_as_a_thread_with_its_files() {
+        let revision = json!({"scope": "chat", "task": null, "rev": 2, "title": "A plan", "presented_by": {"role": "firstmate"}});
+        let threads = vec![json!({
+            "id": "t1", "rev": 2,
+            "anchor": {"scene": "pipeline.excalidraw", "label": "Snip pipeline", "quote": "Snip pipeline",
+                       "scene_file": "/home/data/.artifacts/a/review-files/t1.excalidraw",
+                       "picture": "/home/data/.artifacts/a/review-files/t1.png"},
+            "comments": [{"body": "Moved \"Title the snip\" below \"Transcribe\"; added \"Retry\"."}],
+        })];
+        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
+        assert!(text.contains("t1 on the diagram \"Snip pipeline\": Moved"), "{text}");
+        assert!(text.contains("  proposed scene: /home/data/.artifacts/a/review-files/t1.excalidraw"), "{text}");
+        assert!(text.contains("  picture of it: /home/data/.artifacts/a/review-files/t1.png"), "{text}");
+    }
+
+    #[test]
+    fn a_picture_comes_back_out_of_its_base64() {
+        assert_eq!(decode_base64("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(decode_base64("data:image/png;base64,aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(decode_base64("").unwrap(), Vec::<u8>::new());
+        assert!(decode_base64("not base64!").is_none());
     }
 
     #[test]

@@ -7,6 +7,11 @@
 //!   artifact://localhost/task/<task-id>/<name>/rev-<n>/<file path>
 //!   artifact://localhost/chat/<name>/rev-<n>/<file path>
 //!
+//! and the pictures a review made of its own proposals:
+//!
+//!   artifact://localhost/task/<task-id>/<name>/review-files/<file>
+//!   artifact://localhost/chat/<name>/review-files/<file>
+//!
 //! which map to `data/<task-id>/artifacts/<name>/rev-<n>/files/<file path>`
 //! and `data/.artifacts/<name>/rev-<n>/files/<file path>`. firstmate's script
 //! owns that layout. Only a complete revision (one with `revision.json`) is
@@ -114,7 +119,22 @@ pub fn resolve(data: &Path, request_path: &str) -> Result<PathBuf, Refusal> {
         _ => return Err(Refusal::Malformed),
     };
     let (rev, file) = rest.split_first().ok_or(Refusal::Malformed)?;
-    if !valid_rev(rev) || file.is_empty() {
+    if file.is_empty() {
+        return Err(Refusal::Malformed);
+    }
+    // A review's own files sit beside the revisions rather than inside one.
+    if rev == "review-files" {
+        if file.len() != 1 {
+            return Err(Refusal::Malformed);
+        }
+        let folder = std::fs::canonicalize(artifact_dir.join("review-files")).map_err(|_| Refusal::Missing)?;
+        let found = std::fs::canonicalize(folder.join(&file[0])).map_err(|_| Refusal::Missing)?;
+        if !found.starts_with(&folder) || !found.is_file() {
+            return Err(Refusal::Missing);
+        }
+        return Ok(found);
+    }
+    if !valid_rev(rev) {
         return Err(Refusal::Malformed);
     }
     let revision = artifact_dir.join(rev);
@@ -277,6 +297,12 @@ mod tests {
         assert_eq!(resolve(&data, "/task/t1/plan/rev-2/My%20Plan.html"), Ok(files.join("My Plan.html")));
         assert_eq!(resolve(&data, "/task/t1/plan/rev-2/img/a.png"), Ok(files.join("img/a.png")));
         assert_eq!(resolve(&data, "/chat/board/rev-1/board.html"), Ok(data.join(".artifacts/board/rev-1/files/board.html")));
+        // A review's picture of its own proposal, which lives beside the revisions.
+        std::fs::create_dir_all(data.join("t1/artifacts/plan/review-files")).unwrap();
+        std::fs::write(data.join("t1/artifacts/plan/review-files/t1.png"), "png").unwrap();
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t1.png"), Ok(data.join("t1/artifacts/plan/review-files/t1.png")));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/../rev-2/revision.json"), Err(Refusal::Malformed));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/missing.png"), Err(Refusal::Missing));
         let response = serve(Some(data.clone()), "/task/t1/plan/rev-2/My%20Plan.html");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
