@@ -205,6 +205,7 @@ Bootstrap detects first, asks for consent, and installs only after the captain a
 Do not dispatch until the essential launch tools are present and GitHub authentication is good; presentation availability follows `bootstrap-diagnostics` and does not block nonvisual work.
 Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
 When `bin/fm-artifact.sh mode` prints `quarterdeck`, present visual decisions and reports with `bin/fm-artifact.sh present` instead of `lavish-axi`; it returns at once, and the captain reviews in the Quarterdeck app.
+When a held task's call is a choice between named options, record them with `bin/fm-decision-options.sh set` so the captain can answer it as a choice, and present the page that argues it with `--covers <task-id>`.
 A silent bootstrap section needs no action; for any printed actionable diagnostic line, load `bootstrap-diagnostics` and follow its owner procedure.
 `BOOTSTRAP_INFO:` lines are completed no-action facts and do not require loading a skill.
 `secondmate-provisioning` owns startup secondmate sync, liveness, and inherited local-material convergence.

@@ -9,7 +9,8 @@
 # Usage:
 #   fm-artifact.sh present (--task <id> | --chat) <html-file>
 #                  [--name <name>] [--title <title>] [--note <text>] [--assets <dir>]
-#                  [--accept-layout] [--addressed <t1,t2>] [--reply <t3>=<text>]
+#                  [--accept-layout] [--covers <task-id,...>]
+#                  [--addressed <t1,t2>] [--reply <t3>=<text>]
 #   fm-artifact.sh list [--json]
 #   fm-artifact.sh mode
 #
@@ -23,6 +24,9 @@
 #   [a-z0-9][a-z0-9-]{0,63}.
 #   --title defaults to the document's <title>, then to the name.
 #   --note says what changed since the previous revision.
+#   --covers names the captain-held tasks this page argues, so the review screen
+#   can offer their recorded options (bin/fm-decision-options.sh) beside the
+#   argument. Each must be a task this home knows.
 #   --addressed names the review comments this revision answers, and --reply
 #   answers one in words without changing the page (repeat it per comment).
 #   Both take the comment ids the captain's review carries (t1, t2, ...), and
@@ -59,7 +63,7 @@
 # revision.json fields: schema, scope ("task"|"chat"), task (null for chat),
 # name, rev, title, note, entry (file name under files/), sha256 (over every
 # file's path and content), bytes, presented_at (UTC), presented_by
-# ({role:"crew",task:<FM_TASK_ID>} or {role:"firstmate"}),
+# ({role:"crew",task:<FM_TASK_ID>} or {role:"firstmate"}), covers ([task id]),
 # answers ({addressed:[<comment id>], replies:[{thread,body}]}), layout
 # ({status:"clean"|"accepted"|"skipped", reason (skipped only),
 # issues:[{viewport:"wide"|"narrow", rule, selector, detail}]}).
@@ -259,7 +263,7 @@ cmd_mode() {
 
 cmd_present() {
   local task='' chat=0 file='' name='' title='' note='' assets='' accept_layout=0 scope art_dir stage digest latest latest_sha
-  local n tries entry bytes presented_by rev_dir now layout answered='' replies='[]' reply_id reply_body id
+  local n tries entry bytes presented_by rev_dir now layout answered='' replies='[]' reply_id reply_body id covers=
   while [ $# -gt 0 ]; do
     case "$1" in
       --task) [ $# -ge 2 ] || usage; task=$2; shift 2 ;;
@@ -269,6 +273,16 @@ cmd_present() {
       --note) [ $# -ge 2 ] || usage; note=$2; shift 2 ;;
       --assets) [ $# -ge 2 ] || usage; assets=$2; shift 2 ;;
       --accept-layout) accept_layout=1; shift ;;
+      --covers)
+        [ $# -ge 2 ] || usage
+        for id in $(printf '%s' "$2" | tr ',' ' '); do
+          fm_task_id_path_safe "$id" || die "invalid task id '$id' in --covers"
+          [ -f "$STATE/$id.meta" ] || [ -d "$DATA/$id" ] || die "--covers names unknown task '$id'"
+          case " $covers " in *" $id "*) die "--covers names '$id' twice" ;; esac
+          covers="$covers $id"
+        done
+        shift 2
+        ;;
       --addressed)
         [ $# -ge 2 ] || usage
         for id in $(printf '%s' "$2" | tr ',' ' '); do
@@ -377,6 +391,8 @@ cmd_present() {
   rev_dir="$art_dir/rev-$n"
   mv "$stage/files" "$rev_dir/files" || die "cannot place revision $n"
 
+  local covers_json
+  covers_json=$(jq -cn --arg covers "$covers" '$covers | split(" ") | map(select(length > 0))')
   local answers
   answers=$(jq -cn --arg addressed "$answered" --argjson replies "$replies" \
     '{addressed:($addressed | split(" ") | map(select(length > 0))), replies:$replies}')
@@ -399,6 +415,7 @@ cmd_present() {
     --argjson bytes "$bytes" \
     --arg presented_at "$now" \
     --argjson presented_by "$presented_by" \
+    --argjson covers "$covers_json" \
     --argjson answers "$answers" \
     --argjson layout "$layout" \
     '{schema:"fm-artifact-revision.v1", scope:$scope,
@@ -406,7 +423,8 @@ cmd_present() {
       name:$name, rev:$rev, title:$title,
       note:(if $note == "" then null else $note end),
       entry:$entry, sha256:$sha256, bytes:$bytes,
-      presented_at:$presented_at, presented_by:$presented_by, answers:$answers, layout:$layout}' \
+      presented_at:$presented_at, presented_by:$presented_by, covers:$covers,
+      answers:$answers, layout:$layout}' \
     > "$rev_dir/.revision.json.tmp" || die "cannot write revision $n"
   mv "$rev_dir/.revision.json.tmp" "$rev_dir/revision.json" || die "cannot publish revision $n"
 

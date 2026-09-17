@@ -68,6 +68,10 @@
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   artifacts[]: presented review artifacts, newest first, exactly as
 #     `bin/fm-artifact.sh list --json` reports them; that script owns the shape.
+#   decision_options[]: the machine-readable choices captain-held tasks offer,
+#     exactly as `bin/fm-decision-options.sh list --json` reports them; that
+#     script owns the shape. A task is held or not by the backlog above; these
+#     are only what it offers.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
 #     (orphan structured in-flight ids with no state/<id>.meta, and unstructured
@@ -1990,6 +1994,7 @@ TASKS_JSON_FILE="$JSON_TRANSPORT_DIR/tasks.json"
 MAIN_INVENTORY_JSON_FILE="$JSON_TRANSPORT_DIR/main-inventory.json"
 SCOUT_REPORTS_JSON_FILE="$JSON_TRANSPORT_DIR/scout-reports.json"
 ARTIFACTS_JSON_FILE="$JSON_TRANSPORT_DIR/artifacts.json"
+DECISION_OPTIONS_JSON_FILE="$JSON_TRANSPORT_DIR/decision-options.json"
 SECONDMATE_CURRENT_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-current.json"
 SECONDMATE_LANDED_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-landed.json"
 printf '%s\n' "$BACKLOG_JSON" > "$BACKLOG_JSON_FILE" \
@@ -2018,6 +2023,8 @@ scout_report_lines > "$SCOUT_REPORTS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: scout report snapshot failed" >&2; exit 1; }
 FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-artifact.sh" list --json > "$ARTIFACTS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: artifact listing failed" >&2; exit 1; }
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-decision-options.sh" list --json > "$DECISION_OPTIONS_JSON_FILE" \
+  || { echo "fm-fleet-snapshot: decision options listing failed" >&2; exit 1; }
 main_inventory_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" > "$MAIN_INVENTORY_JSON_FILE" \
   || { echo "fm-fleet-snapshot: main inventory summary failed" >&2; exit 1; }
 secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
@@ -2039,6 +2046,7 @@ jq -n \
   --slurpfile contributions "$CONTRIBUTIONS_JSON_FILE" \
   --slurpfile scout_reports "$SCOUT_REPORTS_JSON_FILE" \
   --slurpfile artifacts "$ARTIFACTS_JSON_FILE" \
+  --slurpfile decision_options "$DECISION_OPTIONS_JSON_FILE" \
   --slurpfile secondmate_current "$SECONDMATE_CURRENT_JSON_FILE" \
   --slurpfile secondmate_landed "$SECONDMATE_LANDED_JSON_FILE" \
   '($backlog[0]) as $backlog
@@ -2061,6 +2069,7 @@ jq -n \
      contributions:$contributions[0],
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      artifacts:$artifacts[0].artifacts,
+     decision_options:$decision_options[0].decisions,
      secondmate_current:$secondmate_current,
      secondmate_landed:$secondmate_landed,
      secondmate_guidance:{
