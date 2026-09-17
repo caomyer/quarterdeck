@@ -51,6 +51,7 @@ pub fn run() {
       review::review_settle,
       review::review_seen,
       review::review_summary,
+      review::review_answer,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")

@@ -437,6 +437,23 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .settled-toggle:hover { color: var(--ink); background: var(--surface-2); }
 .settled-toggle svg { transition: transform .16s ease; }.settled-toggle svg.rotated { transform: rotate(90deg); }
 
+/* A held task this page argues, answered where the argument is. */
+.decision-answers { border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.decision-answer { padding: 12px; }
+.decision-answer + .decision-answer { border-top: 1px solid var(--border); }
+.decision-answer header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.decision-answer header span { color: var(--coral); font-size: .58rem; font-weight: 780; text-transform: uppercase; }
+.decision-answer header small { overflow: hidden; color: var(--muted); font: .56rem ui-monospace, "SFMono-Regular", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.decision-answer p { margin: 6px 0 8px; color: var(--ink); font-size: .68rem; line-height: 1.45; }
+.decision-choices { display: flex; flex-direction: column; gap: 5px; }
+.decision-choices button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .65rem; text-align: left; }
+.decision-choices button:hover { border-color: var(--sea); }
+.decision-choices button.picked { border-color: var(--sea); color: var(--sea); background: color-mix(in srgb, var(--sea) 9%, var(--surface)); font-weight: 680; }
+.decision-choices small { flex: none; color: var(--green); font-size: .52rem; font-weight: 760; text-transform: uppercase; }
+.decision-staged { display: block; margin-top: 7px; color: var(--sea); font-size: .59rem; font-weight: 680; }
+.decision-sent { display: block; margin-top: 7px; color: var(--green); font-size: .59rem; font-weight: 640; }
+.decision-missing { display: block; color: var(--muted); font-size: .61rem; line-height: 1.45; }
+
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 255px; transform: translateX(-102%); transition: transform .18s ease; box-shadow: var(--shadow); }

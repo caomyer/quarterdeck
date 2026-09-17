@@ -12,6 +12,7 @@
 //!   {at, kind: "comment", id, body}               another comment on a thread
 //!   {at, kind: "discarded", id}                   an unsent thread taken back
 //!   {at, kind: "sent", verdict, rev, threads[], message}  one review, sent
+//!   {at, kind: "answer", decision, option, label}  a choice on a held task the page argues
 //!   {at, kind: "resolved" | "reopened", id}       the captain settles a thread
 //!   {at, kind: "seen", rev}                       the captain looked at a revision
 //! A thread is a draft until a `sent` event names it. Sending is the only
@@ -23,8 +24,13 @@
 //! author says a revision answers it is the author's claim, recorded on the
 //! revision itself; settling a thread stays the captain's.
 //!
+//! An answer is staged the same way a comment is: local and changeable until
+//! the review goes, and then part of the one message. Recording it against the
+//! task is the first mate's, through its own intake, so the app never settles a
+//! hold itself.
+//!
 //! Commands: `review_get`, `review_comment`, `review_discard`, `review_submit`,
-//! `review_settle`, `review_seen`, `review_summary`.
+//! `review_settle`, `review_seen`, `review_summary`, `review_answer`.
 
 use crate::artifact;
 use crate::host::{Cmd, HostHandle};
@@ -104,6 +110,7 @@ pub fn view(path: &Path) -> Value {
     let events = read_events(path);
     let mut threads: Vec<Value> = Vec::new();
     let mut sent: Vec<Value> = Vec::new();
+    let mut answers: Vec<Value> = Vec::new();
     let mut seen: Option<u64> = None;
     for event in &events {
         let kind = event.get("kind").and_then(Value::as_str).unwrap_or_default();
@@ -138,6 +145,20 @@ pub fn view(path: &Path) -> Value {
                 }
             }
             "seen" => seen = event.get("rev").and_then(Value::as_u64).max(seen),
+            "answer" => {
+                let decision = event.get("decision").and_then(Value::as_str).unwrap_or_default().to_string();
+                answers.retain(|answer: &Value| answer["decision"] != decision.as_str());
+                // Choosing nothing takes the answer back off the tray.
+                if event.get("option").and_then(Value::as_str).is_some() {
+                    answers.push(json!({
+                        "decision": decision,
+                        "option": event.get("option").cloned().unwrap_or(Value::Null),
+                        "label": event.get("label").cloned().unwrap_or(Value::Null),
+                        "at": event.get("at").cloned().unwrap_or(Value::Null),
+                        "sent_at": Value::Null,
+                    }));
+                }
+            }
             "sent" => {
                 let at = event.get("at").cloned().unwrap_or(Value::Null);
                 for named in event.get("threads").and_then(Value::as_array).cloned().unwrap_or_default() {
@@ -146,6 +167,11 @@ pub fn view(path: &Path) -> Value {
                         if thread["state"] == "draft" {
                             thread["state"] = json!("open");
                         }
+                    }
+                }
+                for answer in answers.iter_mut() {
+                    if answer["sent_at"].is_null() {
+                        answer["sent_at"] = at.clone();
                     }
                 }
                 sent.push(json!({
@@ -160,10 +186,13 @@ pub fn view(path: &Path) -> Value {
         }
     }
     let draft: Vec<&Value> = threads.iter().filter(|thread| thread["sent_at"].is_null()).collect();
+    let staged = answers.iter().filter(|answer| answer["sent_at"].is_null()).count();
     let open = threads.iter().filter(|thread| thread["state"] == "open").count();
     json!({
         "threads": threads,
-        "draft_count": draft.len(),
+        "answers": answers,
+        "draft_count": draft.len() + staged,
+        "staged_answers": staged,
         "open_count": open,
         "sent": sent,
         "seen_rev": seen,
@@ -201,7 +230,7 @@ fn author_line(revision: &Value) -> String {
 
 /// The one message a sent review becomes. The log path is included so the
 /// author can read the whole review rather than only what fits here.
-pub fn compose(revision: &Value, verdict: &str, threads: &[Value], log: &Path) -> Result<String, String> {
+pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Value], log: &Path) -> Result<String, String> {
     let sentence = verdict_sentence(verdict).ok_or_else(|| format!("'{verdict}' is not a verdict"))?;
     let title = revision.get("title").and_then(Value::as_str).unwrap_or("a page");
     let rev = revision.get("rev").and_then(Value::as_u64).unwrap_or(0);
@@ -214,6 +243,15 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], log: &Path) -
         author_line(revision),
         format!("The whole review, including anything cut short below: {}", log.display()),
     ];
+    if !answers.is_empty() {
+        // The first mate records these against the held tasks; the app never closes a hold itself.
+        lines.push("Answers, to record with bin/fm-captain-hold.sh:".to_string());
+        for answer in answers {
+            let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
+            let label = answer.get("label").and_then(Value::as_str).unwrap_or_default();
+            lines.push(format!("{decision}: {}", shorten(label, 200)));
+        }
+    }
     if threads.is_empty() {
         lines.push("No comments on the page itself.".to_string());
     }
@@ -334,20 +372,28 @@ pub async fn review_submit(
         .as_array()
         .map(|threads| threads.iter().filter(|thread| thread["sent_at"].is_null()).cloned().collect())
         .unwrap_or_default();
+    let staged: Vec<Value> = current["answers"]
+        .as_array()
+        .map(|answers| answers.iter().filter(|answer| answer["sent_at"].is_null()).cloned().collect())
+        .unwrap_or_default();
     let revision = revision_record(&dir, rev)?;
-    let text = compose(&revision, &verdict, &draft, &path)?;
+    let text = compose(&revision, &verdict, &draft, &staged, &path)?;
     let message = host.call(|reply| Cmd::Send { text: text.clone(), reply }).await??;
     let ids: Vec<&str> = draft.iter().filter_map(|thread| thread["id"].as_str()).collect();
     append(
         &path,
-        &json!({"at": now_ms(), "kind": "sent", "verdict": verdict, "rev": rev, "threads": ids, "message": message}),
+        &json!({
+            "at": now_ms(), "kind": "sent", "verdict": verdict, "rev": rev, "threads": ids, "message": message,
+            "answers": staged.iter().filter_map(|answer| answer["decision"].as_str()).collect::<Vec<_>>(),
+        }),
     )?;
     Ok(json!({"message": message, "text": text, "review": view(&path)}))
 }
 
 /// Every page's review at a glance, keyed `task/<id>/<name>` or `chat/<name>`:
-/// the newest revision looked at, and how many comments are waiting or unsent.
-/// Only what the list needs, so it stays one cheap read per page.
+/// the newest revision looked at, how many comments are waiting or unsent, and
+/// which held tasks it has answered. Only what the list and the calls need, so
+/// it stays one cheap read per page.
 pub fn summary(data: &Path) -> Value {
     let mut pages = serde_json::Map::new();
     let mut add = |key: String, log: PathBuf| {
@@ -355,12 +401,23 @@ pub fn summary(data: &Path) -> Value {
             return;
         }
         let current = view(&log);
+        let answered: Vec<&str> = current["answers"]
+            .as_array()
+            .map(|answers| {
+                answers
+                    .iter()
+                    .filter(|answer| !answer["sent_at"].is_null())
+                    .filter_map(|answer| answer["decision"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
         pages.insert(
             key,
             json!({
                 "seen_rev": current["seen_rev"],
                 "draft_count": current["draft_count"],
                 "open_count": current["open_count"],
+                "answered": answered,
             }),
         );
     };
@@ -385,6 +442,22 @@ pub fn summary(data: &Path) -> Value {
 #[tauri::command]
 pub async fn review_summary(app: AppHandle) -> Result<Value, String> {
     Ok(summary(&data_dir(&app)?))
+}
+
+/// Stages the captain's choice on a held task this page argues, or takes it
+/// back when `option` is absent. Nothing reaches the first mate until the
+/// review is sent.
+#[tauri::command]
+pub async fn review_answer(app: AppHandle, page: Ref, decision: String, option: Option<String>, label: Option<String>) -> Result<Value, String> {
+    if !artifact::valid_task_id(&decision) {
+        return Err("that is not a task".to_string());
+    }
+    let path = log_path(&app, &page)?;
+    append(
+        &path,
+        &json!({"at": now_ms(), "kind": "answer", "decision": decision, "option": option, "label": label}),
+    )?;
+    Ok(view(&path))
 }
 
 /// The captain settles a thread, or opens it again. Only a sent thread can be
@@ -463,6 +536,35 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_is_staged_changeable_and_goes_with_the_review() {
+        let dir = scratch("answers");
+        let path = dir.join("review.jsonl");
+        append(&path, &json!({"at": 1, "kind": "answer", "decision": "res-model", "option": "eager", "label": "Keep downloading eagerly"})).unwrap();
+        let current = view(&path);
+        assert_eq!(current["staged_answers"], 1);
+        assert_eq!(current["draft_count"], 1);
+        assert_eq!(current["answers"][0]["option"], "eager");
+
+        // Choosing again replaces the answer rather than adding a second one.
+        append(&path, &json!({"at": 2, "kind": "answer", "decision": "res-model", "option": "wifi-only", "label": "Wi-Fi only"})).unwrap();
+        let current = view(&path);
+        assert_eq!(current["answers"].as_array().unwrap().len(), 1);
+        assert_eq!(current["answers"][0]["option"], "wifi-only");
+
+        // Choosing nothing takes it back off the tray.
+        append(&path, &json!({"at": 3, "kind": "answer", "decision": "res-model", "option": Value::Null})).unwrap();
+        assert_eq!(view(&path)["staged_answers"], 0);
+
+        append(&path, &json!({"at": 4, "kind": "answer", "decision": "res-model", "option": "prompt", "label": "Ask on the first snip"})).unwrap();
+        append(&path, &json!({"at": 5, "kind": "sent", "verdict": "approve", "rev": 1, "threads": [], "answers": ["res-model"], "message": "out-2"})).unwrap();
+        let current = view(&path);
+        assert_eq!(current["staged_answers"], 0);
+        assert_eq!(current["draft_count"], 0);
+        assert_eq!(current["answers"][0]["sent_at"], 5);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn settling_is_the_captains_and_only_after_a_comment_has_gone() {
         let dir = scratch("settle");
         let path = dir.join("review.jsonl");
@@ -523,7 +625,7 @@ mod tests {
             json!({"id": "t1", "rev": 2, "anchor": anchor("Runs after transcription, free, private."), "comments": [{"body": "Say what happens on an older phone."}, {"body": "And on a metered hotspot."}]}),
             json!({"id": "t2", "rev": 1, "anchor": anchor(&"a very long quote ".repeat(20)), "comments": [{"body": "Still open from the last round."}]}),
         ];
-        let text = compose(&revision, "changes", &threads, Path::new("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl")).unwrap();
+        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl")).unwrap();
         assert!(text.starts_with("Captain's review of \"AI titles for snips\" (task res-titles-scout, rev 2): Requests changes.\n"), "{text}");
         assert!(text.contains("Written by res-titles-scout. Relay this review to it word for word."), "{text}");
         assert!(text.contains("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), "{text}");
@@ -532,11 +634,17 @@ mod tests {
         assert!(text.contains("…\" (rev 1): Still open from the last round."), "{text}");
 
         let chat = json!({"scope": "chat", "task": null, "rev": 1, "title": "A decision", "presented_by": {"role": "firstmate"}});
-        let text = compose(&chat, "approve", &[], Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
+        let text = compose(&chat, "approve", &[], &[], Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
         assert!(text.contains("(shared in chat, rev 1): Approved."), "{text}");
         assert!(text.contains("Written by you."), "{text}");
         assert!(text.contains("No comments on the page itself."), "{text}");
-        assert!(compose(&chat, "merge", &[], Path::new("/x")).is_err());
+        assert!(compose(&chat, "merge", &[], &[], Path::new("/x")).is_err());
+
+        // An answer to a held task the page argues travels with the review, for the first mate to record.
+        let answers = vec![json!({"decision": "res-model-download", "option": "wifi-only", "label": "Wi-Fi only, with visible progress"})];
+        let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
+        assert!(text.contains("Answers, to record with bin/fm-captain-hold.sh:"), "{text}");
+        assert!(text.contains("res-model-download: Wi-Fi only, with visible progress"), "{text}");
     }
 
     #[test]
@@ -557,6 +665,10 @@ mod tests {
         assert_eq!(pages["task/res-titles-scout/titles-plan"]["seen_rev"], 2);
         assert_eq!(pages["task/res-titles-scout/titles-plan"]["draft_count"], 1);
         assert_eq!(pages["chat/board"]["seen_rev"], 1);
+        // A decision answered in a sent review shows against the page that answered it.
+        append(&chat.join("review.jsonl"), &json!({"at": 3, "kind": "answer", "decision": "res-model", "option": "wifi-only", "label": "Wi-Fi only"})).unwrap();
+        append(&chat.join("review.jsonl"), &json!({"at": 4, "kind": "sent", "verdict": "approve", "rev": 1, "threads": [], "answers": ["res-model"], "message": "out-1"})).unwrap();
+        assert_eq!(summary(&data)["chat/board"]["answered"][0], "res-model");
         assert_eq!(pages["chat/board"]["draft_count"], 0);
         assert_eq!(pages.as_object().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(data);

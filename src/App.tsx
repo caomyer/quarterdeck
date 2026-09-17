@@ -42,7 +42,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, createHostAdapter, type Decision, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, createHostAdapter, type Decision, type DecisionOptions, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw } from "lucide-react";
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
 
@@ -154,12 +154,19 @@ export function App() {
 
   const decisions = useMemo(() => bearings?.decisions_open.map((decision) => {
     const record = fleet?.backlog?.records.find((item) => item.id === decision.id);
+    const recorded = fleet?.decision_options?.find((item) => item.task === decision.id);
     return {
       ...decision,
       title: record?.title ?? decision.key,
-      summary: record?.hold_reason ?? "",
+      summary: recorded?.question || record?.hold_reason || "",
+      // Recorded options are the decision's own; the prose fallback is for holds nobody has recorded yet.
+      options: recorded?.options.map((option) => ({ label: option.label, recommended: option.recommended })) ?? optionLabels(record?.hold_reason ?? ""),
+      // The page that argues it, if one does: then that is where it is answered.
+      page: (fleet?.artifacts ?? []).find((artifact) => (artifact.latest.covers ?? []).includes(decision.id)),
+      // A review that already carried an answer for it. The call stays open until the first mate closes it.
+      answeredIn: (fleet?.artifacts ?? []).find((artifact) => (reviews[artifactKey(artifact)]?.answered ?? []).includes(decision.id)),
     };
-  }) ?? [], [bearings, fleet]);
+  }) ?? [], [bearings, fleet, reviews]);
 
   // Which message answered which call. The link this session made is authoritative; after a relaunch
   // the app has none, so a message still in the host's outbox is matched by the call it names.
@@ -371,7 +378,7 @@ export function App() {
             )}
             <DashboardSection title="Captain's Call" icon={<Inbox size={17} />} tone="coral" count={bearings.decisions_open.length}>
               {decisions.map((decision) => (
-                <DecisionCard key={decision.id} decision={decision} state={outbox[callAnswers[decision.id]]} answerText={messages.find((message) => message.id === callAnswers[decision.id])?.text} runtime={runtime.state} onSend={(text) => answerCall(decision.id, text)} onStart={() => void bridge.start()} />
+                <DecisionCard key={decision.id} decision={decision} state={outbox[callAnswers[decision.id]]} answerText={messages.find((message) => message.id === callAnswers[decision.id])?.text} runtime={runtime.state} onSend={(text) => answerCall(decision.id, text)} onStart={() => void bridge.start()} onReadArgument={decision.page ? () => showArtifact(decision.page!) : undefined} answeredIn={decision.answeredIn?.title} />
               ))}
               {bearings.decisions_open.length === 0 && <EmptyState label="Nothing needs your action right now." />}
             </DashboardSection>
@@ -418,6 +425,8 @@ export function App() {
               onComment={(body, anchor, thread) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread).then(setReview)}
               onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
               onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => { bridge.noteSent(sent.message, sent.text); setReview(sent.review); })}
+              decisions={(shownRevision.covers ?? []).map((task) => (fleet?.decision_options ?? []).find((item) => item.task === task) ?? { task, question: "", options: [] })}
+              onAnswer={(decision, option, label) => host.reviewAnswer(artifactRef!, decision, option, label).then(setReview)}
               onSettle={(thread, resolved) => host.reviewSettle(artifactRef!, thread, resolved).then(setReview)}
               onSeen={(rev) => host.reviewSeen(artifactRef!, rev).then(setReview)}
             />
@@ -521,8 +530,8 @@ function answersCall(text: string, decision: Decision & { summary: string }) {
   return said.toLowerCase().startsWith(`on the ${callName(decision).toLowerCase()}:`);
 }
 
-function DecisionCard({ decision, state, answerText, runtime, onSend, onStart }: { decision: Decision & { title: string }; state: CallState; answerText?: string; runtime: HostRuntimeState; onSend: (text: string) => void; onStart: () => void }) {
-  const options = optionLabels(decision.summary);
+function DecisionCard({ decision, state, answerText, runtime, onSend, onStart, onReadArgument, answeredIn }: { decision: Decision & { title: string; options?: { label: string; recommended: boolean }[] }; state: CallState; answerText?: string; runtime: HostRuntimeState; onSend: (text: string) => void; onStart: () => void; onReadArgument?: () => void; answeredIn?: string }) {
+  const options = decision.options ?? optionLabels(decision.summary);
   const [selection, setSelection] = useState("");
   const [note, setNote] = useState("");
   const [dateOpen, setDateOpen] = useState(false);
@@ -557,6 +566,14 @@ function DecisionCard({ decision, state, answerText, runtime, onSend, onStart }:
     // After a relaunch the card is fresh, so what the captain chose lives in the message, not in this card's state.
     const resendText = preview === "…" ? answerText : preview;
     return <article className={`decision-card ${read ? "read" : "queued"} call-tone-${tone}`}><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3>{decision.title}</h3>{answerText && <p className="call-answer" title={answerText}>{answerText}</p>}<div className={`call-state tone-${tone}`}>{icon}<span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent && resendText ? <button onClick={() => onSend(resendText)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></article>;
+  }
+  if (answeredIn) {
+    // The answer has gone; the call stays until the first mate records it and closes the task.
+    return <article className="decision-card read call-tone-green" data-decision-id={decision.id} data-answered-in-review="true"><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3 data-testid="decision-title">{decision.title}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Answered in your review of “{answeredIn}”</strong><small>This stays here until the first mate records it.</small></span>{onReadArgument && <button onClick={onReadArgument}>Open the page</button>}</div></article>;
+  }
+  if (onReadArgument) {
+    // A page argues this one, so it is answered there: one decision, one place.
+    return <article className="decision-card" data-decision-id={decision.id} data-argued="true"><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3 data-testid="decision-title">{decision.title}</h3><p data-testid="decision-reason">{decision.summary}</p><div className="decision-actions"><span>{options.length > 0 ? `${options.length} options, with the case for each` : "The case for this is written up"}</span><button onClick={onReadArgument}><PanelsTopLeft size={15} /> Read the argument</button></div></article>;
   }
   return <article className="decision-card" data-decision-id={decision.id}><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3 data-testid="decision-title">{decision.title}</h3><p data-testid="decision-reason">{decision.summary}</p><div className="suggestion-chips">{options.map((option) => <button className={selection === option.label ? "selected" : ""} key={option.label} onClick={() => { setSelection(option.label); setDateOpen(false); setDeferDate(""); }}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}<button className={dateOpen ? "selected" : ""} onClick={() => { setDateOpen(true); setSelection(""); }}>Not now</button></div>{dateOpen && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} onChange={(event) => setDeferDate(event.target.value)} /></label>}<label className="reply-field"><span>{selection === "Send it back" ? "What should change?" : "Or write your own answer"}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} /></label><div className="decision-actions"><span>{preview !== "…" && `→ sends: ${preview}`}</span><button disabled={preview === "…"} onClick={() => onSend(preview)}><Send size={15} /> {mergeSelected && !note.trim() ? "Merge now" : "Send"}</button></div>{mergeSelected && note.trim() && <p className="merge-hint">This sends instructions, not a merge. Use Merge now to merge.</p>}</article>;
 }
@@ -885,7 +902,7 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen }: {
+function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, decisions, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer }: {
   artifact: Artifact;
   revision: ArtifactRevision;
   url: string;
@@ -898,6 +915,8 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, o
   onSubmit: (verdict: ReviewVerdict) => Promise<unknown>;
   onSettle: (thread: string, resolved: boolean) => Promise<unknown>;
   onSeen: (rev: number) => Promise<unknown>;
+  decisions: DecisionOptions[];
+  onAnswer: (decision: string, option?: string, label?: string) => Promise<unknown>;
 }) {
   const [narrow, setNarrow] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -1013,8 +1032,26 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, o
           <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setDraft(""); } }} />
           <div><button className="ghost" onClick={() => { setPending(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim()} onClick={() => void save()}>Comment</button></div>
         </section>}
+        {decisions.length > 0 && <div className="decision-answers">
+          {decisions.map((decision) => {
+            const chosen = review?.answers.find((answer) => answer.decision === decision.task);
+            return <section key={decision.task} className="decision-answer" data-testid="decision-answer">
+              <header><span>Your call</span><small>{decision.task}</small></header>
+              {decision.question && <p>{decision.question}</p>}
+              {decision.options.length === 0
+                ? <small className="decision-missing">This page argues a decision whose options are not recorded. Answer it in chat.</small>
+                : <div className="decision-choices">{decision.options.map((option) => {
+                    const picked = chosen?.option === option.key;
+                    return <button key={option.key} className={picked ? "picked" : ""} aria-pressed={picked} onClick={() => void onAnswer(decision.task, picked ? undefined : option.key, option.label)}>
+                      <span>{option.label}</span>{option.recommended && <small>Recommended</small>}
+                    </button>;
+                  })}</div>}
+              {chosen && <small className={chosen.sent_at === null ? "decision-staged" : "decision-sent"}>{chosen.sent_at === null ? "Goes with your review" : `Sent ${formatWhen(new Date(chosen.sent_at).toISOString())}`}</small>}
+            </section>;
+          })}
+        </div>}
         <div className="review-threads">
-          {threads.length === 0 && !pending && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
+          {threads.length === 0 && !pending && decisions.length === 0 && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
           {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
           {settled.length > 0 && <button className="settled-toggle" aria-expanded={showSettled} onClick={() => setShowSettled((current) => !current)}><ChevronRight size={13} className={showSettled ? "rotated" : ""} /> {settled.length} settled</button>}
           {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}

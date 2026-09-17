@@ -79,6 +79,8 @@ export type ArtifactRevision = {
   layout?: { status: "clean" | "accepted" | "skipped"; reason?: string; issues: ArtifactLayoutIssue[] };
   /** What the author says this revision does about the captain's comments. Whether one is settled stays the captain's call. */
   answers?: { addressed: string[]; replies: { thread: string; body: string }[] };
+  /** The captain-held tasks this page argues, so their recorded options can be offered beside it. */
+  covers?: string[];
 };
 
 /** Where a comment sits on the page: the words themselves, a little text either side, and a fallback path. */
@@ -90,11 +92,15 @@ export type ReviewThreadState = "draft" | "open" | "resolved";
 export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[] };
 export type ReviewVerdict = "approve" | "changes" | "comment";
 export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[] };
+/** The captain's choice on a held task the page argues. Staged until the review is sent. */
+export type ReviewAnswer = { decision: string; option: string; label: string; at: number; sent_at: number | null };
+/** What a captain-held task offers, as `bin/fm-decision-options.sh` records it. */
+export type DecisionOptions = { task: string; question: string; options: { key: string; label: string; recommended: boolean }[] };
 /** What the list needs about a page's review, keyed `task/<id>/<name>` or `chat/<name>`. */
-export type ReviewSummary = Record<string, { seen_rev: number | null; draft_count: number; open_count: number }>;
+export type ReviewSummary = Record<string, { seen_rev: number | null; draft_count: number; open_count: number; answered: string[] }>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */
-export type ReviewView = { threads: ReviewThread[]; draft_count: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
+export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
 /** Which page a review belongs to. */
 export type ArtifactRef = { scope: "task" | "chat"; task: string | null; name: string };
 
@@ -116,6 +122,8 @@ export type FleetSnapshot = {
   tasks: FleetTask[];
   /** Absent from homes whose firstmate predates `bin/fm-artifact.sh`. */
   artifacts?: Artifact[];
+  /** What each captain-held task offers, for pages that argue one. */
+  decision_options?: DecisionOptions[];
 };
 
 export type SnapshotProject = { name: string; mode: string; yolo: boolean; description?: string; added?: string | null };
@@ -212,6 +220,8 @@ export interface HostAdapter {
   reviewDiscard(ref: ArtifactRef, thread: string): Promise<ReviewView>;
   /** Sends the whole draft to the first mate as one message. */
   reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict): Promise<{ message: string; text: string; review: ReviewView }>;
+  /** Stages the captain's choice on a held task, or takes it back with no option. */
+  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string): Promise<ReviewView>;
   /** Settles a sent comment, or opens it again. */
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean): Promise<ReviewView>;
   /** Remembers that the captain has looked at a revision, so a later one reads as new. */

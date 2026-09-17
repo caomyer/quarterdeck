@@ -2,7 +2,8 @@
 // revisions, the narrow width, accepted layout findings, the sandbox, the ways in from chat,
 // the task drawer and back, reviewing itself: commenting on a part of the page, the draft
 // surviving a reload, taking a comment back, and sending the review with a verdict, and
-// iterating: what the author answers, settling a comment, and what the list says is new.
+// iterating: what the author answers, settling a comment, what the list says is new, and
+// deciding: a call answered inside the page that argues it, in one review with the comments.
 //
 //   pnpm dev --port 4191 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
@@ -218,6 +219,52 @@ await composer.locator("button", { hasText: "Comment" }).click();
 await page.locator(".back-button").click();
 check((await rows.nth(1).locator(".review-chip").innerText()) === "1 comment not sent", "the list says a comment is still unsent");
 await shot(page, "12-list-state");
+
+// A call that a page argues is answered in that page.
+await page.locator(".nav-item", { hasText: "Bearings" }).click();
+const call = page.locator(".decision-card").first();
+await call.waitFor();
+check(await call.getAttribute("data-argued") === "true", "a call with a page to argue it says so");
+check(await call.locator(".suggestion-chips").count() === 0, "that call offers no second place to answer");
+check((await call.innerText()).includes("3 options, with the case for each"), "the call says what is waiting in the page");
+await shot(page, "13-call-with-page");
+await call.locator("button", { hasText: "Read the argument" }).click();
+const answer = page.locator("[data-testid='decision-answer']");
+await answer.waitFor();
+check((await answer.innerText()).includes("When may the app download the 150 MB speech model?"), "the page offers the call's own question");
+const choices = answer.locator(".decision-choices button");
+check(await choices.count() === 3, "every recorded option is offered");
+check((await choices.first().textContent()).includes("Recommended"), "the recommendation is marked");
+await choices.first().click();
+check((await answer.innerText()).includes("Goes with your review"), "an answer is staged, not sent");
+check((await page.locator(".send-review").innerText()).includes("Send review · 1"), "the answer counts towards the review");
+await shot(page, "14-answer-staged");
+
+// A comment alongside it, then one message carrying both.
+await page.locator(".comment-toggle").click();
+await frame.locator(".card.rec p").click();
+await composer.locator("textarea").fill("Say what happens on a metered hotspot.");
+await composer.locator("button", { hasText: "Comment" }).click();
+check((await page.locator(".send-review").innerText()).includes("Send review · 2"), "the answer and the comment travel together");
+await page.locator(".verdict-picker select").selectOption("approve");
+await page.locator(".send-review").click();
+await page.locator(".review-last").waitFor();
+check((await answer.innerText()).includes("Sent"), "the answer says it has gone");
+await page.locator(".nav-item", { hasText: "Chat" }).click();
+const review = page.locator(".captain-message").last();
+await review.waitFor();
+const reviewText = await review.innerText();
+check(reviewText.includes("Answers, to record with bin/fm-captain-hold.sh:"), "the first mate is told to record the answer");
+check(reviewText.includes("res-model-download: Wi-Fi only, with visible progress"), "the answer names the task and the option");
+check(reviewText.includes("Say what happens on a metered hotspot."), "the comment goes in the same message");
+await shot(page, "15-answer-sent");
+
+// The call stays open until the first mate records it, and says why.
+await page.locator(".nav-item", { hasText: "Bearings" }).click();
+await call.waitFor();
+check(await call.getAttribute("data-answered-in-review") === "true", "the call shows the answer has gone");
+check((await call.innerText()).includes("This stays here until the first mate records it."), "the call is honest about not being closed");
+await shot(page, "16-call-answered");
 
 // Narrow window: the review toolbar wraps instead of pushing the page sideways.
 await page.setViewportSize({ width: 700, height: 900 });

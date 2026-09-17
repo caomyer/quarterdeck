@@ -5,6 +5,7 @@ import { artifactPath } from "./types";
 import type {
   Artifact,
   ArtifactRef,
+  DecisionOptions,
   ArtifactRevision,
   BearingsSnapshot,
   FleetSnapshot,
@@ -54,7 +55,7 @@ function reviewValue(name: string) {
  */
 const ARTIFACT_TASK = "res-titles-scout";
 
-function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; inFlight: BearingsSnapshot["in_flight"][number] } {
+function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; decisionOptions: DecisionOptions[]; inFlight: BearingsSnapshot["in_flight"][number] } {
   const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
   const plan = (rev: number, minutesAgo: number, note: string | null, layout: ArtifactRevision["layout"]): ArtifactRevision => ({
     scope: "task", task: ARTIFACT_TASK, name: "titles-plan", rev, title: "AI titles for snips", note, entry: "titles-plan.html",
@@ -75,7 +76,18 @@ function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; 
   const board: ArtifactRevision = {
     scope: "chat", task: null, name: "model-download", rev: 1, title: "When may the app download the speech model?", note: null,
     entry: "model-download.html", bytes: 2400, presented_at: at(1), presented_by: { role: "firstmate" }, layout: { status: "clean", issues: [] },
+    covers: ["res-model-download"],
   };
+  // What the held task offers, as bin/fm-decision-options.sh records it.
+  const decisionOptions: DecisionOptions[] = [{
+    task: "res-model-download",
+    question: "When may the app download the 150 MB speech model?",
+    options: [
+      { key: "wifi-only", label: "Wi-Fi only, with visible progress", recommended: true },
+      { key: "prompt", label: "Ask on the first snip that needs it", recommended: false },
+      { key: "eager", label: "Keep downloading eagerly", recommended: false },
+    ],
+  }];
   const artifacts: Artifact[] = [
     { scope: "chat", task: null, name: "model-download", title: board.title, latest: board, revisions: [board] },
     { scope: "task", task: ARTIFACT_TASK, name: "titles-plan", title: "AI titles for snips", latest: planRevisions[2], revisions: planRevisions },
@@ -93,7 +105,7 @@ function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; 
     hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "" },
     actions: { watch: "", steer: "", return_channel_note: null },
   };
-  return { artifacts, task, inFlight: { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: task.project, name: "AI titles for snips", doing: "Revising the titles plan." } };
+  return { artifacts, task, decisionOptions, inFlight: { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: task.project, name: "AI titles for snips", doing: "Revising the titles plan." } };
 }
 
 /** What the host says for each `reason_kind`, so the review shows the details a captain would see. */
@@ -190,10 +202,10 @@ export class MockHostAdapter implements HostAdapter {
     const bearings = bearingsFixture as unknown as BearingsSnapshot;
     const fleet = fleetFixture as unknown as FleetSnapshot;
     if (!reviewFlag("artifacts")) return { bearings, fleet };
-    const { artifacts, task, inFlight } = mockArtifacts(fleet.fm_home);
+    const { artifacts, task, decisionOptions, inFlight } = mockArtifacts(fleet.fm_home);
     return {
       bearings: { ...bearings, in_flight: [...bearings.in_flight, inFlight] },
-      fleet: { ...fleet, tasks: [...fleet.tasks, task], artifacts },
+      fleet: { ...fleet, tasks: [...fleet.tasks, task], artifacts, decision_options: decisionOptions },
     };
   }
 
@@ -207,7 +219,7 @@ export class MockHostAdapter implements HostAdapter {
 
   private review(ref: ArtifactRef): ReviewView {
     const key = `${ref.scope}/${ref.task}/${ref.name}`;
-    const current = this.reviews.get(key) ?? { threads: [], draft_count: 0, open_count: 0, sent: [], seen_rev: null, log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
+    const current = this.reviews.get(key) ?? { threads: [], answers: [], draft_count: 0, staged_answers: 0, open_count: 0, sent: [], seen_rev: null, log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
     this.reviews.set(key, current);
     return current;
   }
@@ -217,7 +229,8 @@ export class MockHostAdapter implements HostAdapter {
       ...this.review(ref),
       threads,
       sent,
-      draft_count: threads.filter((thread) => thread.sent_at === null).length,
+      draft_count: threads.filter((thread) => thread.sent_at === null).length + this.review(ref).answers.filter((answer) => answer.sent_at === null).length,
+      staged_answers: this.review(ref).answers.filter((answer) => answer.sent_at === null).length,
       open_count: threads.filter((thread) => thread.state === "open").length,
     };
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, next);
@@ -236,6 +249,14 @@ export class MockHostAdapter implements HostAdapter {
     }
     const id = `t${current.threads.length + 1}`;
     return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, resolved_at: null, state: "draft", comments: [{ body, at }] }]);
+  }
+
+  async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string) {
+    const current = this.review(ref);
+    const kept = current.answers.filter((answer) => answer.decision !== decision || answer.sent_at !== null);
+    const answers = option ? [...kept, { decision, option, label: label ?? option, at: Date.now(), sent_at: null }] : kept;
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers });
+    return this.settle(ref, current.threads);
   }
 
   async reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
@@ -257,7 +278,12 @@ export class MockHostAdapter implements HostAdapter {
     const pages: ReviewSummary = {};
     for (const [key, review] of this.reviews) {
       const [scope, task, name] = key.split("/");
-      pages[scope === "chat" ? `chat/${name}` : `task/${task}/${name}`] = { seen_rev: review.seen_rev, draft_count: review.draft_count, open_count: review.open_count };
+      pages[scope === "chat" ? `chat/${name}` : `task/${task}/${name}`] = {
+        seen_rev: review.seen_rev,
+        draft_count: review.draft_count,
+        open_count: review.open_count,
+        answered: review.answers.filter((answer) => answer.sent_at !== null).map((answer) => answer.decision),
+      };
     }
     return pages;
   }
@@ -270,10 +296,16 @@ export class MockHostAdapter implements HostAdapter {
   async reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict) {
     const current = this.review(ref);
     const draft = current.threads.filter((thread) => thread.sent_at === null);
+    const staged = current.answers.filter((answer) => answer.sent_at === null);
     const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
-    const text = [`Captain's review of "${ref.name}" (rev ${rev}): ${said}`, ...draft.map((thread) => `${thread.id} on "${thread.anchor?.quote ?? ""}": ${thread.comments.map((comment) => comment.body).join(" ")}`)].join("\n");
+    const text = [
+      `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
+      ...(staged.length ? ["Answers, to record with bin/fm-captain-hold.sh:", ...staged.map((answer) => `${answer.decision}: ${answer.label}`)] : []),
+      ...draft.map((thread) => `${thread.id} on "${thread.anchor?.quote ?? ""}": ${thread.comments.map((comment) => comment.body).join(" ")}`),
+    ].join("\n");
     const message = await this.send(text);
     const at = Date.now();
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => answer.sent_at === null ? { ...answer, sent_at: at } : answer) });
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
