@@ -972,8 +972,11 @@ function StepGroup({ steps, live, home }: { steps: ChatMessage[]; live: boolean;
   const failed = steps.filter((step) => step.status === "failed").length;
   const visible = live && !open ? steps.slice(-LIVE_STEPS) : steps;
   const hidden = steps.length - visible.length;
-  const summary = `${steps.length === 1 ? "1 step" : `${steps.length} steps`}${failed ? ` · ${failed} didn't work` : ""}`;
-  return <div className={`step-group ${live ? "live" : ""}`}>{!live && <button className="step-summary" aria-expanded={open} onClick={() => setOpen((current) => !current)}><ChevronRight size={13} className={open ? "rotated" : ""} /><span>{summary}</span></button>}{live && hidden > 0 && <button className="step-summary" onClick={() => setOpen(true)}><ChevronRight size={13} /><span>{hidden} earlier {hidden === 1 ? "step" : "steps"}</span></button>}{(live || open) && <ol className="step-lines">{visible.map((step) => <StepLine key={step.id} step={step} live={live} home={home} />)}</ol>}</div>;
+  const summary = steps.length === 1 ? "1 step" : `${steps.length} steps`;
+  // A step that errors is usually the first mate probing for something that isn't there, and it goes on from
+  // there. The fact stays, told as quietly as the rest of the line.
+  const note = failed ? `${failed === steps.length && failed === 1 ? "it" : failed} came back with an error` : "";
+  return <div className={`step-group ${live ? "live" : ""}`}>{!live && <button className="step-summary" aria-expanded={open} onClick={() => setOpen((current) => !current)} title={failed ? "A step that errors is often the first mate checking for something that isn't there. It carried on from there." : undefined}><ChevronRight size={13} className={open ? "rotated" : ""} /><span>{summary}</span>{note && <span className="step-note">· {note}</span>}</button>}{live && hidden > 0 && <button className="step-summary" onClick={() => setOpen(true)}><ChevronRight size={13} /><span>{hidden} earlier {hidden === 1 ? "step" : "steps"}</span></button>}{(live || open) && <ol className="step-lines">{visible.map((step) => <StepLine key={step.id} step={step} live={live} home={home} />)}</ol>}</div>;
 }
 
 function StepLine({ step, live, home }: { step: ChatMessage; live: boolean; home: string }) {
@@ -1168,7 +1171,19 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
     { key: "now", title: stateLabel(task.current_state.state), detail: statusDetail, time: formatTime(task.current_state.observed_at), icon: taskStatus(task.current_state.state, 15).icon },
   ];
   const captureText = capture?.text ?? `status: ${task.endpoint.status}\nbackend: ${task.backend}\nworker: ${task.endpoint.agent_alive}\nworktree: ${task.paths.worktree.present ? task.paths.worktree.path : "missing"}\nobserved: ${task.endpoint.observed_at}`;
-  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="task-drawer" onMouseDown={(event) => event.stopPropagation()}>
+  // The drawer is not modal: a press anywhere outside it closes it and still does what it was aimed at, so
+  // a click on the sidebar or another task is never swallowed by the drawer going away.
+  const panel = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node)) close.current(); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close.current(); };
+    document.addEventListener("pointerdown", outside, true);
+    window.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside, true); window.removeEventListener("keydown", escape); };
+  }, []);
+  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel}>
     <header className="drawer-header"><div><span>{projectName(task.project)}</span><h2 data-testid="drawer-title">{title}</h2><small className="drawer-id">{task.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{stateLabel(task.current_state.state)}</strong>{statusDetail && <span>{statusDetail}</span>}</div>{started?.exact && <time className="drawer-age" data-testid="drawer-age" title={`Started ${formatStart(started)}`}>{formatDuration(now - started.ms)}</time>}</div>
     <div className="drawer-scroll">

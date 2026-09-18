@@ -120,7 +120,17 @@ check(await drawer.locator(".worker-screen").count() === 0, "the worker's screen
 await drawer.locator(".fold-toggle").click();
 check(await drawer.locator(".worker-screen").count() === 1, "the worker's screen opens on request");
 await shot(page, "00-drawer");
-await drawer.locator(".icon-button[title='Close task details']").click();
+await page.keyboard.press("Escape");
+check(await drawer.count() === 0, "Escape closes the drawer");
+await underwayRows.first().click();
+await drawer.waitFor();
+// One click on the sidebar both closes the drawer and goes where it was aimed. A real press at the
+// sidebar's position, since a locator click would wait for whatever covers it to go away.
+const chatNav = await page.locator(".nav-item", { hasText: "Chat" }).boundingBox();
+await page.mouse.click(chatNav.x + chatNav.width / 2, chatNav.y + chatNav.height / 2);
+check(await drawer.count() === 0, "a click outside the drawer closes it");
+check(await page.locator(".chat-view").count() === 1, "a click on the sidebar while the drawer is open is not swallowed");
+await page.locator(".nav-item", { hasText: "Bearings" }).click();
 await ready.locator("button", { hasText: "Read the report" }).click();
 await page.locator(".artifact-stage iframe").waitFor();
 check((await page.locator(".page-heading span").innerText()).includes("res-transcripts-scout"), "Read the report opens the scout's page");
@@ -465,6 +475,34 @@ await plan.click();
 await frame.locator("h1").waitFor();
 await noSidewaysScroll(page, "review in a narrow window");
 await shot(page, "07-review-small-window");
+
+// A step that failed is told calmly: the fact stays, the alarm does not.
+{
+  const steps = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  steps.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await steps.addInitScript((events) => { window.__FM_REPLAY__ = events; }, [
+    { t_ms: 0, type: "state", payload: { state: "idle" } },
+    { t_ms: 10, type: "tool_call", payload: { update: { toolCallId: "s1", title: "bin/fm-fleet-snapshot.sh --json", kind: "execute", status: "completed" } } },
+    { t_ms: 20, type: "tool_call", payload: { update: { toolCallId: "s2", title: "test -f data/res-ai-titles/report.md", kind: "execute", status: "failed" } } },
+    { t_ms: 30, type: "text", payload: { text: "Nothing new on the titles work.", origin: "agent" } },
+  ]);
+  await steps.goto(`${baseUrl}/?replay`);
+  await steps.waitForFunction(() => !document.querySelector(".app-loading"));
+  await steps.locator(".nav-item", { hasText: "Chat" }).click();
+  const summary = steps.locator(".step-summary").first();
+  await summary.waitFor();
+  const said = await summary.innerText();
+  check(said.includes("2 steps") && said.includes("1 came back with an error"), `a step group keeps the fact that a step failed (${said})`);
+  check(!said.includes("didn't work"), "a step group does not sound the alarm over a failed probe");
+  await summary.click();
+  const failedIcon = steps.locator(".step-line.failed .step-icon");
+  const [iconColour, coral] = await Promise.all([
+    failedIcon.evaluate((element) => getComputedStyle(element).color),
+    steps.evaluate(() => { const probe = document.createElement("span"); probe.style.color = "var(--coral)"; document.body.append(probe); const colour = getComputedStyle(probe).color; probe.remove(); return colour; }),
+  ]);
+  check(iconColour !== coral, "a failed step is not painted in the alarm colour");
+  await steps.close();
+}
 
 await browser.close();
 if (failures.length) {

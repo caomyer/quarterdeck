@@ -14,9 +14,11 @@
       {
         "title": "firstmate",
         "width": 1440,
-        "height": 960,
+        "height": 900,
         "minWidth": 960,
         "minHeight": 640,
+        "center": true,
+        "maximized": true,
         "resizable": true,
         "fullscreen": false
       }

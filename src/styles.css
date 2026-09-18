@@ -302,6 +302,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .send-button { display: grid; place-items: center; width: 31px; height: 31px; padding: 0; border: 0; border-radius: 6px; color: var(--on-accent); background: var(--sea); }
 
 .drawer-backdrop { position: fixed; z-index: 50; inset: 0; background: rgb(12 20 19 / 34%); backdrop-filter: blur(1px); }
+/* Only dims: presses go through to what is under it, and the drawer closes itself on a press outside it. */
+.drawer-backdrop.passive { pointer-events: none; backdrop-filter: none; }
+.drawer-backdrop.passive > .task-drawer { pointer-events: auto; }
 .task-drawer { position: absolute; top: 8px; right: 8px; bottom: 8px; display: flex; width: min(470px, calc(100vw - 16px)); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
 .drawer-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 18px 18px 12px; }
 .drawer-header > div { display: flex; flex-direction: column; gap: 4px; }.drawer-header span { color: var(--sea); font-size: .6rem; font-weight: 800; text-transform: uppercase; }.drawer-header h2 { margin: 0; font-size: 1rem; letter-spacing: 0; }
@@ -363,7 +366,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .step-lines { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; padding: 0; list-style: none; }
 .step-line { display: flex; align-items: center; gap: 7px; min-height: 22px; color: var(--muted); font-size: .62rem; }
 .step-icon { display: grid; flex: none; place-items: center; width: 16px; height: 16px; color: var(--green); }
-.step-line.failed .step-icon, .step-line.failed .step-verb { color: var(--coral); }
+/* A failed step is part of how the first mate works, not an alarm: it keeps the cross but not the red. */
+.step-line.failed .step-icon { color: var(--muted); }
+.step-note { color: var(--muted); }
 .step-verb { flex: none; color: var(--ink); font-weight: 620; }
 .step-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-detail.code { font: .59rem ui-monospace, "SFMono-Regular", monospace; }
