@@ -915,8 +915,15 @@ type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id:
  */
 const CHAT_PAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/** When this window opened: a page shared before it belongs with the resumed conversation, not with today's. */
+const WINDOW_OPENED = new Date().toISOString();
+
 function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
   const lastPast = messages.reduce((found, message, index) => message.past ? index : found, -1);
+  // A resumed conversation comes back without times, so its pages cannot be placed
+  // between its messages. They go after it, still under "Earlier", and "Today" keeps
+  // to what happened since: before, yesterday's pages sat under "Today".
+  const liveFrom = messages.find((message) => !message.past)?.createdAt ?? WINDOW_OPENED;
   const items: ChatItem[] = [{ type: "label", id: "label-top", text: lastPast >= 0 ? "Earlier" : "Today" }];
   const since = Date.now() - CHAT_PAGE_WINDOW_MS;
   const pages = artifacts
@@ -930,7 +937,10 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
     }
   };
   messages.forEach((message, index) => {
-    if (lastPast >= 0 && index === lastPast + 1) items.push({ type: "label", id: `label-${message.id}`, text: "Today" });
+    if (lastPast >= 0 && index === lastPast + 1) {
+      pushPages(liveFrom < WINDOW_OPENED ? liveFrom : WINDOW_OPENED);
+      items.push({ type: "label", id: `label-${message.id}`, text: "Today" });
+    }
     if (!message.past) pushPages(message.createdAt);
     const past = message.past === true;
     const last = items.at(-1);
@@ -938,7 +948,10 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
     else if (last?.type === "steps" && last.past === past) last.steps.push(message);
     else items.push({ type: "steps", id: `steps-${message.id}`, steps: [message], past });
   });
-  if (pages.length && lastPast >= 0 && lastPast === messages.length - 1) items.push({ type: "label", id: "label-today-pages", text: "Today" });
+  if (lastPast >= 0 && lastPast === messages.length - 1) {
+    pushPages(WINDOW_OPENED);
+    if (pages.length) items.push({ type: "label", id: "label-today-pages", text: "Today" });
+  }
   pushPages();
   return items;
 }

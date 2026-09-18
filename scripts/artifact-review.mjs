@@ -504,6 +504,20 @@ await shot(page, "07-review-small-window");
   await steps.close();
 }
 
+// A resumed conversation comes back without times: pages shared before this window opened
+// stay with it under "Earlier", and never sit under "Today" ahead of what happens next.
+const resumed = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+await resumed.goto(`${baseUrl}/?artifacts&history`);
+await resumed.waitForFunction(() => !document.querySelector(".app-loading"));
+await resumed.locator(".nav-item", { hasText: "Chat" }).click();
+await resumed.locator("[data-testid='artifact-card']").first().waitFor();
+// The mock replays the startup, and with it the resumed conversation, a moment after the pages.
+await resumed.locator(".chat-messages .day-label", { hasText: /earlier/i }).waitFor();
+const order = await resumed.evaluate(() => [...document.querySelectorAll(".chat-messages .day-label, .chat-messages [data-testid='artifact-card']")].map((element) => element.matches(".day-label") ? element.textContent.trim().toLowerCase() : "page"));
+const firstToday = order.indexOf("today");
+check(order[0] === "earlier" && order.includes("page") && (firstToday === -1 || order.lastIndexOf("page") < firstToday), `pages from before this window stay under Earlier (${order.join(",")})`);
+await resumed.close();
+
 await browser.close();
 if (failures.length) {
   console.log(`\n${failures.length} failed:\n- ${failures.join("\n- ")}`);
