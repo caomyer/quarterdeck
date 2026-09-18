@@ -12,6 +12,10 @@
 //!   once, which queues them behind a running prompt, except during an agent
 //!   turn: the CLI folds a message that arrives then into the running cycle, whose
 //!   result never settles the message's prompt, so it waits for the turn to end;
+//! - every start opens with firstmate's session-start instruction as a turn,
+//!   unless a captain message is waiting to be that first turn: firstmate's
+//!   watcher is armed by its Stop hook when a turn ends, so a session that never
+//!   had a turn is never woken for work that is waiting;
 //! - a message is picked up only when its own prompt result arrives, and one
 //!   whose result never arrived is re-sent after a restart;
 //! - restart kills the adapter's process group and resumes the conversation
@@ -68,10 +72,8 @@ const REAP_WAIT: Duration = Duration::from_secs(5);
 /// How long firstmate's own session-start hook gets to claim the home's lock on
 /// its own. A live probe saw a new session claim it before session/new returned,
 /// about 4s after spawn; a resumed session only nudges and claims it on a turn.
-const CLAIM_WAIT_BEFORE_NUDGE: Duration = Duration::from_secs(10);
-/// How long the session-start turn gets to claim the lock after it is sent. Missing
-/// the claim no longer stops the start, so this only delays calling it ready.
-const CLAIM_WAIT_AFTER_NUDGE: Duration = Duration::from_secs(60);
+/// A live holder that is not ours by then stops the start.
+const CLAIM_WAIT: Duration = Duration::from_secs(10);
 /// firstmate's own session-start instruction, as `bin/fm-sessionstart-nudge.sh` words it.
 const SESSION_START_BODY: &str =
     "Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.";
@@ -249,6 +251,7 @@ enum HostEvent {
     Exited { gen: u64 },
     Stderr { gen: u64, line: String },
     PromptDone { gen: u64, outbox_id: String, result: RpcResult },
+    SessionStartDone { gen: u64, result: RpcResult },
 }
 
 #[derive(Clone)]
@@ -1037,6 +1040,8 @@ struct Host {
     /// The adapter tags each result with its origin, so an agent turn ends at its result.
     marks_results: bool,
     open_steps: std::collections::HashSet<String>,
+    /// firstmate's session-start turn is running.
+    helm: bool,
     agent_turns: u64,
     agent_turn_starts: VecDeque<Instant>,
     /// The turn count last reported as a rewake storm, while one lasts.
@@ -1065,6 +1070,7 @@ impl Host {
             last_turn_end: None,
             marks_results: false,
             open_steps: std::collections::HashSet::new(),
+            helm: false,
             agent_turns: 0,
             agent_turn_starts: VecDeque::new(),
             storm_reported: None,
@@ -1371,27 +1377,9 @@ impl Host {
         // The lock guards against two first mates in one home, so a live holder that is
         // not ours stops this start. Nobody holding it is a different matter: after a
         // crash the lock names a dead process, which firstmate reads as stale, so nothing
-        // else is running. A resumed first mate also rightly refuses to repeat a session
-        // start it already ran, and so never claims one. Never stop our own first mate
-        // over an unclaimed lock; say it plainly instead.
-        let mut claim = wait_for_lock_claim(&home, adapter.pgid, CLAIM_WAIT_BEFORE_NUDGE).await;
-        if matches!(claim, LockClaim::Unclaimed(_)) && mode == "new" {
-            // A new session whose own hook has not taken the helm gets firstmate's
-            // session-start instruction as its first turn. A resumed one is left alone:
-            // its hook has already nudged it, and asking again spends a turn to be told
-            // about the exactly-once contract.
-            let input = session_start_input(&home).await;
-            let rpc = adapter.rpc.clone();
-            let session_id = adapter.session_id.clone();
-            tauri::async_runtime::spawn(async move {
-                // The claim below is the authority on whether this turn worked.
-                let _ = rpc
-                    .request("session/prompt", json!({"sessionId": session_id, "prompt": [{"type": "text", "text": input}]}))
-                    .await;
-            });
-            claim = wait_for_lock_claim(&home, adapter.pgid, CLAIM_WAIT_AFTER_NUDGE).await;
-        }
-        match claim {
+        // else is running. A resumed session claims it only on a turn, which comes below.
+        // Never stop our own first mate over an unclaimed lock; say it plainly instead.
+        match wait_for_lock_claim(&home, adapter.pgid, CLAIM_WAIT).await {
             LockClaim::Ours => {}
             LockClaim::Other { pid, command, facts } => {
                 let report = adapter.kill_tree().await;
@@ -1434,8 +1422,51 @@ impl Host {
         self.adapter = Some(adapter);
         self.in_flight.clear();
         self.started_hint = None;
-        self.set_state(State::Idle, json!({}));
+        // firstmate hands work to an idle first mate through its watcher, which its Stop
+        // hook arms when a turn ends, and its session start is what a first turn is for:
+        // a new session's hook put the digest in context, a resumed one's put the
+        // instruction to run it. Until some turn runs, nothing waiting is ever handled.
+        // A captain message waiting to go is that first turn; otherwise the host sends
+        // firstmate's own session-start instruction, as its nudge words it.
+        if !self.outbox.as_ref().is_some_and(|outbox| !outbox.queue.is_empty()) {
+            let input = session_start_input(&home).await;
+            self.take_the_helm(input);
+        } else {
+            self.set_state(State::Idle, json!({}));
+        }
         Ok(())
+    }
+
+    /// Sends the session-start turn. It is the first mate's own turn rather than a captain
+    /// message: nothing in the outbox, and messages the captain sends meanwhile wait for it.
+    fn take_the_helm(&mut self, input: String) {
+        let Some(adapter) = self.adapter.as_ref() else { return };
+        let rpc = adapter.rpc.clone();
+        let session_id = adapter.session_id.clone();
+        let events = self.ev_tx.clone();
+        let gen = self.gen;
+        self.helm = true;
+        self.last_activity = Instant::now();
+        self.set_state(State::AgentTurn, json!({"origin": "session_start"}));
+        tauri::async_runtime::spawn(async move {
+            let result = rpc
+                .request("session/prompt", json!({"sessionId": session_id, "prompt": [{"type": "text", "text": input}]}))
+                .await;
+            let _ = events.send(HostEvent::SessionStartDone { gen, result });
+        });
+    }
+
+    fn on_session_start_done(&mut self, result: RpcResult) {
+        self.helm = false;
+        self.last_turn_end = Some(Instant::now());
+        let stop = result.as_ref().ok().and_then(|r| r.get("stopReason")).cloned().unwrap_or(Value::Null);
+        let error = result.err();
+        if let Some(message) = error.as_deref().and_then(session_limit_message) {
+            self.emit("host_health", json!({"kind": "session_limit", "id": "session-start", "warning": message}));
+        }
+        // Diagnostics, not a banner: what firstmate's session start came back with.
+        self.emit("host_health", json!({"kind": "session_start_turn", "stop_reason": stop, "error": error}));
+        self.end_agent_turn(json!({"derived": "session start turn done"}));
     }
 
     fn host_dir_for(&self, home: &Path) -> Result<PathBuf, String> {
@@ -1493,6 +1524,7 @@ impl Host {
         // Open approvals belong to the adapter being stopped; they cannot be answered after it.
         self.asked.clear();
         self.end_storm();
+        self.helm = false;
         if let Some(mut adapter) = self.adapter.take() {
             let report = adapter.kill_tree().await;
             self.report_kill(report, "stop");
@@ -1539,6 +1571,7 @@ impl Host {
             HostEvent::Exited { gen } if gen == self.gen && self.state.live() => {
                 self.asked.clear();
                 self.end_storm();
+                self.helm = false;
                 // The adapter is gone, but the Claude CLI and hook processes it
                 // started may not be: kill the group off the loop.
                 if let Some(mut adapter) = self.adapter.take() {
@@ -1556,6 +1589,7 @@ impl Host {
             HostEvent::PromptDone { gen, outbox_id, result } if gen == self.gen => {
                 self.on_prompt_done(outbox_id, result)
             }
+            HostEvent::SessionStartDone { gen, result } if gen == self.gen => self.on_session_start_done(result),
             _ => {}
         }
     }
@@ -1656,7 +1690,7 @@ impl Host {
 
     /// An agent turn is over: back to idle, where waiting captain messages go out.
     fn end_agent_turn(&mut self, detail: Value) {
-        if self.state == State::AgentTurn && self.in_flight.is_empty() {
+        if self.state == State::AgentTurn && self.in_flight.is_empty() && !self.helm {
             self.open_steps.clear();
             self.set_state(State::Idle, detail);
         }
@@ -1754,7 +1788,7 @@ impl Host {
     fn tick(&mut self) {
         self.review_storm();
         // Quiet only ends an agent turn; with a prompt in flight its result decides.
-        if self.state != State::AgentTurn || !self.in_flight.is_empty() {
+        if self.state != State::AgentTurn || !self.in_flight.is_empty() || self.helm {
             return;
         }
         let quiet = self.last_activity.elapsed();
@@ -2487,7 +2521,7 @@ while True:
         wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == first.as_str() && b["state"] == "picked_up")
             .await
             .expect("the first message was read");
-        wait_for(&log, Duration::from_secs(10), |e, b| e == "state" && b["state"] == "agent_turn")
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "state" && b["state"] == "agent_turn" && b["origin"] == "agent")
             .await
             .expect("the rewake started an agent turn");
         let during = host.call(|reply| Cmd::Send { text: "plain during".into(), reply }).await.unwrap().expect("send");
@@ -2573,13 +2607,11 @@ while True:
         assert!(!events.iter().any(|(e, b)| e == "outbox" && b["id"] == id.as_str() && b["state"] == "requeued"));
     }
 
-    /// A resumed session whose hook only nudged: the host sends firstmate's
-    /// session-start instruction as a turn, and starts once that claims the lock.
-    /// A resumed first mate holds to firstmate's exactly-once session start, so it
-    /// never claims the lock. Nothing else holds it, so the app still starts, says so,
-    /// and does not spend another turn asking.
+    /// A resumed session whose hook only nudged holds no lock until a turn runs. Nothing
+    /// else holds it, so the app starts, says so, and gives the first mate the turn its
+    /// hook asked for: firstmate's session-start instruction, once per start.
     #[tokio::test]
-    async fn a_resumed_first_mate_that_never_claims_the_lock_still_starts() {
+    async fn a_resumed_first_mate_that_has_not_claimed_the_lock_starts_and_takes_the_helm() {
         let _adapter_env = ADAPTER_ENV.lock().await;
         let home = home_with_lock_script(
             "resume-unclaimed",
@@ -2621,9 +2653,46 @@ while True:
         );
         assert_eq!(
             prompts.matches("fm-session-start.sh").count(),
-            1,
-            "the resumed session was asked to start again: {prompts:?}"
+            2,
+            "each start sends the session-start turn once: {prompts:?}"
         );
+        assert!(
+            after.iter().any(|(e, b)| e == "state" && b["state"] == "agent_turn" && b["origin"] == "session_start"),
+            "{after:?}"
+        );
+    }
+
+    /// Reproduces a live run: after a relaunch the first mate sat idle with wakes waiting,
+    /// because nothing ran a turn, and firstmate arms the watcher that delivers them when
+    /// a turn ends. Every start now opens with a turn: firstmate's session start, or the
+    /// captain's own message when one is waiting to go.
+    #[tokio::test]
+    async fn every_start_opens_with_a_turn_and_a_waiting_message_can_be_it() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("helm");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        // Sent while the session-start turn runs: it waits for that turn, then goes.
+        let early = host.call(|reply| Cmd::Send { text: "plain early".into(), reply }).await.unwrap().expect("send");
+        let read = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == early.as_str() && b["state"] == "picked_up").await;
+        host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
+        let _ = std::fs::remove_file(home.join("adapter.pid"));
+        let _waiting = host.call(|reply| Cmd::Send { text: "plain waiting".into(), reply }).await.unwrap().expect("send");
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("second start");
+        let idle = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["state"] == "picked_up" && b["id"] != early.as_str()).await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let prompts: Vec<String> = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default().lines().map(str::to_string).collect();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(read.is_some() && idle.is_some(), "{events:?}");
+        assert_eq!(prompts.len(), 3, "{prompts:?}");
+        assert!(prompts[0].contains("fm-session-start.sh"), "the first start opens with the session start: {prompts:?}");
+        assert_eq!(prompts[1], "plain early", "a message sent meanwhile waits for it: {prompts:?}");
+        assert_eq!(prompts[2], "plain waiting", "a waiting message is the second start's first turn: {prompts:?}");
+        let done = events.iter().find(|(e, b)| e == "host_health" && b["kind"] == "session_start_turn").map(|(_, b)| b).unwrap();
+        assert_eq!(done["stop_reason"], "end_turn", "{done}");
     }
 
     #[tokio::test]
@@ -2643,8 +2712,8 @@ while True:
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
         let started = host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap();
+        let idle = wait_for(&log, Duration::from_secs(5), |e, b| e == "state" && b["state"] == "idle").await;
         let prompts = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default();
-        let idle = wait_for(&log, Duration::from_secs(2), |e, b| e == "state" && b["state"] == "idle").await;
         let _ = host.call(|reply| Cmd::Stop { reply }).await;
         let _ = std::fs::remove_dir_all(&home);
 

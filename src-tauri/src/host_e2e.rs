@@ -634,6 +634,250 @@ async fn host_lock_claim_probe() {
     println!("lock after stop: {}", lock_status(&home));
 }
 
+// --------------------------------------------------- closing and relaunching ---
+
+/// A custom watcher check registered the way a captain registers one, so the
+/// home needs supervision and the watcher can be made to wake the first mate on
+/// cue: it fires once each time its trigger file appears. Unregistered on drop.
+struct TestCheck {
+    home: PathBuf,
+    trigger: PathBuf,
+}
+
+const TEST_CHECK: &str = "hosttest";
+
+impl TestCheck {
+    fn register(home: &Path) -> TestCheck {
+        use std::os::unix::fs::PermissionsExt;
+        let state = home.join("state");
+        let trigger = state.join(format!("{TEST_CHECK}.fire"));
+        let script = state.join(format!("{TEST_CHECK}.check.sh"));
+        let body = format!(
+            "#!/usr/bin/env bash\n[ -e '{}' ] || exit 0\nrm -f '{}'\necho 'automated host test wake from the app test harness: acknowledge it and do nothing else'\n",
+            trigger.display(),
+            trigger.display()
+        );
+        std::fs::write(&script, body).expect("write the test check");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("make the check private");
+        let registered = std::process::Command::new(home.join("bin").join("fm-check-register.sh"))
+            .arg(TEST_CHECK)
+            .env("FM_HOME", home)
+            .current_dir(home)
+            .output()
+            .expect("run fm-check-register.sh");
+        assert!(registered.status.success(), "fm-check-register.sh: {}", String::from_utf8_lossy(&registered.stderr));
+        TestCheck { home: home.to_path_buf(), trigger }
+    }
+
+    fn fire(&self) {
+        std::fs::write(&self.trigger, "").expect("fire the test check");
+    }
+}
+
+impl Drop for TestCheck {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.trigger);
+        let _ = std::process::Command::new(self.home.join("bin").join("fm-check-unregister.sh"))
+            .arg(TEST_CHECK)
+            .env("FM_HOME", &self.home)
+            .current_dir(&self.home)
+            .output();
+    }
+}
+
+/// Rows waiting in the home's durable wake queue.
+fn queued_wakes(home: &Path) -> usize {
+    std::fs::read_to_string(home.join("state").join(".wake-queue"))
+        .map(|text| text.lines().filter(|line| !line.trim().is_empty()).count())
+        .unwrap_or(0)
+}
+
+/// A captain's inbox note, the firstmate path that queues a wake while nobody is watching.
+fn inbox_note(home: &Path, text: &str) -> bool {
+    std::process::Command::new(home.join("bin").join("fm-inbox.sh"))
+        .args(["note", text])
+        .env("FM_HOME", home)
+        .current_dir(home)
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Live run of what a captain does across an app restart: talk to the first mate,
+/// get woken work, send a message while the first mate is busy with a wake, close
+/// the app while it is idle, let wakes arrive while it is closed, and open the app
+/// again. The relaunch must bring back the earlier conversation and the first mate
+/// must pick up the waiting wakes on its own, without a captain message.
+///
+/// ```sh
+/// cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e_live_relaunch -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "live: runs the real claude-agent-acp against a firstmate scratch home"]
+async fn host_e2e_live_relaunch() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+    let before = lock_status(&home);
+    assert!(
+        before == "lock: free" || before.starts_with("lock: stale"),
+        "the scratch home's lock is not free ({before}); another host may be using it"
+    );
+    // The watcher runs custom checks every FM_CHECK_INTERVAL seconds; the first mate's
+    // hooks inherit it through the adapter, so the test check answers within a poll or two.
+    std::env::set_var("FM_CHECK_INTERVAL", "15");
+
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
+    let run = now_ms();
+    let data_dir = out.join(format!("appdata-relaunch-{run}"));
+    std::fs::create_dir_all(&data_dir).expect("create the app data folder");
+    let recording = out.join(format!("relaunch-{run}.jsonl"));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).expect("create the recording")),
+        data_dir,
+        tx,
+    });
+    println!("home: {}\nrecording: {}", home.display(), recording.display());
+    let mut events = Events { rx, seen: Vec::new() };
+    let mut steps = Vec::new();
+    let check = TestCheck::register(&home);
+
+    // 1. First launch: the first mate starts and answers.
+    recorder.mark("1", "first launch: start, and a message answered");
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let cleanup = StopOnDrop(host.clone());
+    let from = events.now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let sent = send(&host, format!("Captain here. {GUARD} Reply with one word: aye.")).await;
+    let id = sent.clone().unwrap_or_default();
+    let picked = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
+    let reply = picked.map(|p| events.text_between(from, p)).unwrap_or_default();
+    let running = started.is_ok() && picked.is_some();
+    record(
+        &mut steps,
+        "first launch: started and answered",
+        running && reply.to_lowercase().contains("aye"),
+        format!("start={started:?}; send={sent:?}; picked_up={}; reply={reply:?}", picked.is_some()),
+    );
+
+    // 2. A wake arrives, and the captain writes while the first mate handles it.
+    if running {
+        recorder.mark("2", "a watcher wake starts a turn, and a message sent during it is read");
+        let quiet = events.now();
+        let _ = events.find(quiet, Duration::from_secs(30), host_state(&["idle"])).await;
+        let from = events.now();
+        check.fire();
+        let turn = events.find(from, REWAKE_WAIT * 2, host_state(&["agent_turn"])).await;
+        match turn {
+            Some(turn) => {
+                let from = events.now();
+                let sent = send(&host, format!("Captain again. {GUARD} Reply with one word: two.")).await;
+                let id = sent.clone().unwrap_or_default();
+                let dispatched = events.find(from, Duration::from_secs(5), outbox(&id, "sent")).await;
+                let picked = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
+                let to = picked.unwrap_or(events.now());
+                let reply = events.text_between(from, to);
+                record(
+                    &mut steps,
+                    "a message sent during a wake turn is read",
+                    picked.is_some(),
+                    format!(
+                        "wake turn={}; sent while={}; picked_up={}; text meanwhile={reply:?}; outbox trail={:?}",
+                        events.body(Some(turn)),
+                        events.body(dispatched)["while"],
+                        picked.is_some(),
+                        events.seen[from..]
+                            .iter()
+                            .filter(|(e, b)| e == "outbox" && b["id"] == id.as_str())
+                            .map(|(_, b)| b["state"].clone())
+                            .collect::<Vec<_>>()
+                    ),
+                );
+            }
+            None => not_exercised(
+                &mut steps,
+                "a message sent during a wake turn is read",
+                format!("the test check's wake started no turn within {}s", (REWAKE_WAIT * 2).as_secs()),
+            ),
+        }
+    } else {
+        not_exercised(&mut steps, "a message sent during a wake turn is read", "the first launch did not answer".into());
+    }
+
+    // 3. The app closes while the first mate is idle, and wakes arrive while it is closed.
+    recorder.mark("3", "the app closes while idle; wakes arrive while it is closed");
+    let quiet = events.now();
+    let idle = events.find(quiet, Duration::from_secs(120), host_state(&["idle"])).await;
+    host.kill_on_exit();
+    drop(cleanup);
+    drop(host);
+    let noted = (1..=3).all(|n| inbox_note(&home, &format!("Automated host test note {n} of 3: acknowledge it and do nothing else.")));
+    let waiting = queued_wakes(&home);
+    println!("   closed while idle={}; notes queued={noted}; wake rows waiting={waiting}", idle.is_some());
+
+    // 4. The app opens again: the earlier conversation comes back.
+    recorder.mark("4", "relaunch: start, and the earlier conversation comes back");
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
+    let from = events.now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
+    let history = events.find(from, Duration::from_secs(5), |e, _| e == "history").await;
+    let items = events.body(history)["items"].as_array().cloned().unwrap_or_default();
+    let has = |who: &str, needle: &str| {
+        items.iter().any(|item| item["who"] == who && item["text"].as_str().is_some_and(|t| t.to_lowercase().contains(needle)))
+    };
+    record(
+        &mut steps,
+        "relaunch: the earlier conversation comes back",
+        started.is_ok() && events.body(session)["mode"] == "loaded" && has("captain", "reply with one word: aye") && has("mate", "aye"),
+        format!("start={started:?}; session={}; history items={}", events.body(session), items.len()),
+    );
+
+    // 5. The wakes that arrived while the app was closed are picked up without a captain message.
+    recorder.mark("5", "relaunch: waiting wakes are handled without a captain message");
+    let deadline = Instant::now() + Duration::from_secs(300);
+    while queued_wakes(&home) > 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let left = queued_wakes(&home);
+    let to = events.now();
+    let turns = events.seen[from..to].iter().filter(|(e, b)| e == "state" && b["state"] == "agent_turn").count();
+    let captain = events.any_between(from, to, |e, b| e == "outbox" && b["state"] == "sent");
+    if waiting == 0 {
+        not_exercised(&mut steps, "relaunch: waiting wakes are handled on their own", "no wake was waiting at relaunch".into());
+    } else {
+        record(
+            &mut steps,
+            "relaunch: waiting wakes are handled on their own",
+            left == 0 && !captain,
+            format!("wake rows at relaunch={waiting}; left after the wait={left}; agent turns={turns}; captain messages sent={captain}"),
+        );
+    }
+
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    drop(check);
+    let failed = steps.iter().filter(|s| s.outcome == Outcome::Failed).count();
+    let summary = json!({
+        "home": home.to_string_lossy(),
+        "recording": recording.to_string_lossy(),
+        "steps": steps.iter().map(|s| json!({"step": s.name, "outcome": s.outcome.label(), "evidence": s.evidence})).collect::<Vec<_>>(),
+    });
+    let _ = std::fs::write(out.join(format!("summary-relaunch-{run}.json")), serde_json::to_string_pretty(&summary).unwrap_or_default());
+    // The UI replay plays a passing run's relaunch into a fresh window.
+    if failed == 0 {
+        let _ = std::fs::copy(&recording, out.join("relaunch-latest.jsonl"));
+    }
+    println!("\nrecording: {}", recording.display());
+    assert_eq!(failed, 0, "{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+}
+
 // ------------------------------------------------- the review of a call ---
 
 /// Reads the home's snapshot once, for the rows the review screen reads.
