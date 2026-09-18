@@ -68,14 +68,12 @@
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   artifacts[]: presented review artifacts, newest first, exactly as
 #     `bin/fm-artifact.sh list --json` reports them; that script owns the shape.
-#   decision_options[]: the machine-readable choices captain-held tasks offer,
-#     exactly as `bin/fm-decision-options.sh list --json` reports them; that
-#     script owns the shape. A task is held or not by the backlog above; these
-#     are only what it offers.
-#   decided[]: the calls firstmate made on the captain's behalf in the last 7
-#     days, newest first, exactly as `bin/fm-decided.sh list --json` reports its
-#     decided array; that script owns the shape and the window, which ends at
-#     this snapshot's generated time.
+#   calls[]: every captain call - open, answered, or closed within the last 7
+#     days - exactly as `bin/fm-captain-hold.sh list --json` reports its calls
+#     array; that script owns the shape, the answer's machine lines, and the
+#     window, which ends at this snapshot's generated time. It is handed this
+#     snapshot's parsed backlog, so each call's bucket and captain_actionable
+#     are the backlog records' own and the listing costs one process.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
 #     (orphan structured in-flight ids with no state/<id>.meta, and unstructured
@@ -245,6 +243,9 @@ refreshes only its parent-side remote-summary cache as an observational side eff
 --contribution-input emits the canonical local backlog/tasks ownership pair only,
 without worker observations or cross-home collection.
 
+--backlog-json emits only the parsed local backlog object (the snapshot's
+backlog field), for bin/fm-captain-hold.sh list to join its calls with.
+
 --secondmate-home-summary emits the bounded structured summary used after a
 validated registered-home handoff. It is local-only, skips nested secondmate
 aggregation, includes generated_epoch for freshness arithmetic, and marks
@@ -294,6 +295,7 @@ case "${1:---json}" in
   --json) ;;
   --secondmate-home-summary) OUTPUT_MODE=secondmate-home-summary ;;
   --contribution-input) OUTPUT_MODE=contribution-input ;;
+  --backlog-json) OUTPUT_MODE='backlog-json' ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
@@ -1967,6 +1969,10 @@ scout_report_lines() {
 }
 
 BACKLOG_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
+if [ "$OUTPUT_MODE" = "backlog-json" ]; then
+  printf '%s\n' "$BACKLOG_JSON"
+  exit 0
+fi
 contribution_tasks_json() {
   local meta id merge_authority
   for meta in "$STATE"/*.meta; do
@@ -1998,8 +2004,7 @@ TASKS_JSON_FILE="$JSON_TRANSPORT_DIR/tasks.json"
 MAIN_INVENTORY_JSON_FILE="$JSON_TRANSPORT_DIR/main-inventory.json"
 SCOUT_REPORTS_JSON_FILE="$JSON_TRANSPORT_DIR/scout-reports.json"
 ARTIFACTS_JSON_FILE="$JSON_TRANSPORT_DIR/artifacts.json"
-DECISION_OPTIONS_JSON_FILE="$JSON_TRANSPORT_DIR/decision-options.json"
-DECIDED_JSON_FILE="$JSON_TRANSPORT_DIR/decided.json"
+CALLS_JSON_FILE="$JSON_TRANSPORT_DIR/calls.json"
 SECONDMATE_CURRENT_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-current.json"
 SECONDMATE_LANDED_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-landed.json"
 printf '%s\n' "$BACKLOG_JSON" > "$BACKLOG_JSON_FILE" \
@@ -2028,11 +2033,14 @@ scout_report_lines > "$SCOUT_REPORTS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: scout report snapshot failed" >&2; exit 1; }
 FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-artifact.sh" list --json > "$ARTIFACTS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: artifact listing failed" >&2; exit 1; }
-FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-decision-options.sh" list --json > "$DECISION_OPTIONS_JSON_FILE" \
-  || { echo "fm-fleet-snapshot: decision options listing failed" >&2; exit 1; }
-FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_DECIDED_NOW="$SNAPSHOT_NOW" \
-  "$SCRIPT_DIR/fm-decided.sh" list --json > "$DECIDED_JSON_FILE" \
-  || { echo "fm-fleet-snapshot: decided listing failed" >&2; exit 1; }
+CALLS_NOW=$SNAPSHOT_NOW
+case "$CALLS_NOW" in
+  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+  *) CALLS_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ) ;;
+esac
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CAPTAIN_HOLD_NOW="$CALLS_NOW" \
+  "$SCRIPT_DIR/fm-captain-hold.sh" list --json --backlog-json "$BACKLOG_JSON_FILE" > "$CALLS_JSON_FILE" \
+  || { echo "fm-fleet-snapshot: call listing failed" >&2; exit 1; }
 main_inventory_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" > "$MAIN_INVENTORY_JSON_FILE" \
   || { echo "fm-fleet-snapshot: main inventory summary failed" >&2; exit 1; }
 secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
@@ -2054,8 +2062,7 @@ jq -n \
   --slurpfile contributions "$CONTRIBUTIONS_JSON_FILE" \
   --slurpfile scout_reports "$SCOUT_REPORTS_JSON_FILE" \
   --slurpfile artifacts "$ARTIFACTS_JSON_FILE" \
-  --slurpfile decision_options "$DECISION_OPTIONS_JSON_FILE" \
-  --slurpfile decided "$DECIDED_JSON_FILE" \
+  --slurpfile calls "$CALLS_JSON_FILE" \
   --slurpfile secondmate_current "$SECONDMATE_CURRENT_JSON_FILE" \
   --slurpfile secondmate_landed "$SECONDMATE_LANDED_JSON_FILE" \
   '($backlog[0]) as $backlog
@@ -2078,8 +2085,7 @@ jq -n \
      contributions:$contributions[0],
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      artifacts:$artifacts[0].artifacts,
-     decision_options:$decision_options[0].decisions,
-     decided:$decided[0].decided,
+     calls:$calls[0].calls,
      secondmate_current:$secondmate_current,
      secondmate_landed:$secondmate_landed,
      secondmate_guidance:{

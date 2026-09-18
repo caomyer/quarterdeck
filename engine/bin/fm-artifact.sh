@@ -24,9 +24,14 @@
 #   [a-z0-9][a-z0-9-]{0,63}.
 #   --title defaults to the document's <title>, then to the name.
 #   --note says what changed since the previous revision.
-#   --covers names the captain-held tasks this page argues, so the review screen
-#   can offer their recorded options (bin/fm-decision-options.sh) beside the
-#   argument. Each must be a task this home knows.
+#   --covers names the captain calls this page argues. It is kept for one
+#   release as a shim: after the revision exists (or is unchanged), each named
+#   call gets this page attached through
+#   `fm-captain-hold.sh evidence <task> add page:<this page>`, which owns call
+#   evidence; the revision itself records nothing about it. A page presented on
+#   the task a call names as its --origin argues that call already. If
+#   attaching fails the present still stands, and the command exits 1 naming
+#   the call, so a retry is safe.
 #   --addressed names the review comments this revision answers, and --reply
 #   answers one in words without changing the page (repeat it per comment).
 #   Both take the comment ids the captain's review carries (t1, t2, ...), and
@@ -69,8 +74,7 @@
 # revision.json fields: schema, scope ("task"|"chat"), task (null for chat),
 # name, rev, title, note, entry (file name under files/), sha256 (over every
 # file's path and content), bytes, presented_at (UTC), presented_by
-# ({role:"crew",task:<FM_TASK_ID>} or {role:"firstmate"}), covers ([task id]),
-# answers ({addressed:[<comment id>], replies:[{thread,body}]}), layout
+# ({role:"crew",task:<FM_TASK_ID>} or {role:"firstmate"}), answers ({addressed:[<comment id>], replies:[{thread,body}]}), layout
 # ({status:"clean"|"accepted"|"skipped", reason (skipped only),
 # issues:[{viewport:"wide"|"narrow", rule, selector, detail}]}).
 #
@@ -90,7 +94,8 @@
 #   1 naming the bad value, so a typo fails loudly instead of silently choosing.
 #
 # Exit codes: 0 success; 1 refused (invalid input, unknown task, over the size
-# cap, bad mode); 2 usage; 3 refused for layout findings.
+# cap, bad mode) or a --covers attachment failed after the present; 2 usage;
+# 3 refused for layout findings.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -308,7 +313,6 @@ cmd_present() {
         [ $# -ge 2 ] || usage
         for id in $(printf '%s' "$2" | tr ',' ' '); do
           fm_task_id_path_safe "$id" || die "invalid task id '$id' in --covers"
-          [ -f "$STATE/$id.meta" ] || [ -d "$DATA/$id" ] || die "--covers names unknown task '$id'"
           case " $covers " in *" $id "*) die "--covers names '$id' twice" ;; esac
           covers="$covers $id"
         done
@@ -401,7 +405,8 @@ cmd_present() {
     if [ "$latest_sha" = "$digest" ]; then
       printf 'unchanged: %s rev %s\n' "$name" "$latest"
       printf 'entry: %s\n' "$art_dir/rev-$latest/files/$(jq -r '.entry' "$art_dir/rev-$latest/revision.json")"
-      return 0
+      attach_covers "$scope" "$task" "$name" "$covers"
+      return
     fi
   fi
 
@@ -430,8 +435,6 @@ cmd_present() {
   rev_dir="$art_dir/rev-$n"
   mv "$stage/files" "$rev_dir/files" || die "cannot place revision $n"
 
-  local covers_json
-  covers_json=$(jq -cn --arg covers "$covers" '$covers | split(" ") | map(select(length > 0))')
   local answers
   answers=$(jq -cn --arg addressed "$answered" --argjson replies "$replies" \
     '{addressed:($addressed | split(" ") | map(select(length > 0))), replies:$replies}')
@@ -454,7 +457,6 @@ cmd_present() {
     --argjson bytes "$bytes" \
     --arg presented_at "$now" \
     --argjson presented_by "$presented_by" \
-    --argjson covers "$covers_json" \
     --argjson answers "$answers" \
     --argjson layout "$layout" \
     '{schema:"fm-artifact-revision.v1", scope:$scope,
@@ -462,13 +464,30 @@ cmd_present() {
       name:$name, rev:$rev, title:$title,
       note:(if $note == "" then null else $note end),
       entry:$entry, sha256:$sha256, bytes:$bytes,
-      presented_at:$presented_at, presented_by:$presented_by, covers:$covers,
+      presented_at:$presented_at, presented_by:$presented_by,
       answers:$answers, layout:$layout}' \
     > "$rev_dir/.revision.json.tmp" || die "cannot write revision $n"
   mv "$rev_dir/.revision.json.tmp" "$rev_dir/revision.json" || die "cannot publish revision $n"
 
   printf 'presented: %s rev %s\n' "$name" "$n"
   printf 'entry: %s\n' "$rev_dir/files/$entry"
+  attach_covers "$scope" "$task" "$name" "$covers"
+}
+
+# The one-release --covers shim: attach this page to each named call through
+# the call's only writer. Returns 1 when any attachment failed.
+attach_covers() {  # <scope> <task> <name> <space-separated call ids>
+  local scope=$1 task=$2 name=$3 covers=$4 ref id failed=0
+  [ -n "${covers# }" ] || return 0
+  if [ "$scope" = chat ]; then ref="page:chat/$name"; else ref="page:task/$task/$name"; fi
+  for id in $covers; do
+    FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      "$SCRIPT_DIR/fm-captain-hold.sh" evidence "$id" add "$ref" >/dev/null || {
+      echo "fm-artifact: the page is presented, but it could not be attached to call '$id' (see above)" >&2
+      failed=1
+    }
+  done
+  return "$failed"
 }
 
 # Every revision record in the store, one path per line, in a stable order.

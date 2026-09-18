@@ -21,8 +21,17 @@
 #
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
-#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
-#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
+#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD] \
+#     [--question <text>] [--option <key>=<label>]... [--recommend <key>] \
+#     [--on-answer done|release] [--evidence <ref>]... [--about <task-id>]
+#   fm-captain-hold.sh offer <task-id> [--question <text>] [--option <key>=<label>]... \
+#     [--recommend <key>] [--on-answer done|release]
+#   fm-captain-hold.sh evidence <task-id> (add | remove) <ref>
+#   fm-captain-hold.sh decide --about <task-id> --title <title> --what <one line> --why <one line> \
+#     [--kind review-finding|merge|new-task|scope|other] [--link <url>] [--option <key>=<label>]...
+#   fm-captain-hold.sh list [--json] [--since <days>]
+#   fm-captain-hold.sh migrate
+#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--key <option-key>] [--via <channel>]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
@@ -46,6 +55,69 @@
 # A task already closed is refused rather than reopened. `--until` records the
 # captain's own deferral date through `tasks-axi hold --until`, so a "revisit
 # later" answer is stored as a date instead of a live card.
+#
+# ONE SOURCE OF TRUTH FOR A CALL'S CONTENT.
+# The backlog row stays the spine: whether a call exists, and whether it is
+# held, bucketed, answered, or closed, is read from the row alone. What the call
+# asks lives beside the row in one sidecar record per call,
+# `state/calls/<task-id>.json` (schema fm-call.v1), and this script is its only
+# writer. It is written to a temporary file of its own and renamed, under the
+# same per-task control lock every mutation here takes:
+#   {schema, task, question, options:[{key,label,recommended}],
+#    on_answer ("done"|"release"|null), origin, about, evidence:[<ref>],
+#    raised_by, raised_at, updated_at, decided (null or {what,why,kind,link})}
+# `hold` writes it whenever it is given --question, --option, --recommend,
+# --on-answer, --evidence, --about, or --origin, and a hold without any of them
+# behaves exactly as it always did (an existing record only has its raised_at
+# moved to a new lifecycle's hold-set stamp). The record is written before the
+# hold is applied, so a newly held call is never visible without its content.
+# Options: 2 to 8, keys `[a-z0-9][a-z0-9-]{0,31}`, labels one line of at most
+# 200 characters, and --recommend must name one of them; the question is one
+# line of at most 400 characters. --on-answer declares how an answer closes the
+# call: `done` (a question; the default for a task this hold created, and for a
+# row whose kind is captain because a hold created it) or `release` (held work
+# resumes; the default for any other existing task). A record that declares
+# nothing (null) is one written by `evidence` or `migrate` for an older call.
+# `--origin` names the task whose work raised the call; that task's report and
+# every page it presented argue the call automatically (see `list`).
+# `offer` replaces the content of an open call and records `updated_at`.
+# `evidence` attaches or detaches one ref on any call, open or closed. Refs:
+#   page:task/<task-id>/<name> or page:chat/<name>  a presented page (must exist)
+#   report:<task-id>   data/<task-id>/report.md (must exist)
+#   url:<http(s) url>  anything else, such as a pull request
+# `decide` raises a call and answers it on the captain's behalf in one act,
+# for a call the first mate settled itself: it holds a new row
+# `decided-<digest>` (the digest of every argument, so an exact retry names the
+# same row and is an idempotent no-op), records the content with `decided`
+# set, and answers it with `Answered by: firstmate` through the same `answer`
+# path. `--about` must be a task this home knows.
+# `list` joins every call row with its record. A call is a backlog row held for
+# the captain now or ever (its hold kind survives a close) or one carrying a
+# resolution block; a record whose row is not a call is ignored, and a row with
+# no record is still listed, with its hold reason as the question and empty
+# options and evidence. `--json` prints {schema:"fm-call-list.v1", calls:[...],
+# damaged:[{task,file}]}, each call being {id, title, question, options,
+# on_answer, state ("open"|"answered"|"closed"), bucket, captain_actionable,
+# origin, about, evidence, raised_by, raised_at, updated_at, answer, decided}.
+# `bucket` and `captain_actionable` are the fleet snapshot's hold projection,
+# unchanged: `list` reads the snapshot's own backlog parser
+# (`fm-fleet-snapshot.sh --backlog-json`), and the snapshot hands its already
+# parsed backlog in through the internal `--backlog-json <file>` flag, so its
+# `calls[]` is exactly this array at one extra process. `evidence` is the
+# explicit refs followed by what the origin produced - `report:<origin>` when
+# the report exists and `page:task/<origin>/<name>` for every page with a
+# complete revision - de-duplicated, derived at read time so presentation order
+# never matters. `answer` is null or {key,label,by,via,at} read from the newest
+# resolution block's machine lines. `state` is `answered` while a held row's
+# newest block was written in this hold lifecycle (an interrupted close). By
+# default every open or answered call is listed plus those closed within 7 days
+# (`--since <days>` widens it); a call closed before `Answered at:` existed
+# dates from its Done row. A damaged record is reported and skipped, never
+# fatal. FM_CAPTAIN_HOLD_NOW pins "now" for the window.
+# `migrate` is one-time and idempotent: it imports every
+# `state/decision-options/<task>.json` into a call that has no options yet and
+# turns every artifact revision's `covers` into page evidence on those calls,
+# leaving the old files in place (read by nothing).
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
@@ -77,10 +149,17 @@
 # not held for the captain, or a task already closed is reported as `skipped:`
 # and feeds nothing. A replayed delivery whose answer digest and requested
 # close mode both match the newest record is reported `closed:` and is a no-op;
-# a mode mismatch is skipped. The command exits nonzero when any key was
-# skipped. `--source` is provenance text recorded in the
-# durable decision, never a behavior switch: this command has no per-channel
-# branch and no knowledge of chat, review decks, or any transport.
+# a mode mismatch is skipped. A call whose record declares `on_answer` closes
+# the way it declares: an empty mode column means "what the call declares",
+# and a mode that disagrees with the declaration is skipped. The command exits
+# nonzero when any key was skipped. `--source` is provenance text recorded in
+# the durable decision and as the `Answered via:` line (`quarterdeck`, for the
+# Quarterdeck app), never a behavior switch: this command has no per-channel
+# branch and no knowledge of chat, review decks, or any transport. An answer
+# that names one of the call's recorded options is recorded with its
+# `Answer key:`. Output, one line per input row: `closed: <task-id>`,
+# `skipped: <task-id-or-key> (<reason>)`, or `refused: <key> (<reason>)`, then
+# `answers: closed=<n> skipped=<n>`.
 # Legacy input: an optional positional origin (or a stored concrete-origin
 # binding) makes a key that names no task fall back to the old
 # `<origin>-decision-<key>` identity, so an in-flight pre-collapse channel
@@ -184,6 +263,22 @@
 # reconciled. Records written by the retired fm-decision-hold.sh (routed,
 # declined, answered, repaired) are recognized everywhere a record is read, so
 # nothing already closed needs rewriting.
+# An answer (every mode but reconciled) also writes machine lines directly
+# under `Resolution mode:`, which `list` and the fleet snapshot read the way
+# they read the hold-set stamp, never touching the prose below them:
+#   Answer key: <option key>      only when the answer named one of the options
+#   Answer label: <one line>      the option's label, the label a channel showed,
+#                                 or the first line of the captain's words
+#   Answered by: captain|firstmate
+#   Answered via: <channel>       `answer`: --via, default chat; `answers`: its
+#                                 --source; `decide`: decide
+#   Answered at: <UTC timestamp>
+# They sit outside the decision digest on purpose: the digest stays the
+# captain's words alone, so records written before these lines existed, and
+# exact retries arriving later or through `answer` instead of `answers`, keep
+# matching; a retry never rewrites an existing block. `answer --key` must name
+# one of the call's recorded options (or, with none recorded, be a well-formed
+# key); --by and --label are internal to `answers` and `decide`.
 #
 # Parent channel: inside a secondmate home a task held for the captain, and its
 # answer, are captain-facing facts the moment they are recorded, so `hold`
@@ -514,11 +609,25 @@ closed_answer_replay_mode_compatible() {  # <mode> <task-body>
 # The record's label is what keeps an evidence-backed reconciliation from
 # reading as the captain's own words. `reconciled` closes a call that went moot
 # and carries verified evidence; every other mode carries what the captain said.
+#
+# An answer's machine lines follow `Resolution mode:` directly (the header
+# owns them). They are outside DECISION_DIGEST, which stays the captain's words.
+ANSWER_KEY=''
+ANSWER_LABEL=''
+ANSWER_BY=''
+ANSWER_VIA=''
 resolution_block() {  # <mode>
-  local label='Captain decision:'
+  local label='Captain decision:' machine=''
   [ "$1" != reconciled ] || label='Reconciliation evidence:'
-  printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\n%s\n%s\n' \
-    "$DECISION_DIGEST" "$1" "$label" "$DECISION_TEXT"
+  if [ "$1" != reconciled ] && [ -n "$ANSWER_BY" ]; then
+    [ -z "$ANSWER_KEY" ] || machine="${machine}Answer key: $ANSWER_KEY"$'\n'
+    [ -z "$ANSWER_LABEL" ] || machine="${machine}Answer label: $ANSWER_LABEL"$'\n'
+    machine="${machine}Answered by: $ANSWER_BY"$'\n'
+    machine="${machine}Answered via: $ANSWER_VIA"$'\n'
+    machine="${machine}Answered at: ${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"$'\n'
+  fi
+  printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n%s\n%s\n%s\n' \
+    "$DECISION_DIGEST" "$1" "$machine" "$label" "$DECISION_TEXT"
 }
 
 # Durable state of one captain call: an active captain hold (annotations
@@ -821,9 +930,332 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
   verify_hold_durable "${resolved%% *}"
 }
 
+# --- call records: the content of a call, beside its row --------------------
+#
+# The header owns the record's contract. Every writer below runs under the
+# task's control lock, and every write goes to a temporary file of its own that
+# is then renamed, so a reader sees a whole record or the previous one.
+
+CALLS_DIR="$STATE/calls"
+CALL_SCHEMA=fm-call.v1
+CALL_MAX_OPTIONS=8
+
+# The jq definition every reader and writer applies before trusting a record.
+# shellcheck disable=SC2016 # jq, not the shell, expands these variables.
+CALL_VALID_JQ='
+  def valid_call($id):
+    type == "object" and .schema == "fm-call.v1" and .task == $id
+    and (.question | type) == "string"
+    and (.options | type) == "array"
+    and all(.options[]; type == "object" and (.key | type) == "string"
+        and (.label | type) == "string" and (.recommended | type) == "boolean")
+    and (.on_answer == null or .on_answer == "done" or .on_answer == "release")
+    and (.origin == null or (.origin | type) == "string")
+    and (.about == null or (.about | type) == "string")
+    and (.evidence | type) == "array" and all(.evidence[]; type == "string")
+    and (.raised_by == null or (.raised_by | type) == "string")
+    and (.raised_at | type) == "string" and (.updated_at | type) == "string"
+    and (.decided == null or (.decided | type) == "object");'
+
+require_jq() {
+  command -v jq >/dev/null 2>&1 || fail "jq is required to read or record a call's content"
+}
+
+option_key_valid() {  # <key>
+  local key=$1
+  local LC_ALL=C
+  case "$key" in
+    ''|[!a-z0-9]*|*[!a-z0-9-]*) return 1 ;;
+  esac
+  [ "${#key}" -le 32 ]
+}
+
+# The task id alphabet a path may carry (bin/fm-pr-lib.sh's rule, which this
+# script does not source).
+task_id_path_safe() {  # <task-id>
+  local id=${1-}
+  local LC_ALL=C
+  case "$id" in
+    ''|.*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+
+page_name_valid() {  # <name>
+  local name=$1
+  local LC_ALL=C
+  case "$name" in
+    ''|[!a-z0-9]*|*[!a-z0-9-]*) return 1 ;;
+  esac
+  [ "${#name}" -le 64 ]
+}
+
+call_record_path() { printf '%s/%s.json\n' "$CALLS_DIR" "$1"; }
+
+call_now() {
+  local now=${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+  case "$now" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    *) fail "FM_CAPTAIN_HOLD_NOW must be a UTC YYYY-MM-DDTHH:MM:SSZ timestamp" ;;
+  esac
+  printf '%s\n' "$now"
+}
+
+# Who raised the call: the first mate, or the crewmate whose pane ran this.
+call_raised_by() {
+  if [ -n "${FM_TASK_ID:-}" ]; then
+    printf 'crew:%s\n' "$(sanitize_field "$FM_TASK_ID")"
+  else
+    printf 'firstmate\n'
+  fi
+}
+
+# A presented page with at least one complete revision.
+page_dir_presented() {  # <artifact-dir>
+  local revision
+  for revision in "$1"/rev-*/revision.json; do
+    [ -f "$revision" ] && return 0
+  done
+  return 1
+}
+
+# Validate one evidence ref; with <must-exist> = 1 it must also name something
+# that exists now (attaching), while detaching accepts any well-formed ref.
+evidence_ref_validate() {  # <ref> <must-exist-0-or-1>
+  local ref=$1 must_exist=$2 rest task name
+  case "$ref" in
+    *$'\n'*|*$'\r'*|*$'\t'*|*' '*) fail "evidence ref must be one word: $ref" ;;
+  esac
+  case "$ref" in
+    page:task/*/*)
+      rest=${ref#page:task/}
+      task=${rest%%/*}
+      name=${rest#*/}
+      task_id_path_safe "$task" || fail "evidence ref names an invalid task id: $ref"
+      page_name_valid "$name" || fail "evidence ref names an invalid page name: $ref"
+      [ "$must_exist" = 0 ] || page_dir_presented "$DATA/$task/artifacts/$name" \
+        || fail "no presented page $name on task $task: $ref"
+      ;;
+    page:chat/*)
+      name=${ref#page:chat/}
+      page_name_valid "$name" || fail "evidence ref names an invalid page name: $ref"
+      [ "$must_exist" = 0 ] || page_dir_presented "$DATA/.artifacts/$name" \
+        || fail "no presented chat page $name: $ref"
+      ;;
+    report:*)
+      task=${ref#report:}
+      task_id_path_safe "$task" || fail "evidence ref names an invalid task id: $ref"
+      [ "$must_exist" = 0 ] || [ -f "$DATA/$task/report.md" ] \
+        || fail "task $task has no report at data/$task/report.md: $ref"
+      ;;
+    url:http://?*|url:https://?*) : ;;
+    *) fail "evidence ref must be page:task/<task-id>/<name>, page:chat/<name>, report:<task-id>, or url:<http(s) url>: $ref" ;;
+  esac
+}
+
+# Load <task-id>'s record into CALL_RECORD (compact JSON), or '' when it has
+# none. A writer must not build on a record it cannot trust, so a damaged one
+# stops the command by name; `list` reads records separately and skips them.
+# call_record_try_load is the same read returning 1 for a damaged record, for a
+# caller that has a safe way to proceed without it.
+CALL_RECORD=''
+call_record_try_load() {  # <task-id>
+  local id=$1 path
+  CALL_RECORD=''
+  path=$(call_record_path "$id")
+  [ -e "$path" ] || [ -L "$path" ] || return 0
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  CALL_RECORD=$(jq -c --arg id "$id" "$CALL_VALID_JQ"'
+    if valid_call($id) then . else error("invalid") end' "$path" 2>/dev/null) || {
+    CALL_RECORD=''
+    return 1
+  }
+}
+
+call_record_load() {  # <task-id>
+  require_jq
+  call_record_try_load "$1" \
+    || fail "call record is damaged: $(call_record_path "$1") (repair or remove it, then retry)"
+}
+
+call_record_store() {  # <task-id> <json>
+  local id=$1 json=$2 dest tmp
+  (umask 077; mkdir -p "$CALLS_DIR") || fail "cannot create $CALLS_DIR"
+  [ -d "$CALLS_DIR" ] && [ ! -L "$CALLS_DIR" ] || fail "the call record directory is unsafe: $CALLS_DIR"
+  dest=$(call_record_path "$id")
+  tmp=$(mktemp "$CALLS_DIR/.$id.json.XXXXXX") || fail "cannot stage the call record for $id"
+  if ! { printf '%s\n' "$json" | jq --arg id "$id" "$CALL_VALID_JQ"'
+           if valid_call($id) then . else error("the composed record is invalid") end' > "$tmp" \
+         && chmod 644 "$tmp" && mv -f -- "$tmp" "$dest"; }; then
+    rm -f -- "$tmp"
+    fail "cannot record the call content for $id"
+  fi
+}
+
+# --- the content flags hold, offer, and decide share -----------------------
+
+CALL_CONTENT_GIVEN=0
+CALL_QUESTION=''
+CALL_QUESTION_SET=0
+CALL_OPTION_PAIRS=()
+CALL_OPTIONS_JSON=null
+CALL_RECOMMEND=''
+CALL_RECOMMEND_SET=0
+CALL_ON_ANSWER=''
+CALL_EVIDENCE=()
+CALL_ABOUT=''
+CALL_ABOUT_SET=0
+
+# Record one content flag; returns 1 for a flag that is not a content flag.
+call_content_flag() {  # <flag> <value>
+  case "$1" in
+    --question) CALL_QUESTION=$2; CALL_QUESTION_SET=1 ;;
+    --option) CALL_OPTION_PAIRS+=("$2") ;;
+    --recommend) CALL_RECOMMEND=$2; CALL_RECOMMEND_SET=1 ;;
+    --on-answer) CALL_ON_ANSWER=$2 ;;
+    --evidence) CALL_EVIDENCE+=("$2") ;;
+    --about) CALL_ABOUT=$2; CALL_ABOUT_SET=1 ;;
+    *) return 1 ;;
+  esac
+  CALL_CONTENT_GIVEN=1
+}
+
+# Validate the content flags the way the retired fm-decision-options.sh did,
+# and build CALL_OPTIONS_JSON (null when no --option was given).
+call_content_validate() {
+  local pair key keys=' ' err ref
+  if [ "$CALL_QUESTION_SET" = 1 ]; then
+    validate_one_line question "$CALL_QUESTION"
+  fi
+  for pair in "${CALL_OPTION_PAIRS[@]+"${CALL_OPTION_PAIRS[@]}"}"; do
+    case "$pair" in *=*) ;; *) fail "--option takes <key>=<label>, got '$pair'" ;; esac
+    key=${pair%%=*}
+    option_key_valid "$key" || fail "'$key' is not an option key (expected [a-z0-9][a-z0-9-]{0,31})"
+    [ -n "${pair#*=}" ] || fail "option '$key' has no label"
+    case "${pair#*=}" in *$'\n'*|*$'\r'*) fail "option '$key' label must be one line" ;; esac
+    case "$keys" in *" $key "*) fail "--option names '$key' twice" ;; esac
+    keys="$keys$key "
+  done
+  if [ "${#CALL_OPTION_PAIRS[@]}" -gt 0 ]; then
+    [ "${#CALL_OPTION_PAIRS[@]}" -ge 2 ] || fail "a call needs at least two options"
+    [ "${#CALL_OPTION_PAIRS[@]}" -le "$CALL_MAX_OPTIONS" ] \
+      || fail "a call takes at most $CALL_MAX_OPTIONS options, got ${#CALL_OPTION_PAIRS[@]}"
+    if [ "$CALL_RECOMMEND_SET" = 1 ]; then
+      case "$keys" in *" $CALL_RECOMMEND "*) ;; *) fail "--recommend names '$CALL_RECOMMEND', which is not one of the options" ;; esac
+    fi
+  elif [ "$CALL_RECOMMEND_SET" = 1 ]; then
+    option_key_valid "$CALL_RECOMMEND" || fail "'$CALL_RECOMMEND' is not an option key"
+  fi
+  case "$CALL_ON_ANSWER" in
+    ''|done|release) : ;;
+    *) fail "--on-answer must be done or release: $CALL_ON_ANSWER" ;;
+  esac
+  if [ "$CALL_ABOUT_SET" = 1 ]; then
+    validate_slug about "$CALL_ABOUT"
+  fi
+  for ref in "${CALL_EVIDENCE[@]+"${CALL_EVIDENCE[@]}"}"; do
+    evidence_ref_validate "$ref" 1
+  done
+  if [ "$CALL_QUESTION_SET" = 1 ] || [ "${#CALL_OPTION_PAIRS[@]}" -gt 0 ]; then
+    require_jq
+    err=$(jq -nr --arg question "$CALL_QUESTION" '
+      ($ARGS.positional | map(.[(index("=") + 1):])) as $labels
+      | if ($question | length) > 400 then "--question is longer than 400 characters"
+        else ([$labels[] | select(length > 200)] | first // empty
+              | "an option label is longer than 200 characters: \(.[:40])...")
+        end' --args "${CALL_OPTION_PAIRS[@]+"${CALL_OPTION_PAIRS[@]}"}") \
+      || fail "cannot measure the call content"
+    [ -z "$err" ] || fail "$err"
+  fi
+  if [ "${#CALL_OPTION_PAIRS[@]}" -gt 0 ]; then
+    CALL_OPTIONS_JSON=$(jq -nc '$ARGS.positional
+      | map(index("=") as $i | {key:.[:$i], label:.[($i + 1):], recommended:false})' \
+      --args "${CALL_OPTION_PAIRS[@]}") || fail "cannot build the call options"
+  fi
+}
+
+# Compose a record from the current one (CALL_RECORD, or a fresh one) and the
+# content flags. <raised-at> replaces raised_at when non-empty; <default-on-answer>
+# declares on_answer only when neither the flags nor the record declare it.
+call_record_compose() {  # <task-id> <now> <raised-at> <default-on-answer> <origin>
+  local id=$1 now=$2 raised_at=$3 default_on_answer=$4 origin=$5 evidence out
+  evidence=$(jq -nc '$ARGS.positional' --args "${CALL_EVIDENCE[@]+"${CALL_EVIDENCE[@]}"}") \
+    || fail "cannot build the call evidence"
+  out=$(jq -nc \
+    --argjson cur "${CALL_RECORD:-null}" \
+    --arg id "$id" --arg now "$now" --arg schema "$CALL_SCHEMA" \
+    --arg raised_by "$(call_raised_by)" --arg raised_at "$raised_at" \
+    --arg question "$CALL_QUESTION" --argjson question_set "$CALL_QUESTION_SET" \
+    --argjson options "$CALL_OPTIONS_JSON" \
+    --arg recommend "$CALL_RECOMMEND" --argjson recommend_set "$CALL_RECOMMEND_SET" \
+    --arg on_answer "$CALL_ON_ANSWER" --arg default_on_answer "$default_on_answer" \
+    --argjson evidence "$evidence" \
+    --arg about "$CALL_ABOUT" --argjson about_set "$CALL_ABOUT_SET" \
+    --arg origin "$origin" '
+    ($cur // {schema:$schema, task:$id, question:"", options:[], on_answer:null,
+              origin:null, about:null, evidence:[], raised_by:$raised_by,
+              raised_at:$now, updated_at:$now, decided:null})
+    | if $question_set == 1 then .question = $question else . end
+    | if $options != null then .options = $options else . end
+    | if $recommend_set == 1 then
+        if any(.options[]; .key == $recommend)
+        then .options |= map(.recommended = (.key == $recommend))
+        else error("--recommend names \($recommend), which is not one of the options") end
+      else . end
+    | if $on_answer != "" then .on_answer = $on_answer
+      elif .on_answer == null and $default_on_answer != "" then .on_answer = $default_on_answer
+      else . end
+    | .evidence = reduce $evidence[] as $e (.evidence;
+        if any(.[]; . == $e) then . else . + [$e] end)
+    | if $about_set == 1 then .about = $about else . end
+    | if $origin != "" then .origin = $origin else . end
+    | if $raised_at != "" then .raised_at = $raised_at else . end
+    | .updated_at = $now' 2>&1) \
+    || fail "cannot compose the call content for $id: ${out##*error*: }"
+  printf '%s\n' "$out"
+}
+
+# Is the shown row a call at all: held for the captain now or ever (the hold
+# kind survives a close), or carrying a resolution block.
+shown_row_is_call() {  # <show-output>
+  [ "$(show_field_value "$1" hold_kind)" = captain ] && return 0
+  body_has_resolution_record "$(show_field "$1" body)"
+}
+
+# The raised_at a record created for an existing call starts from: its active
+# hold-set stamp, else now.
+shown_call_raised_at() {  # <show-output> <now>
+  local stamp
+  stamp=$(body_hold_set_timestamp "$(show_field_value "$1" body)")
+  printf '%s\n' "${stamp:-$2}"
+}
+
+# The answer's machine lines for the resolution block (see the header).
+answer_machine_lines() {  # <task-id> <key> <label> <by> <via>
+  local id=$1 key=$2 label=$3 option_label=''
+  ANSWER_KEY=''
+  ANSWER_LABEL=''
+  ANSWER_BY=$4
+  ANSWER_VIA=$5
+  if [ -n "$key" ]; then
+    call_record_load "$id"
+    if [ -n "$CALL_RECORD" ] \
+      && [ "$(printf '%s' "$CALL_RECORD" | jq '.options | length')" -gt 0 ]; then
+      option_label=$(printf '%s' "$CALL_RECORD" | jq -r --arg key "$key" \
+        'first(.options[] | select(.key == $key) | .label) // empty')
+      [ -n "$option_label" ] || fail "--key $key is not one of the options call $id offers"
+    fi
+    ANSWER_KEY=$key
+  fi
+  [ -n "$label" ] || label=$option_label
+  [ -n "$label" ] || label=$(printf '%s\n' "$DECISION_TEXT" | sed -n '/[^[:space:]]/{p;q;}')
+  ANSWER_LABEL=$(sanitize_field "$label")
+}
+
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
-  local existing_hold_kind='' existing_held='' preserve_hold_set=0
+  local existing_hold_kind='' existing_held='' preserve_hold_set=0 created=0 existing_kind='' default_on_answer
+  local stamp raised_at record
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -833,6 +1265,11 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
+      --question|--option|--recommend|--on-answer|--evidence|--about)
+        [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+        call_content_flag "$1" "$2"
+        shift
+        ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -843,6 +1280,7 @@ command_hold() {
   if [ -n "$origin" ]; then
     validate_slug origin-id "$origin"
   fi
+  call_content_validate
   if [ -n "$until" ]; then
     case "$until" in
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
@@ -863,6 +1301,7 @@ command_hold() {
       || fail "task $id is already closed; a new captain call needs its own task"
     existing_hold_kind=$(show_field_value "$show" hold_kind)
     existing_held=$(show_field_value "$show" held)
+    existing_kind=$(show_field_value "$show" kind)
     if [ "$existing_hold_kind" = captain ] && [ "$existing_held" = yes ]; then
       preserve_hold_set=1
     fi
@@ -888,6 +1327,7 @@ command_hold() {
       tasks_axi add "$id" "$title" --kind captain --repo "$repo" >/dev/null \
         || fail "could not create task $id"
     fi
+    created=1
   fi
   # Publish the timestamp before the captain-hold annotation. A concurrent
   # snapshot may see the harmless stamp by itself, but can never see a newly
@@ -895,8 +1335,35 @@ command_hold() {
   task_show_or_fail "$id" "task $id disappeared before recording its hold-set stamp"
   write_hold_set_stamp "$id" "$(show_field "$show" body)" "$hold_set" "$preserve_hold_set"
   task_show_or_fail "$id" "task $id disappeared while recording its hold-set stamp"
-  [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
-    || fail "task $id did not retain its hold-set stamp"
+  stamp=$(body_hold_set_timestamp "$(show_field_value "$show" body)")
+  [ -n "$stamp" ] || fail "task $id did not retain its hold-set stamp"
+  # The call's content is recorded before the hold is applied, for the same
+  # reason the stamp is: a newly held call is never visible without it. A hold
+  # given no content keeps behaving as it always did; an existing record only
+  # follows a new hold lifecycle's stamp.
+  if [ "$created" = 1 ] || [ "$existing_kind" = captain ]; then
+    default_on_answer="done"
+  else
+    default_on_answer=release
+  fi
+  if [ "$CALL_CONTENT_GIVEN" = 1 ] || [ -n "$origin" ]; then
+    call_record_load "$id"
+    raised_at=''
+    if [ -z "$CALL_RECORD" ] || [ "$preserve_hold_set" = 0 ]; then
+      raised_at=$stamp
+    fi
+    record=$(call_record_compose "$id" "$hold_set" "$raised_at" "$default_on_answer" "$origin") || exit 1
+    call_record_store "$id" "$record"
+  elif [ "$preserve_hold_set" = 0 ] \
+    && { [ -e "$(call_record_path "$id")" ] || [ -L "$(call_record_path "$id")" ]; }; then
+    if call_record_try_load "$id" && [ -n "$CALL_RECORD" ]; then
+      record=$(call_record_compose "$id" "$hold_set" "$stamp" "$default_on_answer" '') || exit 1
+      call_record_store "$id" "$record"
+    else
+      printf 'fm-captain-hold: warning: call record %s is damaged and was left as it is\n' \
+        "$(call_record_path "$id")" >&2
+    fi
+  fi
   if [ -n "$until" ]; then
     tasks_axi hold "$id" --reason "$reason" --kind captain --until "$until" >/dev/null \
       || fail "could not hold task $id for the captain"
@@ -1004,20 +1471,32 @@ remove_interrupted_answer_stamp() {  # <task-id>
 
 command_answer() {
   local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence
+  local key='' key_set=0 via=chat label='' by=captain
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --decision-file) shift; decision_file=${1:-} ;;
       --release) release=1 ;;
+      --key) shift; key=${1:-}; key_set=1 ;;
+      --via) shift; via=${1:-} ;;
+      --label) shift; label=${1:-} ;;
+      --by) shift; by=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
   done
   validate_slug task-id "$id"
   load_decision "$decision_file"
+  if [ "$key_set" = 1 ]; then
+    option_key_valid "$key" || fail "--key must be an option key ([a-z0-9][a-z0-9-]{0,31}): $key"
+  fi
+  via=$(sanitize_field "$via")
+  [ -n "$via" ] || fail "--via must name the channel the answer came through"
+  case "$by" in captain|firstmate) ;; *) fail "--by must be captain or firstmate: $by" ;; esac
   acquire_task_control_lock "$id"
   require_tasks_axi
+  answer_machine_lines "$id" "$key" "$label" "$by" "$via"
   task_show "$id" || fail "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
   show=$TASK_SHOW_OUTPUT
   state=$(show_field "$show" state)
@@ -1115,6 +1594,456 @@ command_answer() {
     return 0
   fi
   fail "task $id is not held for the captain; hold it first or name the right task"
+}
+
+# --- the call's content: offer, evidence, decide, list, migrate --------------
+
+command_offer() {
+  local id=${1:-} now show record
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --question|--option|--recommend|--on-answer)
+        [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+        call_content_flag "$1" "$2"
+        shift
+        ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug task-id "$id"
+  [ "$CALL_CONTENT_GIVEN" = 1 ] || fail "offer needs --question, --option, --recommend, or --on-answer"
+  call_content_validate
+  require_jq
+  now=$(call_now)
+  acquire_task_control_lock "$id"
+  require_tasks_axi
+  task_show_or_fail "$id" "task $id is absent from this home's configured backlog (data directory $DATA)"
+  [ "$(show_field "$show" state)" != "done" ] && [ "$(show_field_value "$show" hold_kind)" = captain ] \
+    || fail "task $id is not an open captain call; offer changes only an open call's content"
+  call_record_load "$id"
+  if [ -z "$CALL_RECORD" ]; then
+    record=$(call_record_compose "$id" "$now" "$(shown_call_raised_at "$show" "$now")" '' '') || exit 1
+  else
+    record=$(call_record_compose "$id" "$now" '' '' '') || exit 1
+  fi
+  call_record_store "$id" "$record"
+  printf 'offered: %s\n' "$id"
+}
+
+command_evidence() {
+  local id=${1:-} action=${2:-} ref=${3:-} now show record
+  [ "$#" -eq 3 ] || { usage >&2; exit 2; }
+  validate_slug task-id "$id"
+  case "$action" in
+    add) evidence_ref_validate "$ref" 1 ;;
+    remove) evidence_ref_validate "$ref" 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  require_jq
+  now=$(call_now)
+  acquire_task_control_lock "$id"
+  require_tasks_axi
+  task_show_or_fail "$id" "task $id is absent from this home's configured backlog (data directory $DATA)"
+  shown_row_is_call "$show" || fail "task $id is not a captain call; evidence argues a call"
+  call_record_load "$id"
+  if [ -n "$CALL_RECORD" ] \
+    && printf '%s' "$CALL_RECORD" | jq -e --arg ref "$ref" 'any(.evidence[]; . == $ref)' >/dev/null; then
+    if [ "$action" = add ]; then
+      printf 'unchanged: %s %s\n' "$id" "$ref"
+      return 0
+    fi
+    record=$(printf '%s' "$CALL_RECORD" | jq -c --arg ref "$ref" --arg now "$now" \
+      '.evidence |= map(select(. != $ref)) | .updated_at = $now') \
+      || fail "cannot compose the call content for $id"
+    call_record_store "$id" "$record"
+    printf 'removed: %s %s\n' "$id" "$ref"
+    return 0
+  fi
+  if [ "$action" = remove ]; then
+    printf 'unchanged: %s %s\n' "$id" "$ref"
+    return 0
+  fi
+  CALL_EVIDENCE=("$ref")
+  if [ -z "$CALL_RECORD" ]; then
+    record=$(call_record_compose "$id" "$now" "$(shown_call_raised_at "$show" "$now")" '' '') || exit 1
+  else
+    record=$(call_record_compose "$id" "$now" '' '' '') || exit 1
+  fi
+  call_record_store "$id" "$record"
+  printf 'added: %s %s\n' "$id" "$ref"
+}
+
+# The durable decision a `decide` call records. Pure function of its inputs,
+# so an exact retry carries the same digest.
+decided_decision_text() {  # <task-id> <what> <why>
+  printf 'Firstmate decided this call on the captain'"'"'s behalf.\n'
+  printf 'Task: %s\n' "$1"
+  printf 'Decided: %s\n' "$2"
+  printf 'Why: %s\n' "$3"
+}
+
+command_decide() {
+  local about='' title='' what='' why='' kind=other link='' what_set=0 why_set=0 pair id digest err
+  local repo='' show state tmp record decided now
+  local -a hold_args=()
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+    case "$1" in
+      --about) about=$2 ;;
+      --title) title=$2 ;;
+      --what) what=$2; what_set=1 ;;
+      --why) why=$2; why_set=1 ;;
+      --kind) kind=$2 ;;
+      --link) link=$2 ;;
+      --option) call_content_flag --option "$2" ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift 2
+  done
+  [ -n "$about" ] || fail "decide needs --about <task-id>: the task the decision concerns"
+  validate_slug about "$about"
+  [ -n "$title" ] || fail "decide needs --title <title>"
+  validate_one_line title "$title"
+  [ "$what_set" = 1 ] || fail "decide needs --what <what was decided>"
+  [ "$why_set" = 1 ] || fail "decide needs --why <why it was decided>"
+  validate_one_line what "$what"
+  validate_one_line why "$why"
+  case "$kind" in
+    review-finding|merge|new-task|scope|other) : ;;
+    *) fail "--kind must be one of review-finding, merge, new-task, scope, other (got '$kind')" ;;
+  esac
+  if [ -n "$link" ]; then
+    case "$link" in
+      http://?*|https://?*) : ;;
+      *) fail "--link must be an http(s) URL (got '$link')" ;;
+    esac
+    case "$link" in *[[:space:]]*) fail "--link must be one word: $link" ;; esac
+  fi
+  require_jq
+  err=$(jq -nr --arg what "$what" --arg why "$why" --arg title "$title" '
+    if ($what | length) > 200 then "--what is longer than 200 characters"
+    elif ($why | length) > 300 then "--why is longer than 300 characters"
+    elif ($title | length) > 400 then "--title is longer than 400 characters"
+    else empty end') || fail "cannot measure the decision"
+  [ -z "$err" ] || fail "$err"
+  call_content_validate
+  require_tasks_axi
+  if [ ! -f "$STATE/$about.meta" ] && [ ! -d "$DATA/$about" ] && ! task_show "$about"; then
+    fail "unknown task '$about' (no state/$about.meta, data/$about/, or backlog row)"
+  fi
+  # The identity is the digest of every argument, so an exact retry names the
+  # same row and a different decision can never land on an existing one.
+  digest=$(sha256_text "$(printf '%s\n' "$about" "$title" "$what" "$why" "$kind" "$link" \
+    "${CALL_OPTION_PAIRS[@]+"${CALL_OPTION_PAIRS[@]}"}")")
+  id="decided-${digest:0:12}"
+  decided=$(jq -nc --arg what "$what" --arg why "$why" --arg kind "$kind" --arg link "$link" \
+    '{what:$what, why:$why, kind:$kind, link:(if $link == "" then null else $link end)}')
+  if task_show "$id"; then
+    show=$TASK_SHOW_OUTPUT
+    state=$(show_field "$show" state)
+    if [ "$state" = "done" ]; then
+      body_has_resolution_record "$(show_field "$show" body)" \
+        || fail "task $id is closed without a recorded decision"
+      printf 'decided: %s\n' "$id"
+      return 0
+    fi
+  fi
+  if [ -f "$STATE/$about.meta" ]; then
+    repo=$(meta_value "$STATE/$about.meta" project)
+    repo=${repo%/}
+    repo=${repo##*/}
+  fi
+  [ -n "$repo" ] || repo=firstmate
+  hold_args=(--title "$title" --reason "decided by firstmate on the captain's behalf" --repo "$repo"
+    --question "$title" --on-answer "done" --about "$about")
+  for pair in "${CALL_OPTION_PAIRS[@]+"${CALL_OPTION_PAIRS[@]}"}"; do
+    hold_args+=(--option "$pair")
+  done
+  "$0" hold "$id" "${hold_args[@]}" >/dev/null || fail "could not raise the decided call $id"
+  now=$(call_now)
+  acquire_task_control_lock "$id"
+  call_record_load "$id"
+  [ -n "$CALL_RECORD" ] || fail "the decided call $id lost its record"
+  record=$(printf '%s' "$CALL_RECORD" | jq -c --argjson decided "$decided" --arg now "$now" \
+    '.decided = $decided | .raised_by = "firstmate" | .updated_at = $now') \
+    || fail "cannot compose the call content for $id"
+  call_record_store "$id" "$record"
+  release_task_control_lock
+  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-captain-decided.XXXXXX") || fail "cannot stage the decision"
+  if ! decided_decision_text "$id" "$what" "$why" > "$tmp"; then
+    rm -f -- "$tmp"
+    fail "cannot stage the decision for $id"
+  fi
+  if ! "$0" answer "$id" --decision-file "$tmp" --via decide --by firstmate --label "$what" >/dev/null; then
+    rm -f -- "$tmp"
+    fail "could not record the decided call $id"
+  fi
+  rm -f -- "$tmp"
+  printf 'decided: %s\n' "$id"
+}
+
+# Every call record, one compact JSON line per file: {task, ok:true, record} or
+# {task, ok:false, file}. One jq reads them all; when a file is not even JSON the
+# whole read fails, and they are read again one at a time so only it is lost.
+call_records_read() {
+  local path lines
+  local -a paths=()
+  for path in "$CALLS_DIR"/*.json; do
+    [ -f "$path" ] && [ ! -L "$path" ] && paths+=("$path")
+  done
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  # shellcheck disable=SC2016 # jq, not the shell, expands these variables.
+  local filter="$CALL_VALID_JQ"'
+    (input_filename) as $file
+    | ($file | sub("^.*/"; "") | sub("\\.json$"; "")) as $id
+    | if valid_call($id) then {task:$id, ok:true, record:.} else {task:$id, ok:false, file:$file} end'
+  if lines=$(jq -c "$filter" "${paths[@]}" 2>/dev/null); then
+    [ -z "$lines" ] || printf '%s\n' "$lines"
+    return 0
+  fi
+  for path in "${paths[@]}"; do
+    jq -c "$filter" "$path" 2>/dev/null \
+      || jq -nc --arg file "$path" '{task:($file | sub("^.*/"; "") | sub("\\.json$"; "")), ok:false, file:$file}'
+  done
+}
+
+command_list() {
+  local json=0 since=7 backlog_file='' now work records origins origin dir name
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --since)
+        shift
+        since=${1:-}
+        case "$since" in ''|*[!0-9]*) fail "--since takes a whole number of days (got '$since')" ;; esac
+        ;;
+      --backlog-json) shift; backlog_file=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  require_jq
+  now=$(call_now)
+  work=$(mktemp -d "${TMPDIR:-/tmp}/fm-captain-calls.XXXXXX") || fail "cannot stage the call listing"
+  # shellcheck disable=SC2064 # expand now: the path is fixed for this run
+  trap "rm -rf -- '$work'; captain_hold_cleanup" EXIT
+  if [ -z "$backlog_file" ]; then
+    backlog_file="$work/backlog.json"
+    FM_SNAPSHOT_NOW="$now" "$SCRIPT_DIR/fm-fleet-snapshot.sh" --backlog-json > "$backlog_file" \
+      || fail "cannot read this home's backlog"
+  fi
+  [ -f "$backlog_file" ] || fail "no backlog listing at $backlog_file"
+  records=$(call_records_read)
+  printf '%s\n' "$records" | jq -sc 'map(select(. != null))' > "$work/records.json" \
+    || fail "cannot read the call records"
+  # What each origin produced, found by globbing rather than by reading the
+  # artifact store, so a listing costs no process per call.
+  origins=$(jq -r '.[] | select(.ok) | .record.origin // empty' "$work/records.json" | LC_ALL=C sort -u)
+  : > "$work/derived.tsv"
+  while IFS= read -r origin; do
+    [ -n "$origin" ] || continue
+    task_id_path_safe "$origin" || continue
+    [ ! -f "$DATA/$origin/report.md" ] || printf '%s\treport\t\n' "$origin" >> "$work/derived.tsv"
+    for dir in "$DATA/$origin/artifacts"/*; do
+      [ -d "$dir" ] || continue
+      name=${dir##*/}
+      page_name_valid "$name" || continue
+      page_dir_presented "$dir" && printf '%s\tpage\t%s\n' "$origin" "$name" >> "$work/derived.tsv"
+    done
+  done <<EOF_ORIGINS
+$origins
+EOF_ORIGINS
+  # shellcheck disable=SC2016 # jq, not the shell, expands these variables.
+  jq -n \
+    --slurpfile backlog "$backlog_file" \
+    --slurpfile records "$work/records.json" \
+    --rawfile derived "$work/derived.tsv" \
+    --arg now "$now" --argjson days "$since" '
+    def epoch($d):
+      if ($d | type) != "string" then null
+      elif ($d | test("T")) then try ($d | fromdateiso8601) catch null
+      else try (($d + "T00:00:00Z") | fromdateiso8601) catch null end;
+    def dedupe: reduce .[] as $e ([]; if any(.[]; . == $e) then . else . + [$e] end);
+    def resolution_line: test("^Resolution recorded by fm-(captain|decision)-hold\\.$");
+    # The newest resolution block'"'"'s machine lines: the fixed header lines
+    # directly under its leader, up to its first line that is not one.
+    def machine($lines):
+      (first(range(0; $lines | length) as $i | select($lines[$i] | resolution_line) | $i) // null) as $at
+      | if $at == null then null
+        else reduce ($lines[($at + 1):][]) as $line ({open:true, m:{}};
+            if .open | not then .
+            else ([$line | capture("^(?<k>Decision digest|Resolution mode|Answer key|Answer label|Answered by|Answered via|Answered at): (?<v>.*)$")] | .[0]) as $c
+              | if $c == null then .open = false else .m[$c.k] = $c.v end
+            end)
+          | .m end;
+    ($derived | split("\n") | map(select(length > 0) | split("\t"))
+      | reduce .[] as $row ({};
+          if $row[1] == "report" then .[$row[0]].report = true
+          else .[$row[0]].pages += [$row[2]] end)) as $made
+    | ($records[0] | map(select(.ok)) | map({key:.task, value:.record}) | from_entries) as $by_task
+    | ($now | epoch(.)) as $end
+    | [ $backlog[0].records[]?
+        | select(.structured == true and .id != null)
+        | select(.hold_kind == "captain" or any(.body_lines[]?; resolution_line))
+        | . as $row
+        | ($by_task[$row.id] // null) as $rec
+        | machine($row.body_lines // []) as $m
+        | (if $row.state == "done" then "closed"
+           elif $row.hold_kind == "captain" then
+             (if $m != null and $m["Answered at"] != null
+                 and ($row.hold_set == null or $m["Answered at"] >= $row.hold_set)
+              then "answered" else "open" end)
+           else "closed" end) as $state
+        | (if $state != "open" and $m != null and $m["Answered by"] != null then
+             {key:($m["Answer key"] // null), label:($m["Answer label"] // null),
+              by:$m["Answered by"], via:($m["Answered via"] // null), at:($m["Answered at"] // null)}
+           else null end) as $answer
+        | (if $state != "closed" then null
+           else ($answer.at // (if $row.state == "done" then ($row.done // $row.completion.date) else null end))
+           end) as $closed_at
+        | select($state != "closed"
+            or ($closed_at != null and epoch($closed_at) != null and $end != null
+                and epoch($closed_at) >= ($end - $days * 86400)))
+        | ($rec.origin // null) as $origin
+        | {id:$row.id,
+           title:$row.title,
+           question:(if (($rec.question // "") != "") then $rec.question else $row.hold_reason end),
+           options:($rec.options // []),
+           on_answer:($rec.on_answer // (if $row.kind == "captain" then "done" else "release" end)),
+           state:$state,
+           bucket:($row.hold_bucket // null),
+           captain_actionable:($row.captain_actionable // false),
+           origin:$origin,
+           about:($rec.about // null),
+           evidence:((($rec.evidence // [])
+             + (if $origin == null then []
+                else ((if $made[$origin].report then ["report:" + $origin] else [] end)
+                      + (($made[$origin].pages // []) | sort | map("page:task/" + $origin + "/" + .)))
+                end)) | dedupe),
+           raised_by:($rec.raised_by // null),
+           raised_at:($rec.raised_at // $row.hold_set // $row.since),
+           updated_at:($rec.updated_at // null),
+           answer:$answer,
+           decided:($rec.decided // null)}
+      ] as $calls
+    | {schema:"fm-call-list.v1", calls:$calls,
+       damaged:($records[0] | map(select(.ok | not) | {task, file}))}' > "$work/list.json" \
+    || fail "cannot list the calls"
+  if [ "$json" = 1 ]; then
+    cat "$work/list.json"
+    return 0
+  fi
+  jq -r '
+    (.calls[] |
+      "\(.id)  \(.state)\(if .bucket then "  " + .bucket else "" end)  \(.question // .title)",
+      (.options[] | "  \(.key)  \(.label)\(if .recommended then "  (recommended)" else "" end)"),
+      (.evidence[] | "  evidence: \(.)"),
+      (if .answer then "  answer: \(.answer.key // "-")  \(.answer.label // "")  (by \(.answer.by) via \(.answer.via // "-"))" else empty end)),
+    (.damaged[] | "damaged: \(.task) \(.file)"),
+    "calls: \(.calls | length)"' "$work/list.json"
+}
+
+# One-time import of the stores this record replaced. Idempotent: an option set
+# lands only on a call with no options yet, and evidence is never duplicated.
+command_migrate() {
+  local path task imported=0 attached=0 skipped=0 unchanged=0 old record now ref rows show
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  require_jq
+  require_tasks_axi
+  now=$(call_now)
+  for path in "$STATE/decision-options"/*.json; do
+    [ -f "$path" ] && [ ! -L "$path" ] || continue
+    task=${path##*/}
+    task=${task%.json}
+    if ! task_id_path_safe "$task"; then
+      printf 'skipped: %s (not a task id)\n' "$task"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    old=$(jq -c --arg task "$task" '
+      select(.schema == "fm-decision-options.v1" and .task == $task
+        and (.options | type) == "array" and (.options | length) >= 2)
+      | {question:(.question // ""), set_at:(.set_at // null),
+         options:[.options[] | {key, label, recommended:(.recommended == true)}]}' "$path" 2>/dev/null)
+    if [ -z "$old" ]; then
+      printf 'skipped: %s (damaged decision-options record)\n' "$task"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    acquire_task_control_lock "$task"
+    if ! task_show "$task" || ! shown_row_is_call "$TASK_SHOW_OUTPUT"; then
+      printf 'skipped: %s (not a captain call)\n' "$task"
+      skipped=$((skipped + 1))
+      release_task_control_lock
+      continue
+    fi
+    show=$TASK_SHOW_OUTPUT
+    call_record_load "$task"
+    if [ -n "$CALL_RECORD" ] && [ "$(printf '%s' "$CALL_RECORD" | jq '.options | length')" -gt 0 ]; then
+      printf 'unchanged: %s options\n' "$task"
+      unchanged=$((unchanged + 1))
+      release_task_control_lock
+      continue
+    fi
+    if [ -z "$CALL_RECORD" ]; then
+      CALL_RECORD=$(call_record_compose "$task" "$now" "$(shown_call_raised_at "$show" "$now")" '' '') || exit 1
+    fi
+    record=$(printf '%s' "$CALL_RECORD" | jq -c --argjson old "$old" --arg now "$now" '
+      .options = $old.options
+      | (if .question == "" then .question = $old.question else . end)
+      | .updated_at = $now') || fail "cannot compose the call content for $task"
+    call_record_store "$task" "$record"
+    printf 'imported: %s options\n' "$task"
+    imported=$((imported + 1))
+    release_task_control_lock
+  done
+  rows=$(FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-artifact.sh" list --json | jq -r '
+    .artifacts[].revisions[]
+    | select((.covers | type) == "array")
+    | (if .scope == "chat" then "page:chat/\(.name)" else "page:task/\(.task)/\(.name)" end) as $ref
+    | .covers[] | select(type == "string") | [., $ref] | @tsv' | LC_ALL=C sort -u) \
+    || fail "cannot read the artifact store"
+  while IFS=$'\t' read -r task ref; do
+    [ -n "$task" ] || continue
+    if ! task_id_path_safe "$task"; then
+      printf 'skipped: %s (not a task id)\n' "$task"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    acquire_task_control_lock "$task"
+    if ! task_show "$task" || ! shown_row_is_call "$TASK_SHOW_OUTPUT"; then
+      printf 'skipped: %s %s (not a captain call)\n' "$task" "$ref"
+      skipped=$((skipped + 1))
+      release_task_control_lock
+      continue
+    fi
+    show=$TASK_SHOW_OUTPUT
+    call_record_load "$task"
+    if [ -n "$CALL_RECORD" ] \
+      && printf '%s' "$CALL_RECORD" | jq -e --arg ref "$ref" 'any(.evidence[]; . == $ref)' >/dev/null; then
+      printf 'unchanged: %s %s\n' "$task" "$ref"
+      unchanged=$((unchanged + 1))
+      release_task_control_lock
+      continue
+    fi
+    CALL_EVIDENCE=("$ref")
+    if [ -z "$CALL_RECORD" ]; then
+      record=$(call_record_compose "$task" "$now" "$(shown_call_raised_at "$show" "$now")" '' '') || exit 1
+    else
+      record=$(call_record_compose "$task" "$now" '' '' '') || exit 1
+    fi
+    CALL_EVIDENCE=()
+    call_record_store "$task" "$record"
+    printf 'attached: %s %s\n' "$task" "$ref"
+    attached=$((attached + 1))
+    release_task_control_lock
+  done <<EOF_ROWS
+$rows
+EOF_ROWS
+  printf 'migrate: imported=%s attached=%s unchanged=%s skipped=%s\n' "$imported" "$attached" "$unchanged" "$skipped"
 }
 
 # --- the one keyed-answer intake, and the source bindings that feed it --------
@@ -1215,7 +2144,8 @@ sanitize_reconcile_provenance() {
 command_answers() {
   local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
   local recorded_digest recorded_mode occurrence tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
-  local resolve_rc
+  local resolve_rc declared option_keys
+  local -a answer_args
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --source) shift; source=${1:-} ;;
@@ -1286,6 +2216,32 @@ command_answers() {
       skipped=$((skipped + 1))
       continue
     fi
+    # A call that declares how an answer closes it closes that way: an empty
+    # mode column takes the declaration, and a disagreeing one is skipped.
+    # The answer names an option when it is one of the recorded keys.
+    declared=''
+    option_keys=''
+    if call_record_try_load "$id" && [ -n "$CALL_RECORD" ]; then
+      declared=$(printf '%s' "$CALL_RECORD" | jq -r '.on_answer // empty')
+      option_keys=$(printf '%s' "$CALL_RECORD" | jq -r '.options[].key')
+    fi
+    if [ -n "$declared" ]; then
+      if [ -z "$mode" ]; then
+        [ "$declared" != release ] || release_flag=--release
+      elif [ "$mode" != "$declared" ]; then
+        printf 'skipped: %s (close mode %s disagrees with the call'"'"'s declared on_answer %s)\n' \
+          "$id" "$mode" "$declared"
+        skipped=$((skipped + 1))
+        continue
+      fi
+    fi
+    answer_args=(--via "$source")
+    if [ -n "$option_keys" ] && list_has_line "$option_keys" "$answer"; then
+      answer_args+=(--key "$answer")
+      [ -z "$label" ] || answer_args+=(--label "$label")
+    else
+      answer_args+=(--label "${label:-$answer}")
+    fi
     keyed_decision_text "$source" "$id" "$answer" "$label" > "$tmp" \
       || fail "cannot stage the captain decision for $id"
     digest=$(sha256_text "$(cat "$tmp")")
@@ -1338,7 +2294,7 @@ command_answers() {
       continue
     fi
     # shellcheck disable=SC2086  # release_flag is empty or a single literal flag.
-    if "$0" answer "$id" --decision-file "$tmp" $release_flag </dev/null >/dev/null 2>"$err"; then
+    if "$0" answer "$id" --decision-file "$tmp" $release_flag "${answer_args[@]}" </dev/null >/dev/null 2>"$err"; then
       # A parent-channel delivery problem is reported on stderr by the answer
       # path even when the close succeeded; keep it visible.
       [ ! -s "$err" ] || cat "$err" >&2
@@ -1932,6 +2888,11 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
 
 case "${1:-}" in
   hold) shift; command_hold "$@" ;;
+  offer) shift; command_offer "$@" ;;
+  evidence) shift; command_evidence "$@" ;;
+  decide) shift; command_decide "$@" ;;
+  list) shift; command_list "$@" ;;
+  migrate) shift; command_migrate "$@" ;;
   answer) shift; command_answer "$@" ;;
   answers) shift; command_answers "$@" ;;
   reconcile-requests) shift; command_reconcile_requests "$@" ;;

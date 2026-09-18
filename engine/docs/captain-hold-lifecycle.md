@@ -17,6 +17,9 @@ Retries of an active hold preserve its hold-set timestamp, while re-holding rele
 The `answer` subcommand records the captain's exact words and resolves the call in the same act: it closes a question-shaped call, while `answer --release` frees a captain-gated work item to proceed without completing it.
 It requires a non-empty captain decision file of at most 8192 bytes, durably writes a resolution block carrying the decision digest and a `Resolution mode:` while retaining the leading hold-set stamp until the selected `tasks-axi done` or `tasks-axi unhold` transition succeeds, then restores the successful record's resolution-first body ordering (the previous body remains preserved below the block and archived through tasks-axi `--archive-body`).
 If the close is interrupted, the still-held task therefore keeps its original age basis.
+Every answer's block also carries machine lines directly under `Resolution mode:` - `Answer key:` when the answer named one of the call's options, `Answer label:`, `Answered by:` (`captain` or `firstmate`), `Answered via:` (the channel), and `Answered at:` - which readers take the way they take the hold-set stamp, stopping at the first line that is not one, so the captain's words below are never parsed.
+They sit outside the decision digest, which stays the captain's words alone: a record written before the lines existed and a retry arriving later or through another command both still match, and a retry never rewrites the block.
+A plain `answer` records `Answered via: chat` unless told otherwise, and an `Answer key:` only when `--key` names one of the call's options.
 A matching retry also completes any resolution-first normalization left unfinished after the close itself succeeded.
 An exact retry is idempotent only when the requested close mode matches the newest record; a drifted answer or mode mismatch is rejected, while a re-held task accepts a new answer as a new record on top.
 On a task closed outside the script, `answer` records the missing block only when the captain-hold annotations tasks-axi preserves through a close prove the captain owned it, and it verifies the task stays closed.
@@ -30,6 +33,21 @@ With a non-empty inventory it appends a `captain-held [key=<key>]: tracked by <i
 Scout teardown calls the read-only `verify` subcommand after checking for the report and before removing any source state.
 `verify` requires the recorded attestation, requires every recorded inventory entry to still be durable (actively captain-held, or carrying a recorded answer), and fails on any keyed status decision that opened after the last `complete`, which makes re-running `complete` the repair.
 The `--force` path remains the explicit captain-approved discard escape hatch.
+
+### One source of truth for a call
+
+The backlog row stays the spine: whether a call exists and whether it is held, bucketed, answered, or closed is read from the row and nowhere else.
+What the call asks - its question, 2 to 8 keyed options, the recommendation, the declared close (`on_answer`), the task whose work raised it (`origin`), the task it concerns (`about`), explicit evidence, and provenance - lives beside the row in one sidecar record per call, `state/calls/<task-id>.json` (schema `fm-call.v1`).
+`bin/fm-captain-hold.sh` is that record's only writer, under the same per-task control lock it already takes, through a temporary file of its own and a rename.
+`hold` writes it when given any content flag or `--origin`, before the hold is applied, for the same reason the hold-set stamp precedes the hold: a newly held call is never visible without its content.
+A hold given none of them behaves exactly as it always did, and such a row is still a call, listed with its hold reason as the question and empty options and evidence.
+`offer` replaces an open call's content and records `updated_at`; `evidence` attaches or detaches one ref (`page:task/<id>/<name>`, `page:chat/<name>`, `report:<id>`, or `url:<http(s) url>`) on any call, open or closed.
+A call raised from a task's work with `--origin` is argued by everything that task produced - its report and every page it presented - derived when the call is read rather than written, so a page presented before the call exists argues it exactly like one presented after.
+`on_answer` defaults to `done` for a question the hold created and to `release` for held work that should resume, and channels never choose it: `answers` takes the declaration for an empty mode column and skips a mode that disagrees with it.
+
+`decide` is the same call for a decision the first mate made on the captain's behalf: it raises a new row whose id is the digest of every argument, records the content with `decided` carrying what and why, and answers it through the same `answer` path with `Answered by: firstmate`, so an exact retry names the same row and changes nothing.
+`bin/fm-decision-options.sh set` is a one-release shim over `offer`, and `bin/fm-artifact.sh present --covers` is one over `evidence add`; revisions no longer record `covers`.
+The one-time `migrate` imports `state/decision-options/` records into calls that have no options yet and turns every revision's `covers` into evidence, leaving the old files in place and read by nothing, and a second run changes nothing.
 
 ## Cleanup never closes a captain call
 
@@ -51,7 +69,9 @@ A pending-close record that fails validation outright is a different case and st
 `answers` is its channel-agnostic entry point: it reads `<task-id>\t<answer>\t<label>[\t<mode>]` lines and resolves each named task through the same `answer` path, so every guard applies identically no matter which channel the answer arrived on.
 The optional mode column carries a card-declared close: `done` (default) completes the task and `release` lifts the hold so held work resumes; any other value is skipped.
 A key that names no task, names a task that is not captain-held, or names a task already closed is reported as `skipped:` and feeds nothing; a replay whose answer and requested close mode match the newest record is an idempotent `closed:`, while a mode mismatch is skipped; and the command exits nonzero when any key was skipped.
-`--source` is provenance text recorded in the durable decision, never a behavior switch, and the command carries no per-channel branch.
+`--source` is provenance text recorded in the durable decision and as `Answered via:`, never a behavior switch, and the command carries no per-channel branch; `quarterdeck` is the value the Quarterdeck app passes.
+An answer that names one of the call's recorded options is recorded with its `Answer key:`, and a freeform answer is recorded with none.
+The Quarterdeck app calls this intake directly and reads its `closed:` and `skipped:` lines per call; the app never closes anything itself, and the first mate is told afterwards to do the follow-up work.
 
 `bind`, `unbind`, and `binding` record that a captured-answer source feeds this intake, as a private record under `state/decision-bindings/`; an unbound source feeds nothing, so the path is opt-in per source, and `bind` deliberately does not require the source to exist yet.
 
@@ -132,6 +152,11 @@ That aging is a projection safety net only.
 The durable deferral remains re-holding with `--until`.
 Its secondmate-home summary classifies an actionable captain hold as `captain_decision` and preserves every captain hold in the bounded queued inventory of the owning home.
 
+The snapshot's `calls[]` is exactly `bin/fm-captain-hold.sh list --json`'s array, and it replaced the `decision_options[]` and `decided[]` lists.
+The snapshot hands the listing its own parsed backlog, so every call's `bucket` and `captain_actionable` are the classification above, unchanged, and the listing costs one process however many calls there are; run standalone, `list` asks the snapshot's parser for the backlog instead.
+Each call joins its row with its record: `state` is `open`, `answered` (the newest resolution block belongs to the current hold lifecycle, so its close was interrupted), or `closed`; `evidence` is the explicit refs followed by what the origin produced, de-duplicated; and `answer` is null or `{key, label, by, via, at}` read from the machine lines.
+It lists every open or answered call plus those closed within 7 days; a damaged record is reported under `damaged[]` and skipped, never fatal, and a record whose row is not a call is ignored.
+
 `bin/fm-bearings-snapshot.sh` places each captain hold by its `hold_bucket` and inspects no prose of its own.
 A `live` hold is a default Captain's Call entry.
 A `blocked`, `dated`, or `aged` hold leaves the default Captain's Call, renders as a Charted Next gate stating why - the blocking work, the `until <date>`, or the floored age - and contributes to the concrete `omitted[]` disclosure.
@@ -210,6 +235,8 @@ The captured-source coverage proves Lavish deduplicates each card before separat
 The board's half is pinned in `tests/fm-bearings-board.test.sh`: every published decision card carries exactly one reconcile option, authored options reserve that value across every card type, recommendations name authored options, a decision card whose structured subject appears in the payload's landed rows is dropped while a genuinely open one is kept even when an unrelated landed id contains its key after a newline, a build requires a fresh authoritative listed-open result before binding or arming, a reopen retires the pre-reopen source generation and waits for a fresh live listener, and a rebuild of an already-armed board with no live listener starts one.
 That suite drives its Lavish session through a protocol-shaped stub, and `tests/fm-bearings-board-lavish-live-e2e.test.sh` is the default-on capability guard for the installed provider; [`verification/process-event-sources.md`](verification/process-event-sources.md) owns the version-scoped evidence.
 [`verification/process-event-sources.md`](verification/process-event-sources.md) owns the process-event ownership and reclamation evidence exercised by `tests/fm-procevent.test.sh`.
+
+`tests/fm-captain-calls.test.sh` pins the call record and its surfaces: `hold` recording content and refusing what nobody could answer, a hold without content still listed as a call, evidence derived from `--origin` for pages presented before and after the call, `offer` and `evidence` (including `updated_at` and closed calls), `answers --source quarterdeck` writing the machine lines and honoring the declared `on_answer` in both directions, a freeform answer carrying no key, `answer --key`, an interrupted close reading as `answered` while a re-held call reads as open, `decide` and its idempotent retry, the listing window, damaged records, the snapshot's `calls[]` equalling `list --json`, an idempotent `migrate`, and both shims.
 
 `tests/fm-classify-decision-key.test.sh` pins `status_key_closing_verb` itself: it separates a resolution from the durable-transfer close and from a still-open key, reports the last real transition across re-openings and both key positions, and treats a prose mention as no transition.
 
