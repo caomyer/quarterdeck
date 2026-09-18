@@ -112,13 +112,17 @@ pub fn parse(answers: &[Keyed], stdout: &str, failure: Option<&str>) -> Vec<Outc
     let mut skipped: Vec<(&str, &str)> = Vec::new();
     for line in stdout.lines() {
         let line = line.trim();
-        for (prefix, found) in [("closed:", &mut closed), ("skipped:", &mut skipped)] {
-            if let Some(rest) = line.strip_prefix(prefix) {
-                let rest = rest.trim_start();
-                let (call, detail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                if !call.is_empty() {
-                    found.push((call, detail.trim()));
-                }
+        // `refused:` is the intake turning an answer away outright (a reserved key such as
+        // `reconcile`); for the captain it is a skip like any other, with its reason.
+        for (prefix, is_close) in [("closed:", true), ("skipped:", false), ("refused:", false)] {
+            let Some(rest) = line.strip_prefix(prefix) else { continue };
+            let rest = rest.trim_start();
+            let (call, detail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            // firstmate wraps a reason in parentheses: `skipped: <task> (<reason>)`.
+            let detail = detail.trim();
+            let detail = detail.strip_prefix('(').and_then(|inner| inner.strip_suffix(')')).unwrap_or(detail).trim();
+            if !call.is_empty() {
+                if is_close { closed.push((call, detail)) } else { skipped.push((call, detail)) }
             }
         }
     }
@@ -306,6 +310,14 @@ mod tests {
         assert_eq!(outcomes[0], Outcome::Closed("done".into()));
         assert_eq!(outcomes[1], Outcome::Skipped("the intake gave no reason".into()));
         // A task whose id merely starts with another's is not that task.
+        // firstmate's own wording: a reason in parentheses, a refusal, and its closing tally line.
+        let outcomes = parse(
+            &[keyed("res-a", "x", "X", "done"), keyed("res-b", "reconcile", "R", "done")],
+            "skipped: res-a (close mode release disagrees with the call's declared on_answer done)\nrefused: res-b (reconcile is reserved)\nanswers: closed=0 skipped=2\n",
+            None,
+        );
+        assert!(matches!(&outcomes[0], Outcome::Skipped(reason) if reason == "close mode release disagrees with the call's declared on_answer done"), "{outcomes:?}");
+        assert!(matches!(&outcomes[1], Outcome::Skipped(reason) if reason == "reconcile is reserved"), "{outcomes:?}");
         let outcomes = parse(&[keyed("res-a", "x", "X", "done")], "closed: res-ab ok\n", None);
         assert!(matches!(&outcomes[0], Outcome::NotRecorded(_)));
     }
