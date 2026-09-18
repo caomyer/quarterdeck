@@ -481,6 +481,7 @@ revision_paths() {
 
 # One revision record, checked against where it sits and given its paths. A
 # record that disagrees with its own location is not one this script wrote.
+# shellcheck disable=SC2016 # jq, not the shell, expands $path, $p, $loc, and $data.
 REVISION_FILTER='
   (input_filename) as $path
   | ($path | ltrimstr($data + "/") | split("/")) as $p
