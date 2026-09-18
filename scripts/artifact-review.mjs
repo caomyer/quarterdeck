@@ -124,6 +124,10 @@ await drawer.locator(".icon-button[title='Close task details']").click();
 await ready.locator("button", { hasText: "Read the report" }).click();
 await page.locator(".artifact-stage iframe").waitFor();
 check((await page.locator(".page-heading span").innerText()).includes("res-transcripts-scout"), "Read the report opens the scout's page");
+check((await page.locator(".verdict-picker select").inputValue()) === "comment", "a finished task's page starts the review on Comment");
+check((await page.locator(".review-send small").innerText()) === "Thoughts only. Its task has finished, so nothing waits on this page.", "the hint says why nothing waits on a finished task's page");
+await page.locator(".verdict-picker select").selectOption("changes");
+check(!(await page.locator(".review-send small").innerText()).includes("keeps waiting"), "Request changes never claims a finished task is waiting");
 await page.locator(".back-button").click();
 check(await bearingsPage.count() === 1, "back from the report returns to Bearings");
 // The mock keeps reviews in memory, so a reload puts the report back to unread for the list below.
@@ -178,6 +182,7 @@ const reachesApp = await page.frames().find((candidate) => candidate.url().inclu
   .evaluate(() => { try { return Boolean(window.parent.document.body); } catch { return false; } });
 check(!reachesApp, "the page cannot reach into the app");
 check(await page.locator(".artifact-loading").count() === 0, "the loading note clears once the page loads");
+check((await page.locator(".verdict-picker select").inputValue()) === "comment", "a live scout's page that argues no call starts on Comment");
 await noSidewaysScroll(page, "review");
 await shot(page, "02-review");
 
@@ -354,6 +359,8 @@ await call.locator("button", { hasText: "Read the argument" }).click();
 const answer = page.locator("[data-testid='decision-answer']");
 await answer.waitFor();
 check((await answer.innerText()).includes("When may the app download the 150 MB speech model?"), "the page offers the call's own question");
+check((await page.locator(".verdict-picker select").inputValue()) === "changes", "a page arguing an open call starts on Request changes");
+check((await page.locator(".review-send small").innerText()) === "The first mate revises the case before you decide.", "the hint says what Request changes does to an open call");
 const choices = answer.locator(".decision-choices button");
 check(await choices.count() === 3, "every recorded option is offered");
 check((await choices.first().textContent()).includes("Recommended"), "the recommendation is marked");

@@ -476,6 +476,7 @@ export function App() {
               revision={shownRevision}
               url={host.artifactUrl(shownRevision)}
               review={review}
+              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records)}
               sendReady={bridge.sendReady}
               runtime={runtime.state}
               onRevision={(rev) => showArtifact(shownArtifact, rev)}
@@ -1381,11 +1382,40 @@ function pagePlace(value: unknown): ScenePlace | null {
 /** Threads for a review not read yet: one array, so effects keyed on it do not fire every render. */
 const NO_THREADS: ReviewThread[] = [];
 
-const VERDICTS: { id: ReviewVerdict; label: string; hint: string }[] = [
-  { id: "changes", label: "Request changes", hint: "The task keeps waiting on this page." },
-  { id: "approve", label: "Approve", hint: "The work on this page can go ahead." },
-  { id: "comment", label: "Comment", hint: "Thoughts only; nothing is blocked." },
+const VERDICTS: { id: ReviewVerdict; label: string }[] = [
+  { id: "changes", label: "Request changes" },
+  { id: "approve", label: "Approve" },
+  { id: "comment", label: "Comment" },
 ];
+
+/** What a review of this page can hold up, which decides the verdict it starts on and what each verdict says. */
+type ReviewStake = { verdict: ReviewVerdict; hints: Record<ReviewVerdict, string> };
+
+const LIVE_STATES = new Set(["working", "blocked", "parked", "paused", "unknown"]);
+
+/**
+ * Whether the page genuinely gates live work. Only then does a review start on Request changes: a page whose
+ * task has finished or landed, a scout's report that argues no call, or a chat page with no open call holds
+ * nothing up, so it starts on Comment, and every hint says what the verdict does for this page, not in general.
+ */
+function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>): ReviewStake {
+  const calls = (artifact.latest.covers ?? []).filter((call) => backlog.get(call)?.captain_actionable);
+  const taskId = artifact.scope === "task" ? artifact.task : null;
+  const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
+  const quiet = (reason: string): ReviewStake => ({
+    verdict: "comment",
+    hints: { changes: `Asks for another revision. ${reason}`, approve: `Says it reads well. ${reason}`, comment: `Thoughts only. ${reason}` },
+  });
+  if (!taskId) {
+    return calls.length > 0
+      ? { verdict: "changes", hints: { changes: "The first mate revises the case before you decide.", approve: "The case reads well as it is argued.", comment: "Thoughts only; the call stays open until you answer it." } }
+      : quiet("Nothing is waiting on this page.");
+  }
+  if (backlog.get(taskId)?.state === "done") return quiet("Its task has already landed, so nothing waits on this page.");
+  if (!task || !LIVE_STATES.has(task.current_state.state)) return quiet("Its task has finished, so nothing waits on this page.");
+  if (calls.length === 0 && task.kind === "scout") return quiet("The scout carries on either way; this page argues no call.");
+  return { verdict: "changes", hints: { changes: "The task keeps waiting on this page.", approve: "The work on this page can go ahead.", comment: "Thoughts only; the task goes on without waiting." } };
+}
 
 /**
  * The picture a proposal made of a diagram, served from beside the review rather
@@ -1411,11 +1441,12 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, decisions, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onScene }: {
+function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, decisions, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onScene }: {
   artifact: Artifact;
   revision: ArtifactRevision;
   url: string;
   review: ReviewView | null;
+  stake: ReviewStake;
   sendReady: boolean;
   runtime: HostRuntimeState;
   onRevision: (rev: number) => void;
@@ -1438,7 +1469,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
   const [scenes, setScenes] = useState<ScenePlace[]>([]);
   const [openScene, setOpenScene] = useState<{ place: ScenePlace; scene: { elements: never[] } } | null>(null);
   const [sceneProblem, setSceneProblem] = useState<string | null>(null);
-  const [verdict, setVerdict] = useState<ReviewVerdict>("changes");
+  const [verdict, setVerdict] = useState<ReviewVerdict>(stake.verdict);
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -1546,7 +1577,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
     ? "Start the first mate to send your review."
     : runtime === "locked_by_other"
       ? "The first mate is running somewhere else. Your review waits until it runs here."
-      : VERDICTS.find((item) => item.id === verdict)?.hint;
+      : stake.hints[verdict];
 
   return <div className="artifact-review" data-screen="artifact">
     <div className="artifact-toolbar">
