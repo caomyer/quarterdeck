@@ -1068,12 +1068,17 @@ function ChatMessageView({ message, outbox, running, onResend }: { message: Chat
       ? `Re-sent after a restart${outbox.status === "picked_up" ? ` · Read by ${formatTime(outbox.readAt ?? message.createdAt)}` : ""}`
       : outbox.status === "picked_up"
         ? `Read by ${formatTime(outbox.readAt ?? message.createdAt)}`
-        : "Queued";
+        // Handed over and being worked on: "Queued" here read as if nothing had happened yet.
+        : outbox.status === "sent" || outbox.status === "likely_started"
+          ? "Reading"
+          : "Queued";
   const tooltip = !outbox || outbox.error ? undefined : outbox.resentAfterRestart
     ? "The app stopped before the first mate finished with this, so it sent it again. If the first mate had already started on it, it may mention it twice."
     : outbox.status === "picked_up"
       ? `The first mate had read this by ${formatTime(outbox.readAt ?? message.createdAt)}, when it finished replying.`
-      : running ? "The first mate will read this when it finishes what it's doing." : "The first mate will read this when it starts.";
+      : outbox.status === "sent" || outbox.status === "likely_started"
+        ? "The first mate has this and is working on it."
+        : running ? "The first mate will read this when it finishes what it's doing." : "The first mate will read this when it starts.";
   const resendAction = !outbox?.error ? null : outbox.resent
     ? <span className="resent-note">Sent again</span>
     : <button onClick={onResend}>{outbox.errorKind === "not_sent" ? "Retry" : "Send again"}</button>;

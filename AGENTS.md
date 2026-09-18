@@ -44,6 +44,9 @@ Agents do not work there and do not branch from it: each agent clones the remote
   It writes a summary and a replayable event recording to `~/.buzz/.scratch/firstmate-desktop-e2e/`.
   Name the test exactly: `host_e2e` also matches the lock probe, and two first mates in one home make the loser report the other as another session.
   Only one live run per home runs at a time; a second one waits in the same binary and refuses across processes, naming the run that holds it.
+- Live test of a relaunch, which also spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e_live_relaunch -- --ignored --nocapture`.
+  It closes and relaunches the host with crew wakes waiting, and checks the first mate handles them without a captain message, no watcher outlives it, and the conversation comes back.
+  `pnpm replay` also plays its relaunch through the UI.
 - Live test of a captain's call answered in the page that argues it, which also spends model tokens:
   `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test review_e2e_live_decision -- --ignored --nocapture`.
   It answers a call the home is already carrying, or asks the first mate to put one up, sends the review the app would send, and waits for the call to stop waiting in the backlog.
