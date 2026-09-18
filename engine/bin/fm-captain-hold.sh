@@ -124,15 +124,19 @@
 # answered before the machine lines existed the lines a current answer carries,
 # inserted into its newest resolution block under the task lock without
 # touching the decision text or digest: `Answered by: captain`, `Answered via:
-# other`, `Answer label:` (the recorded decision's first non-empty line,
-# trimmed and capped at 200 characters; for a block the keyed intake wrote, the
-# label the captain was shown, else the answer), `Answered at:` (the row's
+# other`, `Answer label:` (the recovered option's own label; without a key,
+# the recorded decision's first non-empty line, trimmed and capped at 200
+# characters, or for a block the keyed intake wrote, the label the captain was
+# shown, else the answer), `Answered at:` (the row's
 # close date, the only resolution time an older block has), and `Answer key:`
 # only when exactly one recorded option is named unambiguously - the line
 # starts with the key followed by `:`, ` =`, `=`, or whitespace and a dash, or
 # equals an option's label (a keyed block: its answer equals a key, or its
 # shown label equals an option's label). This conversion is the one place this
-# script ever reads recorded prose. A reconciliation block gets no lines.
+# script ever reads recorded prose. A reconciliation block gets no lines. A
+# block an earlier migrate backfilled (`Answered via: other` with a label equal
+# to that first line) that recovered a key has its label corrected to the
+# option's own.
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
@@ -1995,7 +1999,8 @@ BACKFILL_JQ='
   | select($s != null)
   | (first(range($s + 1; $l | length) as $i | select($l[$i] | test("^[[:space:]]*$")) | $i) // ($l | length)) as $e
   | ($l[($s + 1):$e]) as $header
-  | select((any($header[]; startswith("Answered by:")) or any($header[]; . == "Resolution mode: reconciled")) | not)
+  | select(any($header[]; . == "Resolution mode: reconciled") | not)
+  | ($header | any(startswith("Answered by:"))) as $answered
   | (first(range($s + 1; $e) as $i | select($l[$i] | header_line | not) | $i) // $e) as $insert
   | (first(range($e; $l | length) as $i | select($l[$i] == "Captain decision:") | $i) // null) as $d
   | select($d != null)
@@ -2018,13 +2023,28 @@ BACKFILL_JQ='
                        and ($first[($o.key | length):] | test("^(:| =|=|[[:space:]]+-)"))))
                | .key] | unique)}
     end
-  | . as $answer
-  | (if ($answer.keys | length) == 1 then ["Answer key: " + $answer.keys[0]] else [] end
-     + ["Answer label: " + ($answer.label | gsub("[[:cntrl:]]"; " ") | trim | .[:200])]
-     + ["Answered by: captain", "Answered via: other"]
-     + (if ($closed | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")) then ["Answered at: " + $closed] else [] end)) as $lines
-  | "key=\(if ($answer.keys | length) == 1 then $answer.keys[0] else "-" end)",
-    ($l[:$insert] + $lines + $l[$insert:] | join("\n"))'
+  | (.label | gsub("[[:cntrl:]]"; " ") | trim | .[:200]) as $prose_label
+  | (if (.keys | length) == 1 then .keys[0] else null end) as $key
+  | (if $key == null then $prose_label
+     else first($options[] | select(.key == $key) | .label) end) as $label
+  | if $answered | not then
+      (if $key != null then ["Answer key: " + $key] else [] end
+       + ["Answer label: " + $label]
+       + ["Answered by: captain", "Answered via: other"]
+       + (if ($closed | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")) then ["Answered at: " + $closed] else [] end)) as $lines
+      | "key=\($key // "-")",
+        ($l[:$insert] + $lines + $l[$insert:] | join("\n"))
+    else
+      # A block an earlier migrate backfilled with the prose line as its label
+      # although it recovered a key: give it the option'"'"'s own label.
+      select($key != null and $label != $prose_label
+        and any($header[]; . == "Answered via: other")
+        and any($header[]; . == "Answer key: " + $key)
+        and any($header[]; . == "Answer label: " + $prose_label))
+      | "relabeled key=\($key)",
+        ($l | to_entries | map(if .key > $s and .key < $e and .value == "Answer label: " + $prose_label
+                               then "Answer label: " + $label else .value end) | join("\n"))
+    end'
 
 # Backfill one call's newest resolution block; prints the summary on success
 # and returns 3 when there is nothing to backfill.
@@ -2055,7 +2075,7 @@ migrate_answer_lines() {  # <task-id>
 # One-time import of the stores this record replaced. Idempotent: an option set
 # lands only on a call with no options yet, and evidence is never duplicated.
 command_migrate() {
-  local path task imported=0 attached=0 answered=0 skipped=0 unchanged=0 old record now ref rows show backlog summary rc
+  local path task imported=0 attached=0 answered=0 relabeled=0 skipped=0 unchanged=0 old record now ref rows show backlog summary rc
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
   require_jq
   require_tasks_axi
@@ -2161,7 +2181,8 @@ EOF_ROWS
         | select($l[$i] | test("^Resolution recorded by fm-(captain|decision)-hold\\.$")) | $i) // null) as $s
     | select($s != null)
     | select([$l[($s + 1):][] | select(test("^(Decision digest|Resolution mode|Answer key|Answer label|Answered by|Answered via|Answered at): "))]
-        | any(startswith("Answered by:")) | not)
+        | (any(startswith("Answered by:")) | not)
+          or (any(. == "Answered via: other") and any(startswith("Answer key: "))))
     | $row.id') || fail "cannot read this home's backlog"
   while IFS= read -r task; do
     [ -n "$task" ] || continue
@@ -2171,8 +2192,16 @@ EOF_ROWS
     summary=$(migrate_answer_lines "$task") || rc=$?
     case "$rc" in
       0)
-        printf 'answered: %s %s\n' "$task" "$summary"
-        answered=$((answered + 1))
+        case "$summary" in
+          relabeled*)
+            printf 'relabeled: %s %s\n' "$task" "${summary#relabeled }"
+            relabeled=$((relabeled + 1))
+            ;;
+          *)
+            printf 'answered: %s %s\n' "$task" "$summary"
+            answered=$((answered + 1))
+            ;;
+        esac
         ;;
       3) : ;;
       *) exit "$rc" ;;
@@ -2181,8 +2210,8 @@ EOF_ROWS
   done <<EOF_ANSWERED
 $rows
 EOF_ANSWERED
-  printf 'migrate: imported=%s attached=%s answered=%s unchanged=%s skipped=%s\n' \
-    "$imported" "$attached" "$answered" "$unchanged" "$skipped"
+  printf 'migrate: imported=%s attached=%s answered=%s relabeled=%s unchanged=%s skipped=%s\n' \
+    "$imported" "$attached" "$answered" "$relabeled" "$unchanged" "$skipped"
 }
 
 # --- the one keyed-answer intake, and the source bindings that feed it --------

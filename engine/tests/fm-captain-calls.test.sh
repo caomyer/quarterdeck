@@ -452,10 +452,10 @@ test_migrate_gives_older_answers_their_machine_lines() {
   assert_equals 'null|fastest route please' \
     "$(call_json "$home" sample-bf-prose | jq -r '[(.answer.key|tostring), .answer.label] | join("|")')" \
     "an unrecovered key stays out and the label is the captain's first line"
-  assert_equals 'fast|fast = go now' "$(call_json "$home" sample-bf-spaced | jq -r '[.answer.key, .answer.label] | join("|")')" \
-    "the label is trimmed"
+  assert_equals 'fast|Take the fast route' "$(call_json "$home" sample-bf-spaced | jq -r '[.answer.key, .answer.label] | join("|")')" \
+    "a recovered key is labelled with its option's own label"
   assert_contains "$(cd "$home" && tasks-axi show sample-bf-prefix --full)" \
-    "Resolution mode: answered\\nAnswer key: safe\\nAnswer label: safe: because it is safer\\nAnswered by: captain\\nAnswered via: other\\nAnswered at: $closed\\n\\nCaptain decision:\\nsafe: because it is safer" \
+    "Resolution mode: answered\\nAnswer key: safe\\nAnswer label: Take the safe route\\nAnswered by: captain\\nAnswered via: other\\nAnswered at: $closed\\n\\nCaptain decision:\\nsafe: because it is safer" \
     "the lines sit under the mode and the decision text is untouched"
   assert_not_contains "$(cd "$home" && tasks-axi show sample-bf-released --full)" "Answered at:" \
     "a released call with no close date gets no resolution time"
@@ -470,6 +470,20 @@ test_migrate_gives_older_answers_their_machine_lines() {
   assert_contains "$out" "answered: sample-bf-prefix" "the retry is the idempotent no-op"
   printf 'sample-bf-keyed\tfast\tTake the fast route\n' | run_captain "$home" answers --source quarterdeck >/dev/null \
     || fail "an exact keyed replay no longer matches after the backfill"
+
+  # A home that ran the earlier migrate carries the prose line as the label of
+  # a call whose key it recovered; migrate corrects only what it wrote itself.
+  sed -i.bak -e 's/^  Answer label: Take the safe route$/  Answer label: safe: because it is safer/' \
+    -e 's/^  Answer label: Take the fast route$/  Answer label: fast = go now/' "$home/data/backlog.md"
+  out=$(run_captain "$home" migrate) || fail "relabeling migrate failed"
+  assert_contains "$out" "relabeled: sample-bf-prefix key=safe" "an earlier backfill's prose label is corrected"
+  assert_contains "$out" "relabeled: sample-bf-spaced key=fast" "a trimmed prose label is corrected"
+  assert_contains "$out" "answered=0 relabeled=2" "only those two were relabeled"
+  assert_equals 'safe|Take the safe route' "$(call_json "$home" sample-bf-prefix | jq -r '[.answer.key, .answer.label] | join("|")')" \
+    "the corrected call lists its option's label"
+  assert_equals "$digests_before" "$(grep 'Decision digest:' "$home/data/backlog.md")" "relabeling changed no digest"
+  out=$(run_captain "$home" migrate) || fail "migrate after relabeling failed"
+  assert_contains "$out" "answered=0 relabeled=0" "relabeling happens once"
   pass "migrate gives answers recorded before the machine lines their lines, once"
 }
 
