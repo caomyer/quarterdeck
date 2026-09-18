@@ -152,6 +152,125 @@ fm_watcher_lock_matches_pid() {
   FM_WATCHER_MATCHED_IDENTITY=$lock_identity
 }
 
+# --- Served harness: the first mate a watcher chain works for -----------------
+# A watcher chain (bin/fm-claude-stop-autoarm.sh -> bin/fm-watch-arm.sh ->
+# bin/fm-watch.sh, or any adapter's arm) exists only to wake the first mate
+# session that holds this home's session lock (state/.lock, bin/fm-lock.sh).
+# When that harness dies without cleanup - a crash, SIGKILL, a bad sleep - the
+# chain is reparented and keeps beating, so it looks healthy, keeps the
+# watcher singleton, and would take the next crew wake for a dead session.
+# Each process in the chain therefore binds, at its own start, to the session
+# lock owner in its own process ancestry, and retires itself once that exact
+# process is gone. The binding reuses the lock's recorded pid and the shared
+# ancestry-membership test; the watcher only mirrors it into its own lock
+# directory so other arms can tell an orphan from a live peer.
+#
+# The identity is the process START TIME alone, not fm_pid_identity's
+# start-time-plus-argv: a harness may retitle itself (node's process.title
+# rewrites argv), and a watcher serving a live first mate must never retire.
+# Start time alone still refuses a recycled pid.
+fm_pid_start_identity() {  # <pid>
+  local pid=$1 proc_root stat_line starttime value
+  local -a stat_fields
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  if [ -r "$proc_root/$pid/stat" ]; then
+    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+    read -r -a stat_fields <<< "${stat_line##*)}"
+    [ "${#stat_fields[@]}" -ge 20 ] || return 1
+    starttime=${stat_fields[19]}
+    case "$starttime" in ''|*[!0-9]*) return 1 ;; esac
+    printf 'starttime=%s\n' "$starttime"
+    return 0
+  fi
+  value=$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null) || return 1
+  value=$(printf '%s' "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ -n "$value" ] || return 1
+  printf 'lstart=%s\n' "$value"
+}
+
+# fm_served_harness_capture <state>
+# Bind the caller to the harness it serves. Sets FM_SERVED_HARNESS_PID and
+# FM_SERVED_HARNESS_IDENTITY, and exports the same binding as
+# FM_WATCH_SERVED_PID and FM_WATCH_SERVED_IDENTITY so every process the caller
+# starts next in the chain inherits it.
+#
+# An inherited binding wins: a link started after its harness already died
+# (the watcher forks only after the arm confirms its own start) can no longer
+# find that harness in its ancestry, and deriving it again would leave exactly
+# that late link unbound and immortal. Without one, the binding is the pid in
+# <state>/.lock when that pid is one of the caller's own harness ancestors
+# (fm_session_lock_owned_by_self, bin/fm-session-lock-lib.sh, which the caller
+# must have sourced). Returns 1 and leaves the caller unbound when neither
+# applies - a detached test, an operator shell - so it behaves as before.
+FM_SERVED_HARNESS_PID=
+FM_SERVED_HARNESS_IDENTITY=
+fm_served_harness_capture() {  # <state>
+  local state=$1 pid identity
+  FM_SERVED_HARNESS_PID=
+  FM_SERVED_HARNESS_IDENTITY=
+  pid=${FM_WATCH_SERVED_PID:-}
+  identity=${FM_WATCH_SERVED_IDENTITY:-}
+  case "$pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ -n "$identity" ]; then
+        FM_SERVED_HARNESS_PID=$pid
+        # shellcheck disable=SC2034 # Read by callers after the capture succeeds.
+        FM_SERVED_HARNESS_IDENTITY=$identity
+        return 0
+      fi
+      ;;
+  esac
+  command -v fm_session_lock_owned_by_self >/dev/null 2>&1 || return 1
+  fm_session_lock_owned_by_self "$state" || return 1
+  pid=$(sed -n '1p' "$state/.lock" 2>/dev/null || true)
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  identity=$(fm_pid_start_identity "$pid") || return 1
+  # shellcheck disable=SC2034 # Read by callers after the capture succeeds.
+  FM_SERVED_HARNESS_PID=$pid
+  # shellcheck disable=SC2034 # Read by callers after the capture succeeds.
+  FM_SERVED_HARNESS_IDENTITY=$identity
+  FM_WATCH_SERVED_PID=$pid
+  FM_WATCH_SERVED_IDENTITY=$identity
+  export FM_WATCH_SERVED_PID FM_WATCH_SERVED_IDENTITY
+}
+
+# fm_served_harness_gone <state> <pid> <identity>
+# True only on positive evidence that the bound harness is no longer the first
+# mate: its pid is dead, the pid now belongs to a different process, or the
+# session lock names a different harness. An unbound caller (empty pid or
+# identity) is never gone, and a missing or malformed lock is not evidence.
+fm_served_harness_gone() {  # <state> <pid> <identity>
+  local state=$1 pid=$2 identity=$3 current lock_pid
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$identity" ] || return 1
+  fm_pid_alive "$pid" || return 0
+  if current=$(fm_pid_start_identity "$pid"); then
+    [ "$current" = "$identity" ] || return 0
+  else
+    # The pid can vanish between the liveness probe and the identity read.
+    fm_pid_alive "$pid" || return 0
+    return 1
+  fi
+  lock_pid=$(sed -n '1p' "$state/.lock" 2>/dev/null || true)
+  case "$lock_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$lock_pid" != "$pid" ]
+}
+
+# fm_watcher_served_harness_gone <state>
+# The same question for the watcher recorded in <state>/.watch.lock, whose
+# served-harness file (pid, then identity) bin/fm-watch.sh writes when bound.
+# An unbound watcher has no such file and is never judged orphaned here.
+fm_watcher_served_harness_gone() {  # <state>
+  local state=$1 record pid identity
+  record="$state/.watch.lock/served-harness"
+  [ -f "$record" ] || return 1
+  pid=$(sed -n '1p' "$record" 2>/dev/null || true)
+  identity=$(sed -n '2p' "$record" 2>/dev/null || true)
+  fm_served_harness_gone "$state" "$pid" "$identity"
+}
+
 FM_WATCHER_HEALTHY_PID=
 FM_WATCHER_HEALTHY_IDENTITY=
 fm_watcher_healthy() {
@@ -166,6 +285,9 @@ fm_watcher_healthy() {
   identity=$FM_WATCHER_MATCHED_IDENTITY
   age=$(fm_path_age "$beat")
   [ "$age" -lt "$grace" ] || return 1
+  # A watcher whose first mate is gone still beats until it notices, but it
+  # supervises nobody: it is retiring, never a peer to attach to or trust.
+  fm_watcher_served_harness_gone "$state" && return 1
   # shellcheck disable=SC2034 # Read by callers after fm_watcher_healthy returns.
   FM_WATCHER_HEALTHY_PID=$pid
   # shellcheck disable=SC2034 # Read by callers after fm_watcher_healthy returns.
@@ -422,6 +544,7 @@ fm_lock_clean_known_files() {
     "$lockdir/fm-home" \
     "$lockdir/pid-identity" \
     "$lockdir/role" \
+    "$lockdir/served-harness" \
     "$lockdir/watcher-path" \
     2>/dev/null || true
 }
@@ -1400,9 +1523,13 @@ fm_failure_episode_reset() {
 #     (continuity falls to the synchronous guard), and the identity is read
 #     from the ledger entry alone - never substituted from any lock - so a
 #     reused pid can never authenticate someone else's stale entry.
+#   - An "arming" entry records "session_pid=S", the session-lock owner the
+#     claimant armed for.
 #   - A claim is OPEN (fm_autoarm_claim_open) while its outcome is "arming",
 #     its owner pid is alive, its recorded identity successfully recomputes
-#     and matches that pid, and it is not STUCK - stuck meaning both the
+#     and matches that pid, its recorded session (when present) is alive - an
+#     orphaned hook whose session died never holds a new session's Stop hooks
+#     off - and it is not STUCK - stuck meaning both the
 #     ledger entry and the watcher beacon (state/.last-watcher-beat) are older
 #     than the guard grace, which proves the owner hung mid-arm with nothing
 #     supervising (every legitimate arming phase with no watcher is bounded in
@@ -1522,6 +1649,13 @@ fm_autoarm_claim_open() {  # <state-dir> [grace]
   current=$(fm_pid_identity "$FM_AUTOARM_OWNER" 2>/dev/null) || return 1
   [ -n "$current" ] || return 1
   [ "$current" = "$FM_AUTOARM_IDENTITY" ] || return 1
+  # An orphaned hook whose session died is still a live, identity-matched
+  # owner; its dead session is what proves nobody is left to rewake. Only the
+  # session's own death can move state/.lock (bin/fm-lock.sh refuses a live
+  # owner), so liveness alone is the whole test.
+  if [ -n "$FM_AUTOARM_SESSION" ]; then
+    fm_pid_alive "$FM_AUTOARM_SESSION" || return 1
+  fi
   if [ "$(fm_path_age "$epoch")" -ge "$grace" ] \
     && [ "$(fm_path_age "$state/.last-watcher-beat")" -ge "$grace" ]; then
     return 1
@@ -1569,7 +1703,7 @@ fm_autoarm_midturn_healthy() {  # <state-dir> [grace]
 # 1 when the micro-mutex is contended, the mandatory identity cannot be
 # computed, or the write failed.
 fm_autoarm_claim_next() {  # <state-dir> [grace]
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock epoch pid gen identity tmp
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock epoch pid gen identity tmp session
   lock="$state/.claude-autoarm.lock"
   epoch="$state/.claude-autoarm-epoch"
   FM_AUTOARM_MY_GEN=
@@ -1590,8 +1724,13 @@ fm_autoarm_claim_next() {  # <state-dir> [grace]
   esac
   gen=$((gen + 1))
   tmp="$epoch.tmp.$pid"
-  if ! printf 'epoch=%s owner_pid=%s outcome=arming updated_at=%s\n%s\n' \
-      "$gen" "$pid" "$(date +%s)" "$identity" > "$tmp" 2>/dev/null \
+  session=$(sed -n '1p' "$state/.lock" 2>/dev/null || true)
+  case "$session" in ''|*[!0-9]*) session= ;; esac
+  if ! {
+      printf 'epoch=%s owner_pid=%s outcome=arming updated_at=%s' "$gen" "$pid" "$(date +%s)"
+      [ -z "$session" ] || printf ' session_pid=%s' "$session"
+      printf '\n%s\n' "$identity"
+    } > "$tmp" 2>/dev/null \
     || ! mv -f "$tmp" "$epoch" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
     fm_lock_release "$lock"

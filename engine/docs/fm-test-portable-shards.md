@@ -11,6 +11,7 @@ Local timings are not interchangeable with CI timings: platform and machine load
 
 `tests/fm-artifact.test.sh` (12000), `tests/fm-captain-calls.test.sh` (75000), and `tests/fm-project-intake.test.sh` (1500) are the exception: their hints are rounded up from local macOS runs (9880ms on 2026-09-17, 69780ms under concurrent load and 878ms on 2026-09-18), because the scripts landed between CI refreshes and the coverage guard's unhinted share was already near its cap.
 Refresh all three from the next green run's timing artifacts.
+`tests/fm-watch-served-harness.test.sh` (20000) is likewise rounded up from local macOS runs of 12867ms and 17105ms on 2026-09-18, because it landed between CI refreshes; refresh it from the same run.
 `tests/fm-captain-calls.test.sh` runs in the portable serial lane, never the parallel shards.
 `tests/fm-task-delivery.test.sh` carries its measured CI value plus 3000ms, rounded up from the 2890ms a promotion journey case added to it locally on 2026-09-18; refresh it from the same run.
 `fm-artifact.test.sh` also carries a real headless Chrome case that skips where no Chrome is installed, so its CI duration depends on whether the runner has one.

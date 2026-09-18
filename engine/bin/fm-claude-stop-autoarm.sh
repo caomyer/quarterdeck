@@ -47,6 +47,15 @@
 #     A refused generation exits 0 silently even after printing. A close that
 #     reports no actionable reason is benign when a live identity-matched
 #     watcher still has a fresh beacon.
+#   - Orphan retirement: the session this hook serves can die without cleanup
+#     (a crash or SIGKILL of the harness or its host app), which reparents this
+#     hook and its arm and watcher instead of ending them. The watcher and arm
+#     retire themselves once their served harness is gone (bin/fm-wake-lib.sh
+#     "Served harness"), and this hook re-verifies, before every arm invocation
+#     and again after every arm close, that its own ancestry still holds the
+#     session lock; an orphaned hook exits 0 silently, since no session is left
+#     to rewake. Its claim also records the session it arms for, so a new
+#     session never defers to an orphan's claim (fm_autoarm_claim_open).
 #   - Failure handling: a typed failure is rechecked against the same live,
 #     fresh watcher predicate and retried a bounded number of times in this
 #     hook. Only an exhausted failure with no verified watcher emits one
@@ -178,6 +187,11 @@ fi
 MY_GEN=$FM_AUTOARM_MY_GEN
 [ -n "$MY_GEN" ] || exit 0
 
+# Bind this chain to the session just verified above. The binding is exported
+# to the arm and its watcher, so a link that starts after the session died
+# still knows whom it served and retires instead of running on unbound.
+fm_served_harness_capture "$STATE" || true
+
 # Commit <outcome> (optionally with the once-per-episode notice marker) for
 # this generation. Success means this generation's translation WINS and the
 # caller exits 2 unconditionally. Markerless outcomes commit with the owned
@@ -260,7 +274,8 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
   # A superseded owner must not start or attach another watcher or mutate any
   # watcher/wake state: re-verify generation ownership before every arm
   # invocation, first attempt and retries alike.
-  if ! fm_autoarm_still_owner "$STATE" "$MY_GEN"; then
+  if ! fm_autoarm_still_owner "$STATE" "$MY_GEN" \
+    || ! fm_session_lock_owned_by_self "$STATE"; then
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
   fi
@@ -270,6 +285,13 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
     FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1 || true
   else
     FM_GUARD_GRACE="$GRACE" "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1 || true
+  fi
+
+  # The session this hook serves may have died while the arm ran; the arm and
+  # watcher retire on their own, and an orphaned hook has nobody to wake.
+  if ! fm_session_lock_owned_by_self "$STATE"; then
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
   fi
 
   # AFK may have appeared mid-cycle: the daemon owns triage now, so suppress

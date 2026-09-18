@@ -304,6 +304,7 @@ family_for_basename() {
     fm-tool-update-check.test.sh|\
     fm-mail.test.sh|fm-mail-check.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|\
+    fm-watch-served-harness.test.sh|\
     fm-watch-triage.test.sh|fm-task-inbox.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
       printf '%s\n' watcher-wake-lock
@@ -666,6 +667,7 @@ tests/fm-agy-harness.test.sh 11000
 tests/fm-artifact.test.sh 12000
 tests/fm-captain-calls.test.sh 75000
 tests/fm-project-intake.test.sh 1500
+tests/fm-watch-served-harness.test.sh 20000
 tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
 tests/fm-afk-inject-e2e.test.sh 35792

@@ -22,6 +22,21 @@ Only an exhausted failure with no verified watcher commits one last-resort notic
 The Claude turn-end guard owns that notice commit contract, the monotonic failure progression, one-time attended fail-open, post-alarm continuation suppression, and positive recovery reset described in [`turnend-guard.md`](turnend-guard.md#harness-integrations).
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
 
+## Orphaned chains
+
+A watcher chain serves exactly one first mate: the session-lock owner (`state/.lock`) in its own process ancestry.
+When that harness dies without cleanup, such as a host crash or a SIGKILL, the Stop hook, arm, and watcher are reparented instead of ending, and a reparented watcher still beats and holds the singleton.
+Left alone it would keep the next crew wake for a dead session, and the orphaned hook's open generation claim would make a new session's Stop hooks defer to it.
+`bin/fm-wake-lib.sh` "Served harness" owns the binding: each link binds at its start to that lock owner's pid and start time, and passes the binding down the chain so a link that starts after the harness died still knows whom it served.
+The watcher records its binding in its lock directory and retires at the top of the next poll cycle once the harness is dead, its pid was reused, or the session lock names another harness.
+It prints `watcher: retired - served first mate harness pid <N> is gone` and releases the singleton through the ordinary close, so the downtime is published and the next first mate's first cycle surfaces it for recovery.
+An orphan therefore lives at most one poll (`FM_POLL`, 15 seconds by default) plus that cycle's own work past its harness.
+An attached arm checks its own binding on every attach poll, an owning arm relays the watcher's retirement, and both exit nonzero with the retired line.
+The hook re-verifies its session-lock ancestry before every arm invocation and after every arm close, and an orphaned hook exits 0 silently.
+Its arming claim records its session, and `fm_autoarm_claim_open` treats a claim whose session is dead as not open, so a new session takes the next generation at once.
+`fm_watcher_healthy` never counts an orphaned watcher, so a new arm waits, bounded by one poll plus the confirmation window, for it to retire and then starts its own; nothing ever signals it.
+A link with no lock-owning harness above it, such as an operator shell or a detached test, is unbound and behaves as before.
+
 ## Actionable wake ordering
 
 After an actionable Pi, omp, or OpenCode child close, the adapter starts and verifies one singleton successor before it delivers the original wake.
@@ -118,6 +133,7 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-watch-recovery-loop.test.sh` covers the once-per-generation announcement bound with the real Pi extension against a refused handling handshake, and a handling successor that must surface a real crew event instead of going blind.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
+`tests/fm-watch-served-harness.test.sh` runs the real Stop hook, arm, and watcher under a fake harness: a SIGKILLed harness's chain retires within the poll bound, a chain serving a live harness keeps running across poll cycles, and a new harness in the same home arms at once and keeps its own chain after the old one exits.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, exit-2 translation, and host-timeout HUP/TERM/INT translation into the same durable failure handoff.
 It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim; [`turnend-guard.md`](turnend-guard.md) owns those behavior contracts.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.

@@ -58,11 +58,25 @@
 # watcher. NEVER `pkill -f
 # bin/fm-watch.sh`: that pattern matches every firstmate home's watcher
 # (secondmate homes run the same script) and would kill siblings.
+#
+# Orphan retirement: the arm binds at start to the first mate it serves, the
+# session-lock owner in its own process ancestry (fm_served_harness_capture in
+# bin/fm-wake-lib.sh), exactly as the watcher does. When that harness dies
+# without cleanup, an attached arm stops following successors and exits with
+#   watcher: retired - served first mate harness pid <N> is gone
+# and an owning arm relays the same line when its watcher child retires. Either
+# way the exit is nonzero, never a clean empty success. A new arm that finds the
+# singleton held by such an orphaned watcher waits, bounded by one poll plus the
+# confirmation window, for it to retire and then starts its own; it never
+# attaches to it and never signals it. An arm with no lock-owning harness above
+# it is unbound and keeps its previous behavior.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
@@ -79,6 +93,10 @@ esac
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
+# The watcher checks its served harness once per poll cycle, so an orphaned
+# watcher retires within one poll plus that cycle's work.
+WATCH_POLL=${FM_POLL:-15}
+case "$WATCH_POLL" in ''|*[!0-9]*) WATCH_POLL=15 ;; esac
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
@@ -269,6 +287,44 @@ wait_for_healthy_successor() {
   done
 }
 
+SERVED_HARNESS_PID=
+SERVED_HARNESS_IDENTITY=
+if fm_served_harness_capture "$STATE"; then
+  SERVED_HARNESS_PID=$FM_SERVED_HARNESS_PID
+  SERVED_HARNESS_IDENTITY=$FM_SERVED_HARNESS_IDENTITY
+fi
+
+served_harness_gone() {
+  fm_served_harness_gone "$STATE" "$SERVED_HARNESS_PID" "$SERVED_HARNESS_IDENTITY"
+}
+
+report_retired() {
+  echo "watcher: retired - served first mate harness pid $SERVED_HARNESS_PID is gone"
+}
+
+# The singleton is held by a live, identity-matched watcher whose own served
+# first mate is gone: it is an orphan that retires by itself at its next poll.
+orphaned_watcher_holds_lock() {
+  local pid
+  pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  fm_pid_alive "$pid" || return 1
+  fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$pid" "$FM_HOME" || return 1
+  fm_watcher_served_harness_gone "$STATE"
+}
+
+# Let an orphaned watcher retire on its own before this arm starts a cycle, so
+# the fresh child takes a released lock instead of standing down behind it.
+wait_for_orphan_retirement() {
+  local deadline
+  orphaned_watcher_holds_lock || return 0
+  deadline=$(( $(date +%s) + WATCH_POLL + CONFIRM_TIMEOUT + 1 ))
+  while orphaned_watcher_holds_lock; do
+    [ "$(date +%s)" -ge "$deadline" ] && return 1
+    sleep 0.2
+  done
+  return 0
+}
+
 fail_unexplained_cycle() {
   echo "watcher: FAILED - cycle ended without an actionable reason"
   return 1
@@ -312,6 +368,11 @@ close_unobserved_cycle() {
 attach_and_wait() {
   local attached_pid=$1
   while :; do
+    if served_harness_gone; then
+      cycle_log_append unknown unknown served-harness-gone none
+      report_retired
+      return 1
+    fi
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
         cycle_log_append unknown unknown lock-replaced "attached:$HEALTHY_PID"
@@ -434,6 +495,9 @@ fi
 # one - attach to that cycle and wait until it ends so the harness notify fires
 # then, not as an immediate empty wake. (--restart skips this: it just stopped
 # this home's watcher and wants a fresh one.)
+if [ "$mode" = arm ]; then
+  wait_for_orphan_retirement || true
+fi
 if [ "$mode" = arm ] && healthy_watcher; then
   cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
   cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
@@ -490,6 +554,14 @@ child_done=0
 owned_child_finished() {
   local rc=$1 signal reason_type status
   signal=$(cycle_signal_name "$rc")
+  if grep -q '^watcher: retired' "$child_out" 2>/dev/null; then
+    cycle_log_append "$rc" "$signal" served-harness-gone none
+    print_watch_output "$child_out"
+    rm -f "$child_out" 2>/dev/null || true
+    child=
+    child_out=
+    return 1
+  fi
   if [ "$rc" -eq 0 ] && watch_output_has_wake "$child_out"; then
     reason_type=$(watch_output_reason_type "$child_out")
     cycle_log_append "$rc" "$signal" "$reason_type" none

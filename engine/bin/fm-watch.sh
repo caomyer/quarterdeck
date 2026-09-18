@@ -179,6 +179,10 @@ mkdir -p "$STATE"
 # watcher reads only its presence (afk_record_present below).
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
+# Session-lock ancestry membership, used once at start to bind this watcher to
+# the first mate it serves (fm_served_harness_capture, bin/fm-wake-lib.sh).
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -2010,6 +2014,21 @@ printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path" || true
 FM_WATCH_DELIVERY_PID=$WATCHER_PID
 FM_WATCH_DELIVERY_IDENTITY=$(fm_pid_identity "$WATCHER_PID" 2>/dev/null || true)
 printf '%s\n' "$FM_WATCH_DELIVERY_IDENTITY" > "$WATCH_LOCK/pid-identity" 2>/dev/null || true
+# Bind to the first mate this watcher serves: the session-lock owner in its own
+# ancestry. The record lets other arms tell this watcher from an orphan; the
+# poll loop below retires the watcher once that harness is gone. An unbound
+# watcher (no lock-owning harness above it) writes no record and never retires
+# on this ground.
+SERVED_HARNESS_PID=
+SERVED_HARNESS_IDENTITY=
+if fm_served_harness_capture "$STATE"; then
+  SERVED_HARNESS_PID=$FM_SERVED_HARNESS_PID
+  SERVED_HARNESS_IDENTITY=$FM_SERVED_HARNESS_IDENTITY
+  printf '%s\n%s\n' "$SERVED_HARNESS_PID" "$SERVED_HARNESS_IDENTITY" > "$WATCH_LOCK/served-harness" 2>/dev/null || true
+fi
+# The binding ends with this watcher: nothing it runs (checks, process-event
+# runners, reconcile requests) serves this first mate, so none may inherit it.
+unset FM_WATCH_SERVED_PID FM_WATCH_SERVED_IDENTITY
 
 [ -e "$STATE/.last-heartbeat" ] || touch "$STATE/.last-heartbeat"
 
@@ -2083,6 +2102,18 @@ while :; do
   # This makes any duplicate self-resolve within one poll instead of persisting
   # and doubling every wake.
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" != "$WATCHER_PID" ]; then
+    exit 0
+  fi
+
+  # Orphan retirement: the first mate this watcher serves died without cleanup
+  # (crash, SIGKILL, bad sleep), so its hook chain was reparented and nobody can
+  # receive a wake from this cycle. Retire before touching the beacon, so the
+  # singleton frees for the next first mate instead of carrying its wakes to a
+  # dead session. Checked once per cycle, so an orphan lives at most one poll
+  # (plus the cycle's own work) past its harness. Durable wake-queue rows stay
+  # queued for the next first mate's drain.
+  if fm_served_harness_gone "$STATE" "$SERVED_HARNESS_PID" "$SERVED_HARNESS_IDENTITY"; then
+    echo "watcher: retired - served first mate harness pid $SERVED_HARNESS_PID is gone"
     exit 0
   fi
 
