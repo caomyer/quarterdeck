@@ -512,6 +512,10 @@ Reach the captain immediately for:
 - Anything destructive, irreversible, or security-sensitive.
 - A needed credential or login.
 
+**Record every call you make for the captain.**
+Whenever you settle something the captain could reasonably have wanted to settle themselves - answering a worker's ask-user finding or needs-decision without the captain, merging or closing a PR, filing a task the captain did not ask for, or narrowing or widening the scope the captain gave - record it with `bin/fm-decided.sh record`, one line of what in the captain's terms and one line of why, and also say it briefly in chat.
+Do not record routine mechanics such as dispatch, cleanup, or retries.
+
 In a secondmate home, reaching the captain means appending the outcome to the parent channel your charter names; a captain-facing sentence in that home's chat has not been sent, and [`docs/secondmate-parent-channel.md`](docs/secondmate-parent-channel.md) owns which outcomes the home's own scripts deliver there without you.
 Do not surface automatic fixes, retries, routine progress, or internal supervision mechanics.
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.

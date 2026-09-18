@@ -19,6 +19,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
 | `fm-bearings-snapshot.sh` | Project the bounded remote-ledger fleet snapshot to compact TOON; `--include-prs` adds live GitHub enrichment |
 | `fm-decision-options.sh` | Record the machine-readable choices a captain-held task offers, for review surfaces to present |
+| `fm-decided.sh`          | Record the calls firstmate made on the captain's behalf, with one line of why, for review surfaces to show and the captain to push back on |
 | `fm-artifact.sh`         | Present HTML review artifacts as immutable revisions, list them, and resolve the home's presentation mode |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
 | `fm-secondmate-reconcile.sh` | Queue Bearings reconcile requests for later supervision delivery and ask each mismatched home through its durable inbox with a per-home cooldown |

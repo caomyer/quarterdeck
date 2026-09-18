@@ -275,7 +275,7 @@ cpu_count() {
 family_for_basename() {
   case "$1" in
     fm-arm-pretool-check.test.sh|fm-artifact.test.sh|fm-ask-user-authority.test.sh|\
-    fm-decision-options.test.sh|\
+    fm-decision-options.test.sh|fm-decided.test.sh|\
     fm-bearings-board.test.sh|\
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
@@ -665,6 +665,7 @@ portable_serial_weight_hints() {
 tests/fm-agy-harness.test.sh 11000
 tests/fm-artifact.test.sh 12000
 tests/fm-decision-options.test.sh 1500
+tests/fm-decided.test.sh 2000
 tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
 tests/fm-afk-inject-e2e.test.sh 35792
@@ -1539,8 +1540,9 @@ families_for_changed_path() {
     bin/fm-home-summary-refresh.sh)
       printf '%s\n' snapshot-bearings
       ;;
-    bin/fm-decision-options.sh)
-      # What a held task offers feeds the review screen through the fleet snapshot.
+    bin/fm-decision-options.sh|bin/fm-decided.sh)
+      # What a held task offers, and the calls made for the captain, feed the
+      # review screen through the fleet snapshot.
       printf '%s\n' pure-contract-unit
       printf '%s\n' snapshot-bearings
       ;;

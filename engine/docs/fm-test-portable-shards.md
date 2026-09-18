@@ -9,8 +9,8 @@ Balance hints come from serial runs of the real lanes on `ubuntu-latest`.
 The concurrent isolation proof in [fm-test-isolation-proof.md](fm-test-isolation-proof.md) establishes concurrency safety, not serial CI duration.
 Local timings are not interchangeable with CI timings: platform and machine load can affect each script differently and change their relative weights.
 
-`tests/fm-artifact.test.sh` (12000) and `tests/fm-decision-options.test.sh` (1500) are the exception: their hints are rounded up from local macOS runs (9880ms and 588ms on 2026-09-17), because the scripts landed between CI refreshes and the coverage guard's unhinted share was already near its cap.
-Refresh both from the next green run's timing artifacts.
+`tests/fm-artifact.test.sh` (12000), `tests/fm-decision-options.test.sh` (1500), and `tests/fm-decided.test.sh` (2000) are the exception: their hints are rounded up from local macOS runs (9880ms and 588ms on 2026-09-17, 1229ms on 2026-09-18), because the scripts landed between CI refreshes and the coverage guard's unhinted share was already near its cap.
+Refresh all three from the next green run's timing artifacts.
 `tests/fm-task-delivery.test.sh` carries its measured CI value plus 3000ms, rounded up from the 2890ms a promotion journey case added to it locally on 2026-09-18; refresh it from the same run.
 `fm-artifact.test.sh` also carries a real headless Chrome case that skips where no Chrome is installed, so its CI duration depends on whether the runner has one.
 

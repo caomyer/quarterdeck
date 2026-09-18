@@ -72,6 +72,10 @@
 #     exactly as `bin/fm-decision-options.sh list --json` reports them; that
 #     script owns the shape. A task is held or not by the backlog above; these
 #     are only what it offers.
+#   decided[]: the calls firstmate made on the captain's behalf in the last 7
+#     days, newest first, exactly as `bin/fm-decided.sh list --json` reports its
+#     decided array; that script owns the shape and the window, which ends at
+#     this snapshot's generated time.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
 #     (orphan structured in-flight ids with no state/<id>.meta, and unstructured
@@ -1995,6 +1999,7 @@ MAIN_INVENTORY_JSON_FILE="$JSON_TRANSPORT_DIR/main-inventory.json"
 SCOUT_REPORTS_JSON_FILE="$JSON_TRANSPORT_DIR/scout-reports.json"
 ARTIFACTS_JSON_FILE="$JSON_TRANSPORT_DIR/artifacts.json"
 DECISION_OPTIONS_JSON_FILE="$JSON_TRANSPORT_DIR/decision-options.json"
+DECIDED_JSON_FILE="$JSON_TRANSPORT_DIR/decided.json"
 SECONDMATE_CURRENT_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-current.json"
 SECONDMATE_LANDED_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-landed.json"
 printf '%s\n' "$BACKLOG_JSON" > "$BACKLOG_JSON_FILE" \
@@ -2025,6 +2030,9 @@ FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-artifact.sh" list --
   || { echo "fm-fleet-snapshot: artifact listing failed" >&2; exit 1; }
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-decision-options.sh" list --json > "$DECISION_OPTIONS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: decision options listing failed" >&2; exit 1; }
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_DECIDED_NOW="$SNAPSHOT_NOW" \
+  "$SCRIPT_DIR/fm-decided.sh" list --json > "$DECIDED_JSON_FILE" \
+  || { echo "fm-fleet-snapshot: decided listing failed" >&2; exit 1; }
 main_inventory_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" > "$MAIN_INVENTORY_JSON_FILE" \
   || { echo "fm-fleet-snapshot: main inventory summary failed" >&2; exit 1; }
 secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
@@ -2047,6 +2055,7 @@ jq -n \
   --slurpfile scout_reports "$SCOUT_REPORTS_JSON_FILE" \
   --slurpfile artifacts "$ARTIFACTS_JSON_FILE" \
   --slurpfile decision_options "$DECISION_OPTIONS_JSON_FILE" \
+  --slurpfile decided "$DECIDED_JSON_FILE" \
   --slurpfile secondmate_current "$SECONDMATE_CURRENT_JSON_FILE" \
   --slurpfile secondmate_landed "$SECONDMATE_LANDED_JSON_FILE" \
   '($backlog[0]) as $backlog
@@ -2070,6 +2079,7 @@ jq -n \
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      artifacts:$artifacts[0].artifacts,
      decision_options:$decision_options[0].decisions,
+     decided:$decided[0].decided,
      secondmate_current:$secondmate_current,
      secondmate_landed:$secondmate_landed,
      secondmate_guidance:{
