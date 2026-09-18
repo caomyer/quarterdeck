@@ -4,11 +4,14 @@
 //! Contract (from the host spike, `FIRSTMATE_DESKTOP_ACP_HOST_SPIKE.md`):
 //! - the adapter's stdout is read continuously, so turns the first mate starts
 //!   on its own (Stop-hook rewakes) are observed instead of lost;
-//! - turn state is derived, because agent-initiated turns carry no start or
-//!   end marker: activity with no prompt in flight is an agent turn, ended by
-//!   four seconds of silence;
-//! - captain messages go to a durable outbox and are handed to the adapter at
-//!   once, which queues them behind any running turn;
+//! - turn state is derived, because agent-initiated turns carry no start
+//!   marker: activity with no prompt in flight is an agent turn, ended by the
+//!   usage update the adapter tags with the result's origin, or by silence when
+//!   the adapter does not tag results;
+//! - captain messages go to a durable outbox. They are handed to the adapter at
+//!   once, which queues them behind a running prompt, except during an agent
+//!   turn: the CLI folds a message that arrives then into the running cycle, whose
+//!   result never settles the message's prompt, so it waits for the turn to end;
 //! - a message is picked up only when its own prompt result arrives, and one
 //!   whose result never arrived is re-sent after a restart;
 //! - restart kills the adapter's process group and resumes the conversation
@@ -35,8 +38,19 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-/// How long an agent-initiated turn may stay silent before it is considered over.
+/// How long an agent-initiated turn may stay silent before it is considered over,
+/// with an adapter that does not say when a turn's result arrives.
 const AGENT_TURN_QUIET: Duration = Duration::from_secs(4);
+/// The same, with an adapter that marks each turn's result: the mark ends the turn,
+/// and silence ends it only as a safety net for a mark that never came. A step still
+/// running holds the turn open up to `AGENT_TURN_STEP_LIMIT`.
+const AGENT_TURN_QUIET_MARKED: Duration = Duration::from_secs(60);
+const AGENT_TURN_STEP_LIMIT: Duration = Duration::from_secs(600);
+/// Result origins `claude-agent-acp` counts as the model's own cycle rather than a
+/// prompt's (its `AUTONOMOUS_RESULT_ORIGINS`). A Stop-hook rewake is a
+/// `task-notification`. The adapter never settles a prompt with such a result, so a
+/// prompt the CLI folded into one of these cycles would never be answered.
+const AUTONOMOUS_ORIGINS: [&str; 5] = ["task-notification", "peer", "coordinator", "observer", "observer-activity"];
 /// Usage updates this soon after a prompt result are trailers, not a new turn.
 const TRAILER_WINDOW: Duration = Duration::from_millis(1500);
 /// A rewake storm is this many agent-initiated turns inside the window.
@@ -1000,7 +1014,11 @@ struct Host {
     in_flight: VecDeque<String>,
     started_hint: Option<String>,
     last_activity: Instant,
-    last_prompt_done: Option<Instant>,
+    /// When the last turn's result arrived, prompt or agent: usage just after it is a trailer.
+    last_turn_end: Option<Instant>,
+    /// The adapter tags each result with its origin, so an agent turn ends at its result.
+    marks_results: bool,
+    open_steps: std::collections::HashSet<String>,
     agent_turns: u64,
     agent_turn_starts: VecDeque<Instant>,
     /// The turn count last reported as a rewake storm, while one lasts.
@@ -1026,7 +1044,9 @@ impl Host {
             asked: HashMap::new(),
             started_hint: None,
             last_activity: Instant::now(),
-            last_prompt_done: None,
+            last_turn_end: None,
+            marks_results: false,
+            open_steps: std::collections::HashSet::new(),
             agent_turns: 0,
             agent_turn_starts: VecDeque::new(),
             storm_reported: None,
@@ -1537,8 +1557,21 @@ impl Host {
             self.emit("update", json!({"kind": kind, "update": update}));
             return;
         }
+        // The usage update the adapter sends with a turn's result names whose turn it was.
+        let result_origin = (kind == "usage_update")
+            .then(|| update.pointer("/_meta/_claude~1origin/kind").and_then(Value::as_str))
+            .flatten()
+            .map(str::to_string);
+        if result_origin.is_some() {
+            self.marks_results = true;
+        }
+        self.track_step(&kind, &update);
+        // Usage that trails a turn's end, reports a rate limit, or is a turn's own result
+        // is not a turn starting.
         let trailer = kind == "usage_update"
-            && self.last_prompt_done.is_some_and(|t| t.elapsed() < TRAILER_WINDOW);
+            && (self.last_turn_end.is_some_and(|t| t.elapsed() < TRAILER_WINDOW)
+                || result_origin.is_some()
+                || update.pointer("/_meta/_claude~1rateLimit").is_some());
         if !trailer {
             self.last_activity = Instant::now();
             if self.in_flight.is_empty() {
@@ -1574,6 +1607,40 @@ impl Host {
             }
             "usage_update" => self.emit("usage", json!({"update": update})),
             other => self.emit("update", json!({"origin": origin, "kind": other, "update": update})),
+        }
+        // The model's own cycle ended: its result is the authoritative end of the agent turn.
+        if result_origin.as_deref().is_some_and(|origin| AUTONOMOUS_ORIGINS.contains(&origin)) {
+            self.last_turn_end = Some(Instant::now());
+            self.end_agent_turn(json!({"derived": "agent turn result", "result_origin": result_origin}));
+        }
+    }
+
+    /// Steps the model has started and not finished. A turn with one still running is
+    /// not over however quiet it is: a long command reports nothing until it ends.
+    fn track_step(&mut self, kind: &str, update: &Value) {
+        let (Some(id), status) = (
+            update.get("toolCallId").and_then(Value::as_str),
+            update.get("status").and_then(Value::as_str),
+        ) else {
+            return;
+        };
+        let done = matches!(status, Some("completed" | "failed"));
+        match kind {
+            "tool_call" if !done => {
+                self.open_steps.insert(id.to_string());
+            }
+            "tool_call" | "tool_call_update" if done => {
+                self.open_steps.remove(id);
+            }
+            _ => {}
+        }
+    }
+
+    /// An agent turn is over: back to idle, where waiting captain messages go out.
+    fn end_agent_turn(&mut self, detail: Value) {
+        if self.state == State::AgentTurn && self.in_flight.is_empty() {
+            self.open_steps.clear();
+            self.set_state(State::Idle, detail);
         }
     }
 
@@ -1654,9 +1721,12 @@ impl Host {
             "prompt_result",
             json!({"id": outbox_id, "stop_reason": stop, "usage": usage, "error": error}),
         );
-        self.last_prompt_done = Some(Instant::now());
+        self.last_turn_end = Some(Instant::now());
         if self.state.live() {
             let next = if self.in_flight.is_empty() { State::Idle } else { State::PromptTurn };
+            if next == State::Idle {
+                self.open_steps.clear();
+            }
             if next != self.state {
                 self.set_state(next, json!({}));
             }
@@ -1666,17 +1736,30 @@ impl Host {
     fn tick(&mut self) {
         self.review_storm();
         // Quiet only ends an agent turn; with a prompt in flight its result decides.
-        if self.state == State::AgentTurn
-            && self.in_flight.is_empty()
-            && self.last_activity.elapsed() > AGENT_TURN_QUIET
-        {
-            self.set_state(State::Idle, json!({"derived": "agent turn quiet for 4s"}));
+        if self.state != State::AgentTurn || !self.in_flight.is_empty() {
+            return;
+        }
+        let quiet = self.last_activity.elapsed();
+        if !self.marks_results {
+            if quiet > AGENT_TURN_QUIET {
+                self.end_agent_turn(json!({"derived": "agent turn quiet for 4s"}));
+            }
+            return;
+        }
+        // The result should have ended it. A turn this quiet with no step running, or with a
+        // step running far longer than any should, lost its result: do not hold messages forever.
+        let limit = if self.open_steps.is_empty() { AGENT_TURN_QUIET_MARKED } else { AGENT_TURN_STEP_LIMIT };
+        if quiet > limit {
+            self.end_agent_turn(json!({"derived": format!("agent turn quiet for {}s without a result", limit.as_secs())}));
         }
     }
 
-    /// Hand every queued message to the adapter now; it queues behind any running turn.
+    /// Hand every queued message to the adapter now; it queues behind a running prompt.
+    /// During an agent turn they wait: the CLI folds a message that arrives mid-cycle into
+    /// the running cycle, and the adapter never settles a prompt with that cycle's result,
+    /// so the message would be answered and still read as waiting forever.
     fn dispatch(&mut self) {
-        if !self.state.live() {
+        if !self.state.live() || self.state == State::AgentTurn {
             return;
         }
         let Some(adapter) = self.adapter.as_ref() else { return };
@@ -1686,8 +1769,6 @@ impl Host {
             self.record(&pending.id, None, "sent", json!({}));
             self.emit("outbox", json!({"id": pending.id, "state": "sent", "while": self.state.name()}));
             self.in_flight.push_back(pending.id.clone());
-            // A prompt in flight is a prompt turn, even when it was handed over
-            // during an agent turn and is queued behind it.
             if self.state != State::PromptTurn {
                 self.set_state(State::PromptTurn, json!({"origin": "prompt"}));
             }
@@ -2077,9 +2158,31 @@ def claim():
 claim_on_prompt = os.path.exists(os.path.join(home, "claim-on-prompt"))
 if not claim_on_prompt:
     claim()
+import threading, time
+out = threading.Lock()
 def send(message):
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
+    with out:
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+def update(u):
+    send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": u}})
+def answer(id, origin="human"):
+    # As the real adapter does: the result's usage names whose turn it was, then the response.
+    update({"sessionUpdate": "usage_update", "used": 1, "size": 100, "_meta": {"_claude/origin": {"kind": origin}}})
+    send({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn"}})
+# A Stop-hook rewake: the model's own cycle, with a step that reports nothing for a while.
+# A prompt that arrives during it is folded into the cycle, as the CLI does, and never answered.
+cycle = threading.Event()
+def rewake():
+    time.sleep(0.3)
+    cycle.set()
+    update({"sessionUpdate": "usage_update", "used": 1, "size": 100})
+    update({"sessionUpdate": "tool_call", "toolCallId": "w1", "title": "Drain the wake queue", "status": "pending"})
+    time.sleep(5)
+    update({"sessionUpdate": "tool_call_update", "toolCallId": "w1", "status": "completed"})
+    update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "handled the wake"}})
+    cycle.clear()
+    update({"sessionUpdate": "usage_update", "used": 1, "size": 100, "_meta": {"_claude/origin": {"kind": "task-notification"}}})
 prompt = None
 while True:
     line = sys.stdin.readline()
@@ -2110,9 +2213,20 @@ while True:
         if "fail-me" in text:
             send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32603, "message": "Internal error: boom"}})
             continue
+        if cycle.is_set():
+            update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "folded " + text}})
+            continue
         if "fm-session-start.sh" in text:
             claim()
-            send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
+            answer(m["id"])
+            continue
+        if "wake-me-after" in text:
+            answer(m["id"])
+            threading.Thread(target=rewake).start()
+            continue
+        if "plain" in text:
+            update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "answered " + text}})
+            answer(m["id"])
             continue
         prompt = m["id"]
         send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {"sessionId": "s1", "toolCall": {"title": "Delete the build folder"}, "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]}})
@@ -2325,6 +2439,58 @@ while True:
             ])
         );
         assert!(!events.iter().any(|(e, b)| e == "text" && b["text"] == "earlier answer"), "replay leaked into live chat");
+    }
+
+    /// A throwaway home run by the fake adapter, whose lock is held while the adapter runs.
+    fn fake_adapter_home(name: &str) -> PathBuf {
+        let home = home_with_lock_script(
+            name,
+            Some(r#"if [ -f "$FM_HOME/adapter.pid" ]; then echo "lock: held by live harness pid $(cat "$FM_HOME/adapter.pid")"; else echo 'lock: free'; fi"#),
+        );
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        let adapter = home.join("fake-adapter.py");
+        std::fs::write(&adapter, FAKE_ADAPTER).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+        home
+    }
+
+    /// Reproduces a live run: a message sent while a Stop-hook rewake ran was folded into
+    /// that cycle, answered there, and read as waiting forever, because the adapter never
+    /// settles a prompt with the result of a cycle the model started itself.
+    #[tokio::test]
+    async fn a_message_sent_during_an_agent_turn_waits_for_it_and_is_read() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("hold-during-agent-turn");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        let first = host.call(|reply| Cmd::Send { text: "wake-me-after".into(), reply }).await.unwrap().expect("send");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == first.as_str() && b["state"] == "picked_up")
+            .await
+            .expect("the first message was read");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "state" && b["state"] == "agent_turn")
+            .await
+            .expect("the rewake started an agent turn");
+        let during = host.call(|reply| Cmd::Send { text: "plain during".into(), reply }).await.unwrap().expect("send");
+        let read = wait_for(&log, Duration::from_secs(20), |e, b| e == "outbox" && b["id"] == during.as_str() && b["state"] == "picked_up").await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let prompts = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(read.is_some(), "the message was never read: {events:?}");
+        let position = |pred: &dyn Fn(&str, &Value) -> bool| events.iter().position(|(e, b)| pred(e, b)).unwrap();
+        let queued = position(&|e, b| e == "outbox" && b["id"] == during.as_str() && b["state"] == "queued");
+        let turn_over = position(&|e, b| e == "state" && b["state"] == "idle" && b["derived"] == "agent turn result");
+        let sent = position(&|e, b| e == "outbox" && b["id"] == during.as_str() && b["state"] == "sent");
+        assert_eq!(events[queued].1["while"], "agent_turn", "{events:?}");
+        assert!(queued < turn_over && turn_over < sent, "handed over before the agent turn ended: {events:?}");
+        assert!(!prompts.contains("folded"), "{prompts:?}");
+        let text: String = events.iter().filter(|(e, _)| e == "text").filter_map(|(_, b)| b["text"].as_str()).collect();
+        assert!(text.contains("answered plain during") && !text.contains("folded"), "{text:?}");
+        // The five silent seconds of the rewake's step did not end its turn early.
+        assert!(!events.iter().any(|(e, b)| e == "state" && b["derived"].as_str().is_some_and(|d| d.contains("quiet"))), "{events:?}");
     }
 
     #[test]

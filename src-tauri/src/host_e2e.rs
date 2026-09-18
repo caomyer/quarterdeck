@@ -401,9 +401,10 @@ async fn host_e2e_live_scratch_home() {
         not_exercised(&mut steps, "send: queued, picked_up, reply text", "the host did not start".into());
     }
 
-    // 3. A message sent during an agent-initiated turn is handed over at once.
+    // 3. A message sent during an agent-initiated turn waits for it to end, then is read.
+    // Handed over mid-cycle, the CLI folds it into the cycle and its prompt never settles.
     if let Some(after) = answered_at {
-        recorder.mark("3", "send during a rewake turn is dispatched without waiting for idle");
+        recorder.mark("3", "send during a rewake turn waits for the turn to end and is read");
         let rewake = events.find(after, REWAKE_WAIT, host_state(&["agent_turn"])).await;
         match rewake {
             Some(turn) => {
@@ -411,17 +412,19 @@ async fn host_e2e_live_scratch_home() {
                 let asked = Instant::now();
                 let sent = send(&host, format!("Captain again. {GUARD} Reply with one word: two.")).await;
                 let id = sent.clone().unwrap_or_default();
-                let dispatched = events.find(from, Duration::from_secs(5), outbox(&id, "sent")).await;
+                let queued = events.find(from, Duration::from_secs(5), outbox(&id, "queued")).await;
                 let picked = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
-                let during = events.body(dispatched)["while"].clone();
+                let dispatched = events.find(from, Duration::ZERO, outbox(&id, "sent")).await;
+                let during = events.body(queued)["while"].clone();
                 let idle_first = picked.is_some_and(|p| events.any_between(from, p, host_state(&["idle"])));
                 record(
                     &mut steps,
                     "send during a rewake turn",
-                    during == "agent_turn" && picked.is_some(),
+                    during == "agent_turn" && idle_first && picked.is_some(),
                     format!(
-                        "rewake turn={}; sent while={during}; picked_up={} after {:.1}s; went idle before the answer={idle_first}",
+                        "rewake turn={}; queued while={during}; handed over while={}; picked_up={} after {:.1}s; the turn ended before the answer={idle_first}",
                         events.body(Some(turn)),
+                        events.body(dispatched)["while"],
                         picked.is_some(),
                         asked.elapsed().as_secs_f32()
                     ),
