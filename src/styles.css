@@ -377,6 +377,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .revision-picker svg { position: absolute; right: 9px; color: var(--muted); pointer-events: none; }
 .revision-note { flex: 1; margin: 0; overflow: hidden; color: var(--muted); font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
 .revision-note strong { color: var(--ink); font-weight: 650; }
+.revision-note.commenting { color: var(--sea); font-weight: 640; }
 .layout-flag { display: flex; flex: none; align-items: center; gap: 5px; min-height: 30px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius: 6px; color: var(--amber); background: color-mix(in srgb, var(--amber) 8%, var(--surface)); font-size: .61rem; font-weight: 680; }
 .layout-flag.open { background: color-mix(in srgb, var(--amber) 15%, var(--surface)); }
 .width-toggle { display: flex; flex: none; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }

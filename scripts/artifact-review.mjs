@@ -161,13 +161,16 @@ check(await page.locator(".review-empty").count() === 1, "a page with no review 
 // Written on rev 2, so rev 3's answer is about a comment that already existed.
 await page.locator(".revision-picker select").selectOption("2");
 await frame.locator(".eyebrow", { hasText: "revised" }).waitFor();
+const stageTop = async () => (await page.locator(".artifact-stage").boundingBox()).y;
+const before = await stageTop();
 await page.locator(".comment-toggle").click();
-check((await page.locator(".comment-hint").innerText()).includes("Select the words you mean"), "comment mode says what to do");
+check((await page.locator(".revision-note.commenting").innerText()).includes("Select the words you mean"), "comment mode says what to do");
+check(await stageTop() === before, "turning comment mode on leaves the page where it was");
 await frame.locator(".card.rec p").click();
 const composer = page.locator(".comment-composer");
 await composer.waitFor();
 check((await composer.locator("blockquote").innerText()).includes("Runs after transcription"), "the composer quotes what was clicked");
-check(await page.locator(".comment-hint").count() === 0, "picking a place leaves comment mode");
+check(await page.locator(".revision-note.commenting").count() === 0, "picking a place leaves comment mode");
 await composer.locator("textarea").fill("Say what happens on an older phone.");
 await composer.locator("button", { hasText: "Comment" }).click();
 const threads = page.locator("[data-testid='review-thread']");

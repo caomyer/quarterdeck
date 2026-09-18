@@ -1128,7 +1128,10 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
   return <div className="artifact-review" data-screen="artifact">
     <div className="artifact-toolbar">
       <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""}${seen !== null && item.rev > seen ? " · new" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
-      {revision.note ? <p className="revision-note" title={revision.note}><strong>What changed</strong> {revision.note}</p> : <span className="revision-note" />}
+      {/* While commenting, the hint takes the note's place in the toolbar, so the page under the pointer never moves. */}
+      {commenting
+        ? <p className="revision-note commenting" role="status">Select the words you mean, or click a part of the page{scenes.length > 0 ? ". A diagram opens for you to change" : ""}.</p>
+        : revision.note ? <p className="revision-note" title={revision.note}><strong>What changed</strong> {revision.note}</p> : <span className="revision-note" />}
       {artifact.latest.rev > revision.rev && <button className="newer-revision" onClick={() => onRevision(artifact.latest.rev)} title={artifact.latest.note ?? undefined}>Rev {artifact.latest.rev} is new · Open</button>}
       {note && <button className={`layout-flag ${findingsOpen ? "open" : ""}`} aria-expanded={findingsOpen} onClick={() => setFindingsOpen((current) => !current)}><CircleAlert size={14} /> {note.label}</button>}
       <button className={`comment-toggle ${commenting ? "selected" : ""}`} aria-pressed={commenting} onClick={() => { setCommenting((current) => !current); setPending(null); }} title="Comment on a part of the page"><MessageSquarePlus size={15} /> Comment</button>
@@ -1136,7 +1139,6 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
       <div className="width-toggle" role="group" aria-label="Window width"><button className={narrow ? "" : "selected"} aria-pressed={!narrow} onClick={() => setNarrow(false)} title="Wide"><Monitor size={15} /></button><button className={narrow ? "selected" : ""} aria-pressed={narrow} onClick={() => setNarrow(true)} title="Narrow"><Smartphone size={15} /></button></div>
     </div>
     {note && findingsOpen && <div className="layout-findings" role="note"><p>When it was presented, firstmate's check found {note.issues.length === 1 ? "this" : "these"}, and the presenter kept the page as it is.</p><ul>{note.issues.map((issue, index) => <li key={index}><strong>{issue.viewport === "narrow" ? "Narrow" : "Wide"}</strong> {issue.detail}<code>{issue.selector}</code></li>)}</ul></div>}
-    {commenting && <div className="comment-hint" role="status">Select the words you mean, or click a part of the page{scenes.length > 0 ? ". A diagram opens for you to change" : ""}.</div>}
     {sceneProblem && <div className="comment-hint problem" role="alert">{sceneProblem}</div>}
     <div className="artifact-body">
       <div className={`artifact-stage ${narrow ? "narrow" : ""}`}>
