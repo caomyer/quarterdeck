@@ -80,7 +80,10 @@
 # nothing (null) is one written by `evidence` or `migrate` for an older call.
 # `--origin` names the task whose work raised the call; that task's report and
 # every page it presented argue the call automatically (see `list`).
-# `offer` replaces the content of an open call and records `updated_at`.
+# `offer` replaces the content of an open call and records `updated_at`, which
+# moves only when the offered content (question, options, recommendation, or
+# on_answer) is written by `hold` or `offer`, so a surface can tell a page
+# revision older than the choice it argues; attaching evidence never moves it.
 # `evidence` attaches or detaches one ref on any call, open or closed. Refs:
 #   page:task/<task-id>/<name> or page:chat/<name>  a presented page (must exist)
 #   report:<task-id>   data/<task-id>/report.md (must exist)
@@ -117,7 +120,19 @@
 # `migrate` is one-time and idempotent: it imports every
 # `state/decision-options/<task>.json` into a call that has no options yet and
 # turns every artifact revision's `covers` into page evidence on those calls,
-# leaving the old files in place (read by nothing).
+# leaving the old files in place (read by nothing). It also gives every call
+# answered before the machine lines existed the lines a current answer carries,
+# inserted into its newest resolution block under the task lock without
+# touching the decision text or digest: `Answered by: captain`, `Answered via:
+# other`, `Answer label:` (the recorded decision's first non-empty line,
+# trimmed and capped at 200 characters; for a block the keyed intake wrote, the
+# label the captain was shown, else the answer), `Answered at:` (the row's
+# close date, the only resolution time an older block has), and `Answer key:`
+# only when exactly one recorded option is named unambiguously - the line
+# starts with the key followed by `:`, ` =`, `=`, or whitespace and a dash, or
+# equals an option's label (a keyed block: its answer equals a key, or its
+# shown label equals an option's label). This conversion is the one place this
+# script ever reads recorded prose. A reconciliation block gets no lines.
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
@@ -1221,7 +1236,8 @@ call_record_compose() {  # <task-id> <now> <raised-at> <default-on-answer> <orig
     | if $about_set == 1 then .about = $about else . end
     | if $origin != "" then .origin = $origin else . end
     | if $raised_at != "" then .raised_at = $raised_at else . end
-    | .updated_at = $now' 2>&1) \
+    | if $question_set == 1 or $options != null or $recommend_set == 1 or $on_answer != ""
+      then .updated_at = $now else . end' 2>&1) \
     || fail "cannot compose the call content for $id: ${out##*error*: }"
   printf '%s\n' "$out"
 }
@@ -1674,8 +1690,8 @@ command_evidence() {
       printf 'unchanged: %s %s\n' "$id" "$ref"
       return 0
     fi
-    record=$(printf '%s' "$CALL_RECORD" | jq -c --arg ref "$ref" --arg now "$now" \
-      '.evidence |= map(select(. != $ref)) | .updated_at = $now') \
+    record=$(printf '%s' "$CALL_RECORD" | jq -c --arg ref "$ref" \
+      '.evidence |= map(select(. != $ref))') \
       || fail "cannot compose the call content for $id"
     call_record_store "$id" "$record"
     printf 'removed: %s %s\n' "$id" "$ref"
@@ -1706,7 +1722,7 @@ decided_decision_text() {  # <task-id> <what> <why>
 
 command_decide() {
   local about='' title='' what='' why='' kind=other link='' what_set=0 why_set=0 pair id digest err
-  local repo='' show state tmp record decided now
+  local repo='' show state tmp record decided
   local -a hold_args=()
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { usage >&2; exit 2; }
@@ -1782,12 +1798,11 @@ command_decide() {
     hold_args+=(--option "$pair")
   done
   "$0" hold "$id" "${hold_args[@]}" >/dev/null || fail "could not raise the decided call $id"
-  now=$(call_now)
   acquire_task_control_lock "$id"
   call_record_load "$id"
   [ -n "$CALL_RECORD" ] || fail "the decided call $id lost its record"
-  record=$(printf '%s' "$CALL_RECORD" | jq -c --argjson decided "$decided" --arg now "$now" \
-    '.decided = $decided | .raised_by = "firstmate" | .updated_at = $now') \
+  record=$(printf '%s' "$CALL_RECORD" | jq -c --argjson decided "$decided" \
+    '.decided = $decided | .raised_by = "firstmate"') \
     || fail "cannot compose the call content for $id"
   call_record_store "$id" "$record"
   release_task_control_lock
@@ -1965,10 +1980,82 @@ EOF_ORIGINS
     "calls: \(.calls | length)"' "$work/list.json"
 }
 
+# The one place any recorded prose is read. `migrate` gives a resolution block
+# written before the machine lines existed the lines a current answer carries,
+# so surfaces that read only machine lines keep the answers already on record.
+# It prints the new body and a summary line, or nothing when the newest block
+# already carries them, is a reconciliation, or has no captain decision.
+# shellcheck disable=SC2016 # jq, not the shell, expands these variables.
+BACKFILL_JQ='
+  def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
+  def header_line: test("^(Decision digest|Resolution mode|Answer key|Answer label|Answered by|Answered via|Answered at): ");
+  ($body | split("\n")) as $l
+  | (first(range(0; $l | length) as $i
+      | select($l[$i] | test("^Resolution recorded by fm-(captain|decision)-hold\\.$")) | $i) // null) as $s
+  | select($s != null)
+  | (first(range($s + 1; $l | length) as $i | select($l[$i] | test("^[[:space:]]*$")) | $i) // ($l | length)) as $e
+  | ($l[($s + 1):$e]) as $header
+  | select((any($header[]; startswith("Answered by:")) or any($header[]; . == "Resolution mode: reconciled")) | not)
+  | (first(range($s + 1; $e) as $i | select($l[$i] | header_line | not) | $i) // $e) as $insert
+  | (first(range($e; $l | length) as $i | select($l[$i] == "Captain decision:") | $i) // null) as $d
+  | select($d != null)
+  | ([$l[($d + 1):][] | select(test("[^[:space:]]"))] | .[0] // "" | trim) as $first
+  | select($first != "")
+  | if ($first | test("^Captain answered this (call|decision) through .*\\.$")) then
+      # The keyed intake wrote this block, in its own fixed format.
+      ([$l[($d + 2):][]] | (first(range(0; length) as $j | select(.[$j] | test("^[[:space:]]*$")) | $j) // length) as $n
+        | .[:$n]) as $keyed
+      | ([$keyed[] | capture("^Answer: (?<v>.*)$") | .v] | .[0] // "") as $value
+      | ([$keyed[] | capture("^Answer as shown to the captain: (?<v>.*)$") | .v] | .[0] // "") as $shown
+      | {label:(if $shown != "" then $shown else $value end),
+         keys:([$options[] | select(.key == $value) | .key]
+               + [$options[] | select($shown != "" and .label == $shown) | .key] | unique)}
+    else
+      {label:$first,
+       keys:([$options[] | . as $o
+               | select(($first == $o.label)
+                   or (($first | startswith($o.key))
+                       and ($first[($o.key | length):] | test("^(:| =|=|[[:space:]]+-)"))))
+               | .key] | unique)}
+    end
+  | . as $answer
+  | (if ($answer.keys | length) == 1 then ["Answer key: " + $answer.keys[0]] else [] end
+     + ["Answer label: " + ($answer.label | gsub("[[:cntrl:]]"; " ") | trim | .[:200])]
+     + ["Answered by: captain", "Answered via: other"]
+     + (if ($closed | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")) then ["Answered at: " + $closed] else [] end)) as $lines
+  | "key=\(if ($answer.keys | length) == 1 then $answer.keys[0] else "-" end)",
+    ($l[:$insert] + $lines + $l[$insert:] | join("\n"))'
+
+# Backfill one call's newest resolution block; prints the summary on success
+# and returns 3 when there is nothing to backfill.
+migrate_answer_lines() {  # <task-id>
+  local id=$1 show body options closed out summary tmp
+  task_show "$id" || return 3
+  show=$TASK_SHOW_OUTPUT
+  shown_row_is_call "$show" || return 3
+  body=$(decode_shown_value "$(show_field "$show" body)") || fail "could not decode the body of $id"
+  options='[]'
+  if call_record_try_load "$id" && [ -n "$CALL_RECORD" ]; then
+    options=$(printf '%s' "$CALL_RECORD" | jq -c '.options')
+  fi
+  closed=$(show_field_value "$show" closed)
+  out=$(jq -nr --arg body "$body" --argjson options "$options" --arg closed "$closed" "$BACKFILL_JQ") \
+    || fail "cannot read the resolution block of $id"
+  [ -n "$out" ] || return 3
+  summary=${out%%$'\n'*}
+  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-captain-backfill.XXXXXX") || fail "cannot stage the answer lines for $id"
+  if ! printf '%s\n' "${out#*$'\n'}" > "$tmp" || ! tasks_axi update "$id" --body-file "$tmp" >/dev/null; then
+    rm -f -- "$tmp"
+    fail "could not record the answer lines on $id"
+  fi
+  rm -f -- "$tmp"
+  printf '%s\n' "$summary"
+}
+
 # One-time import of the stores this record replaced. Idempotent: an option set
 # lands only on a call with no options yet, and evidence is never duplicated.
 command_migrate() {
-  local path task imported=0 attached=0 skipped=0 unchanged=0 old record now ref rows show
+  local path task imported=0 attached=0 answered=0 skipped=0 unchanged=0 old record now ref rows show backlog summary rc
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
   require_jq
   require_tasks_axi
@@ -2062,7 +2149,40 @@ command_migrate() {
   done <<EOF_ROWS
 $rows
 EOF_ROWS
-  printf 'migrate: imported=%s attached=%s unchanged=%s skipped=%s\n' "$imported" "$attached" "$unchanged" "$skipped"
+  # Answers recorded before the machine lines existed: every call row whose
+  # newest resolution block lacks them, found in the snapshot's own parse.
+  backlog=$(FM_SNAPSHOT_NOW="$now" "$SCRIPT_DIR/fm-fleet-snapshot.sh" --backlog-json) \
+    || fail "cannot read this home's backlog"
+  rows=$(printf '%s' "$backlog" | jq -r '
+    .records[]? | select(.structured == true and .id != null)
+    | . as $row
+    | ($row.body_lines // []) as $l
+    | (first(range(0; $l | length) as $i
+        | select($l[$i] | test("^Resolution recorded by fm-(captain|decision)-hold\\.$")) | $i) // null) as $s
+    | select($s != null)
+    | select([$l[($s + 1):][] | select(test("^(Decision digest|Resolution mode|Answer key|Answer label|Answered by|Answered via|Answered at): "))]
+        | any(startswith("Answered by:")) | not)
+    | $row.id') || fail "cannot read this home's backlog"
+  while IFS= read -r task; do
+    [ -n "$task" ] || continue
+    task_id_path_safe "$task" || continue
+    acquire_task_control_lock "$task"
+    rc=0
+    summary=$(migrate_answer_lines "$task") || rc=$?
+    case "$rc" in
+      0)
+        printf 'answered: %s %s\n' "$task" "$summary"
+        answered=$((answered + 1))
+        ;;
+      3) : ;;
+      *) exit "$rc" ;;
+    esac
+    release_task_control_lock
+  done <<EOF_ANSWERED
+$rows
+EOF_ANSWERED
+  printf 'migrate: imported=%s attached=%s answered=%s unchanged=%s skipped=%s\n' \
+    "$imported" "$attached" "$answered" "$unchanged" "$skipped"
 }
 
 # --- the one keyed-answer intake, and the source bindings that feed it --------

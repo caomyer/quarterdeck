@@ -166,13 +166,15 @@ test_offer_and_evidence_change_a_call() {
   assert_equals "null|2026-09-18T12:00:00Z" "$(jq -r '[(.on_answer|tostring), .raised_at] | join("|")' "$home/state/calls/sample-legacy.json")" \
     "offer on an older call creates its record from the hold, declaring no close it was not told"
 
-  assert_contains "$(run_captain "$home" evidence sample-offer add url:https://example.invalid/doc)" \
+  assert_contains "$(CALL_NOW=2026-09-18T15:00:00Z run_captain "$home" evidence sample-offer add url:https://example.invalid/doc)" \
     "added: sample-offer url:https://example.invalid/doc" "evidence add reports the ref"
   assert_contains "$(run_captain "$home" evidence sample-offer add url:https://example.invalid/doc)" \
     "unchanged: sample-offer" "attaching again changes nothing"
   assert_contains "$(run_captain "$home" evidence sample-offer remove url:https://example.invalid/doc)" \
     "removed: sample-offer" "evidence remove reports the ref"
   assert_equals 0 "$(jq '.evidence | length' "$record")" "the ref is gone"
+  assert_equals 2026-09-18T14:00:00Z "$(jq -r .updated_at "$record")" \
+    "attaching and detaching evidence never moves updated_at, which tracks the offered choice"
   out=$(run_captain "$home" evidence sample-offer add report:sample-none 2>&1); rc=$?
   expect_code 1 "$rc" "attaching a report that does not exist"
 
@@ -402,6 +404,75 @@ test_migrate_imports_the_old_stores_idempotently() {
   pass "migrate imports the old option and covers stores once"
 }
 
+test_migrate_gives_older_answers_their_machine_lines() {
+  local home out id before after digests_before closed
+  home=$(make_home backfill)
+  (cd "$home" && tasks-axi add sample-bf-released 'Released sample' --kind ship --repo sample >/dev/null) || fail "add failed"
+  for id in sample-bf-keyed sample-bf-prefix sample-bf-prose sample-bf-label sample-bf-spaced; do
+    run_captain "$home" hold "$id" --title "Backfill $id" --reason 'backfill pending' \
+      --option fast='Take the fast route' --option safe='Take the safe route' >/dev/null || fail "hold $id failed"
+  done
+  run_captain "$home" hold sample-bf-released --reason 'backfill pending' \
+    --option fast='Take the fast route' --option safe='Take the safe route' >/dev/null || fail "hold released failed"
+  printf 'sample-bf-keyed\tfast\tTake the fast route\n' | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "keyed answer failed"
+  printf 'safe: because it is safer\n' > "$home/prefix.txt"
+  printf 'fastest route please\n' > "$home/prose.txt"
+  printf 'Take the safe route\n' > "$home/label.txt"
+  printf '\n   fast = go now   \nmore words\n' > "$home/spaced.txt"
+  printf 'safe - resume the work\n' > "$home/released.txt"
+  for id in prefix prose label spaced; do
+    run_captain "$home" answer "sample-bf-$id" --decision-file "$home/$id.txt" >/dev/null || fail "answer $id failed"
+  done
+  run_captain "$home" answer sample-bf-released --decision-file "$home/released.txt" --release >/dev/null \
+    || fail "release answer failed"
+  CALL_NOW=2026-09-19T12:00:00Z run_captain "$home" decide --about sample-bf-keyed --title 'Decided sample' \
+    --what 'Filed a follow-up' --why 'It was needed' >/dev/null || fail "decide failed"
+  # Make every answered block but the decided one look as it did before the
+  # machine lines existed.
+  sed -i.bak -e '/Decided sample/,/^- /!{/^  Answer key: /d;/^  Answer label: /d;/^  Answered by: /d;/^  Answered via: /d;/^  Answered at: /d;}' \
+    "$home/data/backlog.md"
+  assert_equals 1 "$(grep -c '^  Answered by: ' "$home/data/backlog.md")" "fixture: only the decided call keeps its lines"
+  assert_equals null "$(call_json "$home" sample-bf-prefix | jq -c .answer)" "fixture: an older answer lists no structured answer"
+  digests_before=$(grep 'Decision digest:' "$home/data/backlog.md")
+  closed=$(cd "$home" && tasks-axi show sample-bf-keyed --full | sed -n 's/^  closed: //p')
+
+  out=$(run_captain "$home" migrate) || fail "migrate failed"
+  assert_contains "$out" "answered: sample-bf-keyed key=fast" "a keyed block recovers its key"
+  assert_contains "$out" "answered: sample-bf-prefix key=safe" "a line starting with the key and a colon names it"
+  assert_contains "$out" "answered: sample-bf-prose key=-" "a key that is only a prefix of a word names nothing"
+  assert_contains "$out" "answered: sample-bf-label key=safe" "a line equal to an option label names it"
+  assert_contains "$out" "answered: sample-bf-spaced key=fast" "the first non-empty line, trimmed, is what is read"
+  assert_contains "$out" "answered: sample-bf-released key=safe" "a key followed by a spaced dash names it"
+  assert_contains "$out" "answered=6" "only the older answers were backfilled"
+  assert_equals "$digests_before" "$(grep 'Decision digest:' "$home/data/backlog.md")" "no digest changed"
+  assert_equals "fast|Take the fast route|captain|other|$closed" \
+    "$(call_json "$home" sample-bf-keyed | jq -r '[.answer.key, .answer.label, .answer.by, .answer.via, .answer.at] | join("|")')" \
+    "list reports the backfilled answer"
+  assert_equals 'null|fastest route please' \
+    "$(call_json "$home" sample-bf-prose | jq -r '[(.answer.key|tostring), .answer.label] | join("|")')" \
+    "an unrecovered key stays out and the label is the captain's first line"
+  assert_equals 'fast|fast = go now' "$(call_json "$home" sample-bf-spaced | jq -r '[.answer.key, .answer.label] | join("|")')" \
+    "the label is trimmed"
+  assert_contains "$(cd "$home" && tasks-axi show sample-bf-prefix --full)" \
+    "Resolution mode: answered\\nAnswer key: safe\\nAnswer label: safe: because it is safer\\nAnswered by: captain\\nAnswered via: other\\nAnswered at: $closed\\n\\nCaptain decision:\\nsafe: because it is safer" \
+    "the lines sit under the mode and the decision text is untouched"
+  assert_not_contains "$(cd "$home" && tasks-axi show sample-bf-released --full)" "Answered at:" \
+    "a released call with no close date gets no resolution time"
+
+  before=$(cat "$home/data/backlog.md")
+  out=$(run_captain "$home" migrate) || fail "second migrate failed"
+  assert_contains "$out" "migrate: imported=0 attached=0 answered=0" "a second migrate backfills nothing"
+  after=$(cat "$home/data/backlog.md")
+  assert_equals "$before" "$after" "a second migrate left the backlog as it was"
+  out=$(run_captain "$home" answer sample-bf-prefix --decision-file "$home/prefix.txt") \
+    || fail "an exact answer retry no longer matches after the backfill"
+  assert_contains "$out" "answered: sample-bf-prefix" "the retry is the idempotent no-op"
+  printf 'sample-bf-keyed\tfast\tTake the fast route\n' | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "an exact keyed replay no longer matches after the backfill"
+  pass "migrate gives answers recorded before the machine lines their lines, once"
+}
+
 test_the_retired_surfaces_are_shims() {
   local home out rc rev
   home=$(make_home shims)
@@ -438,4 +509,5 @@ test_an_interrupted_close_reads_as_answered
 test_decide_records_a_call_settled_for_the_captain
 test_list_window_damage_and_the_snapshot
 test_migrate_imports_the_old_stores_idempotently
+test_migrate_gives_older_answers_their_machine_lines
 test_the_retired_surfaces_are_shims
