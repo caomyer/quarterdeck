@@ -1003,7 +1003,8 @@ struct Host {
     last_prompt_done: Option<Instant>,
     agent_turns: u64,
     agent_turn_starts: VecDeque<Instant>,
-    storm_active: bool,
+    /// The turn count last reported as a rewake storm, while one lasts.
+    storm_reported: Option<usize>,
     groups: Groups,
 }
 
@@ -1028,7 +1029,7 @@ impl Host {
             last_prompt_done: None,
             agent_turns: 0,
             agent_turn_starts: VecDeque::new(),
-            storm_active: false,
+            storm_reported: None,
         }
     }
 
@@ -1203,7 +1204,7 @@ impl Host {
                     "in_flight": self.in_flight,
                     "queued": queued,
                     "agent_turns": self.agent_turns,
-                    "rewake_storm": self.storm_active,
+                    "rewake_storm": self.storm_reported.is_some(),
                     "permission_requests": self
                         .asked
                         .iter()
@@ -1453,6 +1454,7 @@ impl Host {
     async fn stop_adapter(&mut self) {
         // Open approvals belong to the adapter being stopped; they cannot be answered after it.
         self.asked.clear();
+        self.end_storm();
         if let Some(mut adapter) = self.adapter.take() {
             let report = adapter.kill_tree().await;
             self.report_kill(report, "stop");
@@ -1498,6 +1500,7 @@ impl Host {
             }
             HostEvent::Exited { gen } if gen == self.gen && self.state.live() => {
                 self.asked.clear();
+                self.end_storm();
                 // The adapter is gone, but the Claude CLI and hook processes it
                 // started may not be: kill the group off the loop.
                 if let Some(mut adapter) = self.adapter.take() {
@@ -1575,8 +1578,17 @@ impl Host {
     }
 
     fn note_agent_turn(&mut self) {
+        self.agent_turn_starts.push_back(Instant::now());
+        self.review_storm();
+    }
+
+    /// A storm is `STORM_TURNS` agent turns inside the last `STORM_WINDOW`, counted
+    /// now, not when the last turn started: a first mate that settles stops being in
+    /// one as its turns age out of the window, whether or not another turn comes.
+    /// Every change in the count is reported while it lasts, so the number on screen
+    /// is always the number of turns in the window.
+    fn review_storm(&mut self) {
         let now = Instant::now();
-        self.agent_turn_starts.push_back(now);
         while self
             .agent_turn_starts
             .front()
@@ -1585,16 +1597,23 @@ impl Host {
             self.agent_turn_starts.pop_front();
         }
         let turns = self.agent_turn_starts.len();
-        if turns >= STORM_TURNS && !self.storm_active {
-            self.storm_active = true;
-            self.emit(
-                "host_health",
-                json!({"kind": "rewake_storm", "turns": turns, "window_secs": STORM_WINDOW.as_secs()}),
-            );
-        } else if turns < STORM_TURNS / 2 && self.storm_active {
-            self.storm_active = false;
+        if turns >= STORM_TURNS {
+            if self.storm_reported != Some(turns) {
+                self.storm_reported = Some(turns);
+                self.emit(
+                    "host_health",
+                    json!({"kind": "rewake_storm", "turns": turns, "window_secs": STORM_WINDOW.as_secs()}),
+                );
+            }
+        } else if self.storm_reported.take().is_some() {
             self.emit("host_health", json!({"kind": "rewake_storm_cleared", "turns": turns}));
         }
+    }
+
+    /// A first mate that is not running is not being woken: forget its turns.
+    fn end_storm(&mut self) {
+        self.agent_turn_starts.clear();
+        self.review_storm();
     }
 
     fn on_prompt_done(&mut self, outbox_id: String, result: RpcResult) {
@@ -1645,6 +1664,7 @@ impl Host {
     }
 
     fn tick(&mut self) {
+        self.review_storm();
         // Quiet only ends an agent turn; with a prompt in flight its result decides.
         if self.state == State::AgentTurn
             && self.in_flight.is_empty()
@@ -2174,6 +2194,63 @@ while True:
             .collect();
         let _ = std::fs::remove_dir_all(&home);
         (events, text)
+    }
+
+    /// A host with no adapter, recording what it emits.
+    fn bare_host(name: &str) -> (Host, Arc<EventLog>) {
+        let log = Arc::new(EventLog::default());
+        let dir = std::env::temp_dir().join(format!("fm-desktop-test-{name}-{}", std::process::id()));
+        let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
+        (Host::new(Arc::new(RecordingEnv { dir, log: log.clone() }), ev_tx, Groups::default()), log)
+    }
+
+    fn storm_reports(log: &EventLog) -> Vec<Value> {
+        log.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(event, body)| event == "host_health" && body["kind"].as_str().is_some_and(|k| k.starts_with("rewake_storm")))
+            .map(|(_, body)| json!({"kind": body["kind"], "turns": body["turns"]}))
+            .collect()
+    }
+
+    #[test]
+    fn a_rewake_storm_reports_its_count_and_clears_once_the_turns_age_out() {
+        let (mut host, log) = bare_host("storm");
+        let ago = |secs| Instant::now() - Duration::from_secs(secs);
+        host.agent_turn_starts = (0..STORM_TURNS as u64 - 1).map(|n| ago(100 - n)).collect();
+        host.note_agent_turn();
+        host.note_agent_turn();
+        // Nothing new happened: the count on screen is still the count in the window.
+        host.tick();
+        assert_eq!(
+            storm_reports(&log),
+            vec![json!({"kind": "rewake_storm", "turns": 6}), json!({"kind": "rewake_storm", "turns": 7})]
+        );
+        assert_eq!(host.storm_reported, Some(7));
+
+        // The first mate settles: no more turns, and time passes until most of them left the window.
+        for start in host.agent_turn_starts.iter_mut().take(STORM_TURNS) {
+            *start = ago(STORM_WINDOW.as_secs() + 1);
+        }
+        host.tick();
+        assert_eq!(storm_reports(&log).last(), Some(&json!({"kind": "rewake_storm_cleared", "turns": 1})));
+        assert_eq!(host.storm_reported, None);
+        host.tick();
+        assert_eq!(storm_reports(&log).len(), 3, "cleared once");
+    }
+
+    #[test]
+    fn stopping_the_first_mate_ends_its_rewake_storm() {
+        let (mut host, log) = bare_host("storm-stop");
+        for _ in 0..STORM_TURNS {
+            host.note_agent_turn();
+        }
+        host.end_storm();
+        assert_eq!(
+            storm_reports(&log),
+            vec![json!({"kind": "rewake_storm", "turns": 6}), json!({"kind": "rewake_storm_cleared", "turns": 0})]
+        );
     }
 
     #[test]
