@@ -162,7 +162,7 @@ function mockArtifacts(home: string): MockHome {
     { scope: "task", task: ARTIFACT_TASK, name: "titles-plan", title: "AI titles for snips", latest: planRevisions[2], revisions: planRevisions },
     { scope: "task", task: REPORT_TASK, name: "transcripts-report", title: report.title, latest: report, revisions: [report] },
     { scope: "task", task: LANDED_TASK, name: "rebase-plan", title: shipped.title, latest: shipped, revisions: [shipped] },
-    // STAGED: uploads-wifi
+    { scope: "chat", task: null, name: "uploads-wifi", title: uploads.title, latest: uploads, revisions: [uploads] },
   ];
   const planTask = mockTask(home, ARTIFACT_TASK, "scout", "working", 95, { detail: "harness busy (claude-hook)", note: "Revising the titles plan.", report: false, observedAt: at(2) });
   const reportTask = mockTask(home, REPORT_TASK, "scout", "done", 27 * 60, { detail: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", note: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", report: true, observedAt: at(2) });

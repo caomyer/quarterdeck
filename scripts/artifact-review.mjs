@@ -149,11 +149,12 @@ check((await groups.nth(0).locator("h2").innerText()) === "Needs you", "pages wa
 check(await groups.nth(0).locator(".artifact-row").count() === 3, "every unread page needs the captain");
 const settled = groups.nth(1);
 check((await settled.locator("h2").innerText()) === "Settled", "a page whose task landed is settled");
-check((await settled.locator(".section-count").innerText()) === "1", "the settled group says how many it holds");
+check((await settled.locator(".section-count").innerText()) === "2", "the settled group says how many it holds");
 check(await settled.locator(".artifact-row").count() === 0, "settled pages stay folded away");
 await settled.locator(".artifact-group-heading").click();
 const landed = settled.locator(".artifact-row");
-check(await landed.count() === 1, "the settled group opens on its own");
+check(await landed.count() === 2, "the settled group opens on its own");
+check((await settled.innerText()).includes("Should uploads wait for Wi-Fi?"), "a chat page whose calls are all closed is settled, read or not");
 check((await landed.first().innerText()).includes("Rebase the subject before anybody reads it"), "the landed page is the one that landed");
 check(await landed.first().locator(".review-chip").count() === 0, "a landed page says nothing is waiting on it");
 await shot(page, "01b-list-groups");
@@ -307,6 +308,9 @@ await shot(page, "10-sent-message");
 
 // What the author says about a comment, and settling it.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+// Rev 3 changed what the comment asked about, so the next move is the captain's, not the author's.
+check((await plan.locator(".review-chip").innerText()) === "1 comment answered", "a comment a later revision answered is not counted as waiting");
+check(await page.locator(".artifact-group[data-standing='needs-you'] .artifact-row", { hasText: "AI titles for snips" }).count() === 1, "a page whose author answered every comment needs the captain");
 await plan.click();
 await frame.locator("h1").waitFor();
 await threads.first().waitFor();

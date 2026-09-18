@@ -506,8 +506,8 @@ pub async fn review_submit(
 }
 
 /// Every page's review at a glance, keyed `task/<id>/<name>` or `chat/<name>`:
-/// the newest revision looked at, how many comments are waiting or unsent, and
-/// which held tasks it has answered. Only what the list and the calls need, so
+/// the newest revision looked at, how many comments are waiting or unsent, which
+/// comments are open and on which revision, and which held tasks it has answered. Only what the list and the calls need, so
 /// it stays one cheap read per page.
 pub fn summary(data: &Path) -> Value {
     let mut pages = serde_json::Map::new();
@@ -526,6 +526,18 @@ pub fn summary(data: &Path) -> Value {
                     .collect()
             })
             .unwrap_or_default();
+        // Each comment still open, with the revision it was written on: a later revision the author
+        // presented may answer it, and then the next move is the captain's, not the author's.
+        let open_threads: Vec<Value> = current["threads"]
+            .as_array()
+            .map(|threads| {
+                threads
+                    .iter()
+                    .filter(|thread| thread["state"] == "open")
+                    .map(|thread| json!({"id": thread["id"], "rev": thread["rev"]}))
+                    .collect()
+            })
+            .unwrap_or_default();
         pages.insert(
             key,
             json!({
@@ -533,6 +545,7 @@ pub fn summary(data: &Path) -> Value {
                 "draft_count": current["draft_count"],
                 "open_count": current["open_count"],
                 "answered": answered,
+                "open_threads": open_threads,
             }),
         );
     };
@@ -925,6 +938,25 @@ mod tests {
         assert_eq!(summary(&data)["chat/board"]["answered"][0], "res-model");
         assert_eq!(pages["chat/board"]["draft_count"], 0);
         assert_eq!(pages.as_object().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn the_summary_names_each_open_comment_and_its_revision() {
+        let data = scratch("summary-open");
+        let page = data.join("res-titles-scout/artifacts/titles-plan");
+        std::fs::create_dir_all(&page).unwrap();
+        let log = page.join("review.jsonl");
+        append(&log, &json!({"at": 1, "kind": "opened", "id": "t1", "rev": 2, "anchor": anchor("a"), "body": "one"})).unwrap();
+        append(&log, &json!({"at": 2, "kind": "opened", "id": "t2", "rev": 2, "anchor": anchor("b"), "body": "two"})).unwrap();
+        append(&log, &json!({"at": 3, "kind": "opened", "id": "t3", "rev": 3, "anchor": anchor("c"), "body": "three"})).unwrap();
+        append(&log, &json!({"at": 4, "kind": "sent", "verdict": "changes", "rev": 3, "threads": ["t1", "t2"], "answers": [], "message": "out-1"})).unwrap();
+        append(&log, &json!({"at": 5, "kind": "resolved", "id": "t2"})).unwrap();
+
+        let row = &summary(&data)["task/res-titles-scout/titles-plan"];
+        // A settled comment and an unsent one are not open; the open one carries the revision it was written on.
+        assert_eq!(row["open_threads"], json!([{"id": "t1", "rev": 2}]));
+        assert_eq!(row["open_count"], 1);
         let _ = std::fs::remove_dir_all(data);
     }
 

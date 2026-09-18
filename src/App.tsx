@@ -1223,8 +1223,33 @@ function reviewChip(review?: ReviewSummary[string], artifact?: Artifact, landed 
   const seen = review?.seen_rev ?? null;
   if (seen === null) return { label: "Not looked at yet", tone: "new" };
   if (artifact.latest.rev > seen) return { label: `Rev ${artifact.latest.rev} is new`, tone: "new" };
-  if (review && review.open_count > 0) return { label: review.open_count === 1 ? "1 comment waiting" : `${review.open_count} comments waiting`, tone: "open" };
+  const { waiting, answered } = openComments(artifact, review);
+  if (answered.length > 0) return { label: answered.length === 1 ? "1 comment answered" : `${answered.length} comments answered`, tone: "new" };
+  if (waiting.length > 0) return { label: waiting.length === 1 ? "1 comment waiting" : `${waiting.length} comments waiting`, tone: "open" };
   return null;
+}
+
+/** What the author says each later revision does about the captain's comments: their claim, by thread. */
+function authorAnswers(artifact: Artifact) {
+  const found: Record<string, { rev: number; reply?: string }> = {};
+  for (const item of artifact.revisions) {
+    for (const id of item.answers?.addressed ?? []) found[id] = { ...found[id], rev: item.rev };
+    for (const reply of item.answers?.replies ?? []) found[reply.thread] = { rev: item.rev, reply: reply.body };
+  }
+  return found;
+}
+
+/**
+ * The captain's open comments, split by whose move they are: one a later revision changed or replied to
+ * is answered and waits on the captain to settle or reply; the rest wait on the author.
+ */
+function openComments(artifact: Artifact, review?: ReviewSummary[string]) {
+  const answers = authorAnswers(artifact);
+  const open = review?.open_threads ?? [];
+  const answered = open.filter((thread) => (answers[thread.id]?.rev ?? 0) > thread.rev).map((thread) => thread.id);
+  // An older app's summary counts open comments without naming them; those can only be read as waiting.
+  const waiting = open.length > 0 || !review ? open.filter((thread) => !answered.includes(thread.id)).map((thread) => thread.id) : Array.from({ length: review.open_count }, (_, index) => `open-${index}`);
+  return { waiting, answered };
 }
 
 function ArtifactRow({ artifact, detail, review, landed, onOpen }: { artifact: Artifact; detail: string; review?: ReviewSummary[string]; landed?: boolean; onOpen: () => void }) {
@@ -1253,14 +1278,21 @@ export function artifactStanding(artifact: Artifact, review: ReviewSummary[strin
   const task = artifact.scope === "task" ? artifact.task : null;
   if (task && backlog.get(task)?.state === "done") return "settled";
   if (review && review.draft_count > 0) return "needs-you";
+  const comments = openComments(artifact, review);
+  const covers = artifact.latest.covers ?? [];
+  // A call this page argues: yours until you answer it, then the first mate's until it records it.
+  const calls = covers.filter((call) => backlog.get(call)?.captain_actionable);
+  // A chat page that argued calls exists for them, so once every one is closed it has done its work,
+  // read or not, unless a comment on it is still going back and forth.
+  if (!task && covers.length > 0 && calls.length === 0 && comments.waiting.length === 0 && comments.answered.length === 0) return "settled";
   const seen = review?.seen_rev ?? null;
   if (seen === null || artifact.latest.rev > seen) return "needs-you";
   const answered = review?.answered ?? [];
-  // A call this page argues: yours until you answer it, then the first mate's until it records it.
-  const calls = (artifact.latest.covers ?? []).filter((call) => backlog.get(call)?.captain_actionable);
   if (calls.some((call) => !answered.includes(call))) return "needs-you";
+  // The author answered a comment: settling it or replying is the captain's move.
+  if (comments.answered.length > 0) return "needs-you";
   if (calls.length > 0) return "discussion";
-  if (review && review.open_count > 0) return "discussion";
+  if (comments.waiting.length > 0) return "discussion";
   // A chat page has no work to finish, so once it is read and quiet it is done.
   return task ? "discussion" : "settled";
 }
@@ -1423,14 +1455,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
   }, [review, seen, revision.rev]);
 
   // What the author says a later revision does about each comment. Their claim, shown as theirs.
-  const answers = useMemo(() => {
-    const found: Record<string, { rev: number; reply?: string }> = {};
-    for (const item of artifact.revisions) {
-      for (const id of item.answers?.addressed ?? []) found[id] = { ...found[id], rev: item.rev };
-      for (const reply of item.answers?.replies ?? []) found[reply.thread] = { rev: item.rev, reply: reply.body };
-    }
-    return found;
-  }, [artifact.revisions]);
+  const answers = useMemo(() => authorAnswers(artifact), [artifact]);
   const settled = threads.filter((thread) => thread.state === "resolved");
   const live = threads.filter((thread) => thread.state !== "resolved");
   const [showSettled, setShowSettled] = useState(false);
