@@ -962,6 +962,11 @@ fn call_on_offer(home: &Path) -> Option<(String, Value, String, String, String)>
         if call["state"] != "open" || call["captain_actionable"] != Value::Bool(true) {
             return None;
         }
+        // Only a question-shaped call: answering one that releases held work would
+        // start that work for real, and a test must never set real work going.
+        if call["on_answer"] != "done" {
+            return None;
+        }
         let evidence = call["evidence"].as_array()?;
         let page = pages.iter().find(|page| evidence.iter().any(|item| item.as_str() == Some(page_ref(page).as_str())))?.clone();
         let list = call["options"].as_array()?;
