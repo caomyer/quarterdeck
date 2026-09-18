@@ -60,6 +60,10 @@ A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote 
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
 A `local-only` project may have no remote and skips no-mistakes initialization.
 
+When the captain names a local path instead of a URL, run `bin/fm-project-intake.sh local <path>` before anything else and use what it reports.
+Clone its origin (or, with no origin, the path itself) under the `name` it returns, never under the checkout's own directory name: Treehouse shares one worktree pool between checkouts with the same directory name and origin, so a same-named fleet copy would be handed worktrees of the captain's own repository.
+While confirming the source, name, and posture, tell the captain its `notice` in your own words: work happens in a separate copy, and any uncommitted, untracked, or unpushed work it reports in their folder is not in that copy.
+
 ## Create a project
 
 Creating a GitHub repository is outward-facing.

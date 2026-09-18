@@ -275,7 +275,7 @@ cpu_count() {
 family_for_basename() {
   case "$1" in
     fm-arm-pretool-check.test.sh|fm-artifact.test.sh|fm-ask-user-authority.test.sh|\
-    fm-decision-options.test.sh|fm-decided.test.sh|\
+    fm-decision-options.test.sh|fm-decided.test.sh|fm-project-intake.test.sh|\
     fm-bearings-board.test.sh|\
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
@@ -666,6 +666,7 @@ tests/fm-agy-harness.test.sh 11000
 tests/fm-artifact.test.sh 12000
 tests/fm-decision-options.test.sh 1500
 tests/fm-decided.test.sh 2000
+tests/fm-project-intake.test.sh 1500
 tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
 tests/fm-afk-inject-e2e.test.sh 35792
@@ -1563,7 +1564,7 @@ families_for_changed_path() {
     bin/fm-captain-hold.sh|bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
-    bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-promote.sh|\
+    bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-project-intake.sh|bin/fm-promote.sh|\
     bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/*pretool*)
       printf '%s\n' pure-contract-unit
       ;;
