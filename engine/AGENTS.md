@@ -520,6 +520,7 @@ In a secondmate home, reaching the captain means appending the outcome to the pa
 Do not surface automatic fixes, retries, routine progress, or internal supervision mechanics.
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.
 Batch non-urgent updates into the next natural reply.
+Relay a machine-level change a worker reports - a global install, a switched tool or developer directory, a new simulator or container - in that next reply, because it outlives the task.
 Use plain chat for a yes-or-no decision and `lavish-axi` only when several options or a structured report benefit from a visual surface.
 Whenever a PR is mentioned, include its full `https://...` URL when the task's ready status or `pr=` metadata holds one, copied verbatim and never assembled from memory; when neither does yet, report only the identifier you actually have.
 Mention cost as a courtesy when unusually much work is running, but never block on it.

@@ -931,6 +931,29 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# A worker that changes the machine outside its isolated copy - a global
+# install, a switched developer directory, a new simulator - must say so on the
+# status path firstmate reads, not only in terminal prose, so the captain hears
+# about a change that outlives the task.
+test_ship_and_scout_report_machine_level_changes() {
+  local brief id
+  for id in brief-machine-scout brief-machine-ship; do
+    if [ "$id" = brief-machine-scout ]; then
+      FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" "$id" alpha --scout >/dev/null 2>&1 \
+        || fail "fm-brief.sh scout scaffold exited non-zero"
+    else
+      FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" "$id" alpha --mode direct-PR >/dev/null 2>&1 \
+        || fail "fm-brief.sh ship scaffold exited non-zero"
+    fi
+    brief="$BRIEF_HOME/data/$id/brief.md"
+    assert_grep 'working: machine change: {what}' "$brief" "$id does not ask for machine-level changes on the status path"
+    assert_grep 'a switched tool or developer directory, a new simulator' "$brief" "$id does not name what counts as a machine-level change"
+  done
+  assert_grep 'list every such change in your report' "$BRIEF_HOME/data/brief-machine-scout/brief.md" \
+    "a scout's report does not carry its machine-level changes"
+  pass "fm-brief: ship and scout workers report machine-level changes where firstmate reads them"
+}
+
 test_worker_role_scope() {
   local kind home brief
   home="$TMP_ROOT/worker-role"
@@ -977,5 +1000,6 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_and_scout_teach_validation_round_pause
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_ship_and_scout_report_machine_level_changes
 test_scout_lavish_line_follows_presentation_floor
 test_scout_presentation_mode_selects_native_review
