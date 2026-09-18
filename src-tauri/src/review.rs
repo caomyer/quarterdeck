@@ -12,7 +12,9 @@
 //!   {at, kind: "comment", id, body}               another comment on a thread
 //!   {at, kind: "discarded", id}                   an unsent thread taken back
 //!   {at, kind: "sent", verdict, rev, threads[], message}  one review, sent
-//!   {at, kind: "answer", decision, option, label}  a choice on a held task the page argues
+//!   {at, kind: "answer", decision, option, label, on_answer}  a choice on a call the page argues
+//!   {at, kind: "recorded", decision, result, detail}  what firstmate's intake did with it
+//!   {at, kind: "told", answers[], message}        recorded answers told to the first mate outside a review
 //!   {at, kind: "resolved" | "reopened", id}       the captain settles a thread
 //!   {at, kind: "seen", rev}                       the captain looked at a revision
 //! A thread is a draft until a `sent` event names it. Sending is the only
@@ -25,9 +27,11 @@
 //! revision itself; settling a thread stays the captain's.
 //!
 //! An answer is staged the same way a comment is: local and changeable until
-//! the review goes, and then part of the one message. Recording it against the
-//! task is the first mate's, through its own intake, so the app never settles a
-//! hold itself.
+//! the review goes. Sending runs firstmate's own intake (`calls::record`) with
+//! the staged answers first, notes what it did with each, and then tells the
+//! first mate which answers are already recorded, so it does the follow-up
+//! rather than the recording. The app never closes a call itself, and an
+//! answer the intake skipped is shown as not recorded, never as sent.
 //!
 //! A change the captain makes to a diagram the page owns is a thread like any
 //! other: its anchor names the scene instead of quoting words, its body says
@@ -37,9 +41,10 @@
 //!
 //! Commands: `review_get`, `review_comment`, `review_discard`, `review_submit`,
 //! `review_settle`, `review_seen`, `review_summary`, `review_answer`,
-//! `review_scene`.
+//! `review_scene`, `call_answer`.
 
 use crate::artifact;
+use crate::calls::{self, Keyed, Outcome};
 use crate::host::{Cmd, HostHandle};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -167,8 +172,8 @@ pub fn view(path: &Path) -> Value {
             "seen" => seen = event.get("rev").and_then(Value::as_u64).max(seen),
             "answer" => {
                 let decision = event.get("decision").and_then(Value::as_str).unwrap_or_default().to_string();
-                // A sent answer is on the record; nothing after it changes what the first mate was told.
-                if answers.iter().any(|answer| answer["decision"] == decision.as_str() && !answer["sent_at"].is_null()) {
+                // A recorded or sent answer is on the record; nothing after it changes it.
+                if answers.iter().any(|answer| answer["decision"] == decision.as_str() && locked(answer)) {
                     continue;
                 }
                 answers.retain(|answer: &Value| answer["decision"] != decision.as_str());
@@ -178,9 +183,30 @@ pub fn view(path: &Path) -> Value {
                         "decision": decision,
                         "option": event.get("option").cloned().unwrap_or(Value::Null),
                         "label": event.get("label").cloned().unwrap_or(Value::Null),
+                        "on_answer": event.get("on_answer").cloned().unwrap_or(Value::Null),
                         "at": event.get("at").cloned().unwrap_or(Value::Null),
                         "sent_at": Value::Null,
+                        "recorded": Value::Null,
                     }));
+                }
+            }
+            "recorded" => {
+                let decision = event.get("decision").and_then(Value::as_str).unwrap_or_default();
+                if let Some(answer) = answers.iter_mut().find(|answer| answer["decision"] == decision && answer["recorded"].is_null()) {
+                    answer["recorded"] = json!({
+                        "result": event.get("result").cloned().unwrap_or(Value::Null),
+                        "detail": event.get("detail").cloned().unwrap_or(Value::Null),
+                        "at": event.get("at").cloned().unwrap_or(Value::Null),
+                    });
+                }
+            }
+            "told" => {
+                let at = event.get("at").cloned().unwrap_or(Value::Null);
+                let carried = event.get("answers").and_then(Value::as_array).cloned().unwrap_or_default();
+                for answer in answers.iter_mut() {
+                    if answer["sent_at"].is_null() && carried.iter().any(|decision| *decision == answer["decision"]) {
+                        answer["sent_at"] = at.clone();
+                    }
                 }
             }
             "sent" => {
@@ -212,7 +238,8 @@ pub fn view(path: &Path) -> Value {
         }
     }
     let draft: Vec<&Value> = threads.iter().filter(|thread| thread["sent_at"].is_null()).collect();
-    let staged = answers.iter().filter(|answer| answer["sent_at"].is_null()).count();
+    // Waiting to go: answers not through the intake yet, and recorded ones the first mate has not been told of.
+    let staged = answers.iter().filter(|answer| is_staged(answer) || is_untold(answer)).count();
     let open = threads.iter().filter(|thread| thread["state"] == "open").count();
     json!({
         "threads": threads,
@@ -224,6 +251,27 @@ pub fn view(path: &Path) -> Value {
         "seen_rev": seen,
         "log": path.to_string_lossy(),
     })
+}
+
+/// Chosen, and not through firstmate's intake yet.
+fn is_staged(answer: &Value) -> bool {
+    answer["recorded"].is_null() && answer["sent_at"].is_null()
+}
+
+/// Recorded by the intake.
+fn is_recorded(answer: &Value) -> bool {
+    answer["recorded"]["result"] == "closed"
+}
+
+/// Recorded, and the first mate not told yet.
+fn is_untold(answer: &Value) -> bool {
+    is_recorded(answer) && answer["sent_at"].is_null()
+}
+
+/// An answer that can no longer change: recorded, or, in a review sent before
+/// the app called the intake itself, already handed to the first mate to record.
+fn locked(answer: &Value) -> bool {
+    is_recorded(answer) || (!answer["sent_at"].is_null() && answer["recorded"].is_null())
 }
 
 fn next_thread_id(path: &Path) -> String {
@@ -269,19 +317,7 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Va
         author_line(revision),
         format!("The whole review, including anything cut short below: {}", log.display()),
     ];
-    if !answers.is_empty() {
-        // The first mate records these against the held tasks; the app never closes a hold itself.
-        lines.push("Answers, to record with bin/fm-captain-hold.sh:".to_string());
-        for answer in answers {
-            let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
-            let label = answer.get("label").and_then(Value::as_str).unwrap_or_default();
-            // The option's own key, which is what the keyed intake takes: without it
-            // the first mate has to work back from the label to the key it recorded.
-            let key = answer.get("option").and_then(Value::as_str).unwrap_or_default();
-            let named = if key.is_empty() { decision.to_string() } else { format!("{decision} = {key}") };
-            lines.push(format!("{named}: {}", shorten(label, 200)));
-        }
-    }
+    lines.extend(recorded_lines(answers));
     if threads.is_empty() {
         lines.push("No comments on the page itself.".to_string());
     }
@@ -323,6 +359,23 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Va
         }
     }
     Ok(lines.join("\n"))
+}
+
+/// The answers firstmate's intake has already recorded, stated as done, so the
+/// first mate does the follow-up rather than recording them again.
+fn recorded_lines(answers: &[Value]) -> Vec<String> {
+    if answers.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec!["Answers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:".to_string()];
+    for answer in answers {
+        let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
+        let key = answer.get("option").and_then(Value::as_str).unwrap_or("?");
+        let label = answer.get("label").and_then(Value::as_str).unwrap_or_default();
+        let said = if label.is_empty() { String::new() } else { format!(" (\"{}\")", shorten(label, 200)) };
+        lines.push(format!("Recorded: {decision} = {key}{said}"));
+    }
+    lines
 }
 
 /// The revision a review is about, read from its own record.
@@ -438,8 +491,38 @@ pub async fn review_discard(app: AppHandle, writes: TauriState<'_, Writes>, page
     blocking(move || discard(&log_path(&app, &page)?, &thread)).await
 }
 
-/// The one message a review sends, with the draft comments and staged answers
-/// it is made of, so what goes out and what is recorded cannot drift apart.
+fn answers_where(log: &Path, keep: fn(&Value) -> bool) -> Vec<Value> {
+    view(log)["answers"].as_array().map(|answers| answers.iter().filter(|answer| keep(answer)).cloned().collect()).unwrap_or_default()
+}
+
+/// The answers chosen in this review that have not been through the intake yet,
+/// as the intake takes them.
+pub fn staged(log: &Path) -> Vec<Keyed> {
+    answers_where(log, is_staged)
+        .iter()
+        .map(|answer| Keyed {
+            call: answer["decision"].as_str().unwrap_or_default().to_string(),
+            key: answer["option"].as_str().unwrap_or_default().to_string(),
+            label: answer["label"].as_str().unwrap_or_default().to_string(),
+            on_answer: answer["on_answer"].as_str().unwrap_or_default().to_string(),
+        })
+        .collect()
+}
+
+/// Notes what the intake did with each answer, in the review it was chosen in.
+pub fn note_outcomes(log: &Path, answers: &[Keyed], outcomes: &[Outcome]) -> Result<Value, String> {
+    for (answer, outcome) in answers.iter().zip(outcomes) {
+        append(
+            log,
+            &json!({"at": now_ms(), "kind": "recorded", "decision": answer.call, "result": outcome.result(), "detail": outcome.detail()}),
+        )?;
+    }
+    Ok(view(log))
+}
+
+/// The one message a review sends, with the draft comments and recorded answers
+/// it is made of, so what goes out and what is noted as sent cannot drift apart.
+/// Composed after the intake has run: only answers it recorded are in it.
 pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>, Vec<Value>), String> {
     let log = dir.join("review.jsonl");
     let current = view(&log);
@@ -447,10 +530,7 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
         .as_array()
         .map(|threads| threads.iter().filter(|thread| thread["sent_at"].is_null()).cloned().collect())
         .unwrap_or_default();
-    let answers: Vec<Value> = current["answers"]
-        .as_array()
-        .map(|answers| answers.iter().filter(|answer| answer["sent_at"].is_null()).cloned().collect())
-        .unwrap_or_default();
+    let answers = answers_where(&log, is_untold);
     let revision = revision_record(dir, rev)?;
     let text = compose(&revision, verdict, &threads, &answers, &log)?;
     Ok((text, threads, answers))
@@ -469,11 +549,37 @@ pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answe
     Ok(view(log))
 }
 
-/// Sends the whole draft as one message to the first mate, then records that it went.
+fn home_for(app: &AppHandle) -> Result<PathBuf, String> {
+    crate::settings::saved_home(app).ok_or_else(|| "no firstmate home has been chosen".to_string())
+}
+
+/// Runs the intake for the answers staged in the review at `log` (every one, or
+/// only the one call named), notes what it did with each there, and returns
+/// those outcomes for the screen.
+pub async fn record_staged(home: &Path, log: &Path, only: Option<&str>) -> Result<Vec<Value>, String> {
+    let answers: Vec<Keyed> = {
+        let log = log.to_path_buf();
+        blocking(move || Ok(staged(&log))).await?
+    };
+    let answers: Vec<Keyed> = answers.into_iter().filter(|answer| only.is_none() || only == Some(answer.call.as_str())).collect();
+    if answers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let outcomes = calls::record(home, &answers).await;
+    let shown: Vec<Value> = answers.iter().zip(&outcomes).map(|(answer, outcome)| outcome.to_json(&answer.call)).collect();
+    let log = log.to_path_buf();
+    blocking(move || note_outcomes(&log, &answers, &outcomes)).await?;
+    Ok(shown)
+}
+
+/// Records the review's answers through firstmate's intake, then sends the whole
+/// draft as one message to the first mate, and notes that it went.
 ///
-/// Once the host has taken the message it has gone, so a failure to record that
+/// Once the host has taken the message it has gone, so a failure to note that
 /// is reported alongside the sent message rather than as a failed send: a send
-/// shown as failed invites sending the same review twice.
+/// shown as failed invites sending the same review twice. An answer the intake
+/// recorded stays recorded if the message then cannot go, and is told with the
+/// next review.
 #[tauri::command]
 pub async fn review_submit(
     app: AppHandle,
@@ -484,25 +590,127 @@ pub async fn review_submit(
     verdict: String,
 ) -> Result<Value, String> {
     let _one_writer = writes.0.lock().await;
+    let home = home_for(&app)?;
     let dir = blocking(move || dir_for(&app, &page)).await?;
+    let log = dir.join("review.jsonl");
+    let outcomes = record_staged(&home, &log, None).await?;
     let (text, threads, answers) = {
         let (dir, verdict) = (dir.clone(), verdict.clone());
         blocking(move || draft(&dir, rev, &verdict)).await?
     };
-    let message = host.call(|reply| Cmd::Send { text: text.clone(), reply }).await??;
-    let log = dir.join("review.jsonl");
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await? {
+        Ok(message) => message,
+        Err(problem) if !outcomes.is_empty() => {
+            // The intake has run, so the screen has to show what it recorded even though nothing went.
+            let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
+            return Ok(json!({
+                "message": Value::Null, "text": text, "review": review, "outcomes": outcomes,
+                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded; send the review again to tell the first mate."),
+            }));
+        }
+        Err(problem) => return Err(problem),
+    };
     let recorded = {
-        let message = message.clone();
+        let (log, message) = (log.clone(), message.clone());
         blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, &message)).await
     };
     match recorded {
-        Ok(review) => Ok(json!({"message": message, "text": text, "review": review})),
+        Ok(review) => Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes})),
         Err(problem) => {
             log::error!("review {message} was sent but not recorded: {problem}");
-            let review = blocking(move || Ok(view(&dir.join("review.jsonl")))).await.unwrap_or(Value::Null);
-            Ok(json!({"message": message, "text": text, "review": review, "warning": format!("Sent, but the app could not note that it went: {problem}")}))
+            let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
+            Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes, "warning": format!("Sent, but the app could not note that it went: {problem}")}))
         }
     }
+}
+
+/// What the first mate is told when the captain answers a call from Bearings:
+/// that it is recorded, and anything the captain added.
+pub fn answer_message(call: &str, key: &str, label: &str, note: Option<&str>) -> String {
+    let answer = json!({"decision": call, "option": key, "label": label});
+    let mut lines = vec!["The captain answered a call from Bearings.".to_string()];
+    lines.extend(recorded_lines(&[answer]));
+    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
+        lines.push(format!("The captain added: {}", shorten(note, 1200)));
+    }
+    lines.join("\n")
+}
+
+/// Records one answer through the intake: staged first in the review at `log`
+/// when a page argues the call, so what happened is noted beside that page.
+/// Returns what the intake did with it.
+pub async fn answer_one(home: &Path, log: Option<&Path>, keyed: &Keyed) -> Result<Value, String> {
+    let outcomes = match log {
+        Some(log) => {
+            let (log_at, staged) = (log.to_path_buf(), keyed.clone());
+            blocking(move || stage_answer(&log_at, &staged.call, Some(&staged.key), Some(&staged.label), Some(&staged.on_answer))).await?;
+            record_staged(home, log, Some(&keyed.call)).await?
+        }
+        None => calls::record(home, std::slice::from_ref(keyed)).await.iter().map(|outcome| outcome.to_json(&keyed.call)).collect(),
+    };
+    Ok(outcomes.into_iter().find(|outcome| outcome["call"] == keyed.call.as_str()).unwrap_or_else(|| {
+        Outcome::NotRecorded("the intake was not run for this answer".to_string()).to_json(&keyed.call)
+    }))
+}
+
+/// Answers one call straight from Bearings: stages it in the review of the page
+/// that argues it (when one does), runs the intake for it, notes what happened,
+/// and only if the intake recorded it tells the first mate, so it does the
+/// follow-up. A skip or a failure sends nothing: there is nothing to follow up.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn call_answer(
+    app: AppHandle,
+    host: TauriState<'_, HostHandle>,
+    writes: TauriState<'_, Writes>,
+    page: Option<Ref>,
+    call: String,
+    option: String,
+    label: String,
+    on_answer: String,
+    note: Option<String>,
+) -> Result<Value, String> {
+    let _one_writer = writes.0.lock().await;
+    let home = home_for(&app)?;
+    let keyed = Keyed { call: call.clone(), key: option.clone(), label: label.clone(), on_answer: on_answer.clone() };
+    let log = match page {
+        Some(page) => Some(blocking(move || log_path(&app, &page)).await?),
+        None => None,
+    };
+    let outcome = answer_one(&home, log.as_deref(), &keyed).await?;
+    let review = match &log {
+        Some(log) => {
+            let log = log.clone();
+            blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null)
+        }
+        None => Value::Null,
+    };
+    if outcome["result"] != "closed" {
+        return Ok(json!({"outcome": outcome, "message": Value::Null, "text": Value::Null, "review": review}));
+    }
+    let text = answer_message(&call, &option, &label, note.as_deref());
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await? {
+        Ok(message) => message,
+        Err(problem) => {
+            return Ok(json!({
+                "outcome": outcome, "message": Value::Null, "text": text, "review": review,
+                "warning": format!("Recorded, but the first mate was not told: {problem}. Tell it in chat so it does the follow-up."),
+            }));
+        }
+    };
+    let review = match &log {
+        Some(log) => {
+            let (log, call, message) = (log.clone(), call.clone(), message.clone());
+            blocking(move || {
+                append(&log, &json!({"at": now_ms(), "kind": "told", "answers": [call], "message": message}))?;
+                Ok(view(&log))
+            })
+            .await
+            .unwrap_or(review)
+        }
+        None => review,
+    };
+    Ok(json!({"outcome": outcome, "message": message, "text": text, "review": review}))
 }
 
 /// Every page's review at a glance, keyed `task/<id>/<name>` or `chat/<name>`:
@@ -521,7 +729,7 @@ pub fn summary(data: &Path) -> Value {
             .map(|answers| {
                 answers
                     .iter()
-                    .filter(|answer| !answer["sent_at"].is_null())
+                    .filter(|answer| locked(answer))
                     .filter_map(|answer| answer["decision"].as_str())
                     .collect()
             })
@@ -572,23 +780,25 @@ pub async fn review_summary(app: AppHandle) -> Result<Value, String> {
     blocking(move || Ok(summary(&data_dir(&app)?))).await
 }
 
-/// Stages the captain's choice on a held task this page argues, or takes it
-/// back when `option` is absent. Nothing reaches the first mate until the
-/// review is sent, and once it has, the answer is on the record like a sent
-/// comment: changing it is a new conversation with the first mate, not an edit.
-pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Option<&str>) -> Result<Value, String> {
+/// Stages the captain's choice on a call this page argues, or takes it back
+/// when `option` is absent. `on_answer` is what the call declares, handed to
+/// the intake as it is. Nothing is recorded until the review is sent; once the
+/// intake has recorded it, it is on the record, and changing it is a new
+/// conversation with the first mate, not an edit. An answer the intake skipped
+/// can be chosen again.
+pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Option<&str>, on_answer: Option<&str>) -> Result<Value, String> {
     if !artifact::valid_task_id(decision) {
         return Err("that is not a task".to_string());
     }
-    let already_sent = view(log)["answers"]
+    let already = view(log)["answers"]
         .as_array()
-        .is_some_and(|answers| answers.iter().any(|answer| answer["decision"] == decision && !answer["sent_at"].is_null()));
-    if already_sent {
-        return Err("that answer has already gone to the first mate; tell it in chat if you have changed your mind".to_string());
+        .is_some_and(|answers| answers.iter().any(|answer| answer["decision"] == decision && locked(answer)));
+    if already {
+        return Err("that answer is already on the record; tell the first mate in chat if you have changed your mind".to_string());
     }
     append(
         log,
-        &json!({"at": now_ms(), "kind": "answer", "decision": decision, "option": option, "label": label}),
+        &json!({"at": now_ms(), "kind": "answer", "decision": decision, "option": option, "label": label, "on_answer": on_answer}),
     )?;
     Ok(view(log))
 }
@@ -601,9 +811,10 @@ pub async fn review_answer(
     decision: String,
     option: Option<String>,
     label: Option<String>,
+    on_answer: Option<String>,
 ) -> Result<Value, String> {
     let _one_writer = writes.0.lock().await;
-    blocking(move || stage_answer(&log_path(&app, &page)?, &decision, option.as_deref(), label.as_deref())).await
+    blocking(move || stage_answer(&log_path(&app, &page)?, &decision, option.as_deref(), label.as_deref(), on_answer.as_deref())).await
 }
 
 /// Files a proposed diagram beside the review and opens a thread for it. The
@@ -782,8 +993,8 @@ mod tests {
         assert_eq!(current["answers"][0]["sent_at"], 5);
 
         // Once sent it is on the record: neither taking it back nor choosing again changes it.
-        assert!(stage_answer(&path, "res-model", None, None).is_err());
-        assert!(stage_answer(&path, "res-model", Some("eager"), Some("Keep downloading eagerly")).is_err());
+        assert!(stage_answer(&path, "res-model", None, None, None).is_err());
+        assert!(stage_answer(&path, "res-model", Some("eager"), Some("Keep downloading eagerly"), Some("done")).is_err());
         append(&path, &json!({"at": 6, "kind": "answer", "decision": "res-model", "option": Value::Null})).unwrap();
         let current = view(&path);
         assert_eq!(current["answers"][0]["option"], "prompt");
@@ -902,16 +1113,102 @@ mod tests {
         assert!(text.contains("No comments on the page itself."), "{text}");
         assert!(compose(&chat, "merge", &[], &[], Path::new("/x")).is_err());
 
-        // An answer to a held task the page argues travels with the review, for the first mate to record.
+        // An answer the intake recorded is stated as done, so the first mate follows up instead of recording it.
         let answers = vec![json!({"decision": "res-model-download", "option": "wifi-only", "label": "Wi-Fi only, with visible progress"})];
         let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
-        assert!(text.contains("Answers, to record with bin/fm-captain-hold.sh:"), "{text}");
-        assert!(text.contains("res-model-download = wifi-only: Wi-Fi only, with visible progress"), "{text}");
+        assert!(text.contains("Answers already recorded with bin/fm-captain-hold.sh; do the follow-up"), "{text}");
+        assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only, with visible progress\")"), "{text}");
+        assert!(!text.contains("to record"), "{text}");
+    }
 
-        // Without a recorded key there is nothing to name, so the task alone carries it.
-        let unkeyed = vec![json!({"decision": "res-model-download", "option": null, "label": "Wi-Fi only, with visible progress"})];
-        let text = compose(&chat, "approve", &[], &unkeyed, Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
-        assert!(text.contains("res-model-download: Wi-Fi only, with visible progress"), "{text}");
+    #[test]
+    fn a_bearings_answer_tells_the_first_mate_it_is_recorded() {
+        let text = answer_message("res-snip-lifecycle", "retry", "Mark it failed and give the user a way to retry it", Some("  Ship it this week. "));
+        assert!(text.contains("\nRecorded: res-snip-lifecycle = retry (\"Mark it failed and give the user a way to retry it\")"), "{text}");
+        assert!(text.ends_with("The captain added: Ship it this week."), "{text}");
+        assert!(!answer_message("a", "x", "X", Some("  ")).contains("added"));
+    }
+
+    /// A home with a pretend `fm-captain-hold.sh answers` that keeps what it was fed and prints `says`.
+    fn home_with_intake(name: &str, says: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let home = scratch(name);
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        let script = home.join("bin/fm-captain-hold.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat >> \"$FM_HOME/fed\"\ncat <<'EOF'\n{says}\nEOF\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        home
+    }
+
+    fn revision_on_disk(dir: &Path) {
+        std::fs::create_dir_all(dir.join("rev-1")).unwrap();
+        std::fs::write(
+            dir.join("rev-1/revision.json"),
+            json!({"scope": "chat", "task": null, "name": "board", "rev": 1, "title": "Two calls", "presented_by": {"role": "firstmate"}}).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sending_records_answers_through_the_intake_and_tells_only_what_it_recorded() {
+        let home = home_with_intake("intake-review", "closed: res-model-download recorded; closed\nskipped: res-model-cellular mode release does not match the call's on_answer done");
+        let dir = home.join("data/.artifacts/board");
+        revision_on_disk(&dir);
+        let log = dir.join("review.jsonl");
+        stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done")).unwrap();
+        stage_answer(&log, "res-model-cellular", Some("pause"), Some("Pause until Wi-Fi"), Some("release")).unwrap();
+        assert_eq!(view(&log)["staged_answers"], 2);
+
+        let outcomes = record_staged(&home, &log, None).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join("fed")).unwrap(),
+            "res-model-download\twifi-only\tWi-Fi only\tdone\nres-model-cellular\tpause\tPause until Wi-Fi\trelease\n"
+        );
+        assert_eq!(outcomes[0], json!({"call": "res-model-download", "result": "closed", "detail": "recorded; closed"}));
+        assert_eq!(outcomes[1]["result"], "skipped");
+
+        let current = view(&log);
+        let answer = |call: &str| current["answers"].as_array().unwrap().iter().find(|a| a["decision"] == call).unwrap().clone();
+        assert_eq!(answer("res-model-download")["recorded"]["result"], "closed");
+        assert_eq!(answer("res-model-cellular")["recorded"]["detail"], "mode release does not match the call's on_answer done");
+        // The recorded answer still waits to be told; the skipped one waits on nothing.
+        assert_eq!(current["staged_answers"], 1);
+        assert!(staged(&log).is_empty());
+
+        let (text, threads, told) = draft(&dir, 1, "comment").unwrap();
+        assert!(text.contains("Recorded: res-model-download = wifi-only"), "{text}");
+        assert!(!text.contains("res-model-cellular"), "a skipped answer is never claimed: {text}");
+        record_sent(&log, "comment", 1, &threads, &told, "out-1").unwrap();
+        let current = view(&log);
+        assert_eq!(current["staged_answers"], 0);
+        assert_eq!(summary(&home.join("data"))["chat/board"]["answered"], json!(["res-model-download"]));
+
+        // A recorded answer is on the record; a skipped one can be chosen again, and goes to the intake again.
+        assert!(stage_answer(&log, "res-model-download", Some("prompt"), Some("Ask"), Some("done")).is_err());
+        stage_answer(&log, "res-model-cellular", Some("finish"), Some("Finish on cellular"), Some("done")).unwrap();
+        assert_eq!(staged(&log).len(), 1);
+        assert_eq!(staged(&log)[0].key, "finish");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn a_bearings_answer_runs_the_intake_for_that_call_alone() {
+        let home = home_with_intake("intake-one", "closed: res-transcripts-source recorded; released");
+        let dir = home.join("data/.artifacts/board");
+        let log = dir.join("review.jsonl");
+        // Something else staged on the same page stays staged for its review.
+        stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done")).unwrap();
+        let keyed = Keyed { call: "res-transcripts-source".into(), key: "publisher-first".into(), label: "Publisher first".into(), on_answer: "release".into() };
+        let outcome = answer_one(&home, Some(&log), &keyed).await.unwrap();
+        assert_eq!(outcome["result"], "closed");
+        assert_eq!(std::fs::read_to_string(home.join("fed")).unwrap(), "res-transcripts-source\tpublisher-first\tPublisher first\trelease\n");
+        assert_eq!(staged(&log).iter().map(|answer| answer.call.as_str()).collect::<Vec<_>>(), ["res-model-download"]);
+
+        // With no page, nothing is written to any review, and the outcome is the intake's word alone.
+        let unargued = Keyed { call: "foreman-auto-merge".into(), key: "keep".into(), label: "Keep merging".into(), on_answer: "done".into() };
+        let outcome = answer_one(&home, None, &unargued).await.unwrap();
+        assert_eq!(outcome["result"], "not_recorded", "the fake intake said nothing about it: {outcome}");
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

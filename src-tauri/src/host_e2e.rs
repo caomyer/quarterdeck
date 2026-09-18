@@ -944,49 +944,54 @@ fn still_waiting(home: &Path, task: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// A call the home is carrying, whole: the held task, the option to pick, and
-/// the page that argues it. Any piece missing means there is no call to answer.
-fn call_on_offer(home: &Path) -> Option<(String, Value, String, String)> {
+/// The evidence ref a page answers to, as firstmate's calls name it.
+fn page_ref(page: &Value) -> String {
+    match page["scope"].as_str() {
+        Some("task") => format!("page:task/{}/{}", page["task"].as_str().unwrap_or_default(), page["name"].as_str().unwrap_or_default()),
+        _ => format!("page:chat/{}", page["name"].as_str().unwrap_or_default()),
+    }
+}
+
+/// A call the home is carrying, whole: the open call with its options, the
+/// option to pick, and the page its evidence names. Any piece missing means
+/// there is no call to answer.
+fn call_on_offer(home: &Path) -> Option<(String, Value, String, String, String)> {
     let snapshot = snapshot_json(home);
-    let call = snapshot["backlog"]["records"]
-        .as_array()?
-        .iter()
-        .find(|row| row["captain_actionable"] == Value::Bool(true))?["id"]
-        .as_str()?
-        .to_string();
-    let options = snapshot["decision_options"].as_array()?.iter().find(|row| row["task"] == call.as_str())?.clone();
-    let page = snapshot["artifacts"]
-        .as_array()?
-        .iter()
-        .find(|row| {
-            row["latest"]["covers"]
-                .as_array()
-                .is_some_and(|covers| covers.iter().any(|task| task == call.as_str()))
-        })?
-        .clone();
-    let list = options["options"].as_array()?;
-    let pick = list.iter().find(|option| option["recommended"] == Value::Bool(true)).or_else(|| list.first())?;
-    let key = pick["key"].as_str()?.to_string();
-    let label = pick["label"].as_str()?.to_string();
-    Some((call, page, key, label))
+    let pages = snapshot["artifacts"].as_array()?.clone();
+    snapshot["calls"].as_array()?.iter().find_map(|call| {
+        if call["state"] != "open" || call["captain_actionable"] != Value::Bool(true) {
+            return None;
+        }
+        let evidence = call["evidence"].as_array()?;
+        let page = pages.iter().find(|page| evidence.iter().any(|item| item.as_str() == Some(page_ref(page).as_str())))?.clone();
+        let list = call["options"].as_array()?;
+        let pick = list.iter().find(|option| option["recommended"] == Value::Bool(true)).or_else(|| list.first())?;
+        Some((
+            call["id"].as_str()?.to_string(),
+            page,
+            pick["key"].as_str()?.to_string(),
+            pick["label"].as_str()?.to_string(),
+            call["on_answer"].as_str()?.to_string(),
+        ))
+    })
 }
 
 /// What the first mate is asked for when the home is carrying no call. It is a
 /// captain's request in the captain's own words, so what comes back is whatever
 /// the first mate would really do, not a shape the test dictated.
-const ASK_FOR_A_CALL: &str = "Captain here. This is an automated host test in a scratch home, so keep it to this one thing: do not dispatch work, change any project, or contact anyone. I need one decision from you. Pick something small and real about the demo project that genuinely needs my call, put it to me the way you would any call - hold the task for me with its options recorded - and present a page that argues it so I can decide from the page itself.";
+const ASK_FOR_A_CALL: &str = "Captain here. This is an automated host test in a scratch home, so keep it to this one thing: do not dispatch work, change any project, or contact anyone. I need one decision from you. Pick something small and real about the demo project that genuinely needs my call, put it to me the way you would any call, with its question, options and a recommendation, and present a page that argues it so I can decide from the page itself.";
 
 /// A live run of the one path the mock cannot prove: a call the first mate is
-/// really holding, answered from the page that argues it, sent as one review,
-/// and recorded by the first mate so the call stops waiting.
+/// really holding, answered from the page that argues it, recorded through
+/// firstmate's own intake, and sent as one review the first mate follows up on.
 ///
 /// ```sh
 /// cd src-tauri && FM_E2E_HOME=<scratch home> \
 ///   cargo test review_e2e_live_decision -- --ignored --nocapture
 /// ```
 ///
-/// The run needs the home to be carrying a call: a captain-held task with
-/// recorded options and a presented page that `--covers` it. If the home has one
+/// The run needs the home to be carrying a call: an open call in the snapshot's
+/// `calls[]` with options, whose evidence names a presented page. If the home has one
 /// already it is used; otherwise the first mate is asked for one and produces it
 /// the way it would for a real captain. Nothing here is hand-built, because a
 /// hold written by the test would prove nothing about the path it is testing.
@@ -1052,9 +1057,9 @@ async fn review_e2e_live_decision() {
             format!("ask={asked:?}; call={:?}", offer.as_ref().map(|(call, ..)| call.clone())),
         );
     }
-    let Some((call, page, key, label)) = offer else {
-        not_exercised(&mut steps, "the review carries the answer and reaches the first mate", "no call to answer".into());
-        not_exercised(&mut steps, "the first mate records the answer and the call clears", "no call to answer".into());
+    let Some((call, page, key, label, on_answer)) = offer else {
+        not_exercised(&mut steps, "the intake records the answer and the review reaches the first mate", "no call to answer".into());
+        not_exercised(&mut steps, "the call stops waiting in the backlog", "no call to answer".into());
         let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
         let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
         assert!(failed.is_empty(), "failed: {failed:?}");
@@ -1074,12 +1079,15 @@ async fn review_e2e_live_decision() {
     let rev = page["latest"]["rev"].as_u64().unwrap_or(1);
     let sent = if running {
         recorder.mark("3", "answer the call in the page, and send the review");
-        review::stage_answer(&log, &call, Some(&key), Some(&label)).expect("stage the answer");
+        review::stage_answer(&log, &call, Some(&key), Some(&label), Some(&on_answer)).expect("stage the answer");
         review::add_comment(&log, rev, "Say in the page what this costs us if we change our minds later.", None, None)
             .expect("write the comment");
+        // What sending does first: firstmate's own intake records the answer.
+        let outcomes = review::record_staged(&home, &log, None).await.expect("run the intake");
+        println!("intake: {outcomes:?}");
         let (text, threads, answers) = review::draft(&dir, rev, "approve").expect("compose the review");
         println!("--- the message ---\n{text}\n-------------------");
-        let carries = text.contains(&format!("{call} = {key}")) && text.contains("fm-captain-hold.sh");
+        let carries = text.contains(&format!("Recorded: {call} = {key}"));
         let from = events.now();
         let id = send(&host, text.clone()).await;
         let message = id.clone().unwrap_or_default();
@@ -1089,13 +1097,13 @@ async fn review_e2e_live_decision() {
         }
         record(
             &mut steps,
-            "the review carries the answer and reaches the first mate",
+            "the intake records the answer and the review reaches the first mate",
             carries && picked.is_some(),
-            format!("names the call, the option and the intake={carries}; send={id:?}; picked_up={}", picked.is_some()),
+            format!("states the answer as recorded={carries}; send={id:?}; picked_up={}", picked.is_some()),
         );
         picked.is_some()
     } else {
-        not_exercised(&mut steps, "the review carries the answer and reaches the first mate", "the host did not start".into());
+        not_exercised(&mut steps, "the intake records the answer and the review reaches the first mate", "the host did not start".into());
         false
     };
 
@@ -1117,12 +1125,12 @@ async fn review_e2e_live_decision() {
             .unwrap_or(Value::Null);
         record(
             &mut steps,
-            "the first mate records the answer and the call clears",
+            "the call stops waiting in the backlog",
             cleared,
             format!("state={}; captain_actionable={}; hold={}", row["state"], row["captain_actionable"], row["hold_reason"]),
         );
     } else {
-        not_exercised(&mut steps, "the first mate records the answer and the call clears", "the review never went".into());
+        not_exercised(&mut steps, "the call stops waiting in the backlog", "the review never went".into());
     }
 
     let _ = ask(&host, |reply| Cmd::Stop { reply }).await;

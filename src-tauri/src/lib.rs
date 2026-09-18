@@ -1,4 +1,5 @@
 mod artifact;
+mod calls;
 mod envpath;
 mod host;
 #[cfg(test)]
@@ -60,6 +61,7 @@ pub fn run() {
       review::review_summary,
       review::review_answer,
       review::review_scene,
+      review::call_answer,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
