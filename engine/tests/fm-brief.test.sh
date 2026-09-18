@@ -913,6 +913,8 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
+  assert_grep "## Proposed call\` section" "$brief" "scout brief must ask for a proposed call rather than a raised one"
+  assert_grep "2 to 8 options" "$brief" "scout brief must bound the proposed options"
   assert_grep "## Captain's intent" "$brief" "scout brief missing Captain's intent subsection"
   assert_grep "## Firstmate spec" "$brief" "scout brief missing Firstmate spec subsection"
   assert_grep "{FIRSTMATE_SPEC}" "$brief" "scout brief missing the spec placeholder"

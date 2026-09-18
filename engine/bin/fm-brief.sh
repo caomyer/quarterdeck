@@ -364,7 +364,7 @@ TASK_SECTION=${TASK_SECTION%$'\n'}
 if [ "$KIND" = scout ]; then
 PRESENTATION=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-artifact.sh" mode) || { echo "error: cannot resolve the presentation mode; fix config/presentation or FM_PRESENTATION" >&2; exit 1; }
 if [ "$PRESENTATION" = quarterdeck ]; then
-  LAVISH_LINE="If your deliverable is a visual artifact the captain will review, write it as HTML and run \`FM_HOME='$FM_HOME' '$FM_ROOT/bin/fm-artifact.sh' present --task $ID <file.html>\` (add \`--assets <dir>\` for local images or scripts it references). It checks the page layout first: fix any \`layout:\` findings it refuses with and present again, adding \`--accept-layout\` only when a finding is intentional. It never waits for review, so never poll. The captain reviews it in Quarterdeck, and any feedback reaches you as a message from firstmate. It names each comment (t1, t2, ...): revise the file and present it again with \`--note\` saying what changed, \`--addressed t1,t2\` for the comments this revision answers, and \`--reply t3=<your answer>\` for one you are answering in words rather than changing. If your report asks the captain to choose between named options, say so in your report: firstmate records the options on the held task and presents your page with \`--covers\`, so the captain answers it as a choice rather than by typing."
+  LAVISH_LINE="If your deliverable is a visual artifact the captain will review, write it as HTML and run \`FM_HOME='$FM_HOME' '$FM_ROOT/bin/fm-artifact.sh' present --task $ID <file.html>\` (add \`--assets <dir>\` for local images or scripts it references). It checks the page layout first: fix any \`layout:\` findings it refuses with and present again, adding \`--accept-layout\` only when a finding is intentional. It never waits for review, so never poll. The captain reviews it in Quarterdeck, and any feedback reaches you as a message from firstmate. It names each comment (t1, t2, ...): revise the file and present it again with \`--note\` saying what changed, \`--addressed t1,t2\` for the comments this revision answers, and \`--reply t3=<your answer>\` for one you are answering in words rather than changing. Every page you present argues any call firstmate raises from your work, so the captain sees it beside the choice without anything more from you."
 elif "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
   LAVISH_LINE='If your deliverable is a visual artifact the captain will review and iterate on, you may host the Lavish review loop yourself (poll, revise, re-serve, staying alive) instead of handing it back to firstmate.'
 else
@@ -426,6 +426,8 @@ $INBOX_SECTION
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+If your findings surface a decision that belongs to the captain, end the report with a \`## Proposed call\` section: the question in one line, 2 to 8 options, each with a short lowercase key, a one-line label, and what choosing it costs, and your recommendation with why.
+Firstmate raises the call from that section, so keep the options exactly as you want the captain to see them.
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.

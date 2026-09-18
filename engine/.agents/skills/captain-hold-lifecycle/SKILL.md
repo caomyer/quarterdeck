@@ -18,8 +18,11 @@ The agent performs the semantic inventory because scripts must not infer captain
 
 Every unresolved question that belongs to the captain and is discovered while producing, reading, presenting, or ending an investigation or visual review must be carried by a captain-held task in the authoritative backlog of the home that owns the originating work before that work or review may be treated as complete.
 Prefer holding the work item the question gates over minting a new row; create a new task only when no work item exists to hold.
-Put the question and its options in the hold reason, and keep one held task per genuine gate: a multi-question review is one held task pointing at its report, not a row per question. Represent that task with exactly one board card that consolidates its questions and options; never fan one task id into duplicate same-key cards.
-Register or re-hold through `bin/fm-captain-hold.sh hold`, which is idempotent per task id.
+Raise the call with its content: `hold` takes the question (`--question`), 2 to 8 keyed options (`--option <key>=<label>`), the recommendation (`--recommend`), and, when the call came out of a task's work, `--origin <task>`, which makes that task's report and every page it presented argue the call with nothing more to attach.
+Keep the hold reason a short summary, and keep one held task per genuine gate: a multi-question review is one held task pointing at its report, not a row per question. Represent that task with exactly one board card that consolidates its questions and options; never fan one task id into duplicate same-key cards.
+Register or re-hold through `bin/fm-captain-hold.sh hold`, which is idempotent per task id; change an open call's content with `offer` and attach anything else that argues it with `evidence <task> add <ref>`.
+Never write a call's content any other way: `bin/fm-captain-hold.sh` is the only writer of anything about a call.
+A crewmate's report proposes a call in its `## Proposed call` section; turn it into a call with one `hold --origin <that task>` carrying exactly those options and that recommendation.
 After inventorying the whole report and review surface, run `bin/fm-captain-hold.sh complete` with every captain-held task id, or with `--none` only when the reviewed surface leaves nothing waiting on the captain.
 A completed investigation and an ended visual review use this same owner and completion command; a visual tool, including Lavish, never owns a parallel completion policy.
 Run the command in the originating work's authoritative `FM_HOME`; secondmate-owned work registers in that secondmate home's backlog, and a question already held anywhere is never re-registered as a second row.
@@ -28,6 +31,8 @@ Holding the work item the question gates is safe for exactly that reason: cleanu
 Only `answer` with the captain's words or an evidence-backed `reconcile close` may resolve it.
 
 Never close anything the captain owns without recording what he actually said: `bin/fm-captain-hold.sh answer` writes his exact words into the task and closes a question-shaped call, while `--release` frees a captain-gated work item to proceed.
+When his words name one of the call's options, pass that option's key with `--key` so every surface shows which choice he made.
+A call you settle on the captain's behalf is a call too: record it with `decide`, never in chat prose alone.
 A merge approval uses that existing release path because approval permits the merge to proceed; cleanup closes the work only after it lands and records what shipped.
 Closing a held row at merge approval instead records completion before landing, so the backlog claims completion before the work actually ships.
 When the answer changes what a task must build, follow `AGENTS.md` section 7's Validate contract to preserve the captain's words in the brief and steer the worker.
@@ -58,7 +63,7 @@ The absence of a routed work item is not a divergence and the guard never requir
 
 1. Read the complete investigation result and complete the visual review before declaring either complete.
 2. Inventory only genuine unresolved choices that require the captain, and find the task each one gates.
-3. Hold that task - or create one captain-held task for the review's open questions - with a concise reason carrying the question and options.
+3. Hold that task - or create one captain-held task for the review's open questions - with a concise reason, the question, the options, the recommendation, and `--origin` when the call came out of a task's work.
 4. Run `complete` with the full captain-held inventory for that review pass.
 5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
 6. Close each call only through `answer` (or a channel that feeds `answers`), close a board-requested moot call through evidence-backed `reconcile close`, record a still-active reconciliation through `reconcile note`, use `--until` when the captain defers it, or confirm a channel already closed it.

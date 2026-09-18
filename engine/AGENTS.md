@@ -129,6 +129,7 @@ state/               runtime records and signals; gitignored
   procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (section 13)
   procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line
   decision-bindings/ private records marking a captured-answer source as feeding the keyed-answer intake, with a legacy origin on pre-collapse records; written only by bin/fm-captain-hold.sh bind, dropped by unbind and by source retirement (section 13; docs/captain-hold-lifecycle.md)
+  calls/             one content record per captain call (question, options, evidence, provenance) beside its backlog row; written only by bin/fm-captain-hold.sh, listed as the fleet snapshot's calls[] (docs/captain-hold-lifecycle.md)
   reconcile-requests/ private open obligations to re-check a captain call whose board selection was `reconcile`; written only by bin/fm-captain-hold.sh, retired by its verify-then-decide outcomes or a normal answer that settles the call (section 13; docs/captain-hold-lifecycle.md)
   when/              private condition->action watch specs, their trust bindings, and single-fire markers; written only by bin/fm-procevent-when.sh (section 13's process-event-sources trigger)
   inbox/             captain notes captured out of band by bin/fm-inbox.sh, including the voice handover's queued requests; each note appends one `check` wake and stays pending until acknowledged with `bin/fm-inbox.sh drain --ack <id>`, which moves it to inbox/handled/ (docs/voice-relay.md)
@@ -205,7 +206,7 @@ Bootstrap detects first, asks for consent, and installs only after the captain a
 Do not dispatch until the essential launch tools are present and GitHub authentication is good; presentation availability follows `bootstrap-diagnostics` and does not block nonvisual work.
 Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
 When `bin/fm-artifact.sh mode` prints `quarterdeck`, present visual decisions and reports with `bin/fm-artifact.sh present` instead of `lavish-axi`; it returns at once, and the captain reviews in the Quarterdeck app.
-When a held task's call is a choice between named options, record them with `bin/fm-decision-options.sh set` so the captain can answer it as a choice, and present the page that argues it with `--covers <task-id>`.
+A page presented on the task a call names as its `--origin` already argues that call; attach anything else with `bin/fm-captain-hold.sh evidence`.
 A diagram the captain may want to change belongs in the page as an Excalidraw scene file plus a picture of it marked `data-quarterdeck-scene`; `bin/fm-artifact.sh`'s header owns the mechanics, and a captain's changes come back as a proposed scene to take up in the next revision.
 A silent bootstrap section needs no action; for any printed actionable diagnostic line, load `bootstrap-diagnostics` and follow its owner procedure.
 `BOOTSTRAP_INFO:` lines are completed no-action facts and do not require loading a skill.
@@ -514,7 +515,7 @@ Reach the captain immediately for:
 - A needed credential or login.
 
 **Record every call you make for the captain.**
-Whenever you settle something the captain could reasonably have wanted to settle themselves - answering a worker's ask-user finding or needs-decision without the captain, merging or closing a PR, filing a task the captain did not ask for, or narrowing or widening the scope the captain gave - record it with `bin/fm-decided.sh record`, one line of what in the captain's terms and one line of why, and also say it briefly in chat.
+Whenever you settle something the captain could reasonably have wanted to settle themselves - answering a worker's ask-user finding or needs-decision without the captain, merging or closing a PR, filing a task the captain did not ask for, or narrowing or widening the scope the captain gave - record it with `bin/fm-captain-hold.sh decide --about <task>`, one line of what in the captain's terms and one line of why, and also say it briefly in chat.
 Do not record routine mechanics such as dispatch, cleanup, or retries.
 
 In a secondmate home, reaching the captain means appending the outcome to the parent channel your charter names; a captain-facing sentence in that home's chat has not been sent, and [`docs/secondmate-parent-channel.md`](docs/secondmate-parent-channel.md) owns which outcomes the home's own scripts deliver there without you.
@@ -532,6 +533,7 @@ The configured `tasks-axi` backend is the durable queue; the tracked default is 
 It tracks work items only, never agents; persistent secondmates never appear as backlog items.
 Work routed to a secondmate is recorded in that secondmate home's own backlog, not the main backlog.
 A decision is simply a task held for the captain: create the task with `bin/fm-tasks-axi.sh add` when needed, then always hold it through `bin/fm-captain-hold.sh hold <id> --reason "<reason>"`, with `--until <date>` when the captain defers it.
+Raise every call with its content on that hold - `--question`, the `--option <key>=<label>` choices, and `--recommend` - and pass `--origin <task>` when the call comes out of a task's work, which is how a scout's `## Proposed call` becomes a call; record every decision you make on the captain's behalf with `decide`, and never write call data any other way.
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item and hold it through that wrapper.
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
 When the automatic transition gate applies, dispatch and completion move the item themselves - `bin/fm-spawn.sh` and `bin/fm-teardown.sh` own those transitions and refuse rather than report success without them - so what remains yours is filing the item before dispatch, recording decisions, and keeping notes current; `docs/configuration.md` owns gate applicability and the manual-backend exception.
