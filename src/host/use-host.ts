@@ -370,6 +370,19 @@ export function useHost(adapter: HostAdapter) {
       runtimeState.current = initial.state.state;
       setRuntime(initial.state);
       if (initial.home && !hostHomeRef.current) noteHostHome(initial.home);
+      // A window opened while the first mate runs, such as one reloaded, missed the history its start sent and
+      // everything said since. The host keeps that conversation, so it is shown as if the session had just resumed.
+      const earlier = initial.conversation;
+      if (earlier && session.current === null) {
+        session.current = earlier.sessionId;
+        streamId.current = null;
+        setMessages((current) => {
+          // Anything that arrived before this answer belongs to the same session, and the conversation already holds it.
+          const ours = current.map((message) => message.session == null ? { ...message, session: earlier.sessionId } : message);
+          onScreenAtSession.current = new Set(ours.map((message) => message.id));
+          return mergeHistory(ours, earlier.items, earlier.sessionId, onScreenAtSession.current, outboxStatuses.current);
+        });
+      }
       const waiting = (initial.permissionRequests ?? []).filter((request) => !resolvedApprovals.current.has(request.id));
       if (waiting.length) {
         setPermissionRequests((current) => [...waiting.filter((request) => !current.some((shown) => shown.id === request.id)), ...current]);

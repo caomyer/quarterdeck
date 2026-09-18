@@ -231,6 +231,8 @@ export type HostStateSnapshot = {
   home: string | null;
   /** Approvals still waiting, so a relaunched window can show them again. */
   permissionRequests?: PermissionRequest[];
+  /** While a first mate runs: its session's conversation so far, for a window that opened after the start sent its history. */
+  conversation?: { sessionId: string; items: HistoryItem[] } | null;
 };
 
 /** The captain's firstmate home: `home` once chosen and still valid, `problem` when a choice doesn't check out. */

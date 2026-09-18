@@ -685,6 +685,22 @@ impl Drop for TestCheck {
     }
 }
 
+/// firstmate watcher processes for this home still running, as `ps` lists them.
+fn leftover_watchers(home: &Path) -> Vec<String> {
+    let bin = home.join("bin").to_string_lossy().to_string();
+    std::process::Command::new("/bin/ps")
+        .args(["-Ao", "pid=,command="])
+        .output()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|line| line.contains(&bin) && (line.contains("fm-watch") || line.contains("fm-claude-stop-autoarm")))
+                .map(|line| line.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Rows waiting in the home's durable wake queue.
 fn queued_wakes(home: &Path) -> usize {
     std::fs::read_to_string(home.join("state").join(".wake-queue"))
@@ -769,8 +785,6 @@ async fn host_e2e_live_relaunch() {
     // 2. A wake arrives, and the captain writes while the first mate handles it.
     if running {
         recorder.mark("2", "a watcher wake starts a turn, and a message sent during it is read");
-        let quiet = events.now();
-        let _ = events.find(quiet, Duration::from_secs(30), host_state(&["idle"])).await;
         let from = events.now();
         check.fire();
         let turn = events.find(from, REWAKE_WAIT * 2, host_state(&["agent_turn"])).await;
@@ -779,7 +793,7 @@ async fn host_e2e_live_relaunch() {
                 let from = events.now();
                 let sent = send(&host, format!("Captain again. {GUARD} Reply with one word: two.")).await;
                 let id = sent.clone().unwrap_or_default();
-                let dispatched = events.find(from, Duration::from_secs(5), outbox(&id, "sent")).await;
+                let queued = events.find(from, Duration::from_secs(5), outbox(&id, "queued")).await;
                 let picked = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
                 let to = picked.unwrap_or(events.now());
                 let reply = events.text_between(from, to);
@@ -788,9 +802,9 @@ async fn host_e2e_live_relaunch() {
                     "a message sent during a wake turn is read",
                     picked.is_some(),
                     format!(
-                        "wake turn={}; sent while={}; picked_up={}; text meanwhile={reply:?}; outbox trail={:?}",
+                        "wake turn={}; queued while={}; picked_up={}; text meanwhile={reply:?}; outbox trail={:?}",
                         events.body(Some(turn)),
-                        events.body(dispatched)["while"],
+                        events.body(queued)["while"],
                         picked.is_some(),
                         events.seen[from..]
                             .iter()
@@ -813,10 +827,21 @@ async fn host_e2e_live_relaunch() {
     // 3. The app closes while the first mate is idle, and wakes arrive while it is closed.
     recorder.mark("3", "the app closes while idle; wakes arrive while it is closed");
     let quiet = events.now();
-    let idle = events.find(quiet, Duration::from_secs(120), host_state(&["idle"])).await;
+    let last_state = events.seen.iter().rposition(|(e, _)| e == "state");
+    let idle = match last_state {
+        Some(at) if events.seen[at].1["state"] == "idle" => Some(at),
+        _ => events.find(quiet, Duration::from_secs(120), host_state(&["idle"])).await,
+    };
     host.kill_on_exit();
     drop(cleanup);
     drop(host);
+    let leftovers = leftover_watchers(&home);
+    record(
+        &mut steps,
+        "closing the app leaves no watcher behind",
+        leftovers.is_empty(),
+        format!("watcher processes still running for this home: {leftovers:?}"),
+    );
     let noted = (1..=3).all(|n| inbox_note(&home, &format!("Automated host test note {n} of 3: acknowledge it and do nothing else.")));
     let waiting = queued_wakes(&home);
     println!("   closed while idle={}; notes queued={noted}; wake rows waiting={waiting}", idle.is_some());
@@ -860,6 +885,23 @@ async fn host_e2e_live_relaunch() {
             format!("wake rows at relaunch={waiting}; left after the wait={left}; agent turns={turns}; captain messages sent={captain}"),
         );
     }
+
+    // 6. A window that opens now, such as one reloaded, reads the same conversation from the host.
+    recorder.mark("6", "a window opened after the relaunch reads the conversation from the host");
+    let state = tokio::time::timeout(CALL_WAIT, host.call(|reply| Cmd::GetState { reply })).await.ok().and_then(Result::ok);
+    let kept = state
+        .as_ref()
+        .and_then(|state| state["conversation"]["items"].as_array().cloned())
+        .unwrap_or_default();
+    let kept_has = |who: &str, needle: &str| {
+        kept.iter().any(|item| item["who"] == who && item["text"].as_str().is_some_and(|t| t.to_lowercase().contains(needle)))
+    };
+    record(
+        &mut steps,
+        "a window opened after the relaunch gets the conversation",
+        kept_has("captain", "reply with one word: aye") && kept_has("mate", "aye") && kept.len() >= items.len(),
+        format!("conversation items={} (history had {})", kept.len(), items.len()),
+    );
 
     let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
     drop(check);

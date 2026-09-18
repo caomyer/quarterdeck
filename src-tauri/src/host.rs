@@ -1106,6 +1106,10 @@ struct Host {
     open_steps: std::collections::HashSet<String>,
     /// firstmate's session-start turn is running.
     helm: bool,
+    /// This session's conversation so far, as ACP updates: what it replayed when it
+    /// resumed, then everything since. A window that opens while the first mate runs
+    /// reads it here, since the history event went to whoever was listening at the start.
+    conversation: Vec<Value>,
     agent_turns: u64,
     agent_turn_starts: VecDeque<Instant>,
     /// The turn count last reported as a rewake storm, while one lasts.
@@ -1135,6 +1139,7 @@ impl Host {
             marks_results: false,
             open_steps: std::collections::HashSet::new(),
             helm: false,
+            conversation: Vec::new(),
             agent_turns: 0,
             agent_turn_starts: VecDeque::new(),
             storm_reported: None,
@@ -1313,6 +1318,10 @@ impl Host {
                     "queued": queued,
                     "agent_turns": self.agent_turns,
                     "rewake_storm": self.storm_reported.is_some(),
+                    "conversation": self.adapter.as_ref().map(|adapter| json!({
+                        "session_id": adapter.session_id,
+                        "items": history_items(&self.conversation),
+                    })),
                     "permission_requests": self
                         .asked
                         .iter()
@@ -1483,6 +1492,7 @@ impl Host {
         if mode == "loaded" {
             self.emit("history", json!({"items": history_items(&history)}));
         }
+        self.conversation = history.iter().filter_map(conversation_update).collect();
         self.adapter = Some(adapter);
         self.in_flight.clear();
         self.started_hint = None;
@@ -1682,6 +1692,9 @@ impl Host {
             self.marks_results = true;
         }
         self.track_step(&kind, &update);
+        if let Some(said) = conversation_update(&update) {
+            self.conversation.push(said);
+        }
         // Usage that trails a turn's end, reports a rate limit, or is a turn's own result
         // is not a turn starting.
         let trailer = kind == "usage_update"
@@ -1885,6 +1898,12 @@ impl Host {
             self.record(&pending.id, None, "sent", json!({}));
             self.emit("outbox", json!({"id": pending.id, "state": "sent", "while": self.state.name()}));
             self.in_flight.push_back(pending.id.clone());
+            // The adapter does not echo a prompt back, so the conversation records it here.
+            self.conversation.push(json!({
+                "sessionUpdate": "user_message_chunk",
+                "messageId": pending.id,
+                "content": {"type": "text", "text": pending.text},
+            }));
             if self.state != State::PromptTurn {
                 self.set_state(State::PromptTurn, json!({"origin": "prompt"}));
             }
@@ -1976,10 +1995,35 @@ fn history_items(updates: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// The part of an update the conversation keeps: who said what, and each step's title.
+fn conversation_update(update: &Value) -> Option<Value> {
+    let kind = update.get("sessionUpdate").and_then(Value::as_str)?;
+    match kind {
+        "user_message_chunk" | "agent_message_chunk" => Some(json!({
+            "sessionUpdate": kind,
+            "messageId": update.get("messageId"),
+            "content": {"type": "text", "text": update.pointer("/content/text").and_then(Value::as_str).unwrap_or("")},
+        })),
+        "tool_call" | "tool_call_update" if update.get("title").is_some_and(Value::is_string) => Some(json!({
+            "sessionUpdate": kind,
+            "toolCallId": update.get("toolCallId"),
+            "title": update.get("title"),
+        })),
+        _ => None,
+    }
+}
+
 /// firstmate prefixes inputs the captain did not write with U+2063; the plain
-/// session-start instruction is the older form it still accepts.
+/// session-start instruction is the older form it still accepts. The Claude CLI
+/// records the Stop-hook feedback that starts a rewake as a user message too, wrapped
+/// in a task notification, and a resumed session replays it among the captain's,
+/// as it does the marker it writes when a turn is cut off, as when the app closes.
 fn is_operational_input(text: &str) -> bool {
-    text.starts_with('\u{2063}') || text.trim() == SESSION_START_BODY
+    let text = text.trim();
+    text.starts_with('\u{2063}')
+        || text == SESSION_START_BODY
+        || text.starts_with("<task-notification>")
+        || (text.starts_with("[Request interrupted by user") && text.ends_with(']'))
 }
 
 /// The kind of a failure to start the adapter, read from the host's own messages,
@@ -2533,6 +2577,8 @@ while True:
             json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "title": "Read AGENTS.md"}),
             json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"}),
             chunk("user_message_chunk", SESSION_START_BODY, None),
+            chunk("user_message_chunk", "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n<system-reminder>firstmate watcher wake</system-reminder>", None),
+            chunk("user_message_chunk", "[Request interrupted by user]", None),
             chunk("user_message_chunk", "Ship the fix.", None),
         ];
         assert_eq!(
@@ -2638,6 +2684,45 @@ while True:
         assert!(text.contains("answered plain during") && !text.contains("folded"), "{text:?}");
         // The five silent seconds of the rewake's step did not end its turn early.
         assert!(!events.iter().any(|(e, b)| e == "state" && b["derived"].as_str().is_some_and(|d| d.contains("quiet"))), "{events:?}");
+    }
+
+    /// A window that opens while the first mate runs, such as one reloaded, missed the
+    /// history sent at the start and every message since. It reads them from the state.
+    #[tokio::test]
+    async fn the_state_carries_the_conversation_for_a_window_that_missed_it() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("conversation");
+        std::fs::write(home.join("can-load"), "").unwrap();
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
+        let _ = std::fs::remove_file(home.join("adapter.pid"));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("resumed start");
+        let id = host.call(|reply| Cmd::Send { text: "plain hello".into(), reply }).await.unwrap().expect("send");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == id.as_str() && b["state"] == "picked_up")
+            .await
+            .expect("read");
+        let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let stopped = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(state["conversation"]["session_id"], "s1", "{state}");
+        let items = state["conversation"]["items"].as_array().unwrap();
+        let said: Vec<(String, String)> = items
+            .iter()
+            .map(|item| (item["who"].as_str().unwrap().to_string(), item["text"].as_str().unwrap().to_string()))
+            .collect();
+        let expected = [
+            ("captain", "earlier question"),
+            ("mate", "earlier answer"),
+            ("step", "Read AGENTS.md"),
+            ("captain", "plain hello"),
+            ("mate", "answered plain hello"),
+        ];
+        assert_eq!(said, expected.map(|(who, text)| (who.to_string(), text.to_string())), "the session-start turn stays hidden: {state}");
+        assert_eq!(stopped["conversation"], Value::Null, "no conversation while nothing runs");
     }
 
     #[test]

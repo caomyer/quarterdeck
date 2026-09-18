@@ -482,7 +482,8 @@ export class MockHostAdapter implements HostAdapter {
       return () => this.listeners.delete(listener);
     }
     // The recorded startup starts the first mate, which `?not-started`, `?relaunch` and a refused or dead start must not do.
-    if (!this.startupPlayed && !reviewFlag("not-started") && !reviewFlag("relaunch") && !this.problem()) {
+    // `?reloaded`: the window opened while the first mate was already running, so no startup reaches it.
+    if (!this.startupPlayed && !reviewFlag("not-started") && !reviewFlag("relaunch") && !reviewFlag("reloaded") && !this.problem()) {
       this.startupPlayed = true;
       this.play(recordedStream.startup as RecordedEvent[]);
       // `?markdown`: one reply in the shapes a first mate writes, for judging chat formatting by eye.
@@ -617,6 +618,8 @@ export class MockHostAdapter implements HostAdapter {
       state: { state: this.state, reason: problem?.reason, reasonKind: problem?.kind },
       // The host only knows a home once it has started in one, so before a Start there is none to report.
       home: reviewFlag("not-started") || problem || (reviewFlag("relaunch") && this.state === "stopped") ? null : this.snapshot.fleet.fm_home,
+      // `?reloaded`: the running host still has the conversation the window missed.
+      conversation: reviewFlag("reloaded") ? { sessionId: "79f27945-68cf-4639-899d-49576d4668e4", items: [...EARLIER_CONVERSATION] } : null,
     };
   }
 

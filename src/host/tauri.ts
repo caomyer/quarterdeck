@@ -98,7 +98,10 @@ export class TauriHostAdapter implements HostAdapter {
   }
 
   getState() {
-    return invoke<{ state: HostRuntimeState; home?: string | null; detail?: Record<string, unknown>; permission_requests?: unknown[] }>("get_state").then((state): HostStateSnapshot => ({
+    return invoke<{ state: HostRuntimeState; home?: string | null; detail?: Record<string, unknown>; permission_requests?: unknown[]; conversation?: { session_id?: unknown; items?: unknown } | null }>("get_state").then((state): HostStateSnapshot => ({
+      conversation: typeof state.conversation?.session_id === "string"
+        ? { sessionId: state.conversation.session_id, items: historyItems(state.conversation.items) }
+        : null,
       state: {
         state: state.state,
         holder: typeof state.detail?.holder_command === "string" ? state.detail.holder_command : undefined,
@@ -170,6 +173,13 @@ function permissionRequest(value: unknown): PermissionRequest | null {
   return { id, title: text(raw.title) ?? "an action", options };
 }
 
+function historyItems(raw: unknown): HistoryItem[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((item: Record<string, unknown>): HistoryItem[] => {
+    const who = item?.who;
+    return (who === "captain" || who === "mate" || who === "step") && typeof item.text === "string" ? [{ who, text: item.text }] : [];
+  });
+}
+
 function normalizeEvent(name: (typeof EVENT_NAMES)[number], raw: Record<string, unknown>): HostEvent | null {
   if (name === "permission_request") {
     const request = permissionRequest(raw);
@@ -192,11 +202,7 @@ function normalizeEvent(name: (typeof EVENT_NAMES)[number], raw: Record<string, 
     return { type: name, payload: { id: String(raw.id), status: raw.state as OutboxStatus, resent_after_restart: raw.resent_after_restart === true, error: text(raw.error), text: text(raw.text) } };
   }
   if (name === "history") {
-    const items = (Array.isArray(raw.items) ? raw.items : []).flatMap((item: Record<string, unknown>): HistoryItem[] => {
-      const who = item?.who;
-      return (who === "captain" || who === "mate" || who === "step") && typeof item.text === "string" ? [{ who, text: item.text }] : [];
-    });
-    return { type: name, payload: { items } };
+    return { type: name, payload: { items: historyItems(raw.items) } };
   }
   if (name === "snapshot") {
     return { type: name, payload: { ...raw, phase: (raw.phase ?? "ready") as "refreshing" | "ready", refreshing: raw.phase === "refreshing" } } as HostEvent;

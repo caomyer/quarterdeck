@@ -10,7 +10,11 @@
 // message the captain sent, so the replay waits there until this script types it into
 // the composer. A `queued` or `requeued` event that carries its text comes from the
 // host's durable outbox after a relaunch, and the UI restores it on its own.
-import { readFileSync } from "node:fs";
+//
+// When the live relaunch test has recorded a run (`relaunch-latest.jsonl`, or
+// FIRSTMATE_RELAUNCH_RECORDING), it also plays what a fresh window gets after the app
+// opens again, and checks the conversation from before it closed is on screen.
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "@playwright/test";
 
@@ -95,6 +99,42 @@ const gap = await page.getByTestId("chat-messages").evaluate((element) => elemen
 check(gap < 2, `chat follows to the newest message (${gap}px from the bottom)`);
 await page.screenshot({ path: `${output}/replay-after-restart.png` });
 
-await browser.close();
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
-console.log(JSON.stringify({ ok: true, recording: recordingPath, typed: typed.length, restored: restored.length }));
+
+// A relaunch, from the live relaunch test: a fresh window gets only what the host sends after the app
+// opens again, and must show the conversation from before it closed. Everything before the relaunch
+// step is what the closed app's window saw, so it is left out.
+const relaunchPath = process.env.FIRSTMATE_RELAUNCH_RECORDING
+  ?? `${process.env.HOME}/.buzz/.scratch/firstmate-desktop-e2e/relaunch-latest.jsonl`;
+let relaunched = null;
+if (existsSync(relaunchPath)) {
+  const all = readFileSync(relaunchPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const at = all.findIndex((item) => item.type === "step" && item.payload.step === "4");
+  if (at < 0) throw new Error(`${relaunchPath} has no relaunch step: record it with host_e2e_live_relaunch.`);
+  const after = all.slice(at);
+  const earlier = after.find((item) => item.type === "history")?.payload.items ?? [];
+  const captainEarlier = earlier.filter((item) => item.who === "captain").map((item) => item.text);
+  check(captainEarlier.length > 0, `the relaunch recording resumes a conversation with the captain's messages in it (${captainEarlier.length})`);
+  check(!after.some((item) => item.type === "outbox" && item.payload.state === "queued" && typeof item.payload.text !== "string"), "nothing the captain typed after the relaunch is needed to replay it");
+  const fresh = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+  const freshErrors = [];
+  fresh.on("pageerror", (error) => freshErrors.push(error.message));
+  fresh.on("console", (message) => { if (message.type() === "error") freshErrors.push(message.text()); });
+  await fresh.addInitScript((recording) => { window.__FM_REPLAY__ = recording; }, after);
+  await fresh.goto(`${baseUrl}/?replay`, { waitUntil: "domcontentloaded" });
+  await fresh.getByText("Captain's Call").waitFor();
+  await fresh.getByRole("button", { name: /^Chat/ }).click();
+  await fresh.locator(".day-label", { hasText: /^Earlier$/i }).waitFor({ timeout: 30_000 });
+  const shown = await fresh.locator(".captain-message p").allInnerTexts();
+  check(captainEarlier.every((text) => shown.includes(text)), `after a relaunch the chat shows the captain's earlier messages (${shown.length} shown, ${captainEarlier.length} from before)`);
+  check(await fresh.locator(".mate-message").count() > 0, "and the first mate's earlier replies");
+  check(!shown.some((text) => /^(<task-notification>|\[Request interrupted by user)/.test(text.trim())), `neither a rewake nor the CLI's own interruption marker shows as something the captain wrote (${JSON.stringify(shown)})`);
+  await fresh.screenshot({ path: `${output}/replay-after-relaunch.png` });
+  check(freshErrors.length === 0, `no page errors after the relaunch${freshErrors.length ? `: ${freshErrors.join(" | ")}` : ""}`);
+  relaunched = relaunchPath;
+} else {
+  console.log(`skipped: no relaunch recording at ${relaunchPath}; run host_e2e_live_relaunch to record one`);
+}
+
+await browser.close();
+console.log(JSON.stringify({ ok: true, recording: recordingPath, typed: typed.length, restored: restored.length, relaunch: relaunched }));
