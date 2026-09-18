@@ -355,8 +355,64 @@ fn signal_group(pgid: u32, signal: libc::c_int) -> Result<(), String> {
     Err(error.to_string())
 }
 
-/// TERM the group, give it `KILL_GRACE`, KILL whatever is left, then list the
-/// group again and report who survived. Blocking; runs off the async loop.
+/// The process groups a first mate's tree spans: its own, then every group led by a
+/// process descended from it. The Claude CLI runs some hooks in a group of their own,
+/// among them the Stop hook that keeps firstmate's watcher, and a kill of the adapter's
+/// group alone left that watcher running with no first mate behind it. It kept the
+/// home's watcher lock, took the next wake, and handed it to nobody.
+/// Read before anything is signalled: once their parents die, those processes belong
+/// to launchd and can no longer be told apart. Never names this app's own group.
+fn tree_groups(pgid: u32) -> Vec<u32> {
+    let mut groups = vec![pgid];
+    let Ok(out) = std::process::Command::new("/bin/ps")
+        .args(["-A", "-o", "pid=,ppid=,pgid="])
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return groups;
+    };
+    let rows: Vec<(u32, u32, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().map(|field| field.parse::<u32>().ok());
+            Some((fields.next()??, fields.next()??, fields.next()??))
+        })
+        .collect();
+    let mut tree: std::collections::HashSet<u32> =
+        rows.iter().filter(|(_, _, group)| *group == pgid).map(|(pid, _, _)| *pid).collect();
+    loop {
+        let before = tree.len();
+        let children: Vec<u32> = rows
+            .iter()
+            .filter(|(pid, ppid, _)| tree.contains(ppid) && !tree.contains(pid))
+            .map(|(pid, _, _)| *pid)
+            .collect();
+        tree.extend(children);
+        if tree.len() == before {
+            break;
+        }
+    }
+    // SAFETY: getpgrp has no preconditions and cannot fail.
+    let own = u32::try_from(unsafe { libc::getpgrp() }).unwrap_or(0);
+    for (_, _, group) in rows.iter().filter(|(pid, _, _)| tree.contains(pid)) {
+        if *group > 1 && *group != own && !groups.contains(group) {
+            groups.push(*group);
+        }
+    }
+    groups
+}
+
+/// Live members of every group, as `group_members` lists them.
+fn members_of(groups: &[u32]) -> Result<Vec<String>, String> {
+    let mut all = Vec::new();
+    for group in groups {
+        all.extend(group_members(*group)?);
+    }
+    Ok(all)
+}
+
+/// TERM every group of the first mate's tree, give them `KILL_GRACE`, KILL whatever is
+/// left, then list them again and report who survived. Blocking; runs off the async loop.
 fn kill_group_blocking(pgid: u32) -> Value {
     let listed = |members: &Result<Vec<String>, String>| match members {
         Ok(lines) => json!(lines),
@@ -364,26 +420,32 @@ fn kill_group_blocking(pgid: u32) -> Value {
     };
     let gone = |members: &Result<Vec<String>, String>| matches!(members, Ok(lines) if lines.is_empty());
 
-    let members = group_members(pgid);
-    let term = signal_group(pgid, libc::SIGTERM);
+    let groups = tree_groups(pgid);
+    let members = members_of(&groups);
+    let refused = |results: Vec<Result<(), String>>| {
+        let errors: Vec<String> = results.into_iter().filter_map(Result::err).collect();
+        (!errors.is_empty()).then(|| errors.join("; "))
+    };
+    let term = refused(groups.iter().map(|group| signal_group(*group, libc::SIGTERM)).collect());
     let deadline = Instant::now() + KILL_GRACE;
-    let mut remaining = group_members(pgid);
+    let mut remaining = members_of(&groups);
     while !gone(&remaining) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
-        remaining = group_members(pgid);
+        remaining = members_of(&groups);
     }
     let mut kill = None;
     if !gone(&remaining) {
-        kill = Some(signal_group(pgid, libc::SIGKILL));
+        kill = Some(refused(groups.iter().map(|group| signal_group(*group, libc::SIGKILL)).collect()));
         std::thread::sleep(Duration::from_millis(250));
-        remaining = group_members(pgid);
+        remaining = members_of(&groups);
     }
     json!({
         "pgid": pgid,
+        "groups": groups,
         "members": listed(&members),
-        "term_refused": term.err(),
+        "term_refused": term,
         "killed": kill.is_some(),
-        "kill_refused": kill.and_then(Result::err),
+        "kill_refused": kill.flatten(),
         "survivors": listed(&remaining),
     })
 }
@@ -482,7 +544,9 @@ impl Drop for Adapter {
     /// at once rather than leave it running.
     fn drop(&mut self) {
         if !self.killed {
-            let _ = signal_group(self.pgid, libc::SIGKILL);
+            for group in tree_groups(self.pgid) {
+                let _ = signal_group(group, libc::SIGKILL);
+            }
             self.groups.remove(self.pgid);
         }
     }
@@ -2077,6 +2141,37 @@ mod tests {
         kill_group_blocking(pgid);
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Like the Claude CLI's Stop hook: a descendant that leads a process group of its
+    /// own, with a child of its own, both ignoring TERM.
+    #[test]
+    fn kill_group_takes_descendants_that_left_the_group() {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "python3 -c 'import os, subprocess, signal, time; os.setpgid(0, 0); signal.signal(signal.SIGTERM, signal.SIG_IGN); subprocess.Popen([\"/bin/sleep\", \"30\"]); time.sleep(30)' & wait",
+            ])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pgid = child.id();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut groups = tree_groups(pgid);
+        while (groups.len() < 2 || members_of(&groups).unwrap().len() < 3) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            groups = tree_groups(pgid);
+        }
+        assert_eq!(groups.len(), 2, "the hook-like group was not found: {groups:?}");
+        let hook_group = groups[1];
+        assert_eq!(group_members(hook_group).unwrap().len(), 2);
+
+        let report = kill_group_blocking(pgid);
+        let _ = child.wait();
+        assert!(!has_survivors(&report), "{report}");
+        assert_eq!(report["groups"], json!([pgid, hook_group]), "{report}");
+        assert!(group_members(hook_group).unwrap().is_empty(), "{:?}", group_members(hook_group));
     }
 
     #[test]
