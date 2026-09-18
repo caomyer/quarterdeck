@@ -159,6 +159,8 @@ export function useHost(adapter: HostAdapter) {
   const readyStarts = useRef(0);
   /** The captain pressed Stop, so a Start it cuts short isn't an error. */
   const stopRequested = useRef(false);
+  /** The first mate was left running in the saved home when the app last closed, and hasn't been started again yet. */
+  const startOnLaunch = useRef(false);
 
   const warn = useCallback((warning: HealthWarning) => {
     const starting = runtimeState.current === "starting" || runtimeState.current === "restarting";
@@ -354,6 +356,7 @@ export function useHost(adapter: HostAdapter) {
     void adapter.getHome().then((status) => {
       if (!active) return;
       homeRef.current = status.home;
+      startOnLaunch.current = status.home !== null && status.startOnLaunch === true;
       setHome(status.home);
       setHomeProblem(status.problem);
       setHomeChecked(true);
@@ -436,6 +439,17 @@ export function useHost(adapter: HostAdapter) {
       if (!stopRequested.current) setStartError(errorText(error));
     }
   }, [adapter]);
+  // A first mate the captain left running comes back with the app. Only once the window is listening, so the
+  // earlier conversation the start sends reaches it, and only if nothing started it meanwhile, such as a window
+  // reloaded while the app kept running.
+  useEffect(() => {
+    if (!homeChecked || !startOnLaunch.current) return;
+    startOnLaunch.current = false;
+    void adapter.getState().then((current) => {
+      if (current.state.state === "stopped" && runtimeState.current === "stopped") void start();
+    }, () => { /* the captain can still press Start */ });
+  }, [homeChecked, adapter, start]);
+
   const stop = useCallback(async () => {
     stopRequested.current = true;
     try { await adapter.hostStop(); } catch { /* host state remains authoritative */ }

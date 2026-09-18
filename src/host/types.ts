@@ -234,7 +234,7 @@ export type HostStateSnapshot = {
 };
 
 /** The captain's firstmate home: `home` once chosen and still valid, `problem` when a choice doesn't check out. */
-export type HomeStatus = { home: string | null; problem: string | null };
+export type HomeStatus = { home: string | null; problem: string | null; /** The captain left the first mate running in this home when the app last closed, so the app starts it again. */ startOnLaunch?: boolean };
 
 export type PaneCapture = { text: string; observed_at?: string };
 export type HostEventListener = (event: HostEvent) => void;

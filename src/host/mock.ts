@@ -636,7 +636,8 @@ export class MockHostAdapter implements HostAdapter {
   /** The browser review path keeps the fixtures, so it reports the fixture's home. `?first-launch` shows the folder question instead. */
   async getHome(): Promise<HomeStatus> {
     if (reviewFlag("first-launch") && !this.homeChosen) return { home: null, problem: null };
-    return { home: this.snapshot.fleet.fm_home, problem: null };
+    // `?start-on-launch`, with `?relaunch`: the first mate was running when the app closed, so the app starts it again on its own.
+    return { home: this.snapshot.fleet.fm_home, problem: null, startOnLaunch: reviewFlag("start-on-launch") };
   }
 
   async chooseHome(): Promise<HomeStatus | null> {

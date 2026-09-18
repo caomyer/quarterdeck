@@ -75,7 +75,9 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<ReviewSummary>("review_summary");
   }
 
-  hostStart(home: string) {
+  /** Waits until every event is being listened to: a start's history is sent once, and a window that missed it would show no earlier conversation. */
+  async hostStart(home: string) {
+    await this.ensureListening();
     return invoke<void>("host_start", { home });
   }
 
@@ -124,7 +126,11 @@ export class TauriHostAdapter implements HostAdapter {
   }
 
   getHome() {
-    return invoke<HomeStatus>("home_get");
+    return invoke<{ home: string | null; problem: string | null; start_on_launch?: boolean }>("home_get").then((status): HomeStatus => ({
+      home: status.home,
+      problem: status.problem,
+      startOnLaunch: status.start_on_launch === true,
+    }));
   }
 
   chooseHome() {

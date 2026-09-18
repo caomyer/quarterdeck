@@ -122,6 +122,8 @@ impl HostEnv for TauriEnv {
 pub struct HostHandle {
     tx: mpsc::UnboundedSender<Cmd>,
     groups: Groups,
+    /// The home of the last Start the captain asked for.
+    started_home: std::sync::Mutex<Option<PathBuf>>,
 }
 
 impl HostHandle {
@@ -135,7 +137,15 @@ impl HostHandle {
         let groups = Groups::default();
         let host = Host::new(env, ev_tx, groups.clone());
         tauri::async_runtime::spawn(host.run(cmd_rx, ev_rx));
-        HostHandle { tx, groups }
+        HostHandle { tx, groups, started_home: std::sync::Mutex::new(None) }
+    }
+
+    fn note_started_home(&self, home: &Path) {
+        *self.started_home.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(home.to_path_buf());
+    }
+
+    fn started_home(&self) -> Option<PathBuf> {
+        self.started_home.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
     }
 
     /// Process groups of the adapters running now.
@@ -171,10 +181,14 @@ impl HostHandle {
 #[tauri::command]
 pub async fn host_start(
     home: String,
+    app: AppHandle,
     host: TauriState<'_, HostHandle>,
     snapshots: TauriState<'_, crate::snapshot::SnapshotHandle>,
 ) -> Result<(), String> {
     let home = PathBuf::from(home);
+    // The captain wants it running here until they stop it, including across a relaunch.
+    crate::settings::note_running(&app, &home, true);
+    host.note_started_home(&home);
     snapshots.set_home(home.clone()).await?;
     // Scouts in this home present their pages here rather than in a browser. Not being able to
     // record that never stops the first mate: they fall back to the home's existing review loop.
@@ -186,7 +200,11 @@ pub async fn host_start(
 }
 
 #[tauri::command]
-pub async fn host_stop(host: TauriState<'_, HostHandle>) -> Result<(), String> {
+pub async fn host_stop(app: AppHandle, host: TauriState<'_, HostHandle>) -> Result<(), String> {
+    // Read without asking the host loop, so Stop still answers while a start is running.
+    if let Some(home) = host.started_home() {
+        crate::settings::note_running(&app, &home, false);
+    }
     host.call(|reply| Cmd::Stop { reply }).await?
 }
 
