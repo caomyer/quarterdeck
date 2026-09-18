@@ -4,7 +4,8 @@
 // surviving a reload, taking a comment back, and sending the review with a verdict, and
 // iterating: what the author answers, settling a comment, what the list says is new, and
 // deciding: a call answered inside the page that argues it, in one review with the comments,
-// and a diagram the page owns: opening it, proposing changes, and how they reach the author.
+// recorded through firstmate's intake, or straight from Bearings, a skip never shown as recorded,
+// and a home that predates calls[], and a diagram the page owns: opening it, proposing changes, and how they reach the author.
 //
 //   pnpm dev --port 4191 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
@@ -46,8 +47,8 @@ await page.waitForFunction(() => !document.querySelector(".app-loading"));
 // Bearings: what waits on the captain, what was decided for them, what landed, and how long work has been going.
 const bearingsPage = page.locator("[data-screen='bearings']");
 const callSection = page.locator(".dashboard-section", { hasText: "Captain's Call" });
-check((await callSection.locator(".section-count").innerText()) === "2", "Captain's Call counts a finished report beside the open call");
-check((await page.locator(".nav-item", { hasText: "Bearings" }).locator("em").innerText()) === "2", "the sidebar counts the report as waiting on the captain");
+check((await callSection.locator(".section-count").innerText()) === "5", "Captain's Call counts a finished report beside the four open calls");
+check((await page.locator(".nav-item", { hasText: "Bearings" }).locator("em").innerText()) === "5", "the sidebar counts the report as waiting on the captain");
 const ready = page.locator("[data-testid='report-ready']");
 check(await ready.count() === 1, "a finished scout's report is offered where the captain looks first");
 check((await ready.innerText()).includes("Which episodes already carry a transcript?") || (await ready.innerText()).includes("which episodes already carry a transcript?"), "the report card names the task by its title");
@@ -89,7 +90,8 @@ const landedRows = page.locator("[data-testid='landed-row']");
 check(await landedRows.count() === 3, "Recently Landed shows what landed and the call the captain answered");
 const answeredCall = page.locator("[data-testid='landed-row'][data-landed-kind='answered']");
 check(await answeredCall.count() === 1, "an answered and closed call shows as done");
-check((await answeredCall.innerText()).includes("You chose: Wi-Fi only, and say so in Settings."), "the answered call says what the captain chose");
+check((await answeredCall.innerText()).includes("You chose Wi-Fi only, and say so in Settings · based on Should uploads wait for Wi-Fi?"), "the answered call says what the captain chose, and what it was based on");
+check(await answeredCall.locator("button.link-button", { hasText: "Should uploads wait for Wi-Fi?" }).count() === 1, "what the answer was based on is a link to it");
 check(/closed Sep \d+/.test(await answeredCall.innerText()), "the answered call says when it closed");
 const shippedRow = page.locator("[data-testid='landed-row'][data-id='foreman-rebase-before-review']");
 check((await shippedRow.locator("a.landed-link").getAttribute("href")) === "https://github.com/caomyer/foreman/pull/24", "a landed PR links the PR");
@@ -359,16 +361,22 @@ await shot(page, "12-list-state");
 
 // A call that a page argues is answered in that page.
 await page.locator(".nav-item", { hasText: "Bearings" }).click();
-const call = page.locator(".decision-card").first();
+const call = page.locator(".decision-card[data-call-id='res-model-download']");
 await call.waitFor();
 check(await call.getAttribute("data-argued") === "true", "a call with a page to argue it says so");
-check(await call.locator(".suggestion-chips").count() === 0, "that call offers no second place to answer");
-check((await call.innerText()).includes("3 options, with the case for each"), "the call says what is waiting in the page");
+check(await call.locator(".suggestion-chips").count() === 0, "its options wait behind Answer now");
+check((await call.locator("[data-testid='argued-by']").innerText()) === "Argued by When may the app download the speech model?", "the call names the page that argues it");
+check((await call.innerText()).includes("3 options · Recommended: Wi-Fi only, with visible progress"), "the call says how many options and which is recommended");
+check(await call.locator("[data-testid='decision-reason']").count() === 0, "a question the title already asks is not said twice");
 await shot(page, "13-call-with-page");
 await call.locator("button", { hasText: "Read the argument" }).click();
-const answer = page.locator("[data-testid='decision-answer']");
+const answer = page.locator("[data-testid='decision-answer'][data-call-id='res-model-download']");
 await answer.waitFor();
+check(await page.locator("[data-testid='decision-answer']").count() === 2, "a page that argues two calls offers both");
 check((await answer.innerText()).includes("When may the app download the 150 MB speech model?"), "the page offers the call's own question");
+check(await answer.locator("[data-testid='options-updated']").count() === 0, "options unchanged since the page say nothing");
+const cellular = page.locator("[data-testid='decision-answer'][data-call-id='res-model-cellular']");
+check((await cellular.locator("[data-testid='options-updated']").innerText()) === "Options updated since rev 1", "options changed after the page was presented say so");
 check((await page.locator(".verdict-picker select").inputValue()) === "changes", "a page arguing an open call starts on Request changes");
 check((await page.locator(".review-send small").innerText()) === "The first mate revises the case before you decide.", "the hint says what Request changes does to an open call");
 const choices = answer.locator(".decision-choices button");
@@ -381,29 +389,68 @@ await shot(page, "14-answer-staged");
 
 // A comment alongside it, then one message carrying both.
 await page.locator(".comment-toggle").click();
-await frame.locator(".card.rec p").click();
+await frame.locator(".card.rec p").first().click();
 await composer.locator("textarea").fill("Say what happens on a metered hotspot.");
 await composer.locator("button", { hasText: "Comment" }).click();
 check((await page.locator(".send-review").innerText()).includes("Send review · 2"), "the answer and the comment travel together");
 await page.locator(".verdict-picker select").selectOption("approve");
 await page.locator(".send-review").click();
 await page.locator(".review-last").waitFor();
-check((await answer.innerText()).includes("Sent"), "the answer says it has gone");
+check((await answer.innerText()).includes("Recorded"), "the answer says firstmate recorded it");
 await page.locator(".nav-item", { hasText: "Chat" }).click();
 const review = page.locator(".captain-message").last();
 await review.waitFor();
 const reviewText = await review.innerText();
-check(reviewText.includes("Answers, to record with bin/fm-captain-hold.sh:"), "the first mate is told to record the answer");
-check(reviewText.includes("res-model-download = wifi-only: Wi-Fi only, with visible progress"), "the answer names the task, the option key and what it says");
+check(reviewText.includes("do not record them again"), "the first mate is told the answer is already recorded");
+check(reviewText.includes("Recorded: res-model-download = wifi-only"), "the answer names the call and the option key, as recorded");
+check(!reviewText.includes("to record with"), "the first mate is never asked to do the recording");
 check(reviewText.includes("Say what happens on a metered hotspot."), "the comment goes in the same message");
 await shot(page, "15-answer-sent");
 
-// The call stays open until the first mate records it, and says why.
+// Recorded by the intake, the call closes: it leaves the waiting list and lands as the captain's answer.
 await page.locator(".nav-item", { hasText: "Bearings" }).click();
-await call.waitFor();
-check(await call.getAttribute("data-answered-in-review") === "true", "the call shows the answer has gone");
-check((await call.innerText()).includes("This stays here until the first mate records it."), "the call is honest about not being closed");
+await call.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+check(await call.count() === 0, "a recorded call leaves Captain's Call once the snapshot has it closed");
+const chosenRow = page.locator("[data-testid='landed-row'][data-id='res-model-download']");
+check((await chosenRow.innerText()).includes("You chose Wi-Fi only, with visible progress · based on When may the app download the speech model?"), "the recorded answer lands as what the captain chose");
 await shot(page, "16-call-answered");
+await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+await callPage.click();
+await answer.waitFor();
+check((await answer.locator("[data-testid='call-answered']").innerText()) === "Answered by you here: Wi-Fi only, with visible progress", "the rail says who answered and how, once the call is answered");
+check(await answer.locator(".decision-choices button").count() === 0, "an answered call offers no live buttons");
+await page.locator(".back-button").click();
+
+// Answering from Bearings: Answer now opens the options, a choice is recorded at once, and the card says so.
+await page.locator(".nav-item", { hasText: "Bearings" }).click();
+const quick = page.locator(".decision-card[data-call-id='res-transcripts-source']");
+await quick.waitFor();
+check((await quick.locator("[data-testid='argued-by']").innerText()) === "Argued by Which episodes already carry a transcript?", "a call raised before its page existed is argued by the page its origin presented");
+check((await quick.locator(".decision-actions button").last().innerText()).includes("Read the argument"), "reading the argument is the primary action");
+await quick.locator("button", { hasText: "Answer now" }).click();
+const panel = quick.locator("[data-testid='answer-now']");
+await panel.waitFor();
+check((await panel.innerText()).includes("records it as your answer right away"), "Answer now says a choice is recorded at once");
+check((await panel.locator("[data-testid='unread-argument']").innerText()).includes("You haven't opened"), "answering before opening the argument is noted, quietly");
+await shot(page, "19-answer-now");
+await panel.locator(".suggestion-chips button", { hasText: "Use the publisher" }).click();
+const recordedCard = page.locator(".decision-card[data-call-id='res-transcripts-source'][data-recorded='true']");
+await recordedCard.waitFor();
+check((await recordedCard.innerText()).includes("Recorded: Use the publisher's transcript when there is one, else transcribe"), "the card says the answer is recorded");
+check((await recordedCard.innerText()).includes("You answered without opening the argument."), "the card keeps the note that the argument was not opened");
+await shot(page, "19b-answer-recorded");
+await page.locator(".nav-item", { hasText: "Chat" }).click();
+const quickMessage = await page.locator(".captain-message").last().innerText();
+check(quickMessage.includes("Recorded: res-transcripts-source = publisher-first"), "the first mate is told the answer is already recorded");
+await page.locator(".nav-item", { hasText: "Bearings" }).click();
+await quick.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+check(await quick.count() === 0, "the call leaves once firstmate has it closed");
+const quickRow = page.locator("[data-testid='landed-row'][data-id='res-transcripts-source']");
+check((await quickRow.innerText()).includes("based on Which episodes already carry a transcript?"), "the answer lands based on the page that argued it");
+await quickRow.locator("button.link-button").click();
+await page.locator(".artifact-stage iframe").waitFor();
+check((await page.locator(".page-heading h1").innerText()) === "Which episodes already carry a transcript?", "what an answer was based on opens from Recently Landed");
+await page.locator(".back-button").click();
 
 // A diagram the page owns: opened for real, changed, and proposed with the review.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
@@ -517,6 +564,86 @@ const order = await resumed.evaluate(() => [...document.querySelectorAll(".chat-
 const firstToday = order.indexOf("today");
 check(order[0] === "earlier" && order.includes("page") && (firstToday === -1 || order.lastIndexOf("page") < firstToday), `pages from before this window stay under Earlier (${order.join(",")})`);
 await resumed.close();
+
+// A skip is never shown as recorded: not from Bearings, and not from the review rail.
+{
+  const skipping = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  skipping.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await skipping.goto(`${baseUrl}/?artifacts&skip=foreman-auto-merge,res-model-cellular`);
+  await skipping.waitForFunction(() => !document.querySelector(".app-loading"));
+  const inline = skipping.locator(".decision-card[data-call-id='foreman-auto-merge']");
+  await inline.waitFor();
+  check(await inline.getAttribute("data-inline") === "true", "a call nothing argues offers its options inline");
+  check(await inline.locator(".suggestion-chips button").count() === 3, "its options, and Not now");
+  await inline.locator(".suggestion-chips button", { hasText: "Hold every PR for me" }).click();
+  check((await inline.locator(".decision-actions button").innerText()).includes("Record answer"), "a keyed option is recorded, and the button says so");
+  await inline.locator(".decision-actions button").click();
+  const refused = inline.locator("[data-testid='not-recorded']");
+  await refused.waitFor();
+  check((await refused.innerText()).includes("Not recorded: Hold every PR for me"), "a skipped answer is shown as not recorded");
+  check((await refused.innerText()).includes("the hold changed"), "with the intake's reason");
+  await shot(skipping, "20-not-recorded");
+  await skipping.locator(".nav-item", { hasText: "Chat" }).click();
+  check(await skipping.locator(".captain-message", { hasText: "foreman-auto-merge" }).count() === 0, "nothing about a skipped answer reaches the first mate");
+
+  await skipping.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await skipping.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+  const railCellular = skipping.locator("[data-testid='decision-answer'][data-call-id='res-model-cellular']");
+  await railCellular.waitFor();
+  await railCellular.locator(".decision-choices button").first().click();
+  await skipping.locator(".send-review").click();
+  await railCellular.locator(".decision-refused").waitFor();
+  check((await railCellular.innerText()).includes("Not recorded: the hold changed"), "the rail shows a skipped answer as not recorded");
+  check(await railCellular.locator(".decision-choices button:not(:disabled)").count() === 2, "a skipped answer can be chosen again");
+  await shot(skipping, "20b-rail-not-recorded");
+  await skipping.locator(".nav-item", { hasText: "Chat" }).click();
+  const skippedReview = await skipping.locator(".captain-message").last().innerText();
+  check(skippedReview.includes("Captain's review of") && !skippedReview.includes("res-model-cellular"), "the review never claims a skipped answer");
+
+  // Answered in chat: the rail says so instead of offering buttons.
+  await skipping.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await skipping.locator(".artifact-group[data-standing='settled'] .artifact-group-heading").click();
+  await skipping.locator(".artifact-list .artifact-row", { hasText: "Should uploads wait for Wi-Fi?" }).click();
+  const chatAnswered = skipping.locator("[data-testid='decision-answer'][data-call-id='res-upload-wifi']");
+  await chatAnswered.waitFor();
+  check((await chatAnswered.locator("[data-testid='call-answered']").innerText()) === "Answered by you in chat: Wi-Fi only, and say so in Settings", "a call answered in chat says so in the rail");
+  check(await chatAnswered.locator(".decision-choices button").count() === 0, "and offers no buttons");
+  await shot(skipping, "20c-rail-answered-in-chat");
+
+  // Narrow: the call cards wrap rather than push the window sideways.
+  await skipping.setViewportSize({ width: 420, height: 900 });
+  await skipping.locator(".mobile-menu").click();
+  await skipping.locator(".nav-item", { hasText: "Bearings" }).click();
+  const narrowCall = skipping.locator(".decision-card[data-call-id='res-transcripts-source']");
+  await narrowCall.locator("button", { hasText: "Answer now" }).click();
+  await noSidewaysScroll(skipping, "Bearings with Answer now open in a narrow window");
+  await narrowCall.scrollIntoViewIfNeeded();
+  await shot(skipping, "22-bearings-narrow");
+  await skipping.close();
+}
+
+// A home whose firstmate predates calls[]: Bearings' own calls, bare, answered through the first mate, and nothing else.
+{
+  const legacy = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  legacy.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await legacy.goto(`${baseUrl}/?artifacts&legacy`);
+  await legacy.waitForFunction(() => !document.querySelector(".app-loading"));
+  const legacyCall = legacy.locator(".decision-card[data-call-id='res-model-download']");
+  await legacyCall.waitFor();
+  check((await legacy.locator(".dashboard-section", { hasText: "Captain's Call" }).locator(".section-count").innerText()) === "2", "an older home counts Bearings' calls");
+  check(await legacyCall.getAttribute("data-inline") === "true", "its call is answered in words");
+  check(await legacyCall.locator(".suggestion-chips button").count() === 1, "with no options but Not now");
+  check(await legacyCall.locator("button", { hasText: "Read the argument" }).count() === 0, "and no evidence");
+  check(await legacy.locator("[data-testid='decided']").count() === 0, "no Decided for you without calls[]");
+  check(await legacy.locator("[data-testid='landed-row'][data-landed-kind='answered']").count() === 0, "no answers read back from prose");
+  await shot(legacy, "21-legacy");
+  await legacy.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await legacy.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+  await legacy.locator(".artifact-stage iframe").waitFor();
+  await legacy.waitForTimeout(300);
+  check(await legacy.locator("[data-testid='decision-answer']").count() === 0, "no call cards in the rail without calls[]");
+  await legacy.close();
+}
 
 await browser.close();
 if (failures.length) {

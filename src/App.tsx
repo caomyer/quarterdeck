@@ -46,8 +46,9 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, createHostAdapter, type DecidedRecord, type Decision, type Landed, type DecisionOptions, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
+import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "./calls";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
@@ -96,17 +97,6 @@ function taskStatus(state: string, size = 16): { tone: Tone; icon: React.ReactNo
   if (state === "parked" || state === "paused") return { tone: "amber", icon: <CirclePause size={size} />, summary: `The worker is ${state}.` };
   if (state === "unknown") return { tone: "muted", icon: <CircleQuestionMark size={size} />, summary: "The first mate could not confirm the worker's current state." };
   return { tone: "muted", icon: <CircleDot size={size} />, summary: "" };
-}
-
-function optionLabels(reason: string) {
-  const optionLine = reason.match(/(?:^|\s)Options:\s*([^\n]+)$/i)?.[1]?.trim();
-  if (!optionLine?.includes(";")) return [];
-  const options = optionLine.replace(/[.]$/, "").split(";").map((item) => item.trim());
-  if (options.some((item) => !item)) return [];
-  return options.map((item) => ({
-    label: item.replace(/,\s*recommended$/i, "").trim(),
-    recommended: /,\s*recommended$/i.test(item),
-  }));
 }
 
 function runtimeLabel(state: HostRuntimeState, pending: number, approvals: number) {
@@ -160,21 +150,10 @@ export function App() {
     }));
   }, [bridge.projects, fleet]);
 
-  const decisions = useMemo(() => bearings?.decisions_open.map((decision) => {
-    const record = fleet?.backlog?.records.find((item) => item.id === decision.id);
-    const recorded = fleet?.decision_options?.find((item) => item.task === decision.id);
-    return {
-      ...decision,
-      title: record?.title ?? decision.key,
-      summary: recorded?.question || record?.hold_reason || "",
-      // Recorded options are the decision's own; the prose fallback is for holds nobody has recorded yet.
-      options: recorded?.options.map((option) => ({ label: option.label, recommended: option.recommended })) ?? optionLabels(record?.hold_reason ?? ""),
-      // The page that argues it, if one does: then that is where it is answered.
-      page: (fleet?.artifacts ?? []).find((artifact) => (artifact.latest.covers ?? []).includes(decision.id)),
-      // A review that already carried an answer for it. The call stays open until the first mate closes it.
-      answeredIn: (fleet?.artifacts ?? []).find((artifact) => (reviews[artifactKey(artifact)]?.answered ?? []).includes(decision.id)),
-    };
-  }) ?? [], [bearings, fleet, reviews]);
+  const records = useMemo(() => new Map((fleet?.backlog?.records ?? []).map((record) => [record.id, record])), [fleet]);
+  // Every call the home carries, from its one source: firstmate's calls[], or Bearings' bare list on an older home.
+  const { calls } = useMemo(() => homeCalls(fleet, bearings, records), [fleet, bearings, records]);
+  const waiting = useMemo(() => openCalls(calls), [calls]);
 
   // Which message answered which call. The link this session made is authoritative; after a relaunch
   // the app has none, so a message still in the host's outbox is matched by the call it names.
@@ -184,11 +163,11 @@ export function App() {
       // Only an answer still on its way is matched. A read one is already the first mate's business, so a
       // launch that finds nothing waiting asks rather than showing an answer that has been dealt with.
       if (message.who !== "captain" || !outbox[message.id] || outbox[message.id].status === "picked_up") continue;
-      const call = decisions.find((decision) => answersCall(message.text, decision));
+      const call = waiting.find((item) => answersCall(message.text, item));
       if (call) found[call.id] = message.id;
     }
     return { ...found, ...callMessageIds };
-  }, [messages, outbox, decisions, callMessageIds]);
+  }, [messages, outbox, waiting, callMessageIds]);
 
   // A match made here is kept for the rest of the session. Without this the card would drop the answer the
   // moment the first mate read it and ask its question again, in front of the captain who had just answered.
@@ -201,13 +180,14 @@ export function App() {
 
   const artifacts = useMemo(() => fleet?.artifacts ?? [], [fleet]);
   // Which pages have been looked at, and what is still waiting, for the list. Re-read whenever a review changes.
+  const [answered, setAnswered] = useState<Record<string, AnswerNote>>({});
   useEffect(() => {
     void host.reviewSummary().then(setReviews).catch(() => setReviews({}));
-  }, [artifacts, review]);
-  const records = useMemo(() => new Map((fleet?.backlog?.records ?? []).map((record) => [record.id, record])), [fleet]);
+  }, [artifacts, review, answered]);
   const now = useNow(60_000);
   /** What the captain calls a task: its backlog title. The id is for machines, and shows only beside it. */
   const taskTitle = (id: string) => records.get(id)?.title || bearings?.in_flight.find((item) => item.id === id)?.name || id;
+  const evidenceOf = (call: Call) => resolveEvidence(call, artifacts, taskTitle);
   // A scout that finished with something to read, which the backlog has not closed yet, is the captain's to read.
   const readyReports = useMemo(() => (fleet?.tasks ?? []).flatMap((task) => {
     if (task.kind !== "scout" || task.current_state.state !== "done" || records.get(task.id)?.state === "done") return [];
@@ -217,9 +197,10 @@ export function App() {
   }), [fleet, records, artifacts, bearings]);
   const readyIds = new Set(readyReports.map((item) => item.task.id));
   const underway = (bearings?.in_flight ?? []).filter((item) => !readyIds.has(item.id));
-  const landedRows = useMemo(() => landedItems(bearings?.landed ?? [], records, artifacts, now), [bearings, records, artifacts, now]);
+  const landedRows = landedItems(bearings?.landed ?? [], records, artifacts, answeredByCaptain(calls, now), evidenceOf);
   const [dismissedDecided, setDismissedDecided] = useState<string[]>(readDismissed);
-  const decided = (fleet?.decided ?? []).filter((item) => !dismissedDecided.includes(item.id));
+  const decidedCalls = decidedForCaptain(calls);
+  const decided = decidedCalls.filter((item) => !dismissedDecided.includes(item.id));
   const artifactRef = useMemo<ArtifactRef | null>(() => openArtifact ? { scope: openArtifact.scope, task: openArtifact.task, name: openArtifact.name } : null, [openArtifact]);
 
   // The review is read from the home when a page opens, so a draft written before a relaunch is still there.
@@ -248,7 +229,7 @@ export function App() {
     : view === "artifact" ? (shownArtifact && shownRevision ? `${artifactOwner(shownArtifact, fleet?.tasks ?? [])} · Rev ${shownRevision.rev} of ${shownArtifact.revisions.length}` : "")
     : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
   // Everything waiting on the captain: open calls, and finished reports nobody has closed.
-  const openCallCount = (bearings?.decisions_open.length ?? 0) + readyReports.length;
+  const openCallCount = waiting.length + readyReports.length;
   const approvalCount = bridge.permissionRequests.length;
   // Failed and not-sent messages aren't being worked on.
   const pendingCount = Object.values(outbox).filter((item) => item.status !== "picked_up" && !item.error).length;
@@ -307,9 +288,16 @@ export function App() {
     navigate("chat");
   }
 
+  /** Opens what argues a call: a page here, a report through the first mate, anything else outside the app. */
+  function openEvidence(item: Evidence) {
+    if (item.kind === "page") showArtifact(item.artifact);
+    else if (item.kind === "report") draftInChat(askAboutReport(taskTitle(item.task)));
+    else window.open(item.url, "_blank", "noreferrer");
+  }
+
   function dismissDecided(id: string) {
     // Only ids still in the snapshot are worth remembering, so the list cannot grow without end.
-    const known = new Set((fleet?.decided ?? []).map((item) => item.id));
+    const known = new Set(decidedCalls.map((item) => item.id));
     const next = [...dismissedDecided.filter((item) => known.has(item)), id];
     setDismissedDecided(next);
     writeDismissed(next);
@@ -338,6 +326,26 @@ export function App() {
     const previous = callAnswers[id];
     const messageId = previous ? await bridge.resend(previous, text) : await bridge.send(text);
     setCallMessageIds((current) => ({ ...current, [id]: messageId }));
+  }
+
+  /**
+   * Answers a call from Bearings with one of its options: firstmate's intake records it, noted in the review of
+   * the page that argues it, and the card says what the intake did. Only a recorded answer reaches the first mate.
+   */
+  async function answerNow(call: Call, option: { key: string; label: string }, note?: string) {
+    const argument = argumentOf(evidenceOf(call));
+    const argued = argument?.kind === "page" ? argument.artifact : null;
+    const page = argued ? { scope: argued.scope, task: argued.task, name: argued.name } : null;
+    const unread = argued ? (reviews[artifactKey(argued)]?.seen_rev ?? null) === null : false;
+    let outcome: AnswerNote;
+    try {
+      const result = await host.callAnswer({ call: call.id, option: option.key, label: option.label, onAnswer: call.on_answer ?? "", page, note });
+      if (result.message && result.text) bridge.noteSent(result.message, result.text);
+      outcome = { label: option.label, result: result.outcome.result, detail: result.outcome.detail, told: Boolean(result.message), warning: result.warning, unread };
+    } catch (error) {
+      outcome = { label: option.label, result: "not_recorded", detail: String(error), told: false, unread };
+    }
+    setAnswered((current) => ({ ...current, [call.id]: outcome }));
   }
 
   async function chooseHomeAndStart() {
@@ -424,9 +432,30 @@ export function App() {
               </section>
             )}
             <DashboardSection title="Captain's Call" icon={<Inbox size={17} />} tone="coral" count={openCallCount}>
-              {decisions.map((decision) => (
-                <DecisionCard key={decision.id} decision={decision} state={outbox[callAnswers[decision.id]]} answerText={messages.find((message) => message.id === callAnswers[decision.id])?.text} runtime={runtime.state} onSend={(text) => answerCall(decision.id, text)} onStart={() => void bridge.start()} onReadArgument={decision.page ? () => showArtifact(decision.page!) : undefined} answeredIn={decision.answeredIn?.title} />
-              ))}
+              {waiting.map((call) => {
+                const evidence = evidenceOf(call);
+                const argument = argumentOf(evidence);
+                const pages = evidence.flatMap((item) => item.kind === "page" ? [item.artifact] : []);
+                // A review that already recorded an answer for it; the call leaves once the snapshot catches up.
+                const answeredIn = pages.find((artifact) => (reviews[artifactKey(artifact)]?.answered ?? []).includes(call.id));
+                const seen = argument?.kind === "page" ? (reviews[artifactKey(argument.artifact)]?.seen_rev ?? null) !== null : null;
+                return <DecisionCard
+                  key={call.id}
+                  call={call}
+                  argument={argument}
+                  seenArgument={seen}
+                  answered={answered[call.id]}
+                  answeredIn={answeredIn?.title}
+                  state={outbox[callAnswers[call.id]]}
+                  answerText={messages.find((message) => message.id === callAnswers[call.id])?.text}
+                  runtime={runtime.state}
+                  onSend={(text) => answerCall(call.id, text)}
+                  onAnswer={(option, note) => answerNow(call, option, note)}
+                  onStart={() => void bridge.start()}
+                  onReadArgument={argument ? () => openEvidence(argument) : undefined}
+                  onOpenPage={answeredIn ? () => showArtifact(answeredIn) : argument?.kind === "page" ? () => showArtifact(argument.artifact) : undefined}
+                />;
+              })}
               {readyReports.map(({ task, page, report }) => (
                 <ReportCard key={task.id} title={taskTitle(task.id)} project={projectName(task.project)} id={task.id} finished={finishedLine(task)} page={page} report={report} onOpen={page ? () => showArtifact(page) : undefined} onAsk={() => draftInChat(askAboutReport(taskTitle(task.id)))} onDetails={() => setActiveTask(task)} />
               ))}
@@ -435,12 +464,15 @@ export function App() {
 
             {decided.length > 0 && <DashboardSection title="Decided for you" icon={<ShipWheel size={17} />} tone="sea" count={decided.length}>
               <div className="decided-list" data-testid="decided">
-                {decided.map((item) => <DecidedRow key={item.id} item={item} taskTitle={item.task ? taskTitle(item.task) : null} onTask={item.task && fleet?.tasks.some((task) => task.id === item.task) ? () => openTask(item.task!) : undefined} onPushBack={() => draftInChat(`About "${item.what}": `)} onDismiss={() => dismissDecided(item.id)} />)}
+                {decided.map((call) => {
+                  const item = decidedItem(call);
+                  return <DecidedRow key={item.id} item={item} taskTitle={item.task ? taskTitle(item.task) : null} onTask={item.task && fleet?.tasks.some((task) => task.id === item.task) ? () => openTask(item.task!) : undefined} onPushBack={() => draftInChat(`About "${item.what}": `)} onDismiss={() => dismissDecided(item.id)} />;
+                })}
               </div>
             </DashboardSection>}
 
             <DashboardSection title="Recently Landed" icon={<Check size={17} />} tone="green" count={landedRows.length}>
-              {landedRows.map((row) => <LandedRow key={row.id} row={row} onOpenPage={row.page ? () => showArtifact(row.page!) : undefined} onAsk={row.report && !row.page ? () => draftInChat(askAboutReport(row.title)) : undefined} />)}
+              {landedRows.map((row) => <LandedRow key={row.id} row={row} onOpenPage={row.page ? () => showArtifact(row.page!) : undefined} onAsk={row.report && !row.page ? () => draftInChat(askAboutReport(row.title)) : undefined} onBasis={row.basis ? () => openEvidence(row.basis!) : undefined} />)}
               {landedRows.length === 0 && <EmptyState label="Nothing has landed recently." />}
             </DashboardSection>
 
@@ -468,7 +500,7 @@ export function App() {
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} taskTitle={taskTitle} records={records} now={now} onOpenTask={setActiveTask} />}
-        {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} backlog={fleet?.backlog?.records ?? []} onOpen={showArtifact} />}
+        {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} backlog={records} calls={calls} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
           ? <ArtifactReview
               key={`${shownArtifact.scope}/${shownArtifact.task}/${shownArtifact.name}/${shownRevision.rev}`}
@@ -476,15 +508,19 @@ export function App() {
               revision={shownRevision}
               url={host.artifactUrl(shownRevision)}
               review={review}
-              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records)}
+              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records, calls)}
               sendReady={bridge.sendReady}
               runtime={runtime.state}
               onRevision={(rev) => showArtifact(shownArtifact, rev)}
               onComment={(body, anchor, thread) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread).then(setReview)}
               onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
-              onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => { bridge.noteSent(sent.message, sent.text); setReview(sent.review); })}
-              decisions={(shownRevision.covers ?? []).map((task) => (fleet?.decision_options ?? []).find((item) => item.task === task) ?? { task, question: "", options: [] })}
-              onAnswer={(decision, option, label) => host.reviewAnswer(artifactRef!, decision, option, label).then(setReview)}
+              onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => {
+                if (sent.message) bridge.noteSent(sent.message, sent.text);
+                setReview(sent.review);
+                return sent.warning;
+              })}
+              calls={callsArguedBy(calls, shownArtifact)}
+              onAnswer={(call, option, label) => host.reviewAnswer(artifactRef!, call.id, option, label, call.on_answer).then(setReview)}
               onScene={(place, proposal) => host.reviewScene(artifactRef!, shownRevision.rev, place.file, place.label, place.path, proposal.summary, proposal.scene, proposal.png).then(setReview)}
               onSettle={(thread, resolved) => host.reviewSettle(artifactRef!, thread, resolved).then(setReview)}
               onSeen={(rev) => host.reviewSeen(artifactRef!, rev).then(setReview)}
@@ -654,35 +690,6 @@ function askAboutReport(title: string) {
   return `Walk me through the report on "${title}".`;
 }
 
-/**
- * What the captain answered on a closed call. fm-captain-hold.sh prepends a resolution block whose
- * "Captain decision:" line is followed by the answer, so the first one is the newest. A call closed on
- * evidence instead carries "Reconciliation evidence:", which is not the captain's word and is not shown as it.
- */
-function captainDecision(lines: string[] = []) {
-  const at = lines.findIndex((line) => line.trim().startsWith("Captain decision:"));
-  if (at < 0) return null;
-  const words = [lines[at].trim().slice("Captain decision:".length).trim()];
-  for (const line of lines.slice(at + 1)) {
-    const text = line.trim();
-    if (!text) { if (words.some(Boolean)) break; continue; }
-    if (text.startsWith("Resolution recorded by")) break;
-    words.push(text);
-  }
-  return words.filter(Boolean).join(" ") || null;
-}
-
-/** A link's name: a pull request by its number, anything else by its site. */
-function linkLabel(href: string) {
-  const pr = href.match(/\/pull\/(\d+)/)?.[1];
-  if (pr) return `PR #${pr}`;
-  try {
-    return new URL(href).hostname.replace(/^www\./, "");
-  } catch {
-    return href;
-  }
-}
-
 function ExternalAnchor({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) {
   return <a className={className} href={href} title={href} target="_blank" rel="noreferrer noopener" onClick={(event) => { event.preventDefault(); window.open(href, "_blank", "noreferrer"); }}>{children}</a>;
 }
@@ -710,15 +717,31 @@ const DECIDED_ICONS: Record<string, React.ReactNode> = {
   scope: <Crop size={15} />,
 };
 
+/** A call the first mate settled for the captain, as the lane shows it. */
+type DecidedItem = { id: string; at: string; kind: string | null; task: string | null; what: string; why: string; link: string | null };
+
+/** What and why come from the reasons `decide` recorded; the answer itself stands in for a call without them. */
+function decidedItem(call: Call): DecidedItem {
+  return {
+    id: call.id,
+    at: call.answer?.at ?? "",
+    kind: call.decided?.kind ?? null,
+    task: call.about ?? null,
+    what: call.decided?.what || call.answer?.label || call.title,
+    why: call.decided?.why ?? "",
+    link: call.decided?.link ?? null,
+  };
+}
+
 /** One call the first mate made for the captain: what, why, and a way to disagree. */
-function DecidedRow({ item, taskTitle, onTask, onPushBack, onDismiss }: { item: DecidedRecord; taskTitle: string | null; onTask?: () => void; onPushBack: () => void; onDismiss: () => void }) {
+function DecidedRow({ item, taskTitle, onTask, onPushBack, onDismiss }: { item: DecidedItem; taskTitle: string | null; onTask?: () => void; onPushBack: () => void; onDismiss: () => void }) {
   return <article className="decided-row" data-decided-id={item.id}>
-    <span className="decided-icon">{DECIDED_ICONS[item.kind] ?? <ShipWheel size={15} />}</span>
+    <span className="decided-icon">{(item.kind && DECIDED_ICONS[item.kind]) || <ShipWheel size={15} />}</span>
     <div className="decided-copy">
       <strong>{item.what}</strong>
-      <p>{item.why}</p>
+      {item.why && <p>{item.why}</p>}
       <small className="decided-meta">
-        <time dateTime={item.at}>{formatWhen(item.at)}</time>
+        {item.at && <time dateTime={item.at}>{formatWhen(item.at)}</time>}
         {taskTitle && (onTask ? <button className="link-button" onClick={onTask}>{taskTitle}</button> : <span>{taskTitle}</span>)}
         {item.link && <ExternalAnchor className="link-button" href={item.link}>{linkLabel(item.link)} <ExternalLink size={11} /></ExternalAnchor>}
       </small>
@@ -750,9 +773,6 @@ function writeDismissed(ids: string[]) {
   }
 }
 
-/** A closed call counts as recent for as long as the snapshot keeps the calls the first mate made: a week. */
-const ANSWERED_WINDOW_DAYS = 7;
-
 type LandedItem = {
   id: string;
   kind: "landed" | "answered";
@@ -763,14 +783,23 @@ type LandedItem = {
   pr: string | null;
   report: string | null;
   page?: Artifact;
-  answer?: string | null;
+  /** On an answered call: what the captain chose, and the first thing that argued it. */
+  answer?: string;
+  basis?: Evidence;
 };
+
+/** The local day of a moment, `yyyy-mm-dd`, as backlog dates are written. */
+function localDay(at: string) {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
 
 /**
  * What landed, with what the captain would open next: the PR, the report, the page. Calls the captain
- * answered and the first mate closed sit among them, since for the captain that is something done too.
+ * answered sit among them, since for the captain that is something done too.
  */
-function landedItems(landed: Landed[], records: Map<string, BacklogRecord>, artifacts: Artifact[], now: number): LandedItem[] {
+function landedItems(landed: Landed[], records: Map<string, BacklogRecord>, artifacts: Artifact[], answered: Call[], evidenceOf: (call: Call) => Evidence[]): LandedItem[] {
   const rows: LandedItem[] = landed.map((item) => {
     const record = records.get(item.id);
     // firstmate writes "-" for a row with nothing to point at.
@@ -787,15 +816,12 @@ function landedItems(landed: Landed[], records: Map<string, BacklogRecord>, arti
       page: latestTaskPage(artifacts, item.id),
     };
   });
-  const cutoff = now - ANSWERED_WINDOW_DAYS * DAY_MS;
-  for (const record of records.values()) {
-    if (record.state !== "done" || (record.kind !== "captain" && record.hold_kind !== "captain")) continue;
-    const date = record.completion?.date ?? null;
-    if (!date || dayMs(date) < cutoff) continue;
+  for (const call of answered) {
+    if (!call.answer) continue;
     rows.push({
-      id: record.id, kind: "answered", title: record.title, date, verb: record.completion?.verb ?? null, project: record.repo ?? null, pr: null, report: null,
-      page: artifacts.find((artifact) => artifact.revisions.some((revision) => (revision.covers ?? []).includes(record.id))),
-      answer: captainDecision(record.body_lines),
+      id: call.id, kind: "answered", title: call.title, date: localDay(call.answer.at), verb: call.state === "closed" ? "closed" : "answered",
+      project: records.get(call.id)?.repo ?? null, pr: null, report: null,
+      answer: call.answer.label, basis: argumentOf(evidenceOf(call)),
     });
   }
   // Newest first; a row with no date keeps its place after the dated ones.
@@ -806,16 +832,19 @@ function landedItems(landed: Landed[], records: Map<string, BacklogRecord>, arti
 
 const LANDED_VERBS: Record<string, string> = { merged: "Merged", reported: "Reported", done: "Done" };
 
-function LandedRow({ row, onOpenPage, onAsk }: { row: LandedItem; onOpenPage?: () => void; onAsk?: () => void }) {
+function LandedRow({ row, onOpenPage, onAsk, onBasis }: { row: LandedItem; onOpenPage?: () => void; onAsk?: () => void; onBasis?: () => void }) {
   const when = row.date ? formatDay(row.date) : null;
   const meta = row.kind === "answered"
-    ? ["Your call", when && `closed ${when}`, row.project].filter(Boolean).join(" · ")
+    ? ["Your call", when && `${row.verb ?? "closed"} ${when}`, row.project].filter(Boolean).join(" · ")
     : [row.verb && when ? `${LANDED_VERBS[row.verb] ?? row.verb} ${when}` : when, row.project].filter(Boolean).join(" · ");
+  const basis = row.basis;
   return <div className="compact-row landed-row" data-testid="landed-row" data-landed-kind={row.kind} data-id={row.id}>
     <span className="tone-green">{row.kind === "answered" ? <Inbox size={15} /> : <Check size={15} />}</span>
     <div>
       <strong>{row.title}</strong>
-      {row.kind === "answered" && <small className="landed-answer">{row.answer ? <>You chose: <em>{row.answer}</em></> : "Closed without an answer from you"}</small>}
+      {row.kind === "answered" && <small className="landed-answer">You chose <em>{row.answer}</em>{basis && <> · based on {basis.kind === "url"
+        ? <ExternalAnchor className="link-button" href={basis.url}>{basis.title}</ExternalAnchor>
+        : <button className="link-button" onClick={onBasis}>{basis.title}</button>}</>}</small>}
       {meta && <small>{meta}</small>}
     </div>
     <div className="landed-links">
@@ -827,33 +856,90 @@ function LandedRow({ row, onOpenPage, onAsk }: { row: LandedItem; onOpenPage?: (
 }
 
 /** How an answer names its call, which is what lets a waiting answer find its card again after a relaunch. */
-function callName(decision: Decision) {
-  return (decision.key || decision.id).replaceAll("-", " ");
+function callName(call: Call) {
+  return call.id.replaceAll("-", " ");
 }
 
-function callPrUrl(decision: { summary: string }) {
-  return decision.summary.match(/https:\/\/\S+\/pull\/\d+/)?.[0] ?? "";
+/** Whether a message the captain sent is an answer to this call: the app wrote it itself. */
+function answersCall(text: string, call: Call) {
+  return text.trim().toLowerCase().startsWith(`on the ${callName(call).toLowerCase()}:`);
 }
 
-/** Whether a message the captain sent is an answer to this call: the app wrote both forms itself. */
-function answersCall(text: string, decision: Decision & { summary: string }) {
-  const said = text.trim();
-  const prUrl = callPrUrl(decision);
-  if (prUrl && said === `Merge ${prUrl}`) return true;
-  return said.toLowerCase().startsWith(`on the ${callName(decision).toLowerCase()}:`);
+/** What firstmate's intake did with an answer given from Bearings, kept on the card until the call leaves the list. */
+type AnswerNote = { label: string; result: IntakeResult; detail: string; told: boolean; warning?: string; unread: boolean };
+
+type OptionChoice = { key: string; label: string };
+
+/** A call's options at a glance: how many, and which one the first mate recommends. */
+function optionSummary(call: Call) {
+  const count = call.options.length;
+  if (count === 0) return "The case for this is written up";
+  const pick = recommended(call);
+  return `${count} options${pick ? ` · Recommended: ${pick.label}` : ""}`;
 }
 
-function DecisionCard({ decision, state, answerText, runtime, onSend, onStart, onReadArgument, answeredIn }: { decision: Decision & { title: string; options?: { label: string; recommended: boolean }[] }; state: CallState; answerText?: string; runtime: HostRuntimeState; onSend: (text: string) => void; onStart: () => void; onReadArgument?: () => void; answeredIn?: string }) {
-  const options = decision.options ?? optionLabels(decision.summary);
-  const [selection, setSelection] = useState("");
+/** The call's question, unless its title already asks it word for word (after the project's name). */
+function questionBeyondTitle(call: Call) {
+  const plain = (text: string) => text.replace(/^[^:]{1,40}:\s*/, "").trim().toLowerCase();
+  return call.question && plain(call.question) !== plain(call.title) ? call.question : null;
+}
+
+function CallMeta({ call }: { call: Call }) {
+  return <div className="decision-meta"><span>Your call</span>{call.raised_at && <small>Raised {formatWhen(call.raised_at)}</small>}</div>;
+}
+
+/** An answer the intake did not record, said as plainly as a recorded one. Nothing about it reached the first mate. */
+function NotRecorded({ note }: { note: AnswerNote }) {
+  return <div className="call-state tone-coral call-not-recorded" role="alert" data-testid="not-recorded"><CircleAlert size={16} /><span><strong>Not recorded: {note.label}</strong><small>{note.detail}</small></span></div>;
+}
+
+/**
+ * One call waiting on the captain. A call something argues leads with reading that argument, and can be answered
+ * right here too. A call nothing argues offers its options inline. An answer with a key goes through firstmate's
+ * intake and the card says what it did; anything else is words to the first mate, tracked like any message.
+ */
+function DecisionCard({ call, argument, seenArgument, answered, answeredIn, state, answerText, runtime, onSend, onAnswer, onStart, onReadArgument, onOpenPage }: {
+  call: Call;
+  argument?: Evidence;
+  /** Whether the captain has opened the page that argues it; null when the argument is not a page. */
+  seenArgument: boolean | null;
+  answered?: AnswerNote;
+  answeredIn?: string;
+  state: CallState;
+  answerText?: string;
+  runtime: HostRuntimeState;
+  onSend: (text: string) => void;
+  onAnswer: (option: OptionChoice, note?: string) => Promise<void>;
+  onStart: () => void;
+  onReadArgument?: () => void;
+  onOpenPage?: () => void;
+}) {
+  const [selection, setSelection] = useState<OptionChoice | null>(null);
   const [note, setNote] = useState("");
   const [dateOpen, setDateOpen] = useState(false);
   const [deferDate, setDeferDate] = useState("");
-  const decisionName = callName(decision);
-  const prUrl = callPrUrl(decision);
-  const mergeSelected = selection === "Merge now" && Boolean(prUrl);
-  const answer = deferDate ? `not now. Ask me again on ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${deferDate}T12:00:00`))}.` : [selection, note.trim()].filter(Boolean).join(selection && note.trim() ? ". " : "");
-  const preview = mergeSelected && !note.trim() ? `Merge ${prUrl}` : answer ? `On the ${decisionName}: ${answer.replace(/[.]*$/, ".")}` : "…";
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [recording, setRecording] = useState<string | null>(null);
+  // Options with a key go through the intake; that needs the call to say how an answer closes it.
+  const keyed = call.options.length > 0 && Boolean(call.on_answer);
+  const name = callName(call);
+  const failed = answered && answered.result !== "closed" ? answered : undefined;
+
+  async function record(option: OptionChoice, words?: string) {
+    setRecording(option.key);
+    try {
+      await onAnswer(option, words);
+    } finally {
+      setRecording(null);
+    }
+  }
+
+  const words = deferDate
+    ? `not now. Ask me again on ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${deferDate}T12:00:00`))}.`
+    : [selection && !keyed ? selection.label : "", note.trim()].filter(Boolean).join(". ");
+  const recordPick = keyed && selection && !deferDate ? selection : null;
+  const preview = words && !recordPick ? `On the ${name}: ${words.replace(/[.]*$/, ".")}` : "…";
+
   if (state) {
     const read = state.status === "picked_up";
     const reSent = state.resentAfterRestart;
@@ -878,17 +964,54 @@ function DecisionCard({ decision, state, answerText, runtime, onSend, onStart, o
     const icon = state.error ? <CircleAlert size={16} /> : read ? <Check size={16} /> : <Clock3 size={16} />;
     // After a relaunch the card is fresh, so what the captain chose lives in the message, not in this card's state.
     const resendText = preview === "…" ? answerText : preview;
-    return <article className={`decision-card ${read ? "read" : "queued"} call-tone-${tone}`}><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3>{decision.title}</h3>{answerText && <p className="call-answer" title={answerText}>{answerText}</p>}<div className={`call-state tone-${tone}`}>{icon}<span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent && resendText ? <button onClick={() => onSend(resendText)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></article>;
+    return <article className={`decision-card ${read ? "read" : "queued"} call-tone-${tone}`} data-call-id={call.id}><CallMeta call={call} /><h3>{call.title}</h3>{answerText && <p className="call-answer" title={answerText}>{answerText}</p>}<div className={`call-state tone-${tone}`}>{icon}<span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent && resendText ? <button onClick={() => onSend(resendText)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></article>;
+  }
+  if (answered?.result === "closed") {
+    // Recorded by firstmate itself; the card goes once the snapshot has the call closed.
+    const told = answered.told ? "The first mate has been told, and does the follow-up." : answered.warning ?? "The first mate was not told. Tell it in chat so it does the follow-up.";
+    return <article className="decision-card read call-tone-green" data-call-id={call.id} data-recorded="true"><CallMeta call={call} /><h3 data-testid="decision-title">{call.title}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Recorded: {answered.label}</strong><small>{told}</small>{answered.unread && <small className="call-unread">You answered without opening the argument.</small>}</span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</div></article>;
   }
   if (answeredIn) {
-    // The answer has gone; the call stays until the first mate records it and closes the task.
-    return <article className="decision-card read call-tone-green" data-decision-id={decision.id} data-answered-in-review="true"><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3 data-testid="decision-title">{decision.title}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Answered in your review of “{answeredIn}”</strong><small>This stays here until the first mate records it.</small></span>{onReadArgument && <button onClick={onReadArgument}>Open the page</button>}</div></article>;
+    // Answered in a review; the card goes once the snapshot has the call closed.
+    return <article className="decision-card read call-tone-green" data-call-id={call.id} data-answered-in-review="true"><CallMeta call={call} /><h3 data-testid="decision-title">{call.title}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Answered in your review of “{answeredIn}”</strong><small>This leaves the list once firstmate has closed it.</small></span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</div></article>;
   }
-  if (onReadArgument) {
-    // A page argues this one, so it is answered there: one decision, one place.
-    return <article className="decision-card" data-decision-id={decision.id} data-argued="true"><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3 data-testid="decision-title">{decision.title}</h3><p data-testid="decision-reason">{decision.summary}</p><div className="decision-actions"><span>{options.length > 0 ? `${options.length} options, with the case for each` : "The case for this is written up"}</span><button onClick={onReadArgument}><PanelsTopLeft size={15} /> Read the argument</button></div></article>;
+  if (argument && onReadArgument) {
+    // Something argues this one, so reading it comes first; answering here is for a captain who already knows.
+    return <article className="decision-card" data-call-id={call.id} data-argued="true">
+      <CallMeta call={call} />
+      <h3 data-testid="decision-title">{call.title}</h3>
+      {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
+      <p className="call-argued" data-testid="argued-by">Argued by <strong>{argument.title}</strong></p>
+      {failed && <NotRecorded note={failed} />}
+      <div className="decision-actions">
+        <span>{optionSummary(call)}</span>
+        <div className="report-actions">
+          {keyed && <button className="quiet" aria-expanded={quickOpen} onClick={() => setQuickOpen((open) => !open)}>Answer now</button>}
+          <button onClick={onReadArgument}><PanelsTopLeft size={15} /> Read the argument</button>
+        </div>
+      </div>
+      {quickOpen && keyed && <div className="call-quick" data-testid="answer-now">
+        <p>Choosing an option records it as your answer right away. To change it afterwards, tell the first mate.</p>
+        {seenArgument === false && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argument.title}” yet.</p>}
+        <div className="suggestion-chips">{call.options.map((option) => <button key={option.key} className={recording === option.key ? "selected" : ""} disabled={recording !== null} onClick={() => void record(option)}><span>{recording === option.key ? `Recording “${option.label}”…` : option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}</div>
+      </div>}
+    </article>;
   }
-  return <article className="decision-card" data-decision-id={decision.id}><div className="decision-meta"><span>{decision.key || decision.verb || "Your call"}</span><small>{decision.owner}</small></div><h3 data-testid="decision-title">{decision.title}</h3><p data-testid="decision-reason">{decision.summary}</p><div className="suggestion-chips">{options.map((option) => <button className={selection === option.label ? "selected" : ""} key={option.label} onClick={() => { setSelection(option.label); setDateOpen(false); setDeferDate(""); }}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}<button className={dateOpen ? "selected" : ""} onClick={() => { setDateOpen(true); setSelection(""); }}>Not now</button></div>{dateOpen && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} onChange={(event) => setDeferDate(event.target.value)} /></label>}<label className="reply-field"><span>{selection === "Send it back" ? "What should change?" : "Or write your own answer"}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} /></label><div className="decision-actions"><span>{preview !== "…" && `→ sends: ${preview}`}</span><button disabled={preview === "…"} onClick={() => onSend(preview)}><Send size={15} /> {mergeSelected && !note.trim() ? "Merge now" : "Send"}</button></div>{mergeSelected && note.trim() && <p className="merge-hint">This sends instructions, not a merge. Use Merge now to merge.</p>}</article>;
+  const buttonLabel = recordPick ? (recording ? "Recording…" : "Record answer") : "Send";
+  const hint = recordPick ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}` : preview !== "…" ? `→ sends: ${preview}` : "";
+  return <article className="decision-card" data-call-id={call.id} data-inline="true">
+    <CallMeta call={call} />
+    <h3 data-testid="decision-title">{call.title}</h3>
+    {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
+    {failed && <NotRecorded note={failed} />}
+    <div className="suggestion-chips">
+      {call.options.map((option) => <button className={selection?.key === option.key ? "selected" : ""} key={option.key} disabled={recording !== null} onClick={() => { setSelection(option); setDateOpen(false); setDeferDate(""); }}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}
+      <button className={dateOpen ? "selected" : ""} disabled={recording !== null} onClick={() => { setDateOpen(true); setSelection(null); }}>Not now</button>
+    </div>
+    {dateOpen && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} onChange={(event) => setDeferDate(event.target.value)} /></label>}
+    <label className="reply-field"><span>{recordPick ? "Anything to add for the first mate?" : "Or write your own answer"}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} /></label>
+    <div className="decision-actions"><span>{hint}</span><button disabled={recording !== null || (!recordPick && preview === "…")} onClick={() => recordPick ? void record(recordPick, note.trim() || undefined) : onSend(preview)}><Send size={15} /> {buttonLabel}</button></div>
+  </article>;
 }
 
 function ProjectsView({ projects, onOpen }: { projects: { name: string; posture: string; tasks: FleetTask[] }[]; onOpen: (name: string) => void }) {
@@ -1154,7 +1277,7 @@ function HostHealthBanner({ warning, onRestart }: { warning: HealthWarning; onRe
 const KIND_NAMES: Record<string, string> = { scout: "Scout", ship: "Ship", secondmate: "Second mate" };
 
 /** Backlog body lines that are bookkeeping rather than anything a person wrote about the task. */
-const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:)/;
+const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:|Answer key:|Answered by:|Answered via:)/;
 
 /**
  * One task, led by what its worker is doing now. The snapshot carries the worker's latest note but not the
@@ -1308,24 +1431,24 @@ export type ArtifactStanding = "needs-you" | "discussion" | "settled";
  * arguing a call still waiting on the captain means the move is yours; anything
  * else that is still going belongs with its author.
  */
-export function artifactStanding(artifact: Artifact, review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>): ArtifactStanding {
+export function artifactStanding(artifact: Artifact, review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>, calls: Call[]): ArtifactStanding {
   const task = artifact.scope === "task" ? artifact.task : null;
   if (task && backlog.get(task)?.state === "done") return "settled";
   if (review && review.draft_count > 0) return "needs-you";
   const comments = openComments(artifact, review);
-  const covers = artifact.latest.covers ?? [];
-  // A call this page argues: yours until you answer it, then the first mate's until it records it.
-  const calls = covers.filter((call) => backlog.get(call)?.captain_actionable);
+  const argued = callsArguedBy(calls, artifact);
+  // A call this page argues: yours until you answer it, then firstmate's until its records catch up.
+  const waiting = argued.filter(isOpen);
   // A chat page that argued calls exists for them, so once every one is closed it has done its work,
   // read or not, unless a comment on it is still going back and forth.
-  if (!task && covers.length > 0 && calls.length === 0 && comments.waiting.length === 0 && comments.answered.length === 0) return "settled";
+  if (!task && argued.length > 0 && waiting.length === 0 && comments.waiting.length === 0 && comments.answered.length === 0) return "settled";
   const seen = review?.seen_rev ?? null;
   if (seen === null || artifact.latest.rev > seen) return "needs-you";
   const answered = review?.answered ?? [];
-  if (calls.some((call) => !answered.includes(call))) return "needs-you";
+  if (waiting.some((call) => !answered.includes(call.id))) return "needs-you";
   // The author answered a comment: settling it or replying is the captain's move.
   if (comments.answered.length > 0) return "needs-you";
-  if (calls.length > 0) return "discussion";
+  if (waiting.length > 0) return "discussion";
   if (comments.waiting.length > 0) return "discussion";
   // A chat page has no work to finish, so once it is read and quiet it is done.
   return task ? "discussion" : "settled";
@@ -1337,14 +1460,13 @@ const STANDINGS: { id: ArtifactStanding; title: string; blank: string }[] = [
   { id: "settled", title: "Settled", blank: "" },
 ];
 
-function ArtifactsView({ artifacts, tasks, reviews, backlog, onOpen }: { artifacts: Artifact[]; tasks: FleetTask[]; reviews: ReviewSummary; backlog: BacklogRecord[]; onOpen: (artifact: Artifact) => void }) {
+function ArtifactsView({ artifacts, tasks, reviews, backlog, calls, onOpen }: { artifacts: Artifact[]; tasks: FleetTask[]; reviews: ReviewSummary; backlog: Map<string, BacklogRecord>; calls: Call[]; onOpen: (artifact: Artifact) => void }) {
   const [openSettled, setOpenSettled] = useState(false);
-  const rows = useMemo(() => new Map(backlog.map((record) => [record.id, record])), [backlog]);
   const groups = useMemo(() => {
     const out = new Map<ArtifactStanding, Artifact[]>(STANDINGS.map((standing) => [standing.id, []]));
-    for (const artifact of artifacts) out.get(artifactStanding(artifact, reviews[artifactKey(artifact)], rows))!.push(artifact);
+    for (const artifact of artifacts) out.get(artifactStanding(artifact, reviews[artifactKey(artifact)], backlog, calls))!.push(artifact);
     return out;
-  }, [artifacts, reviews, rows]);
+  }, [artifacts, reviews, backlog, calls]);
 
   const row = (artifact: Artifact, landed: boolean) => <ArtifactRow
     key={`${artifact.scope}/${artifact.task}/${artifact.name}`}
@@ -1431,8 +1553,8 @@ const LIVE_STATES = new Set(["working", "blocked", "parked", "paused", "unknown"
  * task has finished or landed, a scout's report that argues no call, or a chat page with no open call holds
  * nothing up, so it starts on Comment, and every hint says what the verdict does for this page, not in general.
  */
-function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>): ReviewStake {
-  const calls = (artifact.latest.covers ?? []).filter((call) => backlog.get(call)?.captain_actionable);
+function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>, known: Call[]): ReviewStake {
+  const calls = callsArguedBy(known, artifact).filter(isOpen);
   const taskId = artifact.scope === "task" ? artifact.task : null;
   const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
   const quiet = (reason: string): ReviewStake => ({
@@ -1474,7 +1596,7 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, decisions, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onScene }: {
+function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, calls, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onScene }: {
   artifact: Artifact;
   revision: ArtifactRevision;
   url: string;
@@ -1485,11 +1607,13 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   onRevision: (rev: number) => void;
   onComment: (body: string, anchor?: ReviewAnchor, thread?: string) => Promise<unknown>;
   onDiscard: (thread: string) => Promise<unknown>;
-  onSubmit: (verdict: ReviewVerdict) => Promise<unknown>;
+  /** Resolves to a warning when the review went only partly: answers recorded, message not sent. */
+  onSubmit: (verdict: ReviewVerdict) => Promise<string | undefined>;
   onSettle: (thread: string, resolved: boolean) => Promise<unknown>;
   onSeen: (rev: number) => Promise<unknown>;
-  decisions: DecisionOptions[];
-  onAnswer: (decision: string, option?: string, label?: string) => Promise<unknown>;
+  /** Every call whose evidence contains this page. */
+  calls: Call[];
+  onAnswer: (call: Call, option?: string, label?: string) => Promise<unknown>;
   onScene: (place: ScenePlace, proposal: SceneProposal) => Promise<unknown>;
 }) {
   const [narrow, setNarrow] = useState(false);
@@ -1598,7 +1722,8 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     setSending(true);
     setProblem(null);
     try {
-      await onSubmit(verdict);
+      const warning = await onSubmit(verdict);
+      if (warning) setProblem(warning);
     } catch (error) {
       setProblem(String(error));
     } finally {
@@ -1638,28 +1763,11 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
           <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setDraft(""); } }} />
           <div><button className="ghost" onClick={() => { setPending(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim()} onClick={() => void save()}>Comment</button></div>
         </section>}
-        {decisions.length > 0 && <div className="decision-answers">
-          {decisions.map((decision) => {
-            const chosen = review?.answers.find((answer) => answer.decision === decision.task);
-            return <section key={decision.task} className="decision-answer" data-testid="decision-answer">
-              <header><span>Your call</span><small>{decision.task}</small></header>
-              {decision.question && <p>{decision.question}</p>}
-              {decision.options.length === 0
-                ? <small className="decision-missing">This page argues a decision whose options are not recorded. Answer it in chat.</small>
-                : <div className="decision-choices">{decision.options.map((option) => {
-                    const picked = chosen?.option === option.key;
-                    // Once sent, the answer is on the record; changing it is a conversation with the first mate.
-                    const locked = chosen !== undefined && chosen.sent_at !== null;
-                    return <button key={option.key} className={picked ? "picked" : ""} aria-pressed={picked} disabled={locked} onClick={() => void onAnswer(decision.task, picked ? undefined : option.key, option.label)}>
-                      <span>{option.label}</span>{option.recommended && <small>Recommended</small>}
-                    </button>;
-                  })}</div>}
-              {chosen && <small className={chosen.sent_at === null ? "decision-staged" : "decision-sent"}>{chosen.sent_at === null ? "Goes with your review" : `Sent ${formatWhen(new Date(chosen.sent_at).toISOString())}`}</small>}
-            </section>;
-          })}
+        {calls.length > 0 && <div className="decision-answers">
+          {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} onAnswer={(option, label) => onAnswer(call, option, label)} />)}
         </div>}
         <div className="review-threads">
-          {threads.length === 0 && !pending && decisions.length === 0 && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
+          {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
           {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
           {settled.length > 0 && <button className="settled-toggle" aria-expanded={showSettled} onClick={() => setShowSettled((current) => !current)}><ChevronRight size={13} className={showSettled ? "rotated" : ""} /> {settled.length} settled</button>}
           {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
@@ -1677,6 +1785,43 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
       <SceneEditor place={openScene.place} scene={openScene.scene} onClose={() => setOpenScene(null)} onPropose={(proposal) => onScene(openScene.place, proposal)} />
     </Suspense>}
   </div>;
+}
+
+/**
+ * A call this page argues, in the review rail. Open, it offers the call's own options; a choice is staged with the
+ * review and recorded through firstmate's intake as the review goes. Answered anywhere, it says by whom and how,
+ * instead of offering choices that could no longer do anything.
+ */
+function RailCall({ call, revision, chosen, onAnswer }: { call: Call; revision: ArtifactRevision; chosen?: ReviewView["answers"][number]; onAnswer: (option?: string, label?: string) => Promise<unknown> }) {
+  const recorded = chosen?.recorded?.result === "closed";
+  const refused = chosen?.recorded && !recorded ? chosen.recorded : null;
+  // Sent before the app recorded answers itself: the first mate was asked to record it.
+  const handedOver = chosen !== undefined && chosen.sent_at !== null && !chosen.recorded;
+  const locked = recorded || handedOver;
+  const updated = !call.answer && optionsUpdatedSince(call, revision.presented_at);
+  const when = (at: number) => formatWhen(new Date(at).toISOString());
+  return <section className="decision-answer" data-testid="decision-answer" data-call-id={call.id}>
+    <header><span>Your call</span><small>{call.id}</small></header>
+    {call.question && <p>{call.question}</p>}
+    {updated && <small className="decision-updated" data-testid="options-updated">Options updated since rev {revision.rev}</small>}
+    {call.answer
+      ? <p className="decision-answered" data-testid="call-answered"><Check size={13} /><span>{answeredBy(call.answer)}: <strong>{call.answer.label}</strong></span></p>
+      : call.options.length === 0
+        ? <small className="decision-missing">This page argues a call whose options are not recorded. Answer it in chat.</small>
+        : <div className="decision-choices">{call.options.map((option) => {
+            const picked = chosen?.option === option.key && !refused;
+            return <button key={option.key} className={picked ? "picked" : ""} aria-pressed={picked} disabled={locked} onClick={() => void onAnswer(picked ? undefined : option.key, option.label)}>
+              <span>{option.label}</span>{option.recommended && <small>Recommended</small>}
+            </button>;
+          })}</div>}
+    {!call.answer && chosen && (refused
+      ? <small className="decision-refused" role="alert">Not recorded: {refused.detail}</small>
+      : recorded
+        ? <small className="decision-sent">Recorded {when(chosen.recorded!.at)}</small>
+        : handedOver
+          ? <small className="decision-sent">Sent {when(chosen.sent_at!)}</small>
+          : <small className="decision-staged">Goes with your review, and is recorded as it is sent</small>)}
+  </section>;
 }
 
 /**

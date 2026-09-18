@@ -54,20 +54,56 @@ export type BacklogRecord = {
   completion?: { verb: string | null; date: string | null };
   pr_url?: string | null;
   report_path?: string | null;
-  /** The row's body. A closed captain call carries its resolution block, with the answer after "Captain decision:". */
+  /** The row's body, bookkeeping lines included. What a call was answered with is read from `calls[]`, never from here. */
   body_lines?: string[];
   body_excerpt?: string | null;
 };
 
-/** A call the first mate made for the captain, as `bin/fm-decided.sh` records it (`fm-decided.v1`). */
-export type DecidedRecord = {
-  id: string;
+/** One option a call offers, as `bin/fm-captain-hold.sh` records it. */
+export type CallOption = { key: string; label: string; recommended: boolean };
+
+/** Who answered a call and through which channel, read from the machine lines of its resolution block. */
+export type CallAnswer = {
+  /** The option's key, or null when the answer named none (a free answer in chat). */
+  key: string | null;
+  label: string;
+  by: "captain" | "firstmate";
+  /** `quarterdeck`, `chat`, `lavish`, or another source the intake was given. */
+  via: string;
   at: string;
-  kind: string;
-  task: string | null;
-  what: string;
-  why: string;
-  link: string | null;
+};
+
+/** Why the first mate settled a call for the captain, on a call raised and answered by `decide`. */
+export type CallDecided = { what: string; why: string; kind?: string | null; link?: string | null };
+
+/**
+ * A captain call, exactly as `bin/fm-captain-hold.sh list --json` reports it and `fm-fleet-snapshot.sh` carries it
+ * in `calls[]`: the backlog row's lifecycle joined with the call's own record. A row with no record still comes
+ * through, with no options and no evidence.
+ */
+export type Call = {
+  id: string;
+  title: string;
+  question: string | null;
+  options: CallOption[];
+  /** How an answer closes it: `done` or `release`. Channels pass it on, never choose it. */
+  on_answer: string | null;
+  /** `open`: held, not answered. `answered`: the answer is recorded, the row not closed yet. `closed`. */
+  state: "open" | "answered" | "closed";
+  bucket?: string | null;
+  captain_actionable?: boolean;
+  /** The task whose work raised it: everything that task produced argues it. */
+  origin?: string | null;
+  /** The task it is about, if another. */
+  about?: string | null;
+  /** `page:task/<id>/<name>`, `page:chat/<name>`, `report:<task>`, `url:<url>`; explicit refs first, then the origin's. */
+  evidence: string[];
+  raised_by?: string | null;
+  raised_at?: string | null;
+  /** When its question or options last changed. */
+  updated_at?: string | null;
+  answer: CallAnswer | null;
+  decided: CallDecided | null;
 };
 
 export type FleetTask = {
@@ -113,8 +149,6 @@ export type ArtifactRevision = {
   layout?: { status: "clean" | "accepted" | "skipped"; reason?: string; issues: ArtifactLayoutIssue[] };
   /** What the author says this revision does about the captain's comments. Whether one is settled stays the captain's call. */
   answers?: { addressed: string[]; replies: { thread: string; body: string }[] };
-  /** The captain-held tasks this page argues, so their recorded options can be offered beside it. */
-  covers?: string[];
 };
 
 /** Where a comment sits on the page: the words themselves, a little text either side, and a fallback path. */
@@ -128,10 +162,18 @@ export type ReviewThreadState = "draft" | "open" | "resolved";
 export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | SceneAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[] };
 export type ReviewVerdict = "approve" | "changes" | "comment";
 export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[] };
-/** The captain's choice on a held task the page argues. Staged until the review is sent. */
-export type ReviewAnswer = { decision: string; option: string; label: string; at: number; sent_at: number | null };
-/** What a captain-held task offers, as `bin/fm-decision-options.sh` records it. */
-export type DecisionOptions = { task: string; question: string; options: { key: string; label: string; recommended: boolean }[] };
+/** What firstmate's intake did with an answer: `closed` is recorded; anything else is not. */
+export type IntakeResult = "closed" | "skipped" | "not_recorded";
+export type IntakeOutcome = { call: string; result: IntakeResult; detail: string };
+/**
+ * The captain's choice on a call the page argues. Staged until the review is sent, when firstmate's intake records
+ * it (`recorded`); `sent_at` is when the first mate was told.
+ */
+export type ReviewAnswer = { decision: string; option: string; label: string; on_answer?: string | null; at: number; sent_at: number | null; recorded?: { result: IntakeResult; detail: string; at: number } | null };
+/** What sending a review did: the message (null if it could not go), and what the intake did with each answer. */
+export type ReviewSubmitted = { message: string | null; text: string; review: ReviewView; outcomes?: IntakeOutcome[]; warning?: string };
+/** What answering a call from Bearings did. `message` is null when nothing was told to the first mate. */
+export type CallAnswered = { outcome: IntakeOutcome; message: string | null; text: string | null; review: ReviewView | null; warning?: string };
 /** What the list needs about a page's review, keyed `task/<id>/<name>` or `chat/<name>`. */
 export type ReviewSummary = Record<string, {
   seen_rev: number | null;
@@ -144,6 +186,8 @@ export type ReviewSummary = Record<string, {
 
 /** The whole review of one page, as the app stores it beside the revisions. */
 export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
+/** One answer given from Bearings: the call, the option, what the call declares, and the page that argues it. */
+export type CallAnswerRequest = { call: string; option: string; label: string; onAnswer: string; page: ArtifactRef | null; note?: string };
 /** Which page a review belongs to. */
 export type ArtifactRef = { scope: "task" | "chat"; task: string | null; name: string };
 
@@ -165,10 +209,11 @@ export type FleetSnapshot = {
   tasks: FleetTask[];
   /** Absent from homes whose firstmate predates `bin/fm-artifact.sh`. */
   artifacts?: Artifact[];
-  /** What each captain-held task offers, for pages that argue one. */
-  decision_options?: DecisionOptions[];
-  /** The last 7 days of calls the first mate made for the captain, newest first. Absent on homes without `bin/fm-decided.sh`. */
-  decided?: DecidedRecord[];
+  /**
+   * Every open call, and every call closed in the last 7 days. The one source of truth for calls; absent from homes
+   * whose firstmate predates it, which show Bearings' own list instead.
+   */
+  calls?: Call[];
 };
 
 export type SnapshotProject = { name: string; mode: string; yolo: boolean; description?: string; added?: string | null };
@@ -265,12 +310,17 @@ export interface HostAdapter {
   reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: ReviewAnchor, thread?: string): Promise<ReviewView>;
   /** Takes back a thread that has not been sent. */
   reviewDiscard(ref: ArtifactRef, thread: string): Promise<ReviewView>;
-  /** Sends the whole draft to the first mate as one message. */
-  reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict): Promise<{ message: string; text: string; review: ReviewView }>;
+  /** Records the staged answers through firstmate's intake, then sends the whole draft to the first mate as one message. */
+  reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict): Promise<ReviewSubmitted>;
   /** Files a proposed diagram beside the review and opens a thread for it. */
   reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string): Promise<ReviewView>;
-  /** Stages the captain's choice on a held task, or takes it back with no option. */
-  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string): Promise<ReviewView>;
+  /** Stages the captain's choice on a call, or takes it back with no option. `onAnswer` is what the call declares. */
+  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null): Promise<ReviewView>;
+  /**
+   * Answers one call now, from Bearings: firstmate's intake records it (noted in the review of `page`, the page that
+   * argues it, when there is one), and only a recorded answer is told to the first mate.
+   */
+  callAnswer(answer: CallAnswerRequest): Promise<CallAnswered>;
   /** Settles a sent comment, or opens it again. */
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean): Promise<ReviewView>;
   /** Remembers that the captain has looked at a revision, so a later one reads as new. */

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { artifactPath } from "./types";
-import type { ArtifactRef, ArtifactRevision, HistoryItem, HomeStatus, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ReasonKind, SnapshotEvent } from "./types";
+import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ReasonKind, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -52,15 +52,19 @@ export class TauriHostAdapter implements HostAdapter {
   }
 
   reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict) {
-    return invoke<{ message: string; text: string; review: ReviewView }>("review_submit", { page: ref, rev, verdict });
+    return invoke<ReviewSubmitted>("review_submit", { page: ref, rev, verdict });
   }
 
   reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string) {
     return invoke<ReviewView>("review_scene", { page: ref, rev, proposal: { scene, label, path, summary, sceneJson, pngBase64: png } });
   }
 
-  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string) {
-    return invoke<ReviewView>("review_answer", { page: ref, decision, option, label });
+  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null) {
+    return invoke<ReviewView>("review_answer", { page: ref, decision, option, label, onAnswer: onAnswer ?? null });
+  }
+
+  callAnswer({ call, option, label, onAnswer, page, note }: CallAnswerRequest) {
+    return invoke<CallAnswered>("call_answer", { page, call, option, label, onAnswer, note: note ?? null });
   }
 
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {

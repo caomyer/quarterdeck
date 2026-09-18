@@ -222,7 +222,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .report-card > p { margin: 6px 0 12px; color: var(--muted); font-size: .68rem; }
 .report-actions { display: flex; flex: none; align-items: center; gap: 6px; }
 .decision-actions button.quiet { color: var(--muted); background: transparent; font-weight: 640; }
-.decision-actions button.quiet:hover { color: var(--ink); background: var(--surface); }
+.decision-actions button.quiet:hover, .decision-actions button.quiet[aria-expanded="true"] { color: var(--ink); background: var(--surface); }
+.decision-card > p.call-argued { margin: 8px 0 12px; color: var(--muted); font-size: .66rem; }
+.decision-card > p + p.call-argued { margin-top: -4px; }
+.call-argued strong { color: var(--ink); font-weight: 640; }
+/* Answering from Bearings: the options, what choosing does, and whether the argument was read first. */
+.call-quick { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.call-quick > p { margin: 0 0 9px; color: var(--muted); font-size: .63rem; line-height: 1.5; }
+.call-quick > p.call-unread { color: var(--ink); font-weight: 620; }
+.call-quick .suggestion-chips { margin-bottom: 0; }
+.suggestion-chips button:disabled { cursor: default; }
+.suggestion-chips button:disabled:not(.selected) { opacity: .55; }
+.suggestion-chips button:disabled:hover:not(.selected) { border-color: var(--border); }
+.call-state.call-not-recorded { min-height: 0; margin: 0 0 12px; padding: 9px 10px; border-radius: 6px; background: color-mix(in srgb, var(--coral) 8%, transparent); }
+.call-state small.call-unread { color: var(--ink); }
+.landed-answer .link-button { font-weight: 640; }
 
 .decided-list { overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
 .decided-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border); }
@@ -514,6 +528,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .decision-staged { display: block; margin-top: 7px; color: var(--sea); font-size: .59rem; font-weight: 680; }
 .decision-sent { display: block; margin-top: 7px; color: var(--green); font-size: .59rem; font-weight: 640; }
 .decision-missing { display: block; color: var(--muted); font-size: .61rem; line-height: 1.45; }
+.decision-refused { display: block; margin-top: 7px; color: var(--coral); font-size: .59rem; font-weight: 640; line-height: 1.45; }
+.decision-updated { display: inline-block; margin: 0 0 8px; padding: 2px 7px; border-radius: 99px; color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); font-size: .56rem; font-weight: 700; }
+.decision-answer p.decision-answered { display: flex; align-items: flex-start; gap: 6px; margin: 2px 0 0; color: var(--ink); font-size: .65rem; }
+.decision-answered svg { flex: none; margin-top: 3px; color: var(--green); }
+.decision-answered strong { font-weight: 680; }
 
 .newer-revision { display: flex; flex: none; align-items: center; gap: 5px; min-height: 30px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--blue) 50%, var(--border)); border-radius: 6px; color: var(--blue); background: color-mix(in srgb, var(--blue) 9%, var(--surface)); font-size: .61rem; font-weight: 700; }
 
@@ -551,7 +570,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .project-grid { grid-template-columns: 1fr; }.project-summary { align-items: flex-start; gap: 16px; }.project-summary p { max-width: 250px; }
   .decided-row { grid-template-columns: 26px minmax(0, 1fr); }.decided-actions { grid-column: 2; }
   .landed-row { grid-template-columns: 28px minmax(0, 1fr); }.compact-row > .landed-links { grid-column: 2; justify-content: flex-start; }
-  .report-card .decision-actions { flex-wrap: wrap; }
+  .report-card .decision-actions, .decision-card[data-argued] .decision-actions { flex-wrap: wrap; }
+  .decision-card[data-argued] .decision-actions > span { flex-basis: 100%; }
+  .decision-card[data-argued] .report-actions { margin-left: auto; }
   .task-drawer { inset: 0; width: 100%; max-width: none; border-radius: 0; }.decision-actions { align-items: flex-end; }.decision-actions > span { white-space: normal; }
   .artifact-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
   .review-rail { max-height: 45%; border-top: 1px solid var(--border); border-left: 0; }

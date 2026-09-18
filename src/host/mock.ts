@@ -6,8 +6,9 @@ import type {
   Artifact,
   ArtifactRef,
   BacklogRecord,
-  DecidedRecord,
-  DecisionOptions,
+  Call,
+  CallAnswerRequest,
+  IntakeOutcome,
   ArtifactRevision,
   BearingsSnapshot,
   FleetSnapshot,
@@ -56,8 +57,11 @@ function reviewValue(name: string) {
  * The pages live in src/fixtures/review-pages, which only the dev server serves.
  *
  * Around them, a home a day into its work: a scout that has finished and presented its report, a scout that
- * reported without a page and has landed, a call the captain answered two days ago with the page that argued
- * it, and the calls the first mate made for the captain in the meantime.
+ * reported without a page and has landed, and the home's calls[]: one page arguing two calls (one whose options
+ * changed after the page), a call raised before the page its origin later presented, a call nothing argues, a call
+ * the captain answered in chat, and the calls the first mate made for the captain.
+ *
+ * `?legacy` drops calls[], as a home whose firstmate predates it. `?skip=<call>[,<call>]` has the intake skip those calls.
  */
 const ARTIFACT_TASK = "res-titles-scout";
 /** A task the fixture backlog records as done, so its page has somewhere settled to sit. */
@@ -69,15 +73,17 @@ const REPORTED_TASK = "res-feed-scout";
 /** A call the captain answered, argued by a chat page, and closed by the first mate. */
 const ANSWERED_CALL = "res-upload-wifi";
 
+/** A call nothing argues, so Bearings offers its options inline. */
+const UNARGUED_CALL = "foreman-auto-merge";
+
 type MockHome = {
   artifacts: Artifact[];
   tasks: FleetTask[];
-  decisionOptions: DecisionOptions[];
+  calls: Call[];
   inFlight: BearingsSnapshot["in_flight"];
   records: BacklogRecord[];
   landed: BearingsSnapshot["landed"];
   reports: { id: string; path: string }[];
-  decided: DecidedRecord[];
 };
 
 /** A backlog row in the shape fm-fleet-snapshot.sh writes, with only what the app reads filled in. */
@@ -126,21 +132,11 @@ function mockArtifacts(home: string): MockHome {
       answers: { addressed: ["t1"], replies: [{ thread: "t2", body: "Kept the wide image: seeing both titles side by side is the point." }] },
     },
   ];
+  // One page that argues two calls.
   const board: ArtifactRevision = {
     scope: "chat", task: null, name: "model-download", rev: 1, title: "When may the app download the speech model?", note: null,
     entry: "model-download.html", bytes: 2400, presented_at: at(1), presented_by: { role: "firstmate" }, layout: { status: "clean", issues: [] },
-    covers: ["res-model-download"],
   };
-  // What the held task offers, as bin/fm-decision-options.sh records it.
-  const decisionOptions: DecisionOptions[] = [{
-    task: "res-model-download",
-    question: "When may the app download the 150 MB speech model?",
-    options: [
-      { key: "wifi-only", label: "Wi-Fi only, with visible progress", recommended: true },
-      { key: "prompt", label: "Ask on the first snip that needs it", recommended: false },
-      { key: "eager", label: "Keep downloading eagerly", recommended: false },
-    ],
-  }];
   // A page whose task has landed: the list files it away on the backlog's word alone.
   const shipped: ArtifactRevision = {
     scope: "task", task: LANDED_TASK, name: "rebase-plan", rev: 1, title: "Rebase the subject before anybody reads it", note: null,
@@ -155,7 +151,6 @@ function mockArtifacts(home: string): MockHome {
   const uploads: ArtifactRevision = {
     scope: "chat", task: null, name: "uploads-wifi", rev: 1, title: "Should uploads wait for Wi-Fi?", note: null,
     entry: "uploads-wifi.html", bytes: 1700, presented_at: at(3 * 24 * 60), presented_by: { role: "firstmate" }, layout: { status: "clean", issues: [] },
-    covers: [ANSWERED_CALL],
   };
   const artifacts: Artifact[] = [
     { scope: "chat", task: null, name: "model-download", title: board.title, latest: board, revisions: [board] },
@@ -174,12 +169,15 @@ function mockArtifacts(home: string): MockHome {
     }),
     backlogRow(ANSWERED_CALL, "Resonance: should uploads wait for Wi-Fi?", {
       kind: "captain", hold_kind: "captain", state: "done", current_role: "done", since: day(4), completion: { verb: "done", date: day(2) },
-      // The resolution block bin/fm-captain-hold.sh writes when it closes a call with the captain's answer.
+      // The resolution block bin/fm-captain-hold.sh writes when it closes a call, machine lines included.
       body_lines: [
         "Captain hold set: 2026-09-14T09:12:00Z",
         "Resolution recorded by fm-captain-hold.",
         "Decision digest: 5c1f0e",
         "Resolution mode: answered",
+        "Answer key: wifi-only",
+        "Answered by: captain",
+        "Answered via: chat",
         "",
         "Captain decision:",
         "Wi-Fi only, and say so in Settings.",
@@ -187,28 +185,70 @@ function mockArtifacts(home: string): MockHome {
       body_excerpt: "Resolution recorded by fm-captain-hold.",
     }),
   ];
-  // What bin/fm-decided.sh keeps, newest first.
-  const decided: DecidedRecord[] = [
-    {
-      id: "20260918T071400Z-a1b2c3", at: at(40), kind: "review-finding", task: ARTIFACT_TASK,
+  const call = (id: string, title: string, fields: Partial<Call>): Call => ({
+    id, title, question: null, options: [], on_answer: "done", state: "open", bucket: "live", captain_actionable: true, origin: null, about: null,
+    evidence: [], raised_by: "firstmate", raised_at: at(30), updated_at: at(30), answer: null, decided: null, ...fields,
+  });
+  const option = (key: string, label: string, recommended = false) => ({ key, label, recommended });
+  // A call the first mate settled for the captain, raised and answered in one act by `decide`.
+  const decidedCall = (id: string, minutesAgo: number, about: string | null, decided: Call["decided"] & object): Call => call(id, decided.what, {
+    state: "closed", bucket: null, captain_actionable: false, about, raised_at: at(minutesAgo), updated_at: at(minutesAgo),
+    answer: { key: null, label: decided.what, by: "firstmate", via: "firstmate", at: at(minutesAgo) }, decided,
+  });
+  // What `bin/fm-captain-hold.sh list --json` reports, as the snapshot carries it in calls[].
+  const calls: Call[] = [
+    // Argued by a page the first mate presented after raising it; one of two calls that page argues.
+    call("res-model-download", "Resonance: when may the app download the 150 MB speech model?", {
+      question: "When may the app download the 150 MB speech model?",
+      options: [option("wifi-only", "Wi-Fi only, with visible progress", true), option("prompt", "Ask on the first snip that needs it"), option("eager", "Keep downloading eagerly")],
+      evidence: ["page:chat/model-download"], raised_at: at(30), updated_at: at(30),
+    }),
+    // The same page's second call, whose options changed after the page was presented.
+    call("res-model-cellular", "Resonance: what happens when a download leaves Wi-Fi?", {
+      question: "If the phone leaves Wi-Fi halfway through the download, what happens?",
+      options: [option("pause", "Pause, and carry on when Wi-Fi is back", true), option("finish", "Finish on cellular if under 20 MB are left")],
+      evidence: ["page:chat/model-download"], raised_at: at(20), updated_at: at(0.5),
+    }),
+    // Raised from a scout's work before its report page existed: the page comes through the origin.
+    call("res-transcripts-source", "Resonance: where should transcripts come from?", {
+      question: "Where should Resonance get an episode's transcript?",
+      options: [option("publisher-first", "Use the publisher's transcript when there is one, else transcribe", true), option("always-transcribe", "Always transcribe on the device")],
+      on_answer: "release", origin: REPORT_TASK, raised_at: at(26 * 60), updated_at: at(26 * 60),
+      evidence: [`page:task/${REPORT_TASK}/transcripts-report`, `report:${REPORT_TASK}`],
+    }),
+    // Nothing argues this one, so its options are offered inline.
+    call(UNARGUED_CALL, "Foreman: keep merging its own PRs while you are away?", {
+      question: "Should foreman keep merging its own PRs while you are away this week?",
+      options: [option("keep", "Keep merging once checks pass", true), option("pause", "Hold every PR for me")],
+      raised_at: at(3 * 60), updated_at: at(3 * 60),
+    }),
+    // Answered by the captain in chat, and closed.
+    call(ANSWERED_CALL, "Resonance: should uploads wait for Wi-Fi?", {
+      question: "Should uploads wait for Wi-Fi?", state: "closed", bucket: null, captain_actionable: false,
+      options: [option("wifi-only", "Wi-Fi only, and say so in Settings", true), option("any", "Upload on any connection")],
+      evidence: ["page:chat/uploads-wifi"], raised_at: at(4 * 24 * 60), updated_at: at(4 * 24 * 60),
+      answer: { key: "wifi-only", label: "Wi-Fi only, and say so in Settings", by: "captain", via: "chat", at: at(2 * 24 * 60) },
+    }),
+    decidedCall("res-titles-keep-wide", 40, ARTIFACT_TASK, {
+      kind: "review-finding", link: null,
       what: "Kept the wide before-and-after image in the titles plan (review finding F1)",
-      why: "Seeing both titles side by side is the point of the page, so the narrow window scrolls it instead.", link: null,
-    },
-    {
-      id: "20260918T021400Z-d4e5f6", at: at(5 * 60), kind: "merge", task: LANDED_TASK,
+      why: "Seeing both titles side by side is the point of the page, so the narrow window scrolls it instead.",
+    }),
+    decidedCall("foreman-merge-24", 5 * 60, LANDED_TASK, {
+      kind: "merge", link: "https://github.com/caomyer/foreman/pull/24",
       what: "Merged foreman PR #24 once its checks passed",
-      why: "You approved the plan, and foreman merges its own PRs.", link: "https://github.com/caomyer/foreman/pull/24",
-    },
-    {
-      id: "20260917T071400Z-g7h8i9", at: at(26 * 60), kind: "new-task", task: null,
+      why: "You approved the plan, and foreman merges its own PRs.",
+    }),
+    decidedCall("res-file-ai-titles", 26 * 60, null, {
+      kind: "new-task", link: null,
       what: "Filed res-ai-titles to build the titles once you pick an approach",
-      why: "The scout's plan needs a ship task to land, and it waits on your call rather than starting.", link: null,
-    },
+      why: "The scout's plan needs a ship task to land, and it waits on your call rather than starting.",
+    }),
   ];
   return {
     artifacts,
     tasks: [planTask, reportTask],
-    decisionOptions,
+    calls,
     inFlight: [
       { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: planTask.project, name: "AI titles for snips", doing: "Revising the titles plan." },
       { id: REPORT_TASK, kind: "scout", state: "done", repo: reportTask.project, name: "Resonance: which episodes already carry a transcript?", doing: "" },
@@ -216,8 +256,21 @@ function mockArtifacts(home: string): MockHome {
     records,
     landed: [{ id: REPORTED_TASK, what: "Resonance: how often do feeds change their artwork?", artifact: `${home}/data/${REPORTED_TASK}/report.md`, owner: "(main)" }],
     reports: [{ id: REPORT_TASK, path: `${home}/data/${REPORT_TASK}/report.md` }, { id: REPORTED_TASK, path: `${home}/data/${REPORTED_TASK}/report.md` }],
-    decided,
   };
+}
+
+/** An answer that can no longer change: recorded, or handed to the first mate to record before the app recorded answers. */
+function locked(answer: ReviewView["answers"][number]) {
+  return answer.recorded?.result === "closed" || (answer.sent_at !== null && !answer.recorded);
+}
+
+/** The lines the app's composer writes for answers the intake recorded. */
+function recordedLines(answers: { decision: string; option: string; label: string }[]) {
+  if (!answers.length) return [];
+  return [
+    "Answers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:",
+    ...answers.map((answer) => `Recorded: ${answer.decision} = ${answer.option} ("${answer.label}")`),
+  ];
 }
 
 /** What the host says for each `reason_kind`, so the review shows the details a captain would see. */
@@ -327,10 +380,35 @@ export class MockHostAdapter implements HostAdapter {
         tasks: [...fleet.tasks, ...mock.tasks],
         backlog: { ...fleet.backlog, records: [...(fleet.backlog?.records ?? []), ...mock.records] },
         artifacts: mock.artifacts,
-        decision_options: mock.decisionOptions,
-        decided: mock.decided,
+        // `?legacy`: a home whose firstmate predates calls[], so the app reads Bearings' own list instead.
+        ...(reviewFlag("legacy") ? {} : { calls: mock.calls }),
       },
     };
+  }
+
+  /**
+   * firstmate's `answers` intake, as far as the review needs it: every answer is recorded and its call closes, except
+   * a call named by `?skip=<id>`, which the intake skips with a reason. A recorded call reaches the snapshot a
+   * moment later, the way the home's watcher brings it.
+   */
+  private intake(answers: { call: string; key: string; label: string }[]): IntakeOutcome[] {
+    const skip = (reviewValue("skip") ?? "").split(",");
+    const outcomes = answers.map(({ call }): IntakeOutcome => skip.includes(call)
+      ? { call, result: "skipped", detail: "the hold changed after this answer was chosen; answer it again from what is there now" }
+      : { call, result: "closed", detail: "recorded; closed" });
+    const closed = answers.filter((answer) => outcomes.some((outcome) => outcome.call === answer.call && outcome.result === "closed"));
+    if (closed.length && this.snapshot.fleet.calls) {
+      const at = new Date().toISOString();
+      const calls = this.snapshot.fleet.calls.map((call) => {
+        const answer = closed.find((item) => item.call === call.id);
+        return answer ? { ...call, state: "closed" as const, captain_actionable: false, answer: { key: answer.key, label: answer.label, by: "captain" as const, via: "quarterdeck", at } } : call;
+      });
+      this.later(1200, () => {
+        this.snapshot.fleet = { ...this.snapshot.fleet, calls };
+        this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+      });
+    }
+    return outcomes;
   }
 
   /** The dev server serves the review pages at the same paths the app's `artifact` scheme does. */
@@ -358,12 +436,14 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   private settle(ref: ArtifactRef, threads: ReviewThread[], sent = this.review(ref).sent) {
+    // As in the app: waiting to go are answers not through the intake yet, and recorded ones not yet told.
+    const waiting = this.review(ref).answers.filter((answer) => answer.sent_at === null && (!answer.recorded || answer.recorded.result === "closed")).length;
     const next: ReviewView = {
       ...this.review(ref),
       threads,
       sent,
-      draft_count: threads.filter((thread) => thread.sent_at === null).length + this.review(ref).answers.filter((answer) => answer.sent_at === null).length,
-      staged_answers: this.review(ref).answers.filter((answer) => answer.sent_at === null).length,
+      draft_count: threads.filter((thread) => thread.sent_at === null).length + waiting,
+      staged_answers: waiting,
       open_count: threads.filter((thread) => thread.state === "open").length,
     };
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, next);
@@ -398,16 +478,51 @@ export class MockHostAdapter implements HostAdapter {
     }]);
   }
 
-  async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string) {
+  async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null) {
     const current = this.review(ref);
-    // As in the app: a sent answer is on the record and stays as it went.
-    if (current.answers.some((answer) => answer.decision === decision && answer.sent_at !== null)) {
-      throw new Error("that answer has already gone to the first mate; tell it in chat if you have changed your mind");
+    // As in the app: a recorded answer is on the record and stays as it went; a skipped one can be chosen again.
+    if (current.answers.some((answer) => answer.decision === decision && locked(answer))) {
+      throw new Error("that answer is already on the record; tell the first mate in chat if you have changed your mind");
     }
     const kept = current.answers.filter((answer) => answer.decision !== decision);
-    const answers = option ? [...kept, { decision, option, label: label ?? option, at: Date.now(), sent_at: null }] : kept;
+    const answers = option ? [...kept, { decision, option, label: label ?? option, on_answer: onAnswer ?? null, at: Date.now(), sent_at: null, recorded: null }] : kept;
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers });
     return this.settle(ref, current.threads);
+  }
+
+  /** Runs the intake for the review's staged answers (or only `only`), and notes what it did with each. */
+  private recordStaged(ref: ArtifactRef, only?: string) {
+    const current = this.review(ref);
+    const staged = current.answers.filter((answer) => answer.sent_at === null && !answer.recorded && (!only || answer.decision === only));
+    const outcomes = this.intake(staged.map((answer) => ({ call: answer.decision, key: answer.option, label: answer.label })));
+    const at = Date.now();
+    const answers = current.answers.map((answer) => {
+      const outcome = staged.includes(answer) ? outcomes.find((item) => item.call === answer.decision) : undefined;
+      return outcome ? { ...answer, recorded: { result: outcome.result, detail: outcome.detail, at } } : answer;
+    });
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers });
+    this.settle(ref, current.threads);
+    return outcomes;
+  }
+
+  async callAnswer({ call, option, label, onAnswer, page, note }: CallAnswerRequest) {
+    let outcome: IntakeOutcome;
+    if (page) {
+      await this.reviewAnswer(page, call, option, label, onAnswer);
+      outcome = this.recordStaged(page, call)[0];
+    } else {
+      outcome = this.intake([{ call, key: option, label }])[0];
+    }
+    if (outcome.result !== "closed") return { outcome, message: null, text: null, review: page ? this.review(page) : null };
+    const text = ["The captain answered a call from Bearings.", ...recordedLines([{ decision: call, option, label }]), ...(note?.trim() ? [`The captain added: ${note.trim()}`] : [])].join("\n");
+    const message = await this.send(text);
+    if (page) {
+      const current = this.review(page);
+      const at = Date.now();
+      this.reviews.set(`${page.scope}/${page.task}/${page.name}`, { ...current, answers: current.answers.map((answer) => answer.decision === call && answer.sent_at === null ? { ...answer, sent_at: at } : answer) });
+      this.settle(page, current.threads);
+    }
+    return { outcome, message, text, review: page ? this.review(page) : null };
   }
 
   async reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
@@ -433,7 +548,7 @@ export class MockHostAdapter implements HostAdapter {
         seen_rev: review.seen_rev,
         draft_count: review.draft_count,
         open_count: review.open_count,
-        answered: review.answers.filter((answer) => answer.sent_at !== null).map((answer) => answer.decision),
+        answered: review.answers.filter(locked).map((answer) => answer.decision),
         open_threads: review.threads.filter((thread) => thread.state === "open").map((thread) => ({ id: thread.id, rev: thread.rev })),
       };
     }
@@ -446,13 +561,15 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   async reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict) {
+    // As in the app: the intake records the answers first, and only what it recorded is told.
+    const outcomes = this.recordStaged(ref);
     const current = this.review(ref);
     const draft = current.threads.filter((thread) => thread.sent_at === null);
-    const staged = current.answers.filter((answer) => answer.sent_at === null);
+    const told = current.answers.filter((answer) => answer.sent_at === null && answer.recorded?.result === "closed");
     const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
     const text = [
       `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
-      ...(staged.length ? ["Answers, to record with bin/fm-captain-hold.sh:", ...staged.map((answer) => `${answer.option ? `${answer.decision} = ${answer.option}` : answer.decision}: ${answer.label}`)] : []),
+      ...recordedLines(told),
       // The same shape the app's own composer writes, so the browser review sees what a first mate would.
       ...draft.flatMap((thread) => {
         const anchor = thread.anchor as { quote?: string; scene?: string; scene_file?: string; picture?: string | null } | null;
@@ -465,13 +582,13 @@ export class MockHostAdapter implements HostAdapter {
     ].join("\n");
     const message = await this.send(text);
     const at = Date.now();
-    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => answer.sent_at === null ? { ...answer, sent_at: at } : answer) });
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => told.includes(answer) ? { ...answer, sent_at: at } : answer) });
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
       [...current.sent, { at, verdict, rev, message, threads: draft.map((thread) => thread.id) }],
     );
-    return { message, text, review };
+    return { message, text, review, outcomes };
   }
 
   subscribe(listener: HostEventListener) {

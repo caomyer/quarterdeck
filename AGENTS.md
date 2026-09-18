@@ -40,6 +40,8 @@ Agents do not work there and do not branch from it: each agent clones the remote
   Never commit that file, and never let a build write `src-tauri/target` inside the checkout.
   A build cache cannot be moved between checkout paths: Tauri bakes absolute paths into it, so after a move, delete the cache and rebuild.
 - Backend: `cd src-tauri && cargo clippy --all-targets && cargo test`.
+- How every screen reads captain calls (`src/calls.ts`): `pnpm test`, which needs no server.
+  Calls come only from the snapshot's `calls[]`, which `bin/fm-captain-hold.sh` owns; the app answers them through its `answers` intake (`src-tauri/src/calls.rs`) and never closes one itself.
 - Live end-to-end test, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e_live_scratch_home -- --ignored --nocapture`.
   It writes a summary and a replayable event recording to `~/.buzz/.scratch/firstmate-desktop-e2e/`.
   Name the test exactly: `host_e2e` also matches the lock probe, and two first mates in one home make the loser report the other as another session.

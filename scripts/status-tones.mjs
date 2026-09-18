@@ -121,8 +121,9 @@ async function wears(locator, icon) {
 // A Captain's Call answer: read, waiting and failed are three facts, with three looks.
 {
   const page = await open("");
+  // The fixture home predates calls[], so its call has no options and is answered in the captain's own words.
   const card = page.locator(".decision-card").first();
-  await card.locator(".suggestion-chips button").first().click();
+  await card.locator(".reply-field textarea").fill("Wi-Fi only with visible progress");
   await card.locator(".decision-actions button").click();
   await card.getByText("Answered", { exact: false }).waitFor();
   await inBothThemes(page, async (theme) => {

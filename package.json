@@ -11,7 +11,8 @@
     "tones": "node scripts/status-tones.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
-    "artifacts": "node scripts/artifact-review.mjs"
+    "artifacts": "node scripts/artifact-review.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
