@@ -224,6 +224,15 @@ export class MockHostAdapter implements HostAdapter {
 
   /** Reviews live in memory here; the app keeps them in the home beside the revisions. */
   private readonly reviews = new Map<string, ReviewView>();
+  /** Threads ever opened per review, discarded ones included, which is how the app numbers them too. */
+  private readonly opened = new Map<string, number>();
+
+  private nextThreadId(ref: ArtifactRef) {
+    const key = `${ref.scope}/${ref.task}/${ref.name}`;
+    const count = (this.opened.get(key) ?? 0) + 1;
+    this.opened.set(key, count);
+    return `t${count}`;
+  }
 
   private review(ref: ArtifactRef): ReviewView {
     const key = `${ref.scope}/${ref.task}/${ref.name}`;
@@ -255,13 +264,13 @@ export class MockHostAdapter implements HostAdapter {
     if (thread) {
       return this.settle(ref, current.threads.map((item) => item.id === thread ? { ...item, comments: [...item.comments, { body, at }] } : item));
     }
-    const id = `t${current.threads.length + 1}`;
+    const id = this.nextThreadId(ref);
     return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, resolved_at: null, state: "draft", comments: [{ body, at }] }]);
   }
 
   async reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string) {
     const current = this.review(ref);
-    const id = `t${current.threads.length + 1}`;
+    const id = this.nextThreadId(ref);
     const at = Date.now();
     const folder = `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review-files`;
     void sceneJson;
@@ -275,7 +284,11 @@ export class MockHostAdapter implements HostAdapter {
 
   async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string) {
     const current = this.review(ref);
-    const kept = current.answers.filter((answer) => answer.decision !== decision || answer.sent_at !== null);
+    // As in the app: a sent answer is on the record and stays as it went.
+    if (current.answers.some((answer) => answer.decision === decision && answer.sent_at !== null)) {
+      throw new Error("that answer has already gone to the first mate; tell it in chat if you have changed your mind");
+    }
+    const kept = current.answers.filter((answer) => answer.decision !== decision);
     const answers = option ? [...kept, { decision, option, label: label ?? option, at: Date.now(), sent_at: null }] : kept;
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers });
     return this.settle(ref, current.threads);

@@ -38,12 +38,13 @@ pub const SCHEME: &str = "artifact";
 /// Injected into every HTML document served; the script's own header owns what it does.
 const REVIEW_FRAME: &str = include_str!("review-frame.js");
 
-/// Appends the review script to an HTML document, inside `</body>` when there is one.
+/// Appends the review script to an HTML document, inside `</body>` when there is
+/// one. A document that is not UTF-8 comes back untouched, rather than guessed at.
 fn with_review_frame(body: Vec<u8>) -> Vec<u8> {
     let script = format!("\n<script data-quarterdeck-review>\n{REVIEW_FRAME}\n</script>\n");
-    let Ok(text) = String::from_utf8(body) else {
-        // Not UTF-8, so leave the bytes exactly as they are rather than guessing.
-        return Vec::new();
+    let text = match String::from_utf8(body) {
+        Ok(text) => text,
+        Err(not_utf8) => return not_utf8.into_bytes(),
     };
     let insert_at = text
         .rfind("</body>")
@@ -200,14 +201,7 @@ fn serve(data: Option<PathBuf>, request_path: &str) -> Response<Vec<u8>> {
     match std::fs::read(&path) {
         Ok(body) => {
             let kind = content_type(&path);
-            let body = if kind.starts_with("text/html") {
-                match with_review_frame(body.clone()) {
-                    injected if injected.is_empty() => body,
-                    injected => injected,
-                }
-            } else {
-                body
-            };
+            let body = if kind.starts_with("text/html") { with_review_frame(body) } else { body };
             Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, kind)
@@ -225,11 +219,15 @@ fn serve(data: Option<PathBuf>, request_path: &str) -> Response<Vec<u8>> {
     }
 }
 
-/// Handler for the `artifact` scheme. Files are read off the webview's thread.
+/// Handler for the `artifact` scheme. Everything that touches the disk, the
+/// saved settings included, runs off the webview's thread.
 pub fn handle<R: Runtime>(context: UriSchemeContext<'_, R>, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
-    let data = crate::settings::saved_home(context.app_handle()).map(|home| home.join("data"));
+    let app = context.app_handle().clone();
     let request_path = request.uri().path().to_string();
-    tauri::async_runtime::spawn_blocking(move || responder.respond(serve(data, &request_path)));
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = crate::settings::saved_home(&app).map(|home| home.join("data"));
+        responder.respond(serve(data, &request_path))
+    });
 }
 
 /// What starting in a home did about its presentation mode.
@@ -243,22 +241,29 @@ pub enum Presentation {
 }
 
 /// Records `quarterdeck` in the home's `config/presentation` when the home can
-/// present artifacts and names no mode yet. Written to a temporary file and
-/// renamed, so a crash never leaves half a file.
+/// present artifacts and names no mode yet. Written whole to a temporary file,
+/// then linked into place, which fails rather than overwrites: a mode the
+/// captain wrote a moment earlier is theirs and stays.
 pub fn claim_presentation(home: &Path) -> Result<Presentation, String> {
     if !home.join("bin").join("fm-artifact.sh").is_file() {
         return Ok(Presentation::Unsupported);
     }
     let config = home.join("config");
     let target = config.join("presentation");
-    if target.exists() {
+    // Anything at all there, a dangling link included, is a mode someone set.
+    if std::fs::symlink_metadata(&target).is_ok() {
         return Ok(Presentation::AlreadySet);
     }
     std::fs::create_dir_all(&config).map_err(|e| format!("could not create {}: {e}", config.display()))?;
-    let temporary = config.join(".presentation.quarterdeck.tmp");
+    let temporary = config.join(format!(".presentation.quarterdeck.{}.tmp", std::process::id()));
     std::fs::write(&temporary, "quarterdeck\n").map_err(|e| format!("could not write {}: {e}", temporary.display()))?;
-    std::fs::rename(&temporary, &target).map_err(|e| format!("could not save {}: {e}", target.display()))?;
-    Ok(Presentation::Claimed)
+    let linked = std::fs::hard_link(&temporary, &target);
+    let _ = std::fs::remove_file(&temporary);
+    match linked {
+        Ok(()) => Ok(Presentation::Claimed),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(Presentation::AlreadySet),
+        Err(error) => Err(format!("could not save {}: {error}", target.display())),
+    }
 }
 
 #[cfg(test)]
@@ -325,7 +330,7 @@ mod tests {
         assert!(fragment.starts_with("<p>no body tag</p>"), "{fragment}");
         assert!(fragment.contains("data-quarterdeck-review"), "{fragment}");
         // Bytes that are not text are left to the caller, which serves them unchanged.
-        assert!(with_review_frame(vec![0xff, 0xfe, 0x00]).is_empty());
+        assert_eq!(with_review_frame(vec![0xff, 0xfe, 0x00]), vec![0xff, 0xfe, 0x00]);
     }
 
     #[test]

@@ -457,7 +457,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .decision-answer p { margin: 6px 0 8px; color: var(--ink); font-size: .68rem; line-height: 1.45; }
 .decision-choices { display: flex; flex-direction: column; gap: 5px; }
 .decision-choices button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .65rem; text-align: left; }
-.decision-choices button:hover { border-color: var(--sea); }
+.decision-choices button:hover:not(:disabled) { border-color: var(--sea); }
+.decision-choices button:disabled { cursor: default; }
+.decision-choices button:disabled:not(.picked) { opacity: .55; }
 .decision-choices button.picked { border-color: var(--sea); color: var(--sea); background: color-mix(in srgb, var(--sea) 9%, var(--surface)); font-weight: 680; }
 .decision-choices small { flex: none; color: var(--green); font-size: .52rem; font-weight: 760; text-transform: uppercase; }
 .decision-staged { display: block; margin-top: 7px; color: var(--sea); font-size: .59rem; font-weight: 680; }

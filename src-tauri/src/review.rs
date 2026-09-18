@@ -167,6 +167,10 @@ pub fn view(path: &Path) -> Value {
             "seen" => seen = event.get("rev").and_then(Value::as_u64).max(seen),
             "answer" => {
                 let decision = event.get("decision").and_then(Value::as_str).unwrap_or_default().to_string();
+                // A sent answer is on the record; nothing after it changes what the first mate was told.
+                if answers.iter().any(|answer| answer["decision"] == decision.as_str() && !answer["sent_at"].is_null()) {
+                    continue;
+                }
                 answers.retain(|answer: &Value| answer["decision"] != decision.as_str());
                 // Choosing nothing takes the answer back off the tray.
                 if event.get("option").and_then(Value::as_str).is_some() {
@@ -189,8 +193,10 @@ pub fn view(path: &Path) -> Value {
                         }
                     }
                 }
+                // Only what this message carried: a pick made while it was on its way went nowhere.
+                let carried = event.get("answers").and_then(Value::as_array).cloned().unwrap_or_default();
                 for answer in answers.iter_mut() {
-                    if answer["sent_at"].is_null() {
+                    if answer["sent_at"].is_null() && carried.iter().any(|decision| *decision == answer["decision"]) {
                         answer["sent_at"] = at.clone();
                     }
                 }
@@ -340,9 +346,42 @@ fn log_path(app: &AppHandle, page: &Ref) -> Result<PathBuf, String> {
     Ok(dir_for(app, page)?.join("review.jsonl"))
 }
 
+/// One writer at a time for every review log in the home. A thread id is worked
+/// out from the log before it is written, and a review is read, sent and then
+/// recorded, so two commands interleaving could hand out one id twice or send
+/// one draft twice. Async, because a submit holds it across the send.
+#[derive(Default)]
+pub struct Writes(tokio::sync::Mutex<()>);
+
+/// Runs file work on the blocking pool: every write is fsynced, and none of it
+/// belongs on the threads that drive the app.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("the review could not be read or saved: {e}"))?
+}
+
 #[tauri::command]
 pub async fn review_get(app: AppHandle, page: Ref) -> Result<Value, String> {
-    Ok(view(&log_path(&app, &page)?))
+    blocking(move || Ok(view(&log_path(&app, &page)?))).await
+}
+
+/// The only anchor a comment on the page may carry: words and where they sit.
+///
+/// The anchor comes from a script running inside the page, and the page is not
+/// trusted, so everything else is dropped and every part is capped. A diagram
+/// anchor, which names files, is only ever written by `review_scene`.
+fn text_anchor(anchor: Option<Value>) -> Value {
+    let Some(anchor) = anchor else { return Value::Null };
+    let part = |key: &str, limit: usize| {
+        let text = anchor.get(key).and_then(Value::as_str).unwrap_or_default();
+        Value::String(text.chars().take(limit).collect())
+    };
+    let quote = part("quote", 400);
+    if quote.as_str().is_some_and(str::is_empty) {
+        return Value::Null;
+    }
+    json!({"quote": quote, "prefix": part("prefix", 200), "suffix": part("suffix", 200), "path": part("path", 600)})
 }
 
 /// Opens a thread on the page, or adds a comment to one, in the review at `log`.
@@ -359,7 +398,7 @@ pub fn add_comment(log: &Path, rev: u64, body: &str, anchor: Option<Value>, thre
             "kind": "opened",
             "id": next_thread_id(log),
             "rev": rev,
-            "anchor": anchor.unwrap_or(Value::Null),
+            "anchor": text_anchor(anchor),
             "body": body,
         }),
     };
@@ -370,27 +409,33 @@ pub fn add_comment(log: &Path, rev: u64, body: &str, anchor: Option<Value>, thre
 #[tauri::command]
 pub async fn review_comment(
     app: AppHandle,
+    writes: TauriState<'_, Writes>,
     page: Ref,
     rev: u64,
     body: String,
     anchor: Option<Value>,
     thread: Option<String>,
 ) -> Result<Value, String> {
-    add_comment(&log_path(&app, &page)?, rev, &body, anchor, thread.as_deref())
+    let _one_writer = writes.0.lock().await;
+    blocking(move || add_comment(&log_path(&app, &page)?, rev, &body, anchor, thread.as_deref())).await
 }
 
-#[tauri::command]
-pub async fn review_discard(app: AppHandle, page: Ref, thread: String) -> Result<Value, String> {
-    let path = log_path(&app, &page)?;
-    let current = view(&path);
-    let is_draft = current["threads"]
+/// Takes back a comment that has not been sent. A sent one stays on the record.
+pub fn discard(log: &Path, thread: &str) -> Result<Value, String> {
+    let is_draft = view(log)["threads"]
         .as_array()
-        .is_some_and(|threads| threads.iter().any(|item| item["id"] == thread.as_str() && item["sent_at"].is_null()));
+        .is_some_and(|threads| threads.iter().any(|item| item["id"] == thread && item["sent_at"].is_null()));
     if !is_draft {
         return Err("that comment has already been sent, so it stays on the record".to_string());
     }
-    append(&path, &json!({"at": now_ms(), "kind": "discarded", "id": thread}))?;
-    Ok(view(&path))
+    append(log, &json!({"at": now_ms(), "kind": "discarded", "id": thread}))?;
+    Ok(view(log))
+}
+
+#[tauri::command]
+pub async fn review_discard(app: AppHandle, writes: TauriState<'_, Writes>, page: Ref, thread: String) -> Result<Value, String> {
+    let _one_writer = writes.0.lock().await;
+    blocking(move || discard(&log_path(&app, &page)?, &thread)).await
 }
 
 /// The one message a review sends, with the draft comments and staged answers
@@ -425,19 +470,39 @@ pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answe
 }
 
 /// Sends the whole draft as one message to the first mate, then records that it went.
+///
+/// Once the host has taken the message it has gone, so a failure to record that
+/// is reported alongside the sent message rather than as a failed send: a send
+/// shown as failed invites sending the same review twice.
 #[tauri::command]
 pub async fn review_submit(
     app: AppHandle,
     host: TauriState<'_, HostHandle>,
+    writes: TauriState<'_, Writes>,
     page: Ref,
     rev: u64,
     verdict: String,
 ) -> Result<Value, String> {
-    let dir = dir_for(&app, &page)?;
-    let (text, threads, answers) = draft(&dir, rev, &verdict)?;
+    let _one_writer = writes.0.lock().await;
+    let dir = blocking(move || dir_for(&app, &page)).await?;
+    let (text, threads, answers) = {
+        let (dir, verdict) = (dir.clone(), verdict.clone());
+        blocking(move || draft(&dir, rev, &verdict)).await?
+    };
     let message = host.call(|reply| Cmd::Send { text: text.clone(), reply }).await??;
-    let review = record_sent(&dir.join("review.jsonl"), &verdict, rev, &threads, &answers, &message)?;
-    Ok(json!({"message": message, "text": text, "review": review}))
+    let log = dir.join("review.jsonl");
+    let recorded = {
+        let message = message.clone();
+        blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, &message)).await
+    };
+    match recorded {
+        Ok(review) => Ok(json!({"message": message, "text": text, "review": review})),
+        Err(problem) => {
+            log::error!("review {message} was sent but not recorded: {problem}");
+            let review = blocking(move || Ok(view(&dir.join("review.jsonl")))).await.unwrap_or(Value::Null);
+            Ok(json!({"message": message, "text": text, "review": review, "warning": format!("Sent, but the app could not note that it went: {problem}")}))
+        }
+    }
 }
 
 /// Every page's review at a glance, keyed `task/<id>/<name>` or `chat/<name>`:
@@ -491,15 +556,22 @@ pub fn summary(data: &Path) -> Value {
 
 #[tauri::command]
 pub async fn review_summary(app: AppHandle) -> Result<Value, String> {
-    Ok(summary(&data_dir(&app)?))
+    blocking(move || Ok(summary(&data_dir(&app)?))).await
 }
 
 /// Stages the captain's choice on a held task this page argues, or takes it
 /// back when `option` is absent. Nothing reaches the first mate until the
-/// review is sent.
+/// review is sent, and once it has, the answer is on the record like a sent
+/// comment: changing it is a new conversation with the first mate, not an edit.
 pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Option<&str>) -> Result<Value, String> {
     if !artifact::valid_task_id(decision) {
         return Err("that is not a task".to_string());
+    }
+    let already_sent = view(log)["answers"]
+        .as_array()
+        .is_some_and(|answers| answers.iter().any(|answer| answer["decision"] == decision && !answer["sent_at"].is_null()));
+    if already_sent {
+        return Err("that answer has already gone to the first mate; tell it in chat if you have changed your mind".to_string());
     }
     append(
         log,
@@ -509,15 +581,28 @@ pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Opt
 }
 
 #[tauri::command]
-pub async fn review_answer(app: AppHandle, page: Ref, decision: String, option: Option<String>, label: Option<String>) -> Result<Value, String> {
-    stage_answer(&log_path(&app, &page)?, &decision, option.as_deref(), label.as_deref())
+pub async fn review_answer(
+    app: AppHandle,
+    writes: TauriState<'_, Writes>,
+    page: Ref,
+    decision: String,
+    option: Option<String>,
+    label: Option<String>,
+) -> Result<Value, String> {
+    let _one_writer = writes.0.lock().await;
+    blocking(move || stage_answer(&log_path(&app, &page)?, &decision, option.as_deref(), label.as_deref())).await
 }
 
 /// Files a proposed diagram beside the review and opens a thread for it. The
 /// scene is written as the captain left it, with a picture, so the author can
 /// see it and take it up in the next revision.
 #[tauri::command]
-pub async fn review_scene(app: AppHandle, page: Ref, rev: u64, proposal: Proposal) -> Result<Value, String> {
+pub async fn review_scene(app: AppHandle, writes: TauriState<'_, Writes>, page: Ref, rev: u64, proposal: Proposal) -> Result<Value, String> {
+    let _one_writer = writes.0.lock().await;
+    blocking(move || propose_scene(&log_path(&app, &page)?, rev, proposal)).await
+}
+
+fn propose_scene(log: &Path, rev: u64, proposal: Proposal) -> Result<Value, String> {
     let Proposal { scene, label, path, summary, scene_json, png_base64 } = proposal;
     if scene.contains('/') || scene.contains('\\') || scene.starts_with('.') || scene.is_empty() {
         return Err("that is not a diagram this page owns".to_string());
@@ -527,8 +612,7 @@ pub async fn review_scene(app: AppHandle, page: Ref, rev: u64, proposal: Proposa
     if summary.is_empty() {
         return Err("a proposal needs to say what changed".to_string());
     }
-    let log = log_path(&app, &page)?;
-    let id = next_thread_id(&log);
+    let id = next_thread_id(log);
     let folder = log.parent().ok_or("the review has nowhere to live")?.join("review-files");
     std::fs::create_dir_all(&folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
     let scene_file = folder.join(format!("{id}.excalidraw"));
@@ -539,7 +623,7 @@ pub async fn review_scene(app: AppHandle, page: Ref, rev: u64, proposal: Proposa
         None => log::warn!("a proposed diagram came without a readable picture"),
     }
     append(
-        &log,
+        log,
         &json!({
             "at": now_ms(), "kind": "opened", "id": id, "rev": rev, "body": summary,
             "anchor": {
@@ -549,7 +633,7 @@ pub async fn review_scene(app: AppHandle, page: Ref, rev: u64, proposal: Proposa
             },
         }),
     )?;
-    Ok(view(&log))
+    Ok(view(log))
 }
 
 /// Just enough base64 for the picture a proposal carries.
@@ -576,31 +660,39 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
 
 /// The captain settles a thread, or opens it again. Only a sent thread can be
 /// settled: a draft is still theirs to change.
-#[tauri::command]
-pub async fn review_settle(app: AppHandle, page: Ref, thread: String, resolved: bool) -> Result<Value, String> {
-    let path = log_path(&app, &page)?;
-    let current = view(&path);
-    let sent = current["threads"]
+pub fn settle(log: &Path, thread: &str, resolved: bool) -> Result<Value, String> {
+    let sent = view(log)["threads"]
         .as_array()
-        .is_some_and(|threads| threads.iter().any(|item| item["id"] == thread.as_str() && !item["sent_at"].is_null()));
+        .is_some_and(|threads| threads.iter().any(|item| item["id"] == thread && !item["sent_at"].is_null()));
     if !sent {
         return Err("that comment has not been sent yet".to_string());
     }
     let kind = if resolved { "resolved" } else { "reopened" };
-    append(&path, &json!({"at": now_ms(), "kind": kind, "id": thread}))?;
-    Ok(view(&path))
+    append(log, &json!({"at": now_ms(), "kind": kind, "id": thread}))?;
+    Ok(view(log))
+}
+
+#[tauri::command]
+pub async fn review_settle(app: AppHandle, writes: TauriState<'_, Writes>, page: Ref, thread: String, resolved: bool) -> Result<Value, String> {
+    let _one_writer = writes.0.lock().await;
+    blocking(move || settle(&log_path(&app, &page)?, &thread, resolved)).await
 }
 
 /// Records that the captain has looked at a revision, so a later one can be
 /// marked as new. Looking at an older revision never unsees a newer one.
-#[tauri::command]
-pub async fn review_seen(app: AppHandle, page: Ref, rev: u64) -> Result<Value, String> {
-    let path = log_path(&app, &page)?;
-    if view(&path)["seen_rev"].as_u64().is_some_and(|already| already >= rev) {
-        return Ok(view(&path));
+pub fn mark_seen(log: &Path, rev: u64) -> Result<Value, String> {
+    let current = view(log);
+    if current["seen_rev"].as_u64().is_some_and(|already| already >= rev) {
+        return Ok(current);
     }
-    append(&path, &json!({"at": now_ms(), "kind": "seen", "rev": rev}))?;
-    Ok(view(&path))
+    append(log, &json!({"at": now_ms(), "kind": "seen", "rev": rev}))?;
+    Ok(view(log))
+}
+
+#[tauri::command]
+pub async fn review_seen(app: AppHandle, writes: TauriState<'_, Writes>, page: Ref, rev: u64) -> Result<Value, String> {
+    let _one_writer = writes.0.lock().await;
+    blocking(move || mark_seen(&log_path(&app, &page)?, rev)).await
 }
 
 #[cfg(test)]
@@ -675,6 +767,49 @@ mod tests {
         assert_eq!(current["staged_answers"], 0);
         assert_eq!(current["draft_count"], 0);
         assert_eq!(current["answers"][0]["sent_at"], 5);
+
+        // Once sent it is on the record: neither taking it back nor choosing again changes it.
+        assert!(stage_answer(&path, "res-model", None, None).is_err());
+        assert!(stage_answer(&path, "res-model", Some("eager"), Some("Keep downloading eagerly")).is_err());
+        append(&path, &json!({"at": 6, "kind": "answer", "decision": "res-model", "option": Value::Null})).unwrap();
+        let current = view(&path);
+        assert_eq!(current["answers"][0]["option"], "prompt");
+        assert_eq!(current["answers"][0]["sent_at"], 5);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_review_marks_sent_only_the_answers_it_carried() {
+        let dir = scratch("carried");
+        let path = dir.join("review.jsonl");
+        append(&path, &json!({"at": 1, "kind": "answer", "decision": "a-call", "option": "x", "label": "X"})).unwrap();
+        // Picked while the review carrying only a-call was on its way.
+        append(&path, &json!({"at": 2, "kind": "answer", "decision": "b-call", "option": "y", "label": "Y"})).unwrap();
+        append(&path, &json!({"at": 3, "kind": "sent", "verdict": "approve", "rev": 1, "threads": [], "answers": ["a-call"], "message": "m"})).unwrap();
+        let current = view(&path);
+        let sent_at = |decision: &str| current["answers"].as_array().unwrap().iter().find(|a| a["decision"] == decision).unwrap()["sent_at"].clone();
+        assert_eq!(sent_at("a-call"), 3);
+        assert_eq!(sent_at("b-call"), Value::Null);
+        assert_eq!(current["staged_answers"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_comment_keeps_only_a_text_anchor() {
+        let dir = scratch("anchor");
+        let path = dir.join("review.jsonl");
+        let forged = json!({"quote": "Intro", "prefix": "", "suffix": "", "path": "h1", "scene": "x", "scene_file": "/Users/me/.ssh/id_rsa", "picture": "p", "preview": "https://example.invalid/beacon"});
+        let current = add_comment(&path, 1, "Say more.", Some(forged), None).unwrap();
+        let anchor = &current["threads"][0]["anchor"];
+        assert_eq!(anchor["quote"], "Intro");
+        for key in ["scene", "scene_file", "picture", "preview"] {
+            assert!(anchor.get(key).is_none(), "{key} survived: {anchor}");
+        }
+        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &path).unwrap();
+        assert!(!text.contains("id_rsa"), "{text}");
+        // Nothing to quote is a comment on the page as a whole.
+        let current = add_comment(&path, 1, "Overall.", Some(json!({"quote": ""})), None).unwrap();
+        assert_eq!(current["threads"][1]["anchor"], Value::Null);
         let _ = std::fs::remove_dir_all(dir);
     }
 

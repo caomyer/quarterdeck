@@ -102,6 +102,42 @@
     return range;
   }
 
+  // Where a point in the page falls in the normalized text: near enough to tell
+  // one occurrence of the same words from another, which is all it is used for.
+  function normalizedOffset(index, node, offset) {
+    if (node && node.nodeType === 1) {
+      // The child the point sits before, or failing that (say, blank space) the element itself.
+      var candidates = [node.childNodes[offset], node];
+      for (var c = 0; c < candidates.length; c++) {
+        var inside = candidates[c];
+        if (!inside) continue;
+        for (var i = 0; i < index.nodes.length; i++) {
+          if (inside === index.nodes[i].node || (inside.contains && inside.contains(index.nodes[i].node))) {
+            return normalize(index.text.slice(0, index.nodes[i].start)).length;
+          }
+        }
+      }
+      return -1;
+    }
+    for (var j = 0; j < index.nodes.length; j++) {
+      if (index.nodes[j].node === node) return normalize(index.text.slice(0, index.nodes[j].start + offset)).length;
+    }
+    return -1;
+  }
+
+  // The occurrence of the quote the captain actually chose, so a comment on the
+  // second "Wi-Fi only" carries the second one's surroundings, not the first's.
+  function occurrenceNear(whole, quote, near) {
+    var best = whole.indexOf(quote);
+    if (near < 0) return best;
+    var at = best;
+    while (at !== -1) {
+      if (Math.abs(at - near) < Math.abs(best - near)) best = at;
+      at = whole.indexOf(quote, at + 1);
+    }
+    return best;
+  }
+
   // The best place for an anchor: the occurrence of its quote whose surrounding
   // text matches what was there when the comment was written.
   function locate(anchor) {
@@ -203,8 +239,17 @@
         host.appendChild(mark);
       }
     }
-    post("qd:located", { found: found, missing: missing });
-    post("qd:scenes", { scenes: scenes() });
+    // Drawing runs on every scroll frame; the app only needs to hear when something changed.
+    postChanged("qd:located", { found: found, missing: missing });
+    postChanged("qd:scenes", { scenes: scenes() });
+  }
+
+  var lastPosted = {};
+  function postChanged(type, payload) {
+    var said = JSON.stringify(payload);
+    if (lastPosted[type] === said) return;
+    lastPosted[type] = said;
+    post(type, payload);
   }
 
   var pending = null;
@@ -224,7 +269,7 @@
     if (!quote) return null;
     var index = textIndex();
     var whole = normalize(index.text);
-    var at = whole.indexOf(quote);
+    var at = occurrenceNear(whole, quote, normalizedOffset(index, range.startContainer, range.startOffset));
     return {
       quote: quote.slice(0, QUOTE_LIMIT),
       prefix: at > 0 ? whole.slice(Math.max(0, at - CONTEXT), at) : "",
@@ -242,7 +287,7 @@
     if (!quote) return null;
     var index = textIndex();
     var whole = normalize(index.text);
-    var at = whole.indexOf(quote);
+    var at = occurrenceNear(whole, quote, normalizedOffset(index, element, 0));
     return {
       quote: quote,
       prefix: at > 0 ? whole.slice(Math.max(0, at - CONTEXT), at) : "",

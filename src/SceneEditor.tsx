@@ -25,7 +25,24 @@ type SceneElement = {
   text?: string;
   isDeleted?: boolean;
   containerId?: string | null;
+  angle?: number;
+  strokeColor?: string;
+  backgroundColor?: string;
+  fillStyle?: string;
+  strokeWidth?: number;
+  strokeStyle?: string;
+  opacity?: number;
 };
+
+/**
+ * How an element looks, apart from where it sits and what it says. Compared
+ * directly: Excalidraw's own version counter moves when a scene is merely
+ * loaded, so it cannot tell a changed element from an opened one.
+ */
+function look(element: SceneElement) {
+  const { angle, strokeColor, backgroundColor, fillStyle, strokeWidth, strokeStyle, opacity } = element;
+  return JSON.stringify([angle ?? 0, strokeColor, backgroundColor, fillStyle, strokeWidth, strokeStyle, opacity]);
+}
 
 export type ScenePlace = { file: string; label: string; path: string };
 export type SceneProposal = { summary: string; scene: string; png: string };
@@ -47,7 +64,8 @@ function name(element: SceneElement, all: SceneElement[]) {
  * this should know what to draw without opening the scene file.
  */
 export function describeChanges(before: SceneElement[], after: SceneElement[]) {
-  const live = (elements: SceneElement[]) => elements.filter((element) => !element.isDeleted && element.type !== "text");
+  // Text bound to a shape is that shape's label, and is described with it; text standing on its own is a note in its own right.
+  const live = (elements: SceneElement[]) => elements.filter((element) => !element.isDeleted && !(element.type === "text" && element.containerId));
   const was = live(before);
   const now = live(after);
   const lines: string[] = [];
@@ -64,6 +82,8 @@ export function describeChanges(before: SceneElement[], after: SceneElement[]) {
     else if (moved && resized) lines.push(`Moved and resized ${name(element, after)}`);
     else if (moved) lines.push(`Moved ${name(element, after)}`);
     else if (resized) lines.push(`Resized ${name(element, after)}`);
+    // Something the geometry and the words do not show, such as a colour or a line style.
+    else if (look(element) !== look(previous)) lines.push(`Changed ${name(element, after)}`);
   }
   for (const element of was) {
     if (!now.some((candidate) => candidate.id === element.id)) lines.push(`Removed ${name(element, before)}`);

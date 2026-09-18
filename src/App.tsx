@@ -963,6 +963,41 @@ function ArtifactChatCard({ artifact, revision, tasks, onOpen }: { artifact: Art
   return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-icon"><PanelsTopLeft size={16} /></span><div><small>{from}</small><strong>{revision.title}</strong>{revision.note && <p>{revision.note}</p>}<time>{formatWhen(revision.presented_at)}</time></div><button onClick={onOpen}>Open</button></article>;
 }
 
+/**
+ * What the page's script says, taken only as far as it can be trusted.
+ *
+ * The page is someone else's HTML running in the frame, so whatever it posts is
+ * read as data of a known shape: strings, capped, and nothing else. A comment's
+ * anchor is only ever words and where they sit; a diagram is only ever a file
+ * name beside the page, the same rule the review applies when it is saved.
+ */
+function text(value: unknown, limit: number) {
+  return typeof value === "string" ? value.slice(0, limit) : "";
+}
+
+function pageAnchor(value: unknown): ReviewAnchor | null {
+  if (!value || typeof value !== "object") return null;
+  const anchor = value as Record<string, unknown>;
+  const quote = text(anchor.quote, 400);
+  if (!quote.trim()) return null;
+  return { quote, prefix: text(anchor.prefix, 200), suffix: text(anchor.suffix, 200), path: text(anchor.path, 600) };
+}
+
+function sceneFileOk(file: string) {
+  return file.length > 0 && !file.includes("/") && !file.includes("\\") && !file.startsWith(".");
+}
+
+function pagePlace(value: unknown): ScenePlace | null {
+  if (!value || typeof value !== "object") return null;
+  const place = value as Record<string, unknown>;
+  const file = text(place.file, 200);
+  if (!sceneFileOk(file)) return null;
+  return { file, label: text(place.label, 120) || "Diagram", path: text(place.path, 600) };
+}
+
+/** Threads for a review not read yet: one array, so effects keyed on it do not fire every render. */
+const NO_THREADS: ReviewThread[] = [];
+
 const VERDICTS: { id: ReviewVerdict; label: string; hint: string }[] = [
   { id: "changes", label: "Request changes", hint: "The task keeps waiting on this page." },
   { id: "approve", label: "Approve", hint: "The work on this page can go ahead." },
@@ -1026,7 +1061,7 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
   const frame = useRef<HTMLIFrameElement>(null);
   const note = layoutNote(revision);
   const newest = [...artifact.revisions].reverse();
-  const threads = review?.threads ?? [];
+  const threads = review?.threads ?? NO_THREADS;
   const draftCount = review?.draft_count ?? 0;
   const lastSent = review?.sent.at(-1);
   const seen = review?.seen_rev ?? null;
@@ -1060,19 +1095,28 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
     if (loaded) tell({ type: "qd:mode", mode: commenting ? "comment" : "read" });
   }, [loaded, commenting]);
 
+  // The page may only pick a place while the captain has asked to pick one.
+  const commentingNow = useRef(commenting);
+  commentingNow.current = commenting;
+
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow) return;
-      const data = event.data as { type?: string; anchor?: ReviewAnchor; missing?: string[] };
-      if (data?.type === "qd:picked" && data.anchor) {
-        setPending(data.anchor);
+      const data = (event.data ?? {}) as Record<string, unknown>;
+      if (data.type === "qd:picked") {
+        const anchor = commentingNow.current ? pageAnchor(data.anchor) : null;
+        if (!anchor) return;
+        setPending(anchor);
         setCommenting(false);
-      } else if (data?.type === "qd:located") {
-        setMissing(data.missing ?? []);
-      } else if (data?.type === "qd:scenes") {
-        setScenes((data as { scenes?: ScenePlace[] }).scenes ?? []);
-      } else if (data?.type === "qd:scene-open") {
-        void openDiagram((data as { scene?: ScenePlace }).scene);
+      } else if (data.type === "qd:located") {
+        const found = Array.isArray(data.missing) ? data.missing.filter((id): id is string => typeof id === "string") : [];
+        setMissing((current) => current.join("\n") === found.join("\n") ? current : found);
+      } else if (data.type === "qd:scenes") {
+        const found = Array.isArray(data.scenes) ? data.scenes.map(pagePlace).filter((place): place is ScenePlace => place !== null) : [];
+        setScenes((current) => JSON.stringify(current) === JSON.stringify(found) ? current : found);
+      } else if (data.type === "qd:scene-open") {
+        const place = commentingNow.current ? pagePlace(data.scene) : null;
+        if (place) void openDiagram(place);
       }
     };
     window.addEventListener("message", onMessage);
@@ -1080,13 +1124,16 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
   }, []);
 
   /** The page's own scene file, read through the same scheme that serves the page. */
-  async function openDiagram(place?: ScenePlace) {
-    if (!place) return;
+  async function openDiagram(place: ScenePlace) {
     setCommenting(false);
     setSceneProblem(null);
+    if (!sceneFileOk(place.file)) {
+      setSceneProblem("That diagram could not be opened: its scene file has to sit beside the page.");
+      return;
+    }
     try {
       const base = url.slice(0, url.lastIndexOf("/") + 1);
-      const response = await fetch(base + place.file.split("/").map(encodeURIComponent).join("/"));
+      const response = await fetch(base + encodeURIComponent(place.file));
       if (!response.ok) throw new Error(`the diagram file is not in this revision (${response.status})`);
       setOpenScene({ place, scene: await response.json() });
     } catch (error) {
@@ -1161,7 +1208,9 @@ function ArtifactReview({ artifact, revision, url, review, sendReady, runtime, d
                 ? <small className="decision-missing">This page argues a decision whose options are not recorded. Answer it in chat.</small>
                 : <div className="decision-choices">{decision.options.map((option) => {
                     const picked = chosen?.option === option.key;
-                    return <button key={option.key} className={picked ? "picked" : ""} aria-pressed={picked} onClick={() => void onAnswer(decision.task, picked ? undefined : option.key, option.label)}>
+                    // Once sent, the answer is on the record; changing it is a conversation with the first mate.
+                    const locked = chosen !== undefined && chosen.sent_at !== null;
+                    return <button key={option.key} className={picked ? "picked" : ""} aria-pressed={picked} disabled={locked} onClick={() => void onAnswer(decision.task, picked ? undefined : option.key, option.label)}>
                       <span>{option.label}</span>{option.recommended && <small>Recommended</small>}
                     </button>;
                   })}</div>}

@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolve, sep } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -7,6 +9,8 @@ import react from "@vitejs/plugin-react";
  * into the app. The app's own scheme appends src-tauri/src/review-frame.js to every page it serves, so
  * the dev server appends the same file rather than a copy of it, and commenting behaves the same here.
  */
+const PAGES = fileURLToPath(new URL("./src/fixtures/review-pages", import.meta.url));
+
 function reviewPages(): Plugin {
   return {
     name: "quarterdeck-review-pages",
@@ -17,8 +21,11 @@ function reviewPages(): Plugin {
         if (!path.startsWith("/artifacts/") || !path.endsWith(".html")) return next();
         let page: string;
         try {
-          page = readFileSync(new URL(`./src/fixtures/review-pages${decodeURI(path)}`, import.meta.url), "utf8");
-        } catch (error) {
+          // Only the fixtures: an encoded ".." must not walk out to any other page on disk.
+          const file = resolve(PAGES, `.${decodeURIComponent(path)}`);
+          if (!file.startsWith(PAGES + sep)) return next();
+          page = readFileSync(file, "utf8");
+        } catch {
           return next();
         }
         const script = readFileSync(new URL("./src-tauri/src/review-frame.js", import.meta.url), "utf8");

@@ -28,6 +28,7 @@ pub fn run() {
       });
       app.manage(snapshot::SnapshotHandle::spawn(app.handle().clone()));
       app.manage(host::HostHandle::spawn(app.handle().clone()));
+      app.manage(review::Writes::default());
       settings::load_saved_home(app.handle().clone());
       Ok(())
     })

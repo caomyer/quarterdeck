@@ -337,6 +337,28 @@ const proposalMessage = await page.locator(".captain-message").last().innerText(
 check(proposalMessage.includes("on the diagram \"Snip pipeline\""), "the message names the diagram");
 check(proposalMessage.includes("proposed scene:"), "the message points at the scene the author can take up");
 
+// The page is someone else's HTML: what it posts is read as data, and only when the captain asked for it.
+await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+await plan.click();
+await frame.locator("h1").waitFor();
+const forge = (message) => page.frameLocator(".artifact-stage iframe").locator("body").evaluate((_, data) => parent.postMessage(data, "*"), message);
+await forge({ type: "qd:picked", anchor: { quote: "Intro" } });
+await forge({ type: "qd:picked", anchor: {} });
+await forge({ type: "qd:scene-open", scene: { file: "../../../chat/model-download/rev-1/model-download.html", label: "x" } });
+await page.waitForTimeout(300);
+check(await composer.count() === 0, "a page cannot open the composer on its own");
+check(await page.locator(".scene-editor").count() === 0, "a page cannot open a file of its choosing as a diagram");
+await page.locator(".comment-toggle").click();
+await forge({ type: "qd:picked", anchor: { quote: "Intro", scene: "x", scene_file: "/Users/me/.ssh/id_rsa", preview: "https://example.invalid/beacon" } });
+await composer.waitFor();
+await composer.locator("textarea").fill("Checking what a forged anchor keeps.");
+await composer.locator("button", { hasText: "Comment" }).click();
+const forged = threads.last();
+await forged.waitFor();
+check((await forged.innerText()).includes("Intro"), "a forged anchor keeps its words");
+check(await forged.locator("img").count() === 0, "a forged anchor brings no picture into the app");
+await forged.locator("button[title='Take this comment back']").click();
+
 // Narrow window: the review toolbar wraps instead of pushing the page sideways.
 await page.setViewportSize({ width: 700, height: 900 });
 await page.locator(".mobile-menu").click();
