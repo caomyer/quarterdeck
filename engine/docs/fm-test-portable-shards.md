@@ -11,6 +11,7 @@ Local timings are not interchangeable with CI timings: platform and machine load
 
 `tests/fm-artifact.test.sh` (12000) and `tests/fm-decision-options.test.sh` (1500) are the exception: their hints are rounded up from local macOS runs (9880ms and 588ms on 2026-09-17), because the scripts landed between CI refreshes and the coverage guard's unhinted share was already near its cap.
 Refresh both from the next green run's timing artifacts.
+`tests/fm-task-delivery.test.sh` carries its measured CI value plus 3000ms, rounded up from the 2890ms a promotion journey case added to it locally on 2026-09-18; refresh it from the same run.
 `fm-artifact.test.sh` also carries a real headless Chrome case that skips where no Chrome is installed, so its CI duration depends on whether the runner has one.
 
 The retained hints are the slowest completed value each script reached across six CI runs on 2026-09-10: [34459949083](https://github.com/kunchenguid/firstmate/actions/runs/34459949083), [34460760299](https://github.com/kunchenguid/firstmate/actions/runs/34460760299), [34462530836](https://github.com/kunchenguid/firstmate/actions/runs/34462530836), [34462758357](https://github.com/kunchenguid/firstmate/actions/runs/34462758357), [34466966385](https://github.com/kunchenguid/firstmate/actions/runs/34466966385), and [34470382458](https://github.com/kunchenguid/firstmate/actions/runs/34470382458).

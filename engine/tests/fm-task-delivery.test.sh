@@ -880,6 +880,60 @@ EOF
   pass "fm-spawn: every legacy worker receives scoped role instructions without changing project or primary instructions"
 }
 
+# The real journey that hid a shipped PR: a scout is promoted in place, its ship
+# merges, and the close records the PR on the row. The row must read as the ship
+# it became (and carry the new objective when promotion names one), or the shared
+# landed selector treats the merge as a scout's non-delivery and Recently Landed
+# never shows the only thing that shipped. A row that cannot be read refuses
+# promotion before anything changes, and a manual-backlog home is told to edit.
+test_promote_relabels_the_backlog_row_so_the_merge_lands() {
+  local home out status row json
+  command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi is required for the promotion backlog regression"
+  command -v jq >/dev/null 2>&1 || fail "jq is required for the promotion backlog regression"
+  home="$TMP_ROOT/promote-row/home"
+  mkdir -p "$home/state" "$home/config" "$home/projects"
+  cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
+  write_brief "$home" res-audit
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  printf 'window=fm-res-audit\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/res-audit.meta"
+
+  out=$(FM_HOME="$home" "$PROMOTE" res-audit --mode direct-PR --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion without a backlog row should exit non-zero"
+  assert_contains "$out" "has no backlog item" "promotion did not name the missing backlog row"
+  assert_grep 'kind=scout' "$home/state/res-audit.meta" "a refused promotion still changed the task record"
+
+  FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" add res-audit "Resonance: product and technical audit" \
+    --kind scout --repo Resonance --start >/dev/null || fail "could not create the scout row"
+  out=$(FM_HOME="$home" "$PROMOTE" res-audit --mode direct-PR --yolo off \
+    --title "Resonance: fix snip lifecycle" 2>&1)
+  expect_code 0 $? "promotion with a readable backlog row should succeed: $out"
+  assert_contains "$out" "backlog row res-audit now reads kind ship" "promotion did not report the row it relabeled"
+  row=$(grep -- ' res-audit - ' "$home/data/backlog.md")
+  assert_contains "$row" "(kind: ship)" "the promoted row kept its scout kind"
+  assert_contains "$row" "Resonance: fix snip lifecycle" "the promoted row kept its audit title"
+  assert_not_contains "$row" "technical audit" "the promoted row kept its audit title"
+
+  rm -f "$home/state/res-audit.meta"
+  FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" 'done' res-audit \
+    --pr https://github.com/caomyer/Resonance/pull/5 >/dev/null || fail "could not record the merge"
+  json=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$ROOT/bin/fm-bearings-snapshot.sh" --json) \
+    || fail "bearings failed after the promoted ship merged"
+  printf '%s' "$json" | jq -e '.landed | any(.id == "res-audit" and (.artifact | test("/pull/5$")))' >/dev/null \
+    || fail "the promoted ship's merged PR is missing from Recently Landed: $(printf '%s' "$json" | jq -c .landed)"
+
+  home="$TMP_ROOT/promote-row-manual/home"
+  mkdir -p "$home/state" "$home/config"
+  printf 'manual\n' > "$home/config/backlog-backend"
+  write_brief "$home" manual-scout
+  printf 'window=fm-manual-scout\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/manual-scout.meta"
+  out=$(FM_HOME="$home" "$PROMOTE" manual-scout --mode direct-PR --yolo off 2>&1)
+  expect_code 0 $? "a manual-backlog promotion should succeed: $out"
+  assert_contains "$out" "change row manual-scout's (kind: scout) to (kind: ship)" \
+    "a manual-backlog promotion did not say to relabel the row"
+  pass "fm-promote: the backlog row follows the promotion, so the merged ship reaches Recently Landed"
+}
+
 test_authorized_intent_keeps_words_without_composed_address
 test_spawn_refreshes_legacy_worker_roles
 test_ship_spawn_requires_a_valid_delivery_contract
@@ -889,6 +943,7 @@ test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
+test_promote_relabels_the_backlog_row_so_the_merge_lands
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
 test_spawn_and_promote_require_filled_task_subsections

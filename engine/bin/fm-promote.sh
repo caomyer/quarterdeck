@@ -24,7 +24,13 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
+# The backlog row follows the task record: where this home's backlog transitions
+# apply (bin/fm-backlog-transition-lib.sh), promotion rewrites the row's kind to
+# ship, and to --title when the promotion gives the task a new objective, so the
+# row a merge later closes describes the work that shipped rather than the audit
+# it started as. The row is read before anything changes, so an unreadable row
+# refuses promotion; a manual-backend home is told to make the same edit by hand.
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--title <new objective>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +38,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
@@ -52,6 +59,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 MODE=
 YOLO=
+TITLE=
+TITLE_SET=0
 MODE_SET=0
 YOLO_SET=0
 POS=()
@@ -64,6 +73,7 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      title) TITLE=$a; TITLE_SET=1 ;;
     esac
     want_value=
     continue
@@ -73,11 +83,13 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --title) want_value=title ;;
+    --title=*) TITLE=${a#--title=}; TITLE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>" >&2; exit 1; }
+[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--title <new objective>]" >&2; exit 1; }
 [ "$MODE_SET" -eq 1 ] || {
   echo "error: promotion requires --mode <no-mistakes|direct-PR|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
   exit 1
@@ -97,6 +109,15 @@ case "$YOLO" in
   on|off) ;;
   *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
 esac
+if [ "$TITLE_SET" -eq 1 ]; then
+  case "$TITLE" in
+    *[![:space:]]*) ;;
+    *) echo "error: --title must name the promoted task's objective (got an empty title)" >&2; exit 1 ;;
+  esac
+  case "$TITLE" in
+    *$'\n'*|*$'\r'*) echo "error: --title must be a single line" >&2; exit 1 ;;
+  esac
+fi
 
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
@@ -143,6 +164,29 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
   exit 1
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
+
+# Read the backlog row before changing anything, so a row this home cannot
+# update refuses promotion instead of leaving a ship task behind a scout row.
+BACKLOG_UPDATE=0
+BACKLOG_MANUAL=0
+if fm_backlog_transition_applies "$CONFIG" "$DATA" ship; then
+  if ! fm_backlog_row_probe "$DATA" "$ID"; then
+    if [ "$FM_BACKLOG_ROW_RESULT" = not_found ]; then
+      echo "error: task $ID has no backlog item in this home, so its kind cannot follow the promotion; add it (bin/fm-tasks-axi.sh add $ID '<title>' --kind ship) and re-run" >&2
+    else
+      echo "error: task $ID's backlog item could not be read before promotion ($FM_BACKLOG_ROW_ERROR); nothing was changed" >&2
+    fi
+    exit 1
+  fi
+  BACKLOG_UPDATE=1
+else
+  BACKLOG_GATE_STATUS=$?
+  if [ "$BACKLOG_GATE_STATUS" -eq 2 ]; then
+    echo "error: task $ID's backlog cannot be reached, so its kind cannot follow the promotion: $DATA ($FM_BACKLOG_TRANSITION_ERROR); nothing was changed" >&2
+    exit 1
+  fi
+  fm_backlog_backend_manual "$CONFIG" && BACKLOG_MANUAL=1
+fi
 
 SCOUT_BRIEF="$DATA/$ID/brief.md"
 if fm_brief_task_placeholders_present "$SCOUT_BRIEF"; then
@@ -273,6 +317,21 @@ fi
 TMP=
 rm -f -- "$BRIEF_ORIGINAL" 2>/dev/null || true
 BRIEF_ORIGINAL=
+BACKLOG_NOTE=
+if [ "$BACKLOG_UPDATE" = 1 ]; then
+  BACKLOG_ARGS=(--kind ship)
+  [ "$TITLE_SET" -eq 0 ] || BACKLOG_ARGS+=(--title "$TITLE")
+  if fm_backlog_mutate "$DATA" update "$ID" "${BACKLOG_ARGS[@]}"; then
+    BACKLOG_NOTE="backlog row $ID now reads kind ship"
+    [ "$TITLE_SET" -eq 0 ] || BACKLOG_NOTE="$BACKLOG_NOTE, titled \"$TITLE\""
+  else
+    BACKLOG_NOTE="warning: the task record is promoted but backlog row $ID still reads its scout kind ($FM_BACKLOG_TRANSITION_ERROR); fix it now: bin/fm-tasks-axi.sh update $ID --kind ship"
+    [ "$TITLE_SET" -eq 0 ] || BACKLOG_NOTE="$BACKLOG_NOTE --title $(printf '%q' "$TITLE")"
+  fi
+elif [ "$BACKLOG_MANUAL" = 1 ]; then
+  BACKLOG_NOTE="next: this home edits its backlog by hand; change row $ID's (kind: scout) to (kind: ship)"
+  [ "$TITLE_SET" -eq 0 ] || BACKLOG_NOTE="$BACKLOG_NOTE and its title to \"$TITLE\""
+fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 
@@ -280,6 +339,10 @@ HOME_Q=$(printf '%q' "$FM_HOME")
 INSTRUCTIONS_Q=$(printf '%q' "$INSTRUCTIONS")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
 echo "wrote ship instructions for mode=$MODE: $INSTRUCTIONS"
+case "$BACKLOG_NOTE" in
+  warning:*) printf '%s\n' "$BACKLOG_NOTE" >&2 ;;
+  ?*) printf '%s\n' "$BACKLOG_NOTE" ;;
+esac
 echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID \"\$(cat $INSTRUCTIONS_Q)\""
 
 promote_print_rechain_hint() {
