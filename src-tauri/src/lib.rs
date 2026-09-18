@@ -30,6 +30,12 @@ pub fn run() {
       app.manage(host::HostHandle::spawn(app.handle().clone()));
       app.manage(review::Writes::default());
       settings::load_saved_home(app.handle().clone());
+      // macOS ignores the config's `maximized` when it creates the window, which
+      // leaves a fixed 1440x900 window taller than a smaller screen, with the
+      // sidebar's footer behind the Dock. Asking once the window exists works.
+      if let Some(window) = app.get_webview_window("main") {
+        let _ = window.maximize();
+      }
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
