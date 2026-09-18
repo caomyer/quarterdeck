@@ -32,7 +32,7 @@
 #   fm-captain-hold.sh list [--json] [--since <days>]
 #   fm-captain-hold.sh migrate
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--key <option-key>] [--via <channel>]
-#   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
+#   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance> [--via <channel>]   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
 #   fm-captain-hold.sh unbind <source-id>
@@ -153,8 +153,8 @@
 # the way it declares: an empty mode column means "what the call declares",
 # and a mode that disagrees with the declaration is skipped. The command exits
 # nonzero when any key was skipped. `--source` is provenance text recorded in
-# the durable decision and as the `Answered via:` line (`quarterdeck`, for the
-# Quarterdeck app), never a behavior switch: this command has no per-channel
+# the durable decision, never a behavior switch (`--via` names the channel for
+# the `Answered via:` line; see the channel vocabulary below): this command has no per-channel
 # branch and no knowledge of chat, review decks, or any transport. An answer
 # that names one of the call's recorded options is recorded with its
 # `Answer key:`. Output, one line per input row: `closed: <task-id>`,
@@ -270,8 +270,7 @@
 #   Answer label: <one line>      the option's label, the label a channel showed,
 #                                 or the first line of the captain's words
 #   Answered by: captain|firstmate
-#   Answered via: <channel>       `answer`: --via, default chat; `answers`: its
-#                                 --source; `decide`: decide
+#   Answered via: <channel>       one token of the channel vocabulary below
 #   Answered at: <UTC timestamp>
 # They sit outside the decision digest on purpose: the digest stays the
 # captain's words alone, so records written before these lines existed, and
@@ -279,6 +278,18 @@
 # matching; a retry never rewrites an existing block. `answer --key` must name
 # one of the call's recorded options (or, with none recorded, be a well-formed
 # key); --by and --label are internal to `answers` and `decide`.
+# CHANNEL VOCABULARY. `Answered via:` is always one of a closed set of tokens,
+# never provenance prose, so a surface can say where the captain answered:
+#   quarterdeck  the Quarterdeck app
+#   chat         the captain's words relayed in chat by the first mate
+#   lavish       a Lavish review board result
+#   captured     any other captured process-event result
+#   decide       a call the first mate decided on the captain's behalf
+#   other        a channel that named none of these
+# `answer` and `answers` take `--via <token>` and refuse any other value.
+# Defaults when absent: `answer` -> chat; `answers` -> quarterdeck when
+# --source is exactly `quarterdeck` (what the app sends), otherwise other;
+# `decide` -> decide. `--source` stays free provenance text for the decision.
 #
 # Parent channel: inside a secondmate home a task held for the captain, and its
 # answer, are captain-facing facts the moment they are recorded, so `hold`
@@ -1231,6 +1242,15 @@ shown_call_raised_at() {  # <show-output> <now>
 }
 
 # The answer's machine lines for the resolution block (see the header).
+# The closed channel vocabulary of `Answered via:` (the header owns it).
+VIA_TOKENS='quarterdeck, chat, lavish, captured, decide, other'
+via_token_valid() {  # <token>
+  case "$1" in
+    quarterdeck|chat|lavish|captured|decide|other) return 0 ;;
+  esac
+  return 1
+}
+
 answer_machine_lines() {  # <task-id> <key> <label> <by> <via>
   local id=$1 key=$2 label=$3 option_label=''
   ANSWER_KEY=''
@@ -1491,8 +1511,7 @@ command_answer() {
   if [ "$key_set" = 1 ]; then
     option_key_valid "$key" || fail "--key must be an option key ([a-z0-9][a-z0-9-]{0,31}): $key"
   fi
-  via=$(sanitize_field "$via")
-  [ -n "$via" ] || fail "--via must name the channel the answer came through"
+  via_token_valid "$via" || fail "--via must be one of $VIA_TOKENS: $via"
   case "$by" in captain|firstmate) ;; *) fail "--by must be captain or firstmate: $by" ;; esac
   acquire_task_control_lock "$id"
   require_tasks_axi
@@ -2144,11 +2163,12 @@ sanitize_reconcile_provenance() {
 command_answers() {
   local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
   local recorded_digest recorded_mode occurrence tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
-  local resolve_rc declared option_keys
+  local resolve_rc declared option_keys via=''
   local -a answer_args
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --source) shift; source=${1:-} ;;
+      --via) shift; via=${1:-}; [ -n "$via" ] || fail "--via must be one of $VIA_TOKENS" ;;
       --any-origin) origin=$BINDING_ANY ;;
       --*) usage >&2; exit 2 ;;
       *)
@@ -2163,6 +2183,10 @@ command_answers() {
   fi
   [ -n "$source" ] || fail "--source provenance is required so the durable decision records where the answer came from"
   source=$(sanitize_field "$source")
+  if [ -z "$via" ]; then
+    if [ "$source" = quarterdeck ]; then via=quarterdeck; else via=other; fi
+  fi
+  via_token_valid "$via" || fail "--via must be one of $VIA_TOKENS: $via"
   require_tasks_axi
   tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-keyed-decision.XXXXXX") || fail "cannot stage the captain decision"
   err=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-keyed-decision-err.XXXXXX") \
@@ -2235,7 +2259,7 @@ command_answers() {
         continue
       fi
     fi
-    answer_args=(--via "$source")
+    answer_args=(--via "$via")
     if [ -n "$option_keys" ] && list_has_line "$option_keys" "$answer"; then
       answer_args+=(--key "$answer")
       [ -z "$label" ] || answer_args+=(--label "$label")

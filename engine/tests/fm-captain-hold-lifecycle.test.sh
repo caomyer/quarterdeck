@@ -2232,6 +2232,7 @@ SH
   assert_contains "$show" "north" "the board answer lost the captain's selection"
   assert_contains "$show" "the captured result $sid sequence 1" \
     "the recorded answer did not name the board result that carried it"
+  assert_contains "$show" "Answered via: lavish" "the Lavish board answer did not record its channel token"
   pass "a board answer reaches the keyed-answer intake and wakes firstmate"
 }
 
@@ -2316,6 +2317,7 @@ SH
   assert_contains "$show" "Resolution mode: answered" "the chat-answered call did not record its close path"
   assert_contains "$show" "Answer: take the second option" "the chat-answered call lost the captain answer"
   assert_contains "$show" "answer sent to $id" "the chat-answered call lost its channel provenance"
+  assert_contains "$show" "Answered via: chat" "the chat channel did not record its channel token"
 
   : > "$home/send.log"
   set +e

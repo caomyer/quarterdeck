@@ -699,7 +699,7 @@ fm_send_feed_resolved_holds() { # <answer-text>
     lines="${lines}${k}"$'\t'"${note}"$'\t'$'\n'
   done
   if ! printf '%s' "$lines" | "$SCRIPT_DIR/fm-captain-hold.sh" answers \
-    --source "a firstmate answer sent to $RESOLVE_TASK_ID" >/dev/null 2>&1; then
+    --source "a firstmate answer sent to $RESOLVE_TASK_ID" --via chat >/dev/null 2>&1; then
     echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it with fm-captain-hold.sh answer - do not resend the answer." >&2
     return 1
   fi

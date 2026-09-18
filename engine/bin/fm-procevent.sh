@@ -158,8 +158,10 @@
 # `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints
 # is piped straight into that one intake. The adapter reports only what the
 # captain chose; the intake owns every rule about what happens next. This runner
-# names no adapter, parses no result, and knows no decision rule, so a future
-# built-in source needs nothing here beyond an `answers` command and a binding.
+# parses no result and knows no decision rule, so a future built-in source needs
+# nothing here beyond an `answers` command and a binding. Its one mapping is the
+# answer's channel token for the intake's `--via`: the lavish adapter is
+# `lavish`, and every other captured source is `captured`.
 # Reconcile selections use the parallel `reconciles` adapter command and the
 # binding-verified `reconcile-requests` intake, never the keyed-answer value.
 # External binding responses never enter either authority-bearing intake.
@@ -399,15 +401,21 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
 # leave the capture untouched and still announced, because this never
 # acknowledges anything (see the keyed-answer note in the header).
 feed_keyed_answers() {  # <adapter> <source-id> <result-file>
-  local adapter=$1 id=$2 result=$3 script origin seq
+  local adapter=$1 id=$2 result=$3 script origin seq via
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
+  # The answer's channel token: a built-in adapter named in the intake's
+  # channel vocabulary is its own token, and every other one is `captured`.
+  case "$adapter" in
+    lavish) via=lavish ;;
+    *) via=captured ;;
+  esac
   "$script" answers "$result" 2>/dev/null \
     | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
-        --source "the captured result $id sequence $seq" >/dev/null 2>&1
+        --source "the captured result $id sequence $seq" --via "$via" >/dev/null 2>&1
 }
 
 feed_reconcile_requests() {  # <adapter> <source-id> <result-file>

@@ -4,7 +4,8 @@
 # attached explicitly and derived from --origin whatever the presentation
 # order, `decide` for calls settled on the captain's behalf, `list` and the
 # fleet snapshot's calls[], the answer's machine lines written by `answers` and
-# `answer`, the declared on_answer, the one-time `migrate`, and the shims that
+# `answer` with their closed channel vocabulary, the declared on_answer, the
+# one-time `migrate`, and the shims that
 # replaced fm-decision-options.sh and `fm-artifact.sh present --covers`.
 set -u
 
@@ -226,7 +227,7 @@ test_answers_write_machine_lines_and_honor_on_answer() {
   printf 'sample-free\tneither, do something else\t\n' | run_captain "$home" answers --source "a chat relay" >/dev/null \
     || fail "freeform answer failed"
   call=$(call_json "$home" sample-free)
-  assert_equals 'null|neither, do something else|a chat relay' \
+  assert_equals 'null|neither, do something else|other' \
     "$(printf '%s' "$call" | jq -r '[(.answer.key|tostring), .answer.label, .answer.via] | join("|")')" \
     "an answer that names no option records no key"
 
@@ -248,6 +249,35 @@ test_answers_write_machine_lines_and_honor_on_answer() {
     "$(call_json "$home" sample-words | jq -r '[(.answer.key|tostring), .answer.label, .answer.via] | join("|")')" \
     "a plain relayed answer labels itself with the captain's first line"
   pass "answers and answer record machine lines and honor the declared close"
+}
+
+test_answered_via_is_a_closed_channel_vocabulary() {
+  local home out rc token
+  home=$(make_home via)
+  for token in lavish captured chat other; do
+    run_captain "$home" hold "sample-via-$token" --title "Via $token sample" --reason 'via pending' \
+      --option a=A --option b=B >/dev/null || fail "hold for $token failed"
+    printf 'sample-via-%s\ta\tA\n' "$token" \
+      | run_captain "$home" answers --source "some provenance text" --via "$token" >/dev/null \
+      || fail "answers --via $token failed"
+    assert_equals "$token" "$(call_json "$home" "sample-via-$token" | jq -r .answer.via)" \
+      "answers --via $token records that token"
+  done
+  run_captain "$home" hold sample-via-qd --title 'Via app sample' --reason 'via pending' >/dev/null || fail "hold failed"
+  printf 'sample-via-qd\tgo\tGo\n' | run_captain "$home" answers --source quarterdeck >/dev/null || fail "app answer failed"
+  assert_equals quarterdeck "$(call_json "$home" sample-via-qd | jq -r .answer.via)" \
+    "--source quarterdeck without --via records quarterdeck"
+  run_captain "$home" hold sample-via-bad --title 'Via refused sample' --reason 'via pending' >/dev/null || fail "hold failed"
+  out=$(printf 'sample-via-bad\tgo\tGo\n' | run_captain "$home" answers --source quarterdeck --via app 2>&1); rc=$?
+  expect_code 1 "$rc" "answers with an unknown channel token"
+  assert_contains "$out" "--via must be one of quarterdeck, chat, lavish, captured, decide, other: app" "the token is named"
+  printf 'Go.\n' > "$home/go.txt"
+  out=$(run_captain "$home" answer sample-via-bad --decision-file "$home/go.txt" --via "in chat" 2>&1); rc=$?
+  expect_code 1 "$rc" "answer with an unknown channel token"
+  assert_equals open "$(call_json "$home" sample-via-bad | jq -r .state)" "a refused channel closed nothing"
+  run_captain "$home" answer sample-via-bad --decision-file "$home/go.txt" --via lavish >/dev/null || fail "answer --via failed"
+  assert_equals lavish "$(call_json "$home" sample-via-bad | jq -r .answer.via)" "answer --via records its token"
+  pass "Answered via is a token from a closed channel vocabulary, with defaults per command"
 }
 
 test_an_interrupted_close_reads_as_answered() {
@@ -403,6 +433,7 @@ test_a_hold_without_content_is_still_a_call
 test_origin_evidence_is_derived_whatever_the_presentation_order
 test_offer_and_evidence_change_a_call
 test_answers_write_machine_lines_and_honor_on_answer
+test_answered_via_is_a_closed_channel_vocabulary
 test_an_interrupted_close_reads_as_answered
 test_decide_records_a_call_settled_for_the_captain
 test_list_window_damage_and_the_snapshot

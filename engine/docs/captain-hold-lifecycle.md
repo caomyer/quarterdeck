@@ -19,7 +19,7 @@ It requires a non-empty captain decision file of at most 8192 bytes, durably wri
 If the close is interrupted, the still-held task therefore keeps its original age basis.
 Every answer's block also carries machine lines directly under `Resolution mode:` - `Answer key:` when the answer named one of the call's options, `Answer label:`, `Answered by:` (`captain` or `firstmate`), `Answered via:` (the channel), and `Answered at:` - which readers take the way they take the hold-set stamp, stopping at the first line that is not one, so the captain's words below are never parsed.
 They sit outside the decision digest, which stays the captain's words alone: a record written before the lines existed and a retry arriving later or through another command both still match, and a retry never rewrites the block.
-A plain `answer` records `Answered via: chat` unless told otherwise, and an `Answer key:` only when `--key` names one of the call's options.
+`Answered via:` is always a token of the closed channel vocabulary described under answer-time resolution, and a plain `answer` records `chat` unless told otherwise, with an `Answer key:` only when `--key` names one of the call's options.
 A matching retry also completes any resolution-first normalization left unfinished after the close itself succeeded.
 An exact retry is idempotent only when the requested close mode matches the newest record; a drifted answer or mode mismatch is rejected, while a re-held task accepts a new answer as a new record on top.
 On a task closed outside the script, `answer` records the missing block only when the captain-hold annotations tasks-axi preserves through a close prove the captain owned it, and it verifies the task stays closed.
@@ -69,7 +69,10 @@ A pending-close record that fails validation outright is a different case and st
 `answers` is its channel-agnostic entry point: it reads `<task-id>\t<answer>\t<label>[\t<mode>]` lines and resolves each named task through the same `answer` path, so every guard applies identically no matter which channel the answer arrived on.
 The optional mode column carries a card-declared close: `done` (default) completes the task and `release` lifts the hold so held work resumes; any other value is skipped.
 A key that names no task, names a task that is not captain-held, or names a task already closed is reported as `skipped:` and feeds nothing; a replay whose answer and requested close mode match the newest record is an idempotent `closed:`, while a mode mismatch is skipped; and the command exits nonzero when any key was skipped.
-`--source` is provenance text recorded in the durable decision and as `Answered via:`, never a behavior switch, and the command carries no per-channel branch; `quarterdeck` is the value the Quarterdeck app passes.
+`--source` is provenance text recorded in the durable decision, never a behavior switch, and the command carries no per-channel branch.
+`Answered via:` is a token from a closed channel vocabulary rather than that prose, so a surface can say where the captain answered: `quarterdeck` (the app), `chat` (the captain's words relayed by the first mate), `lavish` (a Lavish board result), `captured` (any other captured process-event result), `decide` (a call decided on the captain's behalf), and `other`.
+`answer` and `answers` take it as `--via <token>` and refuse any other value; without it `answer` records `chat`, `answers` records `quarterdeck` when `--source` is exactly `quarterdeck` (what the app sends) and `other` otherwise, and `decide` records `decide`.
+The chat channel passes `--via chat`, and the process-event runner passes `lavish` for the Lavish adapter and `captured` for every other source.
 An answer that names one of the call's recorded options is recorded with its `Answer key:`, and a freeform answer is recorded with none.
 The Quarterdeck app calls this intake directly and reads its `closed:` and `skipped:` lines per call; the app never closes anything itself, and the first mate is told afterwards to do the follow-up work.
 
@@ -77,7 +80,7 @@ The Quarterdeck app calls this intake directly and reads its `closed:` and `skip
 
 Two channels feed that one intake today, and both are ordinary callers rather than special cases.
 `bin/fm-send.sh --resolve-key` is the chat channel: its status-log close for a key the status log still owns is owned by that script's header, and a key the status log no longer owns is resolved to a still-open captain-held task - the key as a task id, then the legacy derived identity - and fed as one keyed line.
-`bin/fm-procevent.sh` is the captured-result channel: after capture, a bound built-in source has its result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>` and whatever that prints is piped into the intake, so any built-in adapter with an `answers` command works and the runner names no adapter, parses no result, and carries no decision rule.
+`bin/fm-procevent.sh` is the captured-result channel: after capture, a bound built-in source has its result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>` and whatever that prints is piped into the intake, so any built-in adapter with an `answers` command works and the runner parses no result and carries no decision rule; its only mapping is the channel token it passes as `--via`.
 Trusted external process-event adapters intentionally expose no answer operation and cannot feed this authority-bearing intake; [`extension-bindings.md`](extension-bindings.md#trust-boundary) owns that boundary.
 `bin/fm-procevent-lavish.sh answers` is one such adapter command; it reads only rows tagged `choice`, relays a card's declared close mode, and can never let freeform captain prose forge a task id or a mode.
 
