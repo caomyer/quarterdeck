@@ -10,6 +10,7 @@ import {
   CirclePause,
   CircleQuestionMark,
   CircleX,
+  Crop,
   Clock3,
   ExternalLink,
   FileText,
@@ -17,7 +18,9 @@ import {
   FolderOpen,
   Gauge,
   GitBranch,
+  GitMerge,
   Inbox,
+  ListPlus,
   Menu,
   MessageSquarePlus,
   MessageSquareText,
@@ -26,6 +29,7 @@ import {
   PanelsTopLeft,
   Radio,
   RefreshCw,
+  Reply,
   Search,
   Send,
   Settings,
@@ -42,7 +46,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, createHostAdapter, type Decision, type DecisionOptions, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, createHostAdapter, type DecidedRecord, type Decision, type Landed, type DecisionOptions, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 
@@ -200,6 +204,22 @@ export function App() {
   useEffect(() => {
     void host.reviewSummary().then(setReviews).catch(() => setReviews({}));
   }, [artifacts, review]);
+  const records = useMemo(() => new Map((fleet?.backlog?.records ?? []).map((record) => [record.id, record])), [fleet]);
+  const now = useNow(60_000);
+  /** What the captain calls a task: its backlog title. The id is for machines, and shows only beside it. */
+  const taskTitle = (id: string) => records.get(id)?.title || bearings?.in_flight.find((item) => item.id === id)?.name || id;
+  // A scout that finished with something to read, which the backlog has not closed yet, is the captain's to read.
+  const readyReports = useMemo(() => (fleet?.tasks ?? []).flatMap((task) => {
+    if (task.kind !== "scout" || task.current_state.state !== "done" || records.get(task.id)?.state === "done") return [];
+    const page = latestTaskPage(artifacts, task.id);
+    const report = task.paths.report.present ? task.paths.report.path : bearings?.reports?.find((item) => item.id === task.id)?.path ?? null;
+    return page || report ? [{ task, page, report }] : [];
+  }), [fleet, records, artifacts, bearings]);
+  const readyIds = new Set(readyReports.map((item) => item.task.id));
+  const underway = (bearings?.in_flight ?? []).filter((item) => !readyIds.has(item.id));
+  const landedRows = useMemo(() => landedItems(bearings?.landed ?? [], records, artifacts, now), [bearings, records, artifacts, now]);
+  const [dismissedDecided, setDismissedDecided] = useState<string[]>(readDismissed);
+  const decided = (fleet?.decided ?? []).filter((item) => !dismissedDecided.includes(item.id));
   const artifactRef = useMemo<ArtifactRef | null>(() => openArtifact ? { scope: openArtifact.scope, task: openArtifact.task, name: openArtifact.name } : null, [openArtifact]);
 
   // The review is read from the home when a page opens, so a draft written before a relaunch is still there.
@@ -227,7 +247,8 @@ export function App() {
     : view === "artifacts" ? `${artifacts.length} page${artifacts.length === 1 ? "" : "s"} shared with you`
     : view === "artifact" ? (shownArtifact && shownRevision ? `${artifactOwner(shownArtifact, fleet?.tasks ?? [])} · Rev ${shownRevision.rev} of ${shownArtifact.revisions.length}` : "")
     : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
-  const openCallCount = bearings?.decisions_open.length ?? 0;
+  // Everything waiting on the captain: open calls, and finished reports nobody has closed.
+  const openCallCount = (bearings?.decisions_open.length ?? 0) + readyReports.length;
   const approvalCount = bridge.permissionRequests.length;
   // Failed and not-sent messages aren't being worked on.
   const pendingCount = Object.values(outbox).filter((item) => item.status !== "picked_up" && !item.error).length;
@@ -278,6 +299,25 @@ export function App() {
     } catch (error) {
       // Storage refused. The theme still applies for this session, it just will not be remembered.
     }
+  }
+
+  /** Puts words in the composer and opens Chat, for the captain to finish and send. Nothing goes without them. */
+  function draftInChat(text: string) {
+    setChatDraft(text);
+    navigate("chat");
+  }
+
+  function dismissDecided(id: string) {
+    // Only ids still in the snapshot are worth remembering, so the list cannot grow without end.
+    const known = new Set((fleet?.decided ?? []).map((item) => item.id));
+    const next = [...dismissedDecided.filter((item) => known.has(item)), id];
+    setDismissedDecided(next);
+    writeDismissed(next);
+  }
+
+  function openTask(id: string) {
+    const task = fleet?.tasks.find((candidate) => candidate.id === id);
+    if (task) setActiveTask(task);
   }
 
   async function sendChat() {
@@ -379,31 +419,41 @@ export function App() {
             {ahoyVisible && (
               <section className="ahoy-card">
                 <div className="ahoy-mark"><ShipWheel size={22} /></div>
-                <div><span>Ahoy</span><h2>Welcome back.</h2><p>The first mate can catch you up and take you through what's waiting.</p><strong>{bearings.decisions_open.length} waiting on you · {bearings.in_flight.length} underway</strong></div>
+                <div><span>Ahoy</span><h2>Welcome back.</h2><p>The first mate can catch you up and take you through what's waiting.</p><strong>{openCallCount} waiting on you · {underway.length} underway</strong></div>
                 <div className="ahoy-actions"><button onClick={runAhoy}>Ahoy</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
               </section>
             )}
-            <DashboardSection title="Captain's Call" icon={<Inbox size={17} />} tone="coral" count={bearings.decisions_open.length}>
+            <DashboardSection title="Captain's Call" icon={<Inbox size={17} />} tone="coral" count={openCallCount}>
               {decisions.map((decision) => (
                 <DecisionCard key={decision.id} decision={decision} state={outbox[callAnswers[decision.id]]} answerText={messages.find((message) => message.id === callAnswers[decision.id])?.text} runtime={runtime.state} onSend={(text) => answerCall(decision.id, text)} onStart={() => void bridge.start()} onReadArgument={decision.page ? () => showArtifact(decision.page!) : undefined} answeredIn={decision.answeredIn?.title} />
               ))}
-              {bearings.decisions_open.length === 0 && <EmptyState label="Nothing needs your action right now." />}
+              {readyReports.map(({ task, page, report }) => (
+                <ReportCard key={task.id} title={taskTitle(task.id)} project={projectName(task.project)} id={task.id} finished={finishedLine(task)} page={page} report={report} onOpen={page ? () => showArtifact(page) : undefined} onAsk={() => draftInChat(askAboutReport(taskTitle(task.id)))} onDetails={() => setActiveTask(task)} />
+              ))}
+              {openCallCount === 0 && <EmptyState label="Nothing needs your action right now." />}
             </DashboardSection>
 
-            <DashboardSection title="Recently Landed" icon={<Check size={17} />} tone="green" count={bearings.landed.length}>
-              {bearings.landed.map((item) => <CompactRow key={item.id} title={item.what} detail={item.artifact || item.owner} icon={<Check size={15} />} />)}
-              {bearings.landed.length === 0 && <EmptyState label="Nothing has landed recently." />}
+            {decided.length > 0 && <DashboardSection title="Decided for you" icon={<ShipWheel size={17} />} tone="sea" count={decided.length}>
+              <div className="decided-list" data-testid="decided">
+                {decided.map((item) => <DecidedRow key={item.id} item={item} taskTitle={item.task ? taskTitle(item.task) : null} onTask={item.task && fleet?.tasks.some((task) => task.id === item.task) ? () => openTask(item.task!) : undefined} onPushBack={() => draftInChat(`About "${item.what}": `)} onDismiss={() => dismissDecided(item.id)} />)}
+              </div>
+            </DashboardSection>}
+
+            <DashboardSection title="Recently Landed" icon={<Check size={17} />} tone="green" count={landedRows.length}>
+              {landedRows.map((row) => <LandedRow key={row.id} row={row} onOpenPage={row.page ? () => showArtifact(row.page!) : undefined} onAsk={row.report && !row.page ? () => draftInChat(askAboutReport(row.title)) : undefined} />)}
+              {landedRows.length === 0 && <EmptyState label="Nothing has landed recently." />}
             </DashboardSection>
 
-            <DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={bearings.in_flight.length}>
+            <DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={underway.length}>
               <div className="task-list">
-                {bearings.in_flight.map((item) => {
+                {underway.map((item) => {
                   const task = fleet?.tasks.find((candidate) => candidate.id === item.id);
                   const status = taskStatus(item.state);
-                  return <button className="task-row" key={item.id} onClick={() => task && setActiveTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{item.name}</strong><small>{projectName(item.repo)} · {item.kind}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(item.state)}</span><ChevronRight size={17} /></button>;
+                  const started = startedAt(task, records.get(item.id));
+                  return <button className="task-row" key={item.id} onClick={() => task && setActiveTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{item.name}</strong><small>{projectName(item.repo ?? "")} · {item.kind}{started && <> · <span data-testid="underway-for" title={`Started ${formatStart(started)}`}>{sinceLabel(started, now)}</span></>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(item.state)}</span><ChevronRight size={17} /></button>;
                 })}
               </div>
-              {bearings.in_flight.length === 0 && <EmptyState label="Nothing is underway." />}
+              {underway.length === 0 && <EmptyState label="Nothing is underway." />}
             </DashboardSection>
 
             <DashboardSection title="Charted Next" icon={<Clock3 size={17} />} tone="amber" count={bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length}>
@@ -417,7 +467,7 @@ export function App() {
 
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} onOpen={openProject} />}
-        {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} onOpenTask={setActiveTask} />}
+        {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} taskTitle={taskTitle} records={records} now={now} onOpenTask={setActiveTask} />}
         {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} backlog={fleet?.backlog?.records ?? []} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
           ? <ArtifactReview
@@ -443,7 +493,7 @@ export function App() {
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
       {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} onClose={() => setSettingsOpen(false)} />}
-      {activeTask && fleet && <TaskDrawer task={activeTask} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
+      {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
     </div>
   );
 }
@@ -521,6 +571,260 @@ function CompactRow({ title, detail, icon, tone = "green", badge }: { title: str
   return <div className="compact-row"><span className={`tone-${tone}`}>{icon}</span><div><strong>{title}</strong>{shown && <small>{shown}</small>}</div>{badge && <em>{badge}</em>}</div>;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A backlog date (`yyyy-mm-dd`) as a moment: midday there, so no time zone moves it to another day. */
+function dayMs(date: string) {
+  return Date.parse(`${date}T12:00:00`);
+}
+
+/** A backlog date the way the captain reads one. */
+function formatDay(date: string) {
+  const at = new Date(dayMs(date));
+  if (Number.isNaN(at.getTime())) return date;
+  if (at.toDateString() === new Date().toDateString()) return "today";
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(at);
+}
+
+/** How long something has been going, to the precision a glance needs. */
+function formatDuration(ms: number) {
+  const minutes = Math.max(0, Math.floor(ms / 60_000));
+  if (minutes < 1) return "under a minute";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}${hours % 24 ? ` ${hours % 24} h` : ""}`;
+}
+
+/** When a worker started. `exact` when its spawn says so; otherwise only the day its backlog row was filed. */
+type Started = { ms: number; exact: boolean; day?: string };
+
+/**
+ * fm-spawn.sh stamps every spawn and relaunch `spawn_gen=s<epoch seconds>.<pid>.<random>`, so a worker's start is
+ * the only time the snapshot carries for it. A row with no worker yet falls back to the day it was filed.
+ */
+function startedAt(task?: FleetTask, record?: BacklogRecord): Started | null {
+  const epoch = task?.spawn_gen?.match(/^s(\d{9,})\./)?.[1];
+  if (epoch) return { ms: Number(epoch) * 1000, exact: true };
+  const since = record?.since ?? null;
+  if (since && /^\d{4}-\d{2}-\d{2}$/.test(since)) return { ms: dayMs(since), exact: false, day: since };
+  return null;
+}
+
+function sinceLabel(started: Started, now: number) {
+  return started.exact ? `started ${formatDuration(now - started.ms)} ago` : `since ${formatDay(started.day!)}`;
+}
+
+function formatStart(started: Started) {
+  return started.exact ? formatWhen(new Date(started.ms).toISOString()) : formatDay(started.day!);
+}
+
+/**
+ * What a worker's state detail means, in the captain's words. fm-crew-state.sh writes these for its own
+ * reasons; anything it did not write this way is the worker's own note and reads as it is.
+ */
+function plainDetail(detail: string) {
+  const text = detail.trim();
+  if (/^harness busy\b/.test(text)) return "Busy in its terminal.";
+  if (/^harness state unavailable\b/.test(text)) return "Its terminal didn't say whether it is busy.";
+  if (/^backend target gone\b/.test(text)) return "Its terminal has closed.";
+  if (/^backend unreachable\b/.test(text)) return "Its terminal didn't answer.";
+  if (text === "no backend target recorded") return "No terminal is recorded for it.";
+  if (text === "no current-state source available") return "Nothing has reported its state yet.";
+  return text;
+}
+
+/** The last thing a finished worker said, which for a scout is usually what it found. */
+function finishedLine(task: FleetTask) {
+  const detail = plainDetail(task.current_state.detail ?? "");
+  return detail && detail !== "Busy in its terminal." ? detail : task.paths.status_log.last_event.note;
+}
+
+/** A task's newest page, when it has presented one. */
+function latestTaskPage(artifacts: Artifact[], task: string) {
+  return artifacts
+    .filter((artifact) => artifact.scope === "task" && artifact.task === task)
+    .sort((a, b) => b.latest.presented_at.localeCompare(a.latest.presented_at))[0];
+}
+
+/** What the captain types to have a report without a page read to them. */
+function askAboutReport(title: string) {
+  return `Walk me through the report on "${title}".`;
+}
+
+/**
+ * What the captain answered on a closed call. fm-captain-hold.sh prepends a resolution block whose
+ * "Captain decision:" line is followed by the answer, so the first one is the newest. A call closed on
+ * evidence instead carries "Reconciliation evidence:", which is not the captain's word and is not shown as it.
+ */
+function captainDecision(lines: string[] = []) {
+  const at = lines.findIndex((line) => line.trim().startsWith("Captain decision:"));
+  if (at < 0) return null;
+  const words = [lines[at].trim().slice("Captain decision:".length).trim()];
+  for (const line of lines.slice(at + 1)) {
+    const text = line.trim();
+    if (!text) { if (words.some(Boolean)) break; continue; }
+    if (text.startsWith("Resolution recorded by")) break;
+    words.push(text);
+  }
+  return words.filter(Boolean).join(" ") || null;
+}
+
+/** A link's name: a pull request by its number, anything else by its site. */
+function linkLabel(href: string) {
+  const pr = href.match(/\/pull\/(\d+)/)?.[1];
+  if (pr) return `PR #${pr}`;
+  try {
+    return new URL(href).hostname.replace(/^www\./, "");
+  } catch {
+    return href;
+  }
+}
+
+function ExternalAnchor({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) {
+  return <a className={className} href={href} title={href} target="_blank" rel="noreferrer noopener" onClick={(event) => { event.preventDefault(); window.open(href, "_blank", "noreferrer"); }}>{children}</a>;
+}
+
+/** A finished scout's report, offered where the captain looks first. */
+function ReportCard({ title, project, id, finished, page, report, onOpen, onAsk, onDetails }: { title: string; project: string; id: string; finished: string; page?: Artifact; report: string | null; onOpen?: () => void; onAsk: () => void; onDetails: () => void }) {
+  return <article className="decision-card report-card" data-testid="report-ready" data-task-id={id}>
+    <div className="decision-meta"><span>Report ready</span><small>{project}</small></div>
+    <h3>{title}</h3>
+    {finished && <p>{finished}</p>}
+    <div className="decision-actions">
+      <span title={report ?? undefined}>{page ? `The scout presented it ${formatWhen(page.latest.presented_at)}` : "The scout wrote it up without a page"}</span>
+      <div className="report-actions">
+        <button className="quiet" onClick={onDetails}>Task details</button>
+        {onOpen ? <button onClick={onOpen}><PanelsTopLeft size={15} /> Read the report</button> : <button onClick={onAsk}><MessageSquareText size={15} /> Ask the first mate for it</button>}
+      </div>
+    </div>
+  </article>;
+}
+
+const DECIDED_ICONS: Record<string, React.ReactNode> = {
+  "review-finding": <MessageSquareText size={15} />,
+  merge: <GitMerge size={15} />,
+  "new-task": <ListPlus size={15} />,
+  scope: <Crop size={15} />,
+};
+
+/** One call the first mate made for the captain: what, why, and a way to disagree. */
+function DecidedRow({ item, taskTitle, onTask, onPushBack, onDismiss }: { item: DecidedRecord; taskTitle: string | null; onTask?: () => void; onPushBack: () => void; onDismiss: () => void }) {
+  return <article className="decided-row" data-decided-id={item.id}>
+    <span className="decided-icon">{DECIDED_ICONS[item.kind] ?? <ShipWheel size={15} />}</span>
+    <div className="decided-copy">
+      <strong>{item.what}</strong>
+      <p>{item.why}</p>
+      <small className="decided-meta">
+        <time dateTime={item.at}>{formatWhen(item.at)}</time>
+        {taskTitle && (onTask ? <button className="link-button" onClick={onTask}>{taskTitle}</button> : <span>{taskTitle}</span>)}
+        {item.link && <ExternalAnchor className="link-button" href={item.link}>{linkLabel(item.link)} <ExternalLink size={11} /></ExternalAnchor>}
+      </small>
+    </div>
+    <div className="decided-actions">
+      <button onClick={onPushBack} title="Tell the first mate you see it differently"><Reply size={14} /> Push back</button>
+      <button className="icon-button" onClick={onDismiss} title="Dismiss"><X size={15} /></button>
+    </div>
+  </article>;
+}
+
+const DISMISSED_KEY = "quarterdeck.decided.dismissed";
+
+/** Which calls the captain has seen and put away. Only a convenience, so a refused store just shows them again. */
+function readDismissed(): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]");
+    return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDismissed(ids: string[]) {
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(ids));
+  } catch {
+    // Storage refused: the row stays dismissed for this session only.
+  }
+}
+
+/** A closed call counts as recent for as long as the snapshot keeps the calls the first mate made: a week. */
+const ANSWERED_WINDOW_DAYS = 7;
+
+type LandedItem = {
+  id: string;
+  kind: "landed" | "answered";
+  title: string;
+  date: string | null;
+  verb: string | null;
+  project: string | null;
+  pr: string | null;
+  report: string | null;
+  page?: Artifact;
+  answer?: string | null;
+};
+
+/**
+ * What landed, with what the captain would open next: the PR, the report, the page. Calls the captain
+ * answered and the first mate closed sit among them, since for the captain that is something done too.
+ */
+function landedItems(landed: Landed[], records: Map<string, BacklogRecord>, artifacts: Artifact[], now: number): LandedItem[] {
+  const rows: LandedItem[] = landed.map((item) => {
+    const record = records.get(item.id);
+    // firstmate writes "-" for a row with nothing to point at.
+    const artifact = item.artifact.trim() === "-" ? "" : item.artifact.trim();
+    return {
+      id: item.id,
+      kind: "landed",
+      title: item.what,
+      date: record?.completion?.date ?? null,
+      verb: record?.completion?.verb ?? null,
+      project: record?.repo ?? null,
+      pr: record?.pr_url ?? (/^https?:\/\/\S+\/pull\/\d+/.test(artifact) ? artifact : null),
+      report: record?.report_path ?? (artifact.endsWith(".md") ? artifact : null),
+      page: latestTaskPage(artifacts, item.id),
+    };
+  });
+  const cutoff = now - ANSWERED_WINDOW_DAYS * DAY_MS;
+  for (const record of records.values()) {
+    if (record.state !== "done" || (record.kind !== "captain" && record.hold_kind !== "captain")) continue;
+    const date = record.completion?.date ?? null;
+    if (!date || dayMs(date) < cutoff) continue;
+    rows.push({
+      id: record.id, kind: "answered", title: record.title, date, verb: record.completion?.verb ?? null, project: record.repo ?? null, pr: null, report: null,
+      page: artifacts.find((artifact) => artifact.revisions.some((revision) => (revision.covers ?? []).includes(record.id))),
+      answer: captainDecision(record.body_lines),
+    });
+  }
+  // Newest first; a row with no date keeps its place after the dated ones.
+  return rows.map((row, index) => ({ row, index }))
+    .sort((a, b) => (b.row.date ?? "").localeCompare(a.row.date ?? "") || a.index - b.index)
+    .map(({ row }) => row);
+}
+
+const LANDED_VERBS: Record<string, string> = { merged: "Merged", reported: "Reported", done: "Done" };
+
+function LandedRow({ row, onOpenPage, onAsk }: { row: LandedItem; onOpenPage?: () => void; onAsk?: () => void }) {
+  const when = row.date ? formatDay(row.date) : null;
+  const meta = row.kind === "answered"
+    ? ["Your call", when && `closed ${when}`, row.project].filter(Boolean).join(" · ")
+    : [row.verb && when ? `${LANDED_VERBS[row.verb] ?? row.verb} ${when}` : when, row.project].filter(Boolean).join(" · ");
+  return <div className="compact-row landed-row" data-testid="landed-row" data-landed-kind={row.kind} data-id={row.id}>
+    <span className="tone-green">{row.kind === "answered" ? <Inbox size={15} /> : <Check size={15} />}</span>
+    <div>
+      <strong>{row.title}</strong>
+      {row.kind === "answered" && <small className="landed-answer">{row.answer ? <>You chose: <em>{row.answer}</em></> : "Closed without an answer from you"}</small>}
+      {meta && <small>{meta}</small>}
+    </div>
+    <div className="landed-links">
+      {row.pr && <ExternalAnchor className="landed-link" href={row.pr}><GitMerge size={13} /> {linkLabel(row.pr)}</ExternalAnchor>}
+      {onOpenPage && <button className="landed-link" onClick={onOpenPage}><PanelsTopLeft size={13} /> The page</button>}
+      {onAsk && <button className="landed-link" onClick={onAsk} title={row.report ?? undefined}><FileText size={13} /> Report</button>}
+    </div>
+  </div>;
+}
+
 /** How an answer names its call, which is what lets a waiting answer find its card again after a relaunch. */
 function callName(decision: Decision) {
   return (decision.key || decision.id).replaceAll("-", " ");
@@ -590,10 +894,11 @@ function ProjectsView({ projects, onOpen }: { projects: { name: string; posture:
   return <div className="content-scroll projects-page"><div className="project-grid">{projects.map((project) => <button key={project.name} className="project-card" onClick={() => onOpen(project.name)}><span className="project-sigil large">{project.name.slice(0, 2).toUpperCase()}</span><div><h2>{project.name}</h2><p>{project.posture}</p><span>{project.tasks.length} underway</span></div><ChevronRight size={18} /></button>)}</div></div>;
 }
 
-function ProjectView({ project, onOpenTask }: { project: { name: string; posture: string; tasks: FleetTask[] }; onOpenTask: (task: FleetTask) => void }) {
+function ProjectView({ project, taskTitle, records, now, onOpenTask }: { project: { name: string; posture: string; tasks: FleetTask[] }; taskTitle: (id: string) => string; records: Map<string, BacklogRecord>; now: number; onOpenTask: (task: FleetTask) => void }) {
   return <div className="content-scroll project-page"><div className="posture-line"><Anchor size={15} /><span>{project.posture}</span></div><section className="project-summary"><div><span>Project</span><h2>{project.name}</h2><p>The first mate keeps this work within the project's standing delivery posture.</p></div><div className="project-stat"><strong>{project.tasks.length}</strong><span>Underway</span></div></section><DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={project.tasks.length}><div className="task-list">{project.tasks.map((task) => {
     const status = taskStatus(task.current_state.state);
-    return <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{task.id}</strong><small>{task.kind} · {task.harness}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(task.current_state.state)}</span><ChevronRight size={17} /></button>;
+    const started = startedAt(task, records.get(task.id));
+    return <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{taskTitle(task.id)}</strong><small>{task.kind} · {task.harness}{started && <> · {sinceLabel(started, now)}</>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(task.current_state.state)}</span><ChevronRight size={17} /></button>;
   })}</div></DashboardSection></div>;
 }
 
@@ -690,6 +995,14 @@ function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, r
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
   const items = chatItems(messages, artifacts);
   const scroller = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
+  // Arriving with words already written (Push back, asking for a report) puts the caret after them, ready to go on.
+  useEffect(() => {
+    const element = composer.current;
+    if (!element || !draft) return;
+    element.focus();
+    element.setSelectionRange(draft.length, draft.length);
+  }, []);
   // Follow the conversation, including a resumed session's history, unless the captain has scrolled up to read.
   const following = useRef(true);
   useLayoutEffect(() => {
@@ -716,7 +1029,7 @@ function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, r
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
         ? <div key={item.message.id} className="chat-notice" role="status">{item.message.text}</div>
-        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}<div className="composer"><textarea value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><button className="icon-button" title="Attach a file"><FileText size={17} /></button><button className="send-button" onClick={onSend} disabled={!draft.trim() || !sendReady} title={sendReady ? "Send message" : "Start the first mate to send messages"}><Send size={16} /></button></div></div></div>;
+        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}<div className="composer"><textarea ref={composer} value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><button className="icon-button" title="Attach a file"><FileText size={17} /></button><button className="send-button" onClick={onSend} disabled={!draft.trim() || !sendReady} title={sendReady ? "Send message" : "Start the first mate to send messages"}><Send size={16} /></button></div></div></div>;
 }
 
 /**
@@ -816,23 +1129,61 @@ function HostHealthBanner({ warning, onRestart }: { warning: HealthWarning; onRe
   return <section className="offline-banner health-banner" role="alert" data-health-kind={warning.kind}><CircleAlert size={18} /><div><strong>{warning.message}</strong>{hint && <span>{hint}</span>}{open && warning.details && <pre className="banner-details">{warning.details}</pre>}</div>{hasActions && <div className="banner-actions">{warning.details && <button aria-expanded={open} onClick={() => setOpen((current) => !current)}>{open ? "Hide details" : "Show details"}</button>}{warning.kind === "kill_refused" && <button onClick={onRestart}>Restart</button>}</div>}</section>;
 }
 
-function TaskDrawer({ task, artifacts, onOpenArtifact, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose }: { task: FleetTask; artifacts: Artifact[]; onOpenArtifact: (artifact: Artifact) => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void }) {
+const KIND_NAMES: Record<string, string> = { scout: "Scout", ship: "Ship", secondmate: "Second mate" };
+
+/** Backlog body lines that are bookkeeping rather than anything a person wrote about the task. */
+const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:)/;
+
+/**
+ * One task, led by what its worker is doing now. The snapshot carries the worker's latest note but not the
+ * brief it was given, so the note is labelled as what it is. The worker's screen is kept, folded: its top is
+ * the brief being delivered, which is plumbing, so it opens on its newest lines.
+ */
+function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void }) {
   const [capture, setCapture] = useState<{ text: string; observed_at?: string } | null>(null);
+  const [screenOpen, setScreenOpen] = useState(false);
+  const screen = useRef<HTMLPreElement>(null);
   useEffect(() => {
     let active = true;
     void onCapture(task.id).then((next) => { if (active) setCapture(next); });
     return () => { active = false; };
   }, [onCapture, task.id]);
+  useLayoutEffect(() => {
+    if (screenOpen && screen.current) screen.current.scrollTop = screen.current.scrollHeight;
+  }, [screenOpen, capture]);
   const status = taskStatus(task.current_state.state);
   // The snapshot's own detail says more than the generic sentence for a state, when it has one.
-  const statusDetail = (task.current_state.detail ?? "").trim() || status.summary;
+  const statusDetail = plainDetail(task.current_state.detail ?? "") || status.summary;
+  const lastEvent = task.paths.status_log.last_event;
+  const started = startedAt(task, record);
+  const backlogNotes = (record?.body_lines ?? []).map((line) => line.trim()).filter((line) => line && !BOOKKEEPING.test(line));
+  const report = task.paths.report.present ? task.paths.report.path : null;
+  // A scout reports and never opens a PR, and a task that stays on this machine is landed by the captain.
+  const prApplies = task.kind === "ship" && task.mode !== "local-only";
   const timeline = [
-    { title: "Registered with the fleet", detail: `${task.kind} · ${task.harness}`, time: "Start", icon: <GitBranch size={15} /> },
-    { title: task.paths.status_log.last_event.state, detail: task.paths.status_log.last_event.note, time: "Latest", icon: <Radio size={15} /> },
-    { title: stateLabel(task.current_state.state), detail: statusDetail, time: formatTime(task.current_state.observed_at), icon: taskStatus(task.current_state.state, 15).icon },
+    ...(started ? [{ key: "start", title: started.exact ? "Started" : "Filed", detail: `${KIND_NAMES[task.kind] ?? task.kind} · ${task.harness} · ${sinceLabel(started, now)}`, time: formatStart(started), icon: <GitBranch size={15} /> }] : []),
+    // A finished worker's last note is usually its state's detail too, and says it once.
+    ...(lastEvent.note && lastEvent.note !== statusDetail ? [{ key: "event", title: `Last update · ${stateLabel(lastEvent.state)}`, detail: lastEvent.note, time: "Latest", icon: <Radio size={15} /> }] : []),
+    { key: "now", title: stateLabel(task.current_state.state), detail: statusDetail, time: formatTime(task.current_state.observed_at), icon: taskStatus(task.current_state.state, 15).icon },
   ];
   const captureText = capture?.text ?? `status: ${task.endpoint.status}\nbackend: ${task.backend}\nworker: ${task.endpoint.agent_alive}\nworktree: ${task.paths.worktree.present ? task.paths.worktree.path : "missing"}\nobserved: ${task.endpoint.observed_at}`;
-  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="task-drawer" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>{projectName(task.project)}</span><h2>{task.id}</h2></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header><div className="drawer-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{stateLabel(task.current_state.state)}</strong>{statusDetail && <span>{statusDetail}</span>}</div></div><div className="drawer-scroll"><DrawerSection title="Instructions"><div className="brief-block"><p>{task.paths.status_log.last_event.note}</p></div></DrawerSection><DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.time}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection>{artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}<DrawerSection title="PR"><div className="pr-block">{task.pr.url ? <a href={task.pr.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {task.pr.url}</a> : <span><GitBranch size={15} /> No PR recorded</span>}</div></DrawerSection><DrawerSection title="Worker's screen"><p className="worker-caption">Read-only. To change anything, tell the first mate.</p><div className="worker-screen"><header><TerminalSquare size={14} /><span>{task.endpoint.target}</span><em>{capture?.observed_at ? `Updated ${formatTime(capture.observed_at)}` : "Updating…"}</em></header><pre>{captureText}</pre></div></DrawerSection><button className="show-everything" onClick={onToggle}><ChevronDown size={16} className={expanded ? "rotated" : ""} /><span>Show everything</span></button>{expanded && <div className="machine-details"><dl><dt>Branch</dt><dd>none recorded</dd><dt>Isolated copy</dt><dd>{task.paths.worktree.present ? task.paths.worktree.path : "missing"}</dd><dt>Worker runtime</dt><dd>{task.harness} on {task.backend}</dd><dt>Status line</dt><dd>{task.current_state.raw}</dd><dt>Log</dt><dd>{task.paths.status_log.last_event.raw}</dd></dl><div className="step-chips"><span>Registered</span><span>{task.current_state.freshness}</span><span>Endpoint {task.endpoint.status}</span><span>PR {task.pr.source}</span><span>Report {task.paths.report.present ? "ready" : "none"}</span></div></div>}</div><footer className="drawer-footer">From {fleetSchema} · {formatTime(fleetGenerated)}</footer></aside></div>;
+  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="task-drawer" onMouseDown={(event) => event.stopPropagation()}>
+    <header className="drawer-header"><div><span>{projectName(task.project)}</span><h2 data-testid="drawer-title">{title}</h2><small className="drawer-id">{task.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
+    <div className="drawer-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{stateLabel(task.current_state.state)}</strong>{statusDetail && <span>{statusDetail}</span>}</div>{started?.exact && <time className="drawer-age" data-testid="drawer-age" title={`Started ${formatStart(started)}`}>{formatDuration(now - started.ms)}</time>}</div>
+    <div className="drawer-scroll">
+      <DrawerSection title="Latest from the worker"><div className="brief-block"><p>{lastEvent.note || "The worker hasn't written a note yet."}</p>{backlogNotes.length > 0 && <dl><dt>Backlog</dt><dd>{backlogNotes.join(" ")}</dd></dl>}</div></DrawerSection>
+      {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed={record?.state === "done"} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
+      {report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
+      <DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.key}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection>
+      {prApplies && <DrawerSection title="PR"><div className="pr-block">{task.pr.url ? <a href={task.pr.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {task.pr.url}</a> : <span><GitBranch size={15} /> No PR yet</span>}</div></DrawerSection>}
+      <section className="drawer-section"><button className="fold-toggle" aria-expanded={screenOpen} onClick={() => setScreenOpen((open) => !open)}><ChevronRight size={14} className={screenOpen ? "rotated" : ""} /><h3>Worker's screen</h3><small>{capture?.observed_at ? `Updated ${formatTime(capture.observed_at)}` : "Updating…"}</small></button>
+        {screenOpen && <><p className="worker-caption">Read-only, newest at the bottom. To change anything, tell the first mate.</p><div className="worker-screen"><header><TerminalSquare size={14} /><span>{task.endpoint.target}</span></header><pre ref={screen}>{captureText}</pre></div></>}
+      </section>
+      <button className="show-everything" onClick={onToggle}><ChevronDown size={16} className={expanded ? "rotated" : ""} /><span>Show everything</span></button>
+      {expanded && <div className="machine-details"><dl><dt>Task</dt><dd>{task.id}</dd><dt>Branch</dt><dd>none recorded</dd><dt>Isolated copy</dt><dd>{task.paths.worktree.present ? task.paths.worktree.path : "missing"}</dd><dt>Worker runtime</dt><dd>{task.harness} on {task.backend}</dd><dt>Spawn</dt><dd>{task.spawn_gen ?? "not recorded"}</dd><dt>Status line</dt><dd>{task.current_state.raw}</dd><dt>Log</dt><dd>{lastEvent.raw}</dd>{report && <><dt>Report</dt><dd>{report}</dd></>}</dl><div className="step-chips"><span>Registered</span><span>{task.current_state.freshness}</span><span>Endpoint {task.endpoint.status}</span><span>PR {task.pr.source}</span><span>Report {task.paths.report.present ? "ready" : "none"}</span></div></div>}
+    </div>
+    <footer className="drawer-footer">From {fleetSchema} · {formatTime(fleetGenerated)}</footer>
+  </aside></div>;
 }
 
 function sameArtifact(artifact: Artifact, ref: ArtifactRef) {

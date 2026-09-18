@@ -27,6 +27,8 @@ export type BearingsSnapshot = {
   decisions_open: Decision[];
   landed: Landed[];
   gates: Gate[];
+  /** Scout reports on disk for tasks still in play or recently landed. */
+  reports?: { id: string; path: string }[];
   /** fm-bearings-snapshot.sh omits this key entirely when no endpoint is unhealthy. */
   unhealthy_endpoints?: { id: string; backend: string; target: string; exists: boolean; agent: string }[];
 };
@@ -40,6 +42,32 @@ export type BacklogRecord = {
   state?: string;
   /** firstmate's own read of "waiting on the captain now"; exactly a live captain hold. */
   captain_actionable?: boolean;
+  /** `ship`, `scout`, `captain` or `secondmate`; absent on rows written before kinds. */
+  kind?: string | null;
+  /** The project, by name. */
+  repo?: string | null;
+  /** `captain` on a call held for the captain, which it keeps after the call is answered. */
+  hold_kind?: string | null;
+  /** The date the row was filed, `yyyy-mm-dd`. */
+  since?: string | null;
+  /** How a done row was closed, and on which date (`yyyy-mm-dd`). */
+  completion?: { verb: string | null; date: string | null };
+  pr_url?: string | null;
+  report_path?: string | null;
+  /** The row's body. A closed captain call carries its resolution block, with the answer after "Captain decision:". */
+  body_lines?: string[];
+  body_excerpt?: string | null;
+};
+
+/** A call the first mate made for the captain, as `bin/fm-decided.sh` records it (`fm-decided.v1`). */
+export type DecidedRecord = {
+  id: string;
+  at: string;
+  kind: string;
+  task: string | null;
+  what: string;
+  why: string;
+  link: string | null;
 };
 
 export type FleetTask = {
@@ -55,6 +83,8 @@ export type FleetTask = {
     worktree: { path: string; present: boolean };
     report: { path: string; present: boolean };
   };
+  /** `s<epoch seconds>.<pid>.<random>`, new on every spawn or relaunch, so it says when this worker started. */
+  spawn_gen?: string | null;
   current_state: { state: string; source: string; detail: string; raw: string; observed_at: string; freshness: string };
   endpoint: { target: string; exists: boolean; agent_alive: string; status: string; observed_at: string; freshness: string };
   pr: { url: string | null; source: string };
@@ -103,7 +133,14 @@ export type ReviewAnswer = { decision: string; option: string; label: string; at
 /** What a captain-held task offers, as `bin/fm-decision-options.sh` records it. */
 export type DecisionOptions = { task: string; question: string; options: { key: string; label: string; recommended: boolean }[] };
 /** What the list needs about a page's review, keyed `task/<id>/<name>` or `chat/<name>`. */
-export type ReviewSummary = Record<string, { seen_rev: number | null; draft_count: number; open_count: number; answered: string[] }>;
+export type ReviewSummary = Record<string, {
+  seen_rev: number | null;
+  draft_count: number;
+  open_count: number;
+  answered: string[];
+  /** Each sent comment the captain has not settled, with the revision it was written on, so a later revision can answer it. */
+  open_threads?: { id: string; rev: number }[];
+}>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */
 export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
@@ -130,6 +167,8 @@ export type FleetSnapshot = {
   artifacts?: Artifact[];
   /** What each captain-held task offers, for pages that argue one. */
   decision_options?: DecisionOptions[];
+  /** The last 7 days of calls the first mate made for the captain, newest first. Absent on homes without `bin/fm-decided.sh`. */
+  decided?: DecidedRecord[];
 };
 
 export type SnapshotProject = { name: string; mode: string; yolo: boolean; description?: string; added?: string | null };

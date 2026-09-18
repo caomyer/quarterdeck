@@ -5,6 +5,8 @@ import { artifactPath } from "./types";
 import type {
   Artifact,
   ArtifactRef,
+  BacklogRecord,
+  DecidedRecord,
   DecisionOptions,
   ArtifactRevision,
   BearingsSnapshot,
@@ -52,13 +54,62 @@ function reviewValue(name: string) {
  * `?artifacts`: a scout's plan in two revisions (the second presented with a narrow-window finding the scout accepted)
  * and a page the first mate shared in chat, all presented moments ago so they also show in the conversation.
  * The pages live in src/fixtures/review-pages, which only the dev server serves.
+ *
+ * Around them, a home a day into its work: a scout that has finished and presented its report, a scout that
+ * reported without a page and has landed, a call the captain answered two days ago with the page that argued
+ * it, and the calls the first mate made for the captain in the meantime.
  */
 const ARTIFACT_TASK = "res-titles-scout";
 /** A task the fixture backlog records as done, so its page has somewhere settled to sit. */
 const LANDED_TASK = "foreman-rebase-before-review";
+/** A scout that finished and presented its report, which the backlog has not closed yet. */
+const REPORT_TASK = "res-transcripts-scout";
+/** A scout that reported without a page and has landed. */
+const REPORTED_TASK = "res-feed-scout";
+/** A call the captain answered, argued by a chat page, and closed by the first mate. */
+const ANSWERED_CALL = "res-upload-wifi";
 
-function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; decisionOptions: DecisionOptions[]; inFlight: BearingsSnapshot["in_flight"][number] } {
+type MockHome = {
+  artifacts: Artifact[];
+  tasks: FleetTask[];
+  decisionOptions: DecisionOptions[];
+  inFlight: BearingsSnapshot["in_flight"];
+  records: BacklogRecord[];
+  landed: BearingsSnapshot["landed"];
+  reports: { id: string; path: string }[];
+  decided: DecidedRecord[];
+};
+
+/** A backlog row in the shape fm-fleet-snapshot.sh writes, with only what the app reads filled in. */
+function backlogRow(id: string, title: string, fields: Partial<BacklogRecord>): BacklogRecord {
+  return {
+    id, title, hold_reason: null, current_role: fields.state ?? "in_flight", state: "in_flight", captain_actionable: false,
+    kind: "ship", repo: "resonance", hold_kind: null, since: null, completion: { verb: null, date: null }, pr_url: null, report_path: null, body_lines: [], body_excerpt: null,
+    ...fields,
+  };
+}
+
+/** A worker the fleet snapshot reports, spawned `startedMinutesAgo` ago. */
+function mockTask(home: string, id: string, kind: string, state: string, startedMinutesAgo: number, fields: { detail: string; note: string; report: boolean; observedAt: string }): FleetTask {
+  return {
+    id, kind, harness: "claude", mode: kind === "scout" ? "" : "no-mistakes", yolo: kind === "scout" ? "" : "off", project: `${home}/projects/resonance`, backend: "tmux",
+    spawn_gen: `s${Math.floor((Date.now() - startedMinutesAgo * 60_000) / 1000)}.4242.17`,
+    paths: {
+      status_log: { present: true, last_event: { state, note: fields.note, raw: `${state}: ${fields.note}` } },
+      worktree: { path: `${home}/worktrees/${id}`, present: true },
+      report: { path: `${home}/data/${id}/report.md`, present: fields.report },
+    },
+    current_state: { state, source: state === "working" ? "pane" : "status-log", detail: fields.detail, raw: `${state}: ${fields.detail}`, observed_at: fields.observedAt, freshness: "fresh" },
+    endpoint: { target: `fm:${id}`, exists: true, agent_alive: "yes", status: "alive", observed_at: fields.observedAt, freshness: "fresh" },
+    pr: { url: null, source: "none" },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: fields.report, last_event_text: "" },
+    actions: { watch: "", steer: "", return_channel_note: null },
+  };
+}
+
+function mockArtifacts(home: string): MockHome {
   const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const day = (daysAgo: number) => at(daysAgo * 24 * 60).slice(0, 10);
   const plan = (rev: number, minutesAgo: number, note: string | null, layout: ArtifactRevision["layout"]): ArtifactRevision => ({
     scope: "task", task: ARTIFACT_TASK, name: "titles-plan", rev, title: "AI titles for snips", note, entry: "titles-plan.html",
     bytes: 3100 + rev * 600, presented_at: at(minutesAgo), presented_by: { role: "crew", task: ARTIFACT_TASK }, layout,
@@ -95,25 +146,78 @@ function mockArtifacts(home: string): { artifacts: Artifact[]; task: FleetTask; 
     scope: "task", task: LANDED_TASK, name: "rebase-plan", rev: 1, title: "Rebase the subject before anybody reads it", note: null,
     entry: "rebase-plan.html", bytes: 1900, presented_at: at(2880), presented_by: { role: "crew", task: LANDED_TASK }, layout: { status: "clean", issues: [] },
   };
+  // The finished scout's report, presented a little over a day ago, so it is not in today's conversation.
+  const report: ArtifactRevision = {
+    scope: "task", task: REPORT_TASK, name: "transcripts-report", rev: 1, title: "Which episodes already carry a transcript?", note: null,
+    entry: "transcripts-report.html", bytes: 2200, presented_at: at(25 * 60), presented_by: { role: "crew", task: REPORT_TASK }, layout: { status: "clean", issues: [] },
+  };
+  // The page that argued a call the captain has since answered and the first mate has closed.
+  const uploads: ArtifactRevision = {
+    scope: "chat", task: null, name: "uploads-wifi", rev: 1, title: "Should uploads wait for Wi-Fi?", note: null,
+    entry: "uploads-wifi.html", bytes: 1700, presented_at: at(3 * 24 * 60), presented_by: { role: "firstmate" }, layout: { status: "clean", issues: [] },
+    covers: [ANSWERED_CALL],
+  };
   const artifacts: Artifact[] = [
     { scope: "chat", task: null, name: "model-download", title: board.title, latest: board, revisions: [board] },
     { scope: "task", task: ARTIFACT_TASK, name: "titles-plan", title: "AI titles for snips", latest: planRevisions[2], revisions: planRevisions },
+    { scope: "task", task: REPORT_TASK, name: "transcripts-report", title: report.title, latest: report, revisions: [report] },
     { scope: "task", task: LANDED_TASK, name: "rebase-plan", title: shipped.title, latest: shipped, revisions: [shipped] },
+    // STAGED: uploads-wifi
   ];
-  const task: FleetTask = {
-    id: ARTIFACT_TASK, kind: "scout", harness: "claude", mode: "no-mistakes", yolo: "off", project: `${home}/projects/resonance`, backend: "tmux",
-    paths: {
-      status_log: { present: true, last_event: { state: "working", note: "Compare ways to title snips and show what each looks like.", raw: "working: comparing title options" } },
-      worktree: { path: `${home}/worktrees/${ARTIFACT_TASK}`, present: true },
-      report: { path: `${home}/data/${ARTIFACT_TASK}/report.md`, present: false },
+  const planTask = mockTask(home, ARTIFACT_TASK, "scout", "working", 95, { detail: "harness busy (claude-hook)", note: "Revising the titles plan.", report: false, observedAt: at(2) });
+  const reportTask = mockTask(home, REPORT_TASK, "scout", "done", 27 * 60, { detail: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", note: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", report: true, observedAt: at(2) });
+  const records: BacklogRecord[] = [
+    backlogRow(ARTIFACT_TASK, "Resonance: AI titles for snips", { kind: "scout", since: day(0) }),
+    backlogRow(REPORT_TASK, "Resonance: which episodes already carry a transcript?", { kind: "scout", since: day(1) }),
+    backlogRow(REPORTED_TASK, "Resonance: how often do feeds change their artwork?", {
+      kind: "scout", state: "done", current_role: "done", since: day(3), completion: { verb: "reported", date: day(1) }, report_path: `${home}/data/${REPORTED_TASK}/report.md`,
+    }),
+    backlogRow(ANSWERED_CALL, "Resonance: should uploads wait for Wi-Fi?", {
+      kind: "captain", hold_kind: "captain", state: "done", current_role: "done", since: day(4), completion: { verb: "done", date: day(2) },
+      // The resolution block bin/fm-captain-hold.sh writes when it closes a call with the captain's answer.
+      body_lines: [
+        "Captain hold set: 2026-09-14T09:12:00Z",
+        "Resolution recorded by fm-captain-hold.",
+        "Decision digest: 5c1f0e",
+        "Resolution mode: answered",
+        "",
+        "Captain decision:",
+        "Wi-Fi only, and say so in Settings.",
+      ],
+      body_excerpt: "Resolution recorded by fm-captain-hold.",
+    }),
+  ];
+  // What bin/fm-decided.sh keeps, newest first.
+  const decided: DecidedRecord[] = [
+    {
+      id: "20260918T071400Z-a1b2c3", at: at(40), kind: "review-finding", task: ARTIFACT_TASK,
+      what: "Kept the wide before-and-after image in the titles plan (review finding F1)",
+      why: "Seeing both titles side by side is the point of the page, so the narrow window scrolls it instead.", link: null,
     },
-    current_state: { state: "working", source: "status", detail: "Revising the titles plan.", raw: "working: revising the titles plan", observed_at: at(2), freshness: "fresh" },
-    endpoint: { target: `fm:${ARTIFACT_TASK}`, exists: true, agent_alive: "yes", status: "alive", observed_at: at(2), freshness: "fresh" },
-    pr: { url: null, source: "none" },
-    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "" },
-    actions: { watch: "", steer: "", return_channel_note: null },
+    {
+      id: "20260918T021400Z-d4e5f6", at: at(5 * 60), kind: "merge", task: LANDED_TASK,
+      what: "Merged foreman PR #24 once its checks passed",
+      why: "You approved the plan, and foreman merges its own PRs.", link: "https://github.com/caomyer/foreman/pull/24",
+    },
+    {
+      id: "20260917T071400Z-g7h8i9", at: at(26 * 60), kind: "new-task", task: null,
+      what: "Filed res-ai-titles to build the titles once you pick an approach",
+      why: "The scout's plan needs a ship task to land, and it waits on your call rather than starting.", link: null,
+    },
+  ];
+  return {
+    artifacts,
+    tasks: [planTask, reportTask],
+    decisionOptions,
+    inFlight: [
+      { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: planTask.project, name: "AI titles for snips", doing: "Revising the titles plan." },
+      { id: REPORT_TASK, kind: "scout", state: "done", repo: reportTask.project, name: "Resonance: which episodes already carry a transcript?", doing: "" },
+    ],
+    records,
+    landed: [{ id: REPORTED_TASK, what: "Resonance: how often do feeds change their artwork?", artifact: `${home}/data/${REPORTED_TASK}/report.md`, owner: "(main)" }],
+    reports: [{ id: REPORT_TASK, path: `${home}/data/${REPORT_TASK}/report.md` }, { id: REPORTED_TASK, path: `${home}/data/${REPORTED_TASK}/report.md` }],
+    decided,
   };
-  return { artifacts, task, decisionOptions, inFlight: { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: task.project, name: "AI titles for snips", doing: "Revising the titles plan." } };
 }
 
 /** What the host says for each `reason_kind`, so the review shows the details a captain would see. */
@@ -210,10 +314,22 @@ export class MockHostAdapter implements HostAdapter {
     const bearings = bearingsFixture as unknown as BearingsSnapshot;
     const fleet = fleetFixture as unknown as FleetSnapshot;
     if (!reviewFlag("artifacts")) return { bearings, fleet };
-    const { artifacts, task, decisionOptions, inFlight } = mockArtifacts(fleet.fm_home);
+    const mock = mockArtifacts(fleet.fm_home);
     return {
-      bearings: { ...bearings, in_flight: [...bearings.in_flight, inFlight] },
-      fleet: { ...fleet, tasks: [...fleet.tasks, task], artifacts, decision_options: decisionOptions },
+      bearings: {
+        ...bearings,
+        in_flight: [...bearings.in_flight, ...mock.inFlight],
+        landed: [...mock.landed, ...bearings.landed],
+        reports: [...(bearings.reports ?? []), ...mock.reports],
+      },
+      fleet: {
+        ...fleet,
+        tasks: [...fleet.tasks, ...mock.tasks],
+        backlog: { ...fleet.backlog, records: [...(fleet.backlog?.records ?? []), ...mock.records] },
+        artifacts: mock.artifacts,
+        decision_options: mock.decisionOptions,
+        decided: mock.decided,
+      },
     };
   }
 
@@ -318,6 +434,7 @@ export class MockHostAdapter implements HostAdapter {
         draft_count: review.draft_count,
         open_count: review.open_count,
         answered: review.answers.filter((answer) => answer.sent_at !== null).map((answer) => answer.decision),
+        open_threads: review.threads.filter((thread) => thread.state === "open").map((thread) => ({ id: thread.id, rev: thread.rev })),
       };
     }
     return pages;

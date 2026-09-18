@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Which episodes already carry a transcript?</title>
+<style>
+  :root { color-scheme: light; --ink: #1f2430; --muted: #5d6475; --line: #dde1e8; --accent: #2b6cb0; --soft: #f3f7fb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: #fff; }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 28px 64px; }
+  .eyebrow { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  h1 { margin: 6px 0 10px; font-size: 30px; line-height: 1.15; }
+  h2 { margin: 36px 0 10px; font-size: 19px; }
+  p.lead { margin: 0; color: var(--muted); font-size: 17px; }
+  .card { padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  @media (max-width: 640px) { h1 { font-size: 24px; } }
+</style>
+</head>
+<body><main>
+<div class="eyebrow">resonance · scout report</div>
+<h1>Which episodes already carry a transcript?</h1>
+<p class="lead">Almost none: 2 of 9281 sampled episodes link a publisher transcript, so on-device transcription is the normal path, not the fallback.</p>
+<h2>What I measured</h2>
+<div class="card"><p>Every feed in the sample library, read for a podcast:transcript tag or a transcript link in the show notes.</p></div>
+<h2>What it means</h2>
+<div class="card"><p>The speech model is needed on nearly every episode, so when it may download is worth deciding first.</p></div>
+</main></body>
+</html>

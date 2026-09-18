@@ -43,13 +43,100 @@ page.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
 await page.goto(`${baseUrl}/?artifacts`);
 await page.waitForFunction(() => !document.querySelector(".app-loading"));
 
+// Bearings: what waits on the captain, what was decided for them, what landed, and how long work has been going.
+const bearingsPage = page.locator("[data-screen='bearings']");
+const callSection = page.locator(".dashboard-section", { hasText: "Captain's Call" });
+check((await callSection.locator(".section-count").innerText()) === "2", "Captain's Call counts a finished report beside the open call");
+check((await page.locator(".nav-item", { hasText: "Bearings" }).locator("em").innerText()) === "2", "the sidebar counts the report as waiting on the captain");
+const ready = page.locator("[data-testid='report-ready']");
+check(await ready.count() === 1, "a finished scout's report is offered where the captain looks first");
+check((await ready.innerText()).includes("Which episodes already carry a transcript?") || (await ready.innerText()).includes("which episodes already carry a transcript?"), "the report card names the task by its title");
+check((await ready.innerText()).includes("2 of 9281 sampled episodes"), "the report card says what the scout found");
+const underwayRows = page.locator(".dashboard-section", { hasText: "Underway" }).locator(".task-row");
+check(await underwayRows.count() === 1, "a finished scout leaves Underway once its report is offered");
+check(/started 1 h 3\d min ago/.test(await underwayRows.first().locator("[data-testid='underway-for']").innerText()), `Underway says how long a task has been going (${await underwayRows.first().locator("[data-testid='underway-for']").innerText()})`);
+
+const decidedRows = page.locator("[data-testid='decided'] .decided-row");
+check(await decidedRows.count() === 3, "Decided for you lists the calls the first mate made");
+const finding = decidedRows.first();
+check((await finding.innerText()).includes("Kept the wide before-and-after image"), "a decision says what was decided");
+check((await finding.innerText()).includes("Seeing both titles side by side is the point"), "a decision says why");
+check((await finding.locator(".link-button").first().innerText()) === "Resonance: AI titles for snips", "a decision names its task by title");
+const merge = decidedRows.nth(1);
+check((await merge.locator("a.link-button").getAttribute("href")) === "https://github.com/caomyer/foreman/pull/24", "a decision links what it points at");
+check((await merge.locator("a.link-button").innerText()).includes("PR #24"), "a pull request link reads as its number");
+await finding.locator(".link-button").first().click();
+await page.locator(".task-drawer").waitFor();
+check((await page.locator("[data-testid='drawer-title']").innerText()) === "Resonance: AI titles for snips", "a decision's task opens that task");
+await page.locator(".task-drawer .icon-button[title='Close task details']").click();
+await finding.locator("button", { hasText: "Push back" }).click();
+const composerBox = page.locator(".composer textarea");
+await composerBox.waitFor();
+check((await composerBox.inputValue()) === 'About "Kept the wide before-and-after image in the titles plan (review finding F1)": ', "Push back puts the decision in the composer");
+check(await composerBox.evaluate((element) => document.activeElement === element), "Push back leaves the caret in the composer");
+check(await page.locator(".captain-message", { hasText: "Kept the wide" }).count() === 0, "Push back sends nothing by itself");
+await composerBox.fill("");
+await page.locator(".nav-item", { hasText: "Bearings" }).click();
+await decidedRows.nth(2).locator("button[title='Dismiss']").click();
+check(await decidedRows.count() === 2, "a decision can be dismissed");
+await page.reload();
+await page.waitForFunction(() => !document.querySelector(".app-loading"));
+await decidedRows.first().waitFor();
+check(await decidedRows.count() === 2, "a dismissed decision stays dismissed after a reload");
+check(await page.locator(".decided-row", { hasText: "Filed res-ai-titles" }).count() === 0, "the dismissed decision is the one that was dismissed");
+
+const landedRows = page.locator("[data-testid='landed-row']");
+check(await landedRows.count() === 3, "Recently Landed shows what landed and the call the captain answered");
+const answeredCall = page.locator("[data-testid='landed-row'][data-landed-kind='answered']");
+check(await answeredCall.count() === 1, "an answered and closed call shows as done");
+check((await answeredCall.innerText()).includes("You chose: Wi-Fi only, and say so in Settings."), "the answered call says what the captain chose");
+check(/closed Sep \d+/.test(await answeredCall.innerText()), "the answered call says when it closed");
+const shippedRow = page.locator("[data-testid='landed-row'][data-id='foreman-rebase-before-review']");
+check((await shippedRow.locator("a.landed-link").getAttribute("href")) === "https://github.com/caomyer/foreman/pull/24", "a landed PR links the PR");
+check(await shippedRow.locator("button.landed-link", { hasText: "The page" }).count() === 1, "a landed task with a page offers it");
+const reportedRow = page.locator("[data-testid='landed-row'][data-id='res-feed-scout']");
+check((await reportedRow.innerText()).includes("Reported"), "a landed scout says it reported");
+await reportedRow.locator("button.landed-link", { hasText: "Report" }).click();
+await composerBox.waitFor();
+check((await composerBox.inputValue()) === 'Walk me through the report on "Resonance: how often do feeds change their artwork?".', "a report without a page is asked for in chat");
+await composerBox.fill("");
+await page.locator(".nav-item", { hasText: "Bearings" }).click();
+await noSidewaysScroll(page, "bearings");
+await shot(page, "00-bearings");
+
+// The task drawer leads with the worker's own words, in plain language.
+await underwayRows.first().click();
+const drawer = page.locator(".task-drawer");
+await drawer.waitFor();
+check((await drawer.locator("[data-testid='drawer-title']").innerText()) === "Resonance: AI titles for snips", "the drawer is titled by the task's title");
+check((await drawer.locator(".drawer-id").innerText()) === "res-titles-scout", "the task id sits beside the title");
+check(!(await drawer.innerText()).includes("harness busy"), "the drawer never says harness busy");
+check((await drawer.locator(".drawer-status").innerText()).includes("Busy in its terminal."), "the drawer says what the worker is doing in plain words");
+check(await drawer.locator("h3", { hasText: "Instructions" }).count() === 0, "the drawer does not call a status note the instructions");
+check((await drawer.locator(".drawer-section", { hasText: "Latest from the worker" }).innerText()).includes("Revising the titles plan."), "the drawer shows the worker's latest note, labelled as such");
+check(/^1 h 3\d min$/.test(await drawer.locator("[data-testid='drawer-age']").innerText()), "the drawer says how long the task has been going");
+check(await drawer.locator("h3", { hasText: /^PR$/ }).count() === 0, "a scout's drawer has no PR section");
+check(await drawer.locator(".worker-screen").count() === 0, "the worker's screen starts folded");
+await drawer.locator(".fold-toggle").click();
+check(await drawer.locator(".worker-screen").count() === 1, "the worker's screen opens on request");
+await shot(page, "00-drawer");
+await drawer.locator(".icon-button[title='Close task details']").click();
+await ready.locator("button", { hasText: "Read the report" }).click();
+await page.locator(".artifact-stage iframe").waitFor();
+check((await page.locator(".page-heading span").innerText()).includes("res-transcripts-scout"), "Read the report opens the scout's page");
+await page.locator(".back-button").click();
+check(await bearingsPage.count() === 1, "back from the report returns to Bearings");
+// The mock keeps reviews in memory, so a reload puts the report back to unread for the list below.
+await page.reload();
+await page.waitForFunction(() => !document.querySelector(".app-loading"));
+
 // The list.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
 const rows = page.locator(".artifact-list .artifact-row");
 // Rows move between groups as a review goes on, so each page is addressed by name, never by position.
 const plan = page.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" });
 const callPage = page.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" });
-check(await rows.count() === 2, "the list shows the pages still in play");
+check(await rows.count() === 3, "the list shows the pages still in play");
 check((await rows.nth(0).innerText()).includes("When may the app download the speech model?"), "the newest page comes first");
 check((await plan.innerText()).includes("resonance · res-titles-scout · Rev 3"), "a task page names its project, task and revision");
 check((await plan.locator(".review-chip").innerText()) === "Not looked at yet", "a page nobody has opened says so");
@@ -59,7 +146,7 @@ check(await callPage.locator(".artifact-flag").count() === 0, "a clean page carr
 const groups = page.locator(".artifact-group");
 check(await groups.count() === 2, "only the groups with pages in them show");
 check((await groups.nth(0).locator("h2").innerText()) === "Needs you", "pages waiting on the captain come first");
-check(await groups.nth(0).locator(".artifact-row").count() === 2, "both unread pages need the captain");
+check(await groups.nth(0).locator(".artifact-row").count() === 3, "every unread page needs the captain");
 const settled = groups.nth(1);
 check((await settled.locator("h2").innerText()) === "Settled", "a page whose task landed is settled");
 check((await settled.locator(".section-count").innerText()) === "1", "the settled group says how many it holds");
