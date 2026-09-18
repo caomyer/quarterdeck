@@ -31,6 +31,9 @@ tmux attach -t firstmate
 ```
 
 Each task window is named `fm-<id>`.
+That detached session is shared by every home on the machine that runs outside tmux, so their task windows sit side by side in it and a window name does not say which home owns it.
+Two homes cannot hold live windows with the same name there: a spawn whose `fm-<id>` window already exists in the session is refused rather than attached to the other home's window, so give each home's tasks distinct ids.
+Starting each home's primary harness inside its own tmux session keeps that home's windows apart.
 
 ```sh
 tmux list-windows -t <session-name>
