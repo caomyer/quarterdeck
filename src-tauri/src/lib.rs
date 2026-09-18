@@ -12,7 +12,7 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
+    let app = tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .register_asynchronous_uri_scheme_protocol(artifact::SCHEME, artifact::handle)
     .setup(|app| {
@@ -64,14 +64,38 @@ pub fn run() {
       review::call_answer,
     ])
     .build(tauri::generate_context!())
-    .expect("error while building tauri application")
-    .run(|app, event| {
-      // Closing the last window or quitting ends here: stop the first mate's
-      // whole process group so nothing it started outlives the app.
-      if let tauri::RunEvent::Exit = event {
-        if let Some(host) = app.try_state::<host::HostHandle>() {
-          host.kill_on_exit();
-        }
+    .expect("error while building tauri application");
+  exit_on_termination_signals(app.handle().clone());
+  app.run(|app, event| {
+    // Closing the last window or quitting ends here: stop the first mate's
+    // whole process group so nothing it started outlives the app.
+    if let tauri::RunEvent::Exit = event {
+      if let Some(host) = app.try_state::<host::HostHandle>() {
+        host.kill_on_exit();
       }
-    });
+    }
+  });
+}
+
+/// A kill signal (a plain `kill`, logging out, Activity Monitor's Quit) would
+/// otherwise end the process without the exit event, so nothing the first mate
+/// started would be stopped: its watchers outlived it and took the next wake.
+/// These signals now ask the app to exit, which runs the same cleanup as
+/// quitting. A crash or a force quit cannot be caught; the next start deals
+/// with what those leave behind.
+fn exit_on_termination_signals(app: tauri::AppHandle) {
+  use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+  let mut signals = match signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP]) {
+    Ok(signals) => signals,
+    Err(error) => {
+      log::warn!("could not listen for termination signals: {error}");
+      return;
+    }
+  };
+  std::thread::spawn(move || {
+    if let Some(signal) = signals.forever().next() {
+      log::info!("signal {signal} received; exiting so the first mate is stopped cleanly");
+      app.exit(0);
+    }
+  });
 }
