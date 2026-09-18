@@ -158,6 +158,13 @@ html_title() {  # <file>
     | cut -c 1-200
 }
 
+# Total size in bytes of the regular files under <dir>, read from their sizes
+# rather than their contents, so measuring a mistaken huge directory is cheap.
+tree_bytes() {  # <dir>
+  find "$1" -type f -exec wc -c {} + 2>/dev/null \
+    | awk '$2 != "total" { sum += $1 } END { printf "%d\n", sum }'
+}
+
 # Highest complete revision number in an artifact directory, or 0.
 latest_rev() {  # <artifact-dir>
   local dir=$1 best=0 entry n
@@ -186,6 +193,26 @@ find_chrome() {
   done
 }
 
+# Stop one headless Chrome and everything it started, for certain. The browser
+# is asked first, since it tidies up its own helpers; if it is still there after
+# a few seconds it is killed, and so is any helper it left. A bare `wait` after a
+# single polite signal could wait forever, and the check is meant to fail open.
+stop_chrome() {  # <pid>
+  local pid=$1 helpers tries=0
+  helpers=$(pgrep -P "$pid" 2>/dev/null | tr '\n' ' ')
+  kill "$pid" 2>/dev/null
+  while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 15 ]; do
+    sleep 0.2
+    tries=$((tries + 1))
+  done
+  helpers="$helpers $(pgrep -P "$pid" 2>/dev/null | tr '\n' ' ')"
+  kill -KILL "$pid" 2>/dev/null
+  for helper in $helpers; do
+    kill -KILL "$helper" 2>/dev/null
+  done
+  wait "$pid" 2>/dev/null
+}
+
 # Load <page> once in headless Chrome and print the probe's JSON, or nothing.
 # Headless Chrome can keep running after it has dumped the DOM, so the dump is
 # read as it arrives and Chrome is stopped as soon as the probe result is in it.
@@ -204,9 +231,7 @@ layout_probe_once() {  # <chrome> <page> <width> <height> <scratch>
     sleep 0.2
     waited=$((waited + 1))
   done
-  pkill -P "$pid" 2>/dev/null
-  kill "$pid" 2>/dev/null
-  wait "$pid" 2>/dev/null
+  stop_chrome "$pid"
   LC_ALL=C tr '\n' ' ' < "$scratch/dom-$width" \
     | LC_ALL=C sed -n "s/.*<pre id=\"$LAYOUT_MARKER\">\([^<]*\)<\/pre>.*/\1/p" \
     | sed -e 's/&quot;/"/g' -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g'
@@ -268,7 +293,7 @@ cmd_mode() {
 }
 
 cmd_present() {
-  local task='' chat=0 file='' name='' title='' note='' assets='' accept_layout=0 scope art_dir stage digest latest latest_sha
+  local task='' chat=0 file='' name='' title='' note='' assets='' accept_layout=0 scope art_dir stage digest latest latest_sha source_bytes
   local n tries entry bytes presented_by rev_dir now layout answered='' replies='[]' reply_id reply_body id covers=
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -335,6 +360,10 @@ cmd_present() {
   if [ -n "$assets" ]; then
     [ -d "$assets" ] || die "--assets is not a directory: $assets"
     [ -z "$(find "$assets" -type l -print -quit)" ] || die "--assets contains symbolic links, which are refused: $assets"
+    # Measured before anything is copied: a mistaken --assets (a repo root, a
+    # home folder) is refused here instead of being copied onto the home's disk.
+    source_bytes=$(( $(tree_bytes "$assets") + $(wc -c < "$file") ))
+    [ "$source_bytes" -le "$MAX_BYTES" ] || die "revision would be $source_bytes bytes, over the $MAX_BYTES byte cap (FM_ARTIFACT_MAX_BYTES); present a smaller assets directory"
   fi
 
   [ -n "$name" ] || name=$(normalize_name "${entry%.*}")
@@ -357,8 +386,12 @@ cmd_present() {
     cp -R "$assets/." "$stage/files/" || die "cannot copy assets from $assets"
   fi
   cp "$file" "$stage/files/$entry" || die "cannot copy $file"
+  # Checked again on the copy itself: the source can change between the first
+  # look and the copy, and only plain files and folders belong in a revision.
+  [ -z "$(find "$stage/files" ! -type f ! -type d -print -quit)" ] \
+    || die "--assets contains symbolic links or special files, which are refused: $assets"
 
-  bytes=$(find "$stage/files" -type f -exec cat {} + | wc -c | tr -d '[:space:]')
+  bytes=$(tree_bytes "$stage/files")
   [ "$bytes" -le "$MAX_BYTES" ] || die "revision is $bytes bytes, over the $MAX_BYTES byte cap (FM_ARTIFACT_MAX_BYTES); present a smaller assets directory"
 
   digest=$(tree_digest "$stage/files") || die "cannot digest the revision"
@@ -438,6 +471,48 @@ cmd_present() {
   printf 'entry: %s\n' "$rev_dir/files/$entry"
 }
 
+# Every revision record in the store, one path per line, in a stable order.
+revision_paths() {
+  {
+    find "$DATA" -mindepth 5 -maxdepth 5 -path "$DATA/*/artifacts/*/rev-*/revision.json" -type f 2>/dev/null
+    find "$DATA" -mindepth 4 -maxdepth 4 -path "$DATA/.artifacts/*/rev-*/revision.json" -type f 2>/dev/null
+  } | LC_ALL=C sort
+}
+
+# One revision record, checked against where it sits and given its paths. A
+# record that disagrees with its own location is not one this script wrote.
+REVISION_FILTER='
+  (input_filename) as $path
+  | ($path | ltrimstr($data + "/") | split("/")) as $p
+  | (if $p[0] == ".artifacts"
+     then {scope:"chat", task:null, name:$p[1], rev:$p[2]}
+     else {scope:"task", task:$p[0], name:$p[2], rev:$p[3]} end) as $loc
+  | select(.schema == "fm-artifact-revision.v1"
+           and .scope == $loc.scope and .task == $loc.task and .name == $loc.name
+           and ("rev-" + (.rev | tostring)) == $loc.rev
+           and (.entry | type) == "string" and (.entry | test("^[^/]+$")))
+  | . + {path:(($path | rtrimstr("/revision.json")) + "/files/" + .entry),
+         dir:($path | rtrimstr("/revision.json") | sub("/rev-[0-9]+$"; ""))}'
+
+# The records for the paths on stdin. The fleet snapshot lists the store every
+# time it runs and revisions are never deleted, so the records are read in one
+# jq rather than one per file. jq reads its files as one stream, though, so a
+# single damaged record would fail the whole read; when it does, the records are
+# read again one at a time and only the damaged one is left out.
+revision_records() {
+  local paths records
+  paths=$(cat)
+  [ -n "$paths" ] || return 0
+  # Held until the whole read succeeds, so a failed pass never leaves half its records behind.
+  if records=$(printf '%s\n' "$paths" | tr '\n' '\0' | xargs -0 jq -c --arg data "$DATA" "$REVISION_FILTER" 2>/dev/null); then
+    [ -z "$records" ] || printf '%s\n' "$records"
+    return 0
+  fi
+  printf '%s\n' "$paths" | while IFS= read -r path; do
+    jq -c --arg data "$DATA" "$REVISION_FILTER" "$path" 2>/dev/null
+  done
+}
+
 cmd_list() {
   local json=0 records
   while [ $# -gt 0 ]; do
@@ -448,24 +523,7 @@ cmd_list() {
   done
   records='{"schema":"fm-artifact-list.v1","artifacts":[]}'
   if [ -d "$DATA" ]; then
-    records=$(
-      {
-        find "$DATA" -mindepth 5 -maxdepth 5 -path "$DATA/*/artifacts/*/rev-*/revision.json" -type f 2>/dev/null
-        find "$DATA" -mindepth 4 -maxdepth 4 -path "$DATA/.artifacts/*/rev-*/revision.json" -type f 2>/dev/null
-      } | LC_ALL=C sort | while IFS= read -r path; do
-        jq -c --arg path "$path" --arg data "$DATA" '
-          ($path | ltrimstr($data + "/") | split("/")) as $p
-          | (if $p[0] == ".artifacts"
-             then {scope:"chat", task:null, name:$p[1], rev:$p[2]}
-             else {scope:"task", task:$p[0], name:$p[2], rev:$p[3]} end) as $loc
-          | select(.schema == "fm-artifact-revision.v1"
-                   and .scope == $loc.scope and .task == $loc.task and .name == $loc.name
-                   and ("rev-" + (.rev | tostring)) == $loc.rev
-                   and (.entry | type) == "string" and (.entry | test("^[^/]+$")))
-          | . + {path:(($path | rtrimstr("/revision.json")) + "/files/" + .entry),
-                 dir:($path | rtrimstr("/revision.json") | sub("/rev-[0-9]+$"; ""))}
-        ' "$path" 2>/dev/null
-      done | jq -s '
+    records=$(revision_paths | revision_records | jq -s '
         {schema:"fm-artifact-list.v1",
          artifacts:(group_by([.scope, .task, .name])
            | map(sort_by(.rev) as $revs

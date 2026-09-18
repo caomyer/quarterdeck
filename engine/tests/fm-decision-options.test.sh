@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/fm-decision-options.sh.
-# Covers recording what a captain-held task offers, replacing it, the refusals
+# Covers recording what a captain-held task offers, replacing it, concurrent
+# writers, the refusals
 # that keep a renderer from offering a choice nobody can answer, clearing, and
 # the fleet snapshot carrying the listing.
 set -u
@@ -82,6 +83,23 @@ test_clearing_and_the_fleet_snapshot() {
   pass "fm-decision-options.sh: clearing, and the fleet snapshot listing"
 }
 
+# Two sets of one task at once: each writes its own temporary file, so the
+# record is always one whole offer or the other, never half of each.
+test_concurrent_sets_never_publish_half_a_record() {
+  local home record round
+  home=$(new_home concurrent)
+  record="$home/state/decision-options/res-model.json"
+  for round in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    FM_HOME="$home" "$OPTIONS" set res-model --option a="A $round" --option b=B >/dev/null 2>&1 &
+    FM_HOME="$home" "$OPTIONS" set res-model --option c="C $round" --option d=D --recommend c >/dev/null 2>&1 &
+    wait
+    jq -e '.options | length == 2' "$record" >/dev/null 2>&1 || fail "round $round left a damaged record"
+  done
+  [ -z "$(find "$home/state/decision-options" -name '.*' -type f)" ] || fail "a writer left its temporary file behind"
+  pass "fm-decision-options.sh: concurrent sets never publish half a record"
+}
+
 test_a_decision_records_what_it_offers
 test_refusals_keep_an_unanswerable_offer_out
 test_clearing_and_the_fleet_snapshot
+test_concurrent_sets_never_publish_half_a_record

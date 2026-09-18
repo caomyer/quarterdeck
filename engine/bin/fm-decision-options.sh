@@ -35,7 +35,8 @@
 #
 # Store: state/decision-options/<task-id>.json, schema fm-decision-options.v1,
 # {schema, task, question, options:[{key,label,recommended}], set_at}. Written
-# to a temporary file and renamed, so a crash never leaves half a record.
+# to a temporary file of its own and renamed, so neither a crash nor a second
+# writer ever leaves half a record; the last whole record written wins.
 #
 # Exit codes: 0 done; 1 refused; 2 usage.
 set -u
@@ -130,7 +131,11 @@ cmd_set() {
   [ -d "$STORE" ] && [ ! -L "$STORE" ] || die "the decision options store is unsafe: $STORE"
   local target temporary
   target=$(record_path "$id")
-  temporary="$STORE/.$id.json.tmp"
+  # Each writer gets its own temporary file: with one shared name, two sets of
+  # the same task truncate each other and can publish half a record.
+  temporary=$(mktemp "$STORE/.$id.json.XXXXXX") || die "cannot write in $STORE"
+  # shellcheck disable=SC2064 # expand now: the path is fixed for this run
+  trap "rm -f -- '$temporary'" EXIT
   jq -n \
     --arg task "$id" \
     --arg question "$question" \
@@ -140,7 +145,8 @@ cmd_set() {
     '{schema:"fm-decision-options.v1", task:$task, question:$question,
       options:($options | map(. + {recommended:(.key == $recommend)})), set_at:$set_at}' \
     > "$temporary" || die "cannot write $temporary"
-  mv "$temporary" "$target" || die "cannot save $target"
+  chmod 644 "$temporary" 2>/dev/null
+  mv -f "$temporary" "$target" || die "cannot save $target"
   printf 'set: %s (%s options)\n' "$id" "$count"
 }
 

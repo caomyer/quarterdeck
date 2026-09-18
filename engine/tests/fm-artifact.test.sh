@@ -108,6 +108,13 @@ test_refusals() {
   expect_code 1 "$rc" "over the size cap"
   assert_contains "$out" "byte cap" "size refusal is explained"
   assert_absent "$home/data/t1/artifacts/page/rev-1" "a refused present left a revision"
+  # An oversized assets folder is measured and refused before any of it is copied.
+  mkdir -p "$TMP_ROOT/refuse/big"
+  head -c 4096 /dev/zero > "$TMP_ROOT/refuse/big/blob.bin"
+  out=$(FM_HOME="$home" FM_ARTIFACT_MAX_BYTES=1024 "$ARTIFACT" present --task t1 "$src" --assets "$TMP_ROOT/refuse/big" 2>&1); rc=$?
+  expect_code 1 "$rc" "oversized assets"
+  assert_contains "$out" "would be" "oversized assets are refused before copying"
+  [ -z "$(find "$home/data" -name blob.bin 2>/dev/null)" ] || fail "oversized assets were copied before being refused"
   [ -z "$(find "$home/data/t1/artifacts" -name '.stage.*' 2>/dev/null)" ] || fail "a refused present left a staging directory"
   pass "fm-artifact.sh: invalid input is refused without leaving revisions behind"
 }
@@ -148,11 +155,14 @@ test_list_ignores_incomplete_and_misplaced_revisions() {
   # A record copied to the wrong place must not be trusted.
   mkdir -p "$home/data/t1/artifacts/stolen/rev-1"
   cp "$home/data/t1/artifacts/a/rev-1/revision.json" "$home/data/t1/artifacts/stolen/rev-1/revision.json"
+  # A damaged record is left out on its own; it must not take every other page with it.
+  mkdir -p "$home/data/t1/artifacts/broken/rev-1/files"
+  printf '{"schema":"fm-artifact-revision.v1","scope":' > "$home/data/t1/artifacts/broken/rev-1/revision.json"
   out=$(FM_HOME="$home" "$ARTIFACT" list --json) || fail "list --json failed"
   assert_equals "fm-artifact-list.v1" "$(printf '%s' "$out" | jq -r .schema)" "listing schema"
   assert_equals "a:1:1,b:1:1" \
     "$(printf '%s' "$out" | jq -r '[.artifacts[] | "\(.name):\(.latest.rev):\(.revisions|length)"] | sort | join(",")')" \
-    "listing skips incomplete and misplaced revisions"
+    "listing skips incomplete, misplaced and damaged revisions"
   assert_equals "$home/data/t1/artifacts/a/rev-1/files/a.html|$home/data/t1/artifacts/a" \
     "$(printf '%s' "$out" | jq -r '.artifacts[] | select(.name == "a") | "\(.latest.path)|\(.dir)"')" \
     "listing carries absolute entry and artifact paths"
