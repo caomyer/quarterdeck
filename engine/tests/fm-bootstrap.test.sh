@@ -414,6 +414,21 @@ ROWS
   pass "bootstrap permits nonvisual work without compatible lavish-axi and retains its presentation floor"
 }
 
+test_quarterdeck_presentation_needs_no_lavish() {
+  local case_dir="$TMP_ROOT/quarterdeck-presentation" fakebin out
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' quarterdeck > "$case_dir/home/config/presentation"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/lavish-axi"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh") \
+    || fail "bootstrap must not fail for a Quarterdeck home"
+  assert_not_contains "$out" 'PRESENTATION_UNAVAILABLE' "a home that presents in Quarterdeck needs no lavish-axi"
+  [ -z "$out" ] || fail "a Quarterdeck home with its tools must be silent, got: $out"
+  pass "bootstrap does not ask a Quarterdeck home for lavish-axi"
+}
+
 test_tasks_axi_min_version() {
   local label version mode case_dir fakebin out missing n archive_body multi_id
   missing='MISSING: tasks-axi (install: npm install -g tasks-axi)'
@@ -1237,6 +1252,7 @@ test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version
 test_lavish_axi_min_version
+test_quarterdeck_presentation_needs_no_lavish
 test_tasks_axi_min_version
 test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction

@@ -1482,7 +1482,13 @@ detect_local_tools() {
   if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
     echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"
   fi
-  if ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
+  # Pages go where config/presentation says. Quarterdeck presents them itself
+  # through bin/fm-artifact.sh, which needs jq; lavish-axi then plays no part.
+  local presentation
+  presentation=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-artifact.sh" mode 2>/dev/null) || presentation=lavish
+  if [ "$presentation" = quarterdeck ]; then
+    command -v jq >/dev/null 2>&1 || missing_tool_diagnostic jq
+  elif ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
     echo "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=$LAVISH_AXI_MIN; install: $(install_cmd lavish-axi)) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish"
   fi
   if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
