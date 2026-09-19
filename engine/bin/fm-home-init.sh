@@ -20,15 +20,23 @@
 # the read-only copy instead of changing it.
 #
 # The home is --home, else FM_HOME. The code is the copy this script belongs to,
-# by its physical path. Run it on every launch: it is idempotent, and it
-# repoints links when the code has moved (an app update or a moved app),
-# links entries a newer code added, and removes links to entries the code no
-# longer has. A real file or directory in the home where the code has an entry
-# is the home's own and is kept, and reported.
+# by its physical path, however the script was reached (a home's bin/ link
+# included). A home this script lays out carries a `.fm-home` marker naming the
+# code it last mirrored.
 #
-# Refused, with nothing changed: a home that is the code, lies inside it, or
-# contains it; a home that is itself a git checkout of firstmate (it already
-# carries its code); a home path that exists and is not a directory.
+# Run it on every launch: it is idempotent, and it repoints its links when the
+# code has moved (an app update or a moved app), links entries a newer code
+# added, and removes its links to entries the code no longer has. Its links are
+# exactly those that point at the entry of the same name in this code or in the
+# code the marker names; every other file and link in the home is the home's
+# own and is never changed, only reported as `kept` where the code has an entry
+# of that name. Links are swapped in by rename, so a first mate already running
+# in the home never sees an entry missing, and concurrent runs take turns.
+#
+# Refused, with nothing created or changed: a home that is the code, lies
+# inside it, or contains it; an existing directory that is neither empty nor
+# already a firstmate home (a checkout, a user's home directory, /); a home path
+# that exists and is not a directory.
 #
 # Output: `home: <path>`, `code: <path>`, then one line per change -
 # `linked: <name>`, `relinked: <name>`, `unlinked: <name>`, `kept: <name> (...)`
@@ -71,23 +79,98 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$home" ] || usage_fail "name the home with --home or FM_HOME"
+case "$home" in
+  /*) ;;
+  *) home="$PWD/$home" ;;
+esac
+
+MARKER=.fm-home
 
 # is_firstmate_code <dir>: whether <dir> is a copy of firstmate's code.
 is_firstmate_code() {
   [ -f "$1/AGENTS.md" ] && [ -d "$1/bin" ]
 }
 
-CODE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || fail "cannot resolve this copy of firstmate"
+# physical <path>: the absolute <path> with its existing part resolved and the
+# part that does not exist yet appended as given. Creates nothing; fails when a
+# component exists and is not a directory.
+physical() {
+  local path=${1%/} rest='' dir
+  while [ -n "$path" ] && [ ! -d "$path" ]; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      return 1
+    fi
+    rest="/${path##*/}$rest"
+    path=${path%/*}
+  done
+  dir=$(CDPATH='' cd -P -- "${path:-/}" && pwd -P) || return 1
+  [ "$dir" = / ] && dir=''
+  printf '%s\n' "$dir$rest"
+}
+
+CODE=$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P) \
+  || fail "cannot resolve this copy of firstmate"
 is_firstmate_code "$CODE" || fail "$CODE is not a copy of firstmate"
 
+HOME_DIR=$(physical "$home") || fail "$home exists and is not a directory"
+[ -n "$HOME_DIR" ] || HOME_DIR=/
+
+case "$HOME_DIR/" in
+  "$CODE/"*) fail "the home $HOME_DIR is, or lies inside, the code at $CODE" ;;
+esac
+case "$CODE/" in
+  "${HOME_DIR%/}/"*) fail "the code $CODE lies inside the home $HOME_DIR" ;;
+esac
+# Only an empty or missing directory becomes a home, and only a home this
+# script laid out is refreshed: a checkout, a user's home directory, or any
+# other folder with contents is never taken over.
+if [ -d "$HOME_DIR" ] && [ ! -f "$HOME_DIR/$MARKER" ]; then
+  for entry in "$HOME_DIR"/* "$HOME_DIR"/.[!.]* "$HOME_DIR"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    fail "$HOME_DIR is not empty and is not a firstmate home"
+  done
+fi
+
+# The code the marker names, when the home was laid out before.
+PREVIOUS=''
+if [ -f "$HOME_DIR/$MARKER" ]; then
+  PREVIOUS=$(sed -n 's/^code=//p' "$HOME_DIR/$MARKER" | head -n 1)
+fi
+
+mkdir -p -- "$HOME_DIR" || fail "cannot create $HOME_DIR"
+
+# Concurrent runs take turns. A lock whose holder has died is taken over.
+LOCK="$HOME_DIR/.fm-home-init.lock"
+lock_waited=0
+until mkdir -- "$LOCK" 2>/dev/null; do
+  holder=$(cat -- "$LOCK/pid" 2>/dev/null || true)
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+    rm -rf -- "$LOCK"
+    continue
+  fi
+  lock_waited=$((lock_waited + 1))
+  [ "$lock_waited" -le 300 ] || fail "another fm-home-init.sh has held $LOCK for over a minute"
+  sleep 0.2
+done
+printf '%s\n' "$$" > "$LOCK/pid"
+# shellcheck disable=SC2064 # expand now: the path is fixed for this run
+trap "rm -rf -- '$LOCK'" EXIT
+
+printf 'home: %s\n' "$HOME_DIR"
+printf 'code: %s\n' "$CODE"
+
+for dir in data state config projects .claude; do
+  mkdir -p -- "$HOME_DIR/$dir" || fail "cannot create $HOME_DIR/$dir"
+done
+
 # What belongs to a home, never to the code: the paths .gitignore keeps out of
-# a checkout, the harness's own directory, and git's. tests/fm-home-init.test.sh
-# checks this list against .gitignore.
-HOME_OWNED='data state config projects .no-mistakes .lavish .fm-secondmate-home .fm-secondmate-parent .env .tools .DS_Store __pycache__ .git .claude'
+# a checkout, the harness's own directory, git's, and this script's own files.
+# tests/fm-home-init.test.sh checks this list against .gitignore.
+HOME_OWNED='data state config projects .no-mistakes .lavish .fm-secondmate-home .fm-secondmate-parent .env .tools .DS_Store __pycache__ .git .claude .fm-home .fm-home-init.lock'
 
 home_owned() {  # <name>
   case "$1" in
-    scratchpad*|*.pyc) return 0 ;;
+    scratchpad*|*.pyc|.fm-home-init.*) return 0 ;;
   esac
   case " $HOME_OWNED " in
     *" $1 "*) return 0 ;;
@@ -95,69 +178,64 @@ home_owned() {  # <name>
   return 1
 }
 
-if [ -e "$home" ] || [ -L "$home" ]; then
-  [ -d "$home" ] || fail "$home exists and is not a directory"
-fi
-mkdir -p "$home" || fail "cannot create $home"
-HOME_DIR=$(cd "$home" && pwd -P) || fail "cannot resolve $home"
+# ours <link-path> <rel>: whether the link at <link-path> is one this script
+# made for <rel>, a path relative to a code root: it points at <rel> in this
+# code or in the code the marker names.
+ours() {
+  local current
+  current=$(readlink -- "$1") || return 1
+  [ "$current" = "$CODE/$2" ] && return 0
+  [ -n "$PREVIOUS" ] && [ "$current" = "$PREVIOUS/$2" ] && return 0
+  return 1
+}
 
-case "$HOME_DIR/" in
-  "$CODE/"*) fail "the home $HOME_DIR is, or lies inside, the code at $CODE" ;;
-esac
-case "$CODE/" in
-  "$HOME_DIR/"*) fail "the code $CODE lies inside the home $HOME_DIR" ;;
-esac
-if [ -d "$HOME_DIR/.git" ] && [ -d "$HOME_DIR/bin" ] && [ ! -L "$HOME_DIR/bin" ]; then
-  fail "$HOME_DIR is a git checkout of firstmate, which carries its own code"
-fi
+# swap_link <target> <path>: point <path> at <target> by renaming a new link
+# over it, so the entry never goes missing. GNU mv takes -T, BSD mv -h; both
+# replace a link to a directory instead of moving into it.
+swap_link() {
+  local tmp="${2%/*}/.fm-home-init.$$.${2##*/}"
+  rm -f -- "$tmp"
+  ln -s -- "$1" "$tmp" || return 1
+  if mv -f -T -- "$tmp" "$2" 2>/dev/null || mv -f -h -- "$tmp" "$2" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
 
-printf 'home: %s\n' "$HOME_DIR"
-printf 'code: %s\n' "$CODE"
-
-for dir in data state config projects .claude; do
-  mkdir -p "$HOME_DIR/$dir" || fail "cannot create $HOME_DIR/$dir"
-done
-
-# mirror <code-dir> <home-dir> <label-prefix> <skip-fn> <depth>
-# Link every entry of <code-dir> that <skip-fn> does not claim into <home-dir>,
-# and remove links in <home-dir> to entries the code no longer has. <depth> is
-# how far <code-dir> sits below its code root: 0 for the root, 1 for .claude.
+# mirror <rel-dir> <skip-fn>: link every entry of the code's <rel-dir> ("" for
+# the root) that <skip-fn> does not claim into the same place in the home, and
+# remove this script's links to entries the code no longer has.
 mirror() {
-  local from=$1 to=$2 prefix=$3 skip=$4 depth=$5 path name target current root
+  local rel=$1 skip=$2 from to prefix path name
+  from="$CODE${rel:+/$rel}"
+  to="$HOME_DIR${rel:+/$rel}"
+  prefix="${rel:+$rel/}"
   for path in "$from"/* "$from"/.[!.]* "$from"/..?*; do
     [ -e "$path" ] || [ -L "$path" ] || continue
     name=${path##*/}
     "$skip" "$name" && continue
-    target="$from/$name"
     if [ -L "$to/$name" ]; then
-      current=$(readlink "$to/$name")
-      [ "$current" = "$target" ] && continue
-      rm -f -- "$to/$name" || fail "cannot replace the link $to/$name"
-      ln -s "$target" "$to/$name" || fail "cannot link $to/$name"
-      printf 'relinked: %s%s\n' "$prefix" "$name"
+      [ "$(readlink -- "$to/$name")" = "$from/$name" ] && continue
+      if ours "$to/$name" "$prefix$name"; then
+        swap_link "$from/$name" "$to/$name" || fail "cannot relink $to/$name"
+        printf 'relinked: %s%s\n' "$prefix" "$name"
+      else
+        printf 'kept: %s%s (the home'"'"'s own link, not the code'"'"'s)\n' "$prefix" "$name"
+      fi
     elif [ -e "$to/$name" ]; then
       printf 'kept: %s%s (the home'"'"'s own, not the code'"'"'s)\n' "$prefix" "$name"
     else
-      ln -s "$target" "$to/$name" || fail "cannot link $to/$name"
+      swap_link "$from/$name" "$to/$name" || fail "cannot link $to/$name"
       printf 'linked: %s%s\n' "$prefix" "$name"
     fi
   done
-  # A link this script made points at the entry of the same name in a copy of
-  # firstmate: this one, an older one that moved away, or one gone entirely.
-  # Such a link to an entry this code does not have is removed. Other links are
-  # the home's own and are left alone.
   for path in "$to"/* "$to"/.[!.]* "$to"/..?*; do
     [ -L "$path" ] || continue
     name=${path##*/}
-    # A home-owned name is never this script's, even as a link: a data/ kept
-    # elsewhere stays exactly where the home put it.
     "$skip" "$name" && continue
-    current=$(readlink "$path")
-    [ "${current##*/}" = "$name" ] || continue
     { [ -e "$from/$name" ] || [ -L "$from/$name" ]; } && continue
-    root=${current%/*}
-    [ "$depth" = 1 ] && root=${root%/*}
-    [ -e "$path" ] && ! is_firstmate_code "$root" && continue
+    ours "$path" "$prefix$name" || continue
     rm -f -- "$path" || fail "cannot remove the stale link $path"
     printf 'unlinked: %s%s\n' "$prefix" "$name"
   done
@@ -167,9 +245,15 @@ top_skip() { home_owned "$1"; }
 # The harness writes its own local settings beside the tracked ones.
 claude_skip() { [ "$1" = settings.local.json ]; }
 
-mirror "$CODE" "$HOME_DIR" "" top_skip 0
+mirror "" top_skip
 if [ -d "$CODE/.claude" ]; then
-  mirror "$CODE/.claude" "$HOME_DIR/.claude" ".claude/" claude_skip 1
+  mirror .claude claude_skip
+fi
+
+marker_tmp="$HOME_DIR/.fm-home-init.$$.marker"
+if ! { printf 'firstmate-home=1\ncode=%s\n' "$CODE" > "$marker_tmp" && mv -f -- "$marker_tmp" "$HOME_DIR/$MARKER"; }; then
+  rm -f -- "$marker_tmp"
+  fail "cannot write $HOME_DIR/$MARKER"
 fi
 
 printf 'ok\n'
