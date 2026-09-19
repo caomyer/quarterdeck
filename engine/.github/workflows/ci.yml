@@ -27,8 +27,10 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     # Hang tripwire only: lint executions measured at 14-16 minutes in the
-    # September 12 starvation report, so this leaves deliberate margin.
-    timeout-minutes: 25
+    # September 12 starvation report with two workers. A runner under 12 GB
+    # (a private repository's) runs one worker to stay in memory, which takes
+    # longer, so this leaves margin for that as well.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck

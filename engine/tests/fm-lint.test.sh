@@ -1205,6 +1205,17 @@ SH
   assert_grep $'source_boundary_directives\t' "$telemetry" "telemetry did not record source-graph boundaries"
   assert_grep $'shellcheck_processes_start\t' "$telemetry" "telemetry did not record competing ShellCheck conditions"
 
+  # With no FM_LINT_JOBS, the worker count follows memory: one worker below
+  # 12 GB, where two run a private repository's CI runner out of memory.
+  printf 'MemTotal:        7110688 kB\n' > "$tmp/meminfo-small"
+  printf 'MemTotal:       16373844 kB\n' > "$tmp/meminfo-large"
+  FM_LINT_MEMINFO="$tmp/meminfo-small" FM_LINT_TELEMETRY="$tmp/small.tsv" "$LINT" "$good" >/dev/null 2>&1 \
+    || fail "lint on a small machine failed"
+  assert_grep $'jobs\t1' "$tmp/small.tsv" "a machine under 12 GB must default to one worker"
+  FM_LINT_MEMINFO="$tmp/meminfo-large" FM_LINT_TELEMETRY="$tmp/large.tsv" "$LINT" "$good" >/dev/null 2>&1 \
+    || fail "lint on a large machine failed"
+  assert_grep $'jobs\t2' "$tmp/large.tsv" "a machine with 12 GB or more must default to two workers"
+
   cleanup_tmp="$tmp/lint-tmp"
   mkdir -p "$cleanup_tmp"
   cleanup_out=$(TMPDIR="$cleanup_tmp" FM_LINT_JOBS=2 "$LINT" "$good" 2>&1) \
@@ -1212,7 +1223,7 @@ SH
   [ "$cleanup_out" = "$out_clean_2" ] || fail "cleanup fixture changed routine diagnostics"
   [ -z "$(find "$cleanup_tmp" -mindepth 1 -maxdepth 1 -name 'fm-lint.*' -print -quit)" ] \
     || fail "bounded lint left temporary worker state behind"
-  pass "jobs=1 and jobs=2 preserve deterministic diagnostics, failures, cleanup bounds, and quiet telemetry"
+  pass "jobs=1 and jobs=2 preserve deterministic diagnostics, failures, cleanup bounds, and quiet telemetry, and the default follows memory"
 }
 
 test_worker_trees_stop_on_signal() {

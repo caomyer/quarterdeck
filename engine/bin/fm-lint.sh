@@ -45,6 +45,9 @@
 # Each shard writes separate diagnostics, and the parent replays those outputs in
 # deterministic shard and root order after every worker finishes. FM_LINT_JOBS=1
 # runs the same shards serially with byte-identical diagnostics and exit selection.
+# One full-analysis worker peaks near 4.5 GB on this tree, so the default is one
+# worker on a machine with less than 12 GB of memory (a private repository's CI
+# runner): two there run it out of memory and the runner is shut down mid-lint.
 #
 # Optional quiet telemetry writes one bounded TSV snapshot of content and source
 # graph identity, wall/CPU/RSS, shard load, and competing ShellCheck processes.
@@ -392,7 +395,21 @@ fm_lint_run_backend_purity() {
   }
 }
 
-JOBS=${FM_LINT_JOBS:-2}
+# Two workers where memory holds both, else one; see the header. The memory is
+# read from FM_LINT_MEMINFO (default /proc/meminfo), or from sysctl on macOS.
+fm_lint_default_jobs() {
+  local kb='' bytes='' meminfo=${FM_LINT_MEMINFO:-/proc/meminfo}
+  if [ -r "$meminfo" ]; then
+    kb=$(awk '/^MemTotal:/ { print $2; exit }' "$meminfo")
+  elif bytes=$(sysctl -n hw.memsize 2>/dev/null); then
+    case "$bytes" in ''|*[!0-9]*) ;; *) kb=$((bytes / 1024)) ;; esac
+  fi
+  case "$kb" in
+    ''|*[!0-9]*) echo 2 ;;
+    *) if [ "$kb" -ge $((12 * 1024 * 1024)) ]; then echo 2; else echo 1; fi ;;
+  esac
+}
+JOBS=${FM_LINT_JOBS:-$(fm_lint_default_jobs)}
 TELEMETRY=${FM_LINT_TELEMETRY:-}
 FAST=0
 ANALYSIS_MODE=full
