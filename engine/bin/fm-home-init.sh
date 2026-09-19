@@ -174,6 +174,34 @@ if [ ! -f "$HOME_DIR/$MARKER" ] && ! unclaimed "$HOME_DIR"; then
   fail "$HOME_DIR is not empty and is not a firstmate home"
 fi
 
+# A run killed partway leaves its temporary links and marker, and a lock owner
+# record, behind. Under the lock, clear those whose process is gone: a
+# temporary entry names its run's pid, and an owner record holds its pid (or,
+# if it died before writing one, is over a minute old). A live run's are kept.
+LIVE_OWNER=$(fm_lock_link_owner "$LOCK" 2>/dev/null || true)
+for entry in "$HOME_DIR"/.fm-home-init.*; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  case "${entry##*/}" in
+    .fm-home-init.lock) continue ;;
+    .fm-home-init.lock.owner.*)
+      [ "$entry" = "$LIVE_OWNER" ] && continue
+      owner_pid=$(cat -- "$entry/pid" 2>/dev/null || true)
+      if [ -n "$owner_pid" ]; then
+        kill -0 "$owner_pid" 2>/dev/null && continue
+      elif [ -z "$(find "$entry" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        continue
+      fi
+      ;;
+    *)
+      owner_pid=${entry##*/.fm-home-init.}
+      owner_pid=${owner_pid%%.*}
+      case "$owner_pid" in ''|*[!0-9]*) continue ;; esac
+      kill -0 "$owner_pid" 2>/dev/null && continue
+      ;;
+  esac
+  rm -rf -- "$entry"
+done
+
 # Every code this home has mirrored, current first. A link into any of them is
 # this script's; a recorded path that now holds something other than firstmate
 # is not trusted. The marker is rewritten before anything is laid out, so a run

@@ -225,6 +225,34 @@ test_a_cut_short_run_is_finished() {
   pass "a run cut short, and a lock its owner left behind, are finished by the next run"
 }
 
+test_leftovers_of_dead_runs_are_cleared() {
+  local home="$TMP_ROOT/leftovers" dead out
+  init "$CODE" "$home" >/dev/null 2>&1 || fail "first run failed"
+  sh -c 'exit 0' & dead=$!
+  wait "$dead"
+  # What a run killed partway leaves: a temporary link and marker, and a lock
+  # owner record, all naming a process that is gone.
+  ln -s "$CODE/bin" "$home/.fm-home-init.$dead.bin"
+  printf 'x\n' > "$home/.fm-home-init.$dead.marker"
+  mkdir "$home/.fm-home-init.lock.owner.deadbeef"
+  printf '%s\n' "$dead" > "$home/.fm-home-init.lock.owner.deadbeef/pid"
+  mkdir "$home/.fm-home-init.lock.owner.nopid"
+  touch -t 200001010000 "$home/.fm-home-init.lock.owner.nopid"
+  # A live process's entries are another run's and stay.
+  printf 'x\n' > "$home/.fm-home-init.$$.marker"
+  mkdir "$home/.fm-home-init.lock.owner.fresh"
+  out=$(init "$CODE" "$home" 2>&1) || fail "init failed: $out"
+  [ ! -e "$home/.fm-home-init.$dead.bin" ] && [ ! -L "$home/.fm-home-init.$dead.bin" ] \
+    || fail "a dead run's temporary link was left"
+  [ ! -e "$home/.fm-home-init.$dead.marker" ] || fail "a dead run's temporary marker was left"
+  [ ! -e "$home/.fm-home-init.lock.owner.deadbeef" ] || fail "a dead owner's record was left"
+  [ ! -e "$home/.fm-home-init.lock.owner.nopid" ] || fail "an old pid-less owner record was left"
+  [ -e "$home/.fm-home-init.$$.marker" ] || fail "a live run's temporary entry was removed"
+  [ -e "$home/.fm-home-init.lock.owner.fresh" ] || fail "a fresh owner record was removed"
+  rm -rf "$home/.fm-home-init.$$.marker" "$home/.fm-home-init.lock.owner.fresh"
+  pass "what dead runs leave behind is cleared, and a live run's is kept"
+}
+
 test_concurrent_first_runs_on_an_empty_folder() {
   local home="$TMP_ROOT/empty-race" i pids='' pid failed=0
   mkdir -p "$home"
@@ -305,6 +333,7 @@ test_concurrent_runs_take_turns
 test_paths_are_resolved_safely
 test_refusals_create_nothing
 test_a_cut_short_run_is_finished
+test_leftovers_of_dead_runs_are_cleared
 test_concurrent_first_runs_on_an_empty_folder
 test_every_recorded_code_is_known
 test_path_components_and_quotes
