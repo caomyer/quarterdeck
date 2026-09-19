@@ -28,8 +28,13 @@ TMP_ROOT=$(fm_test_tmproot fm-public-followup)
 PF_TEST_NOW=1787539200
 PF_TEST_LOCK_HOLDER=
 
+# Promotion relabels the scout's backlog row and refuses when there is none, so
+# each promoted scout gets its row here.
 write_promotion_brief() {  # <home> <id>
   local home=$1 id=$2
+  grep -q -- "- \[ \] $id " "$home/data/backlog.md" \
+    || FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" add "$id" "Synthetic scout $id" --kind scout --start >/dev/null \
+    || fail "could not seed the backlog row for $id"
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<'EOF'
 # Task
@@ -323,7 +328,7 @@ test_ambient_tasks_axi_env_never_reaches_a_real_backlog() {
 # non-ASCII characters, and control characters must never survive into the typed
 # event or the thread.
 test_outcome_text_is_bounded_without_corrupting_characters() {
-  local home event text long
+  local home event text long count
   home=$(make_home outcome-text)
   seed_commitment "$home" pf-text req-text discord main work-text
 
@@ -349,7 +354,9 @@ test_outcome_text_is_bounded_without_corrupting_characters() {
   event=$(find "$home/state/public-followup/events" -name '*.json' | head -1)
   text=$(jq -r '.public_safe_outcome' "$event") \
     || fail "an over-long outcome must still produce valid JSON"
-  [ "${#text}" -le 600 ] || fail "the outcome text was not bounded, got ${#text} characters"
+  # jq counts code points whatever the shell's locale; ${#text} counts bytes under C.
+  count=$(jq -r '.public_safe_outcome | length' "$event")
+  [ "$count" -le 600 ] || fail "the outcome text was not bounded, got $count characters"
   case "$text" in
     *[!é]*) fail "codepoint bounding split a multi-byte character" ;;
   esac
@@ -1539,7 +1546,7 @@ test_control_registered_followon_is_guarded() {
 }
 
 test_rechain_delivers_second_post_on_same_thread() {
-  local parent log out posts command command_log
+  local parent log out posts command command_log emit_bin record_bin
   parent=$(make_home rechain-parent)
   log="$parent/curl.log"; : > "$log"
   seed_repro_commitment "$parent" public-final-a req-rechain main scout-a
@@ -1570,7 +1577,11 @@ SH
   ')
   assert_contains "$command" "--outcome-text" \
     "the exact rechain command must remain continuous through outcome text"
-  command=${command/"$ROOT/bin/fm-public-followup-emit.sh"/"$parent/fakebin/record-emit"}
+  # Bash 3.2 garbles a quoted pattern that holds a slash and a quoted replacement,
+  # so both sides come from variables.
+  emit_bin="$ROOT/bin/fm-public-followup-emit.sh"
+  record_bin="$parent/fakebin/record-emit"
+  command=${command/"$emit_bin"/$record_bin}
   command=${command//<value>/https://github.com/example/repo/pull/99}
   RECORD_ARGS="$command_log" bash -c "$command" \
     || fail "the exact rechain command must execute after filling its deliverable value"
