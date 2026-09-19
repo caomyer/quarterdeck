@@ -161,15 +161,110 @@ fm_test_reap_procevent_homes() {
 FM_TEST_STUB_MAX_BLOCK_SECONDS=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
 export FM_TEST_STUB_MAX_BLOCK_SECONDS
 
+# fm_test_reap_fixture_processes <dir>: stop the processes a fixture left behind
+# before its files are removed. A suite that exercises a deferred or detached
+# stage (the startup network checks, a watcher, a worker a script hands to the
+# system) leaves it running when the suite ends, and removing the files
+# underneath it leaves a process spinning on a path that is gone: they pile up
+# across runs until they spoil later runs and the machine.
+#
+# A process is reaped when its command names the fixture root AND nothing is
+# left to stop it: its parent is gone, or is init or a subreaper that adopts
+# orphans in its place (`systemd --user` on a Linux session, which is why a bare
+# `ppid = 1` test is not portable). That is the shape a detached stage leaves.
+# Anything still holding a live parent of its own is left alone, whether that is
+# a person's `tail -f` on a fixture file or a child the suite itself started:
+# a suite owns what it starts and is expected to stop it (the ones here track
+# their pids and do), and reaching into a live tree from shared cleanup is how
+# the first version of this became dangerous.
+#
+# The root is matched as a literal string, never as a pattern: a path holding a
+# regex character would otherwise match nothing, or - with a `|` - match half
+# the machine. Each one is stopped with its whole process group, whose other
+# members are its own children and need not name the fixture at all; a group
+# this shell belongs to is never signalled, and when this shell's own group
+# cannot be read nothing is signalled by group at all, so the suite and the
+# runner it shares a group with can never be caught by it.
+fm_test_reap_fixture_processes() {
+  local dir=$1 pid ppid pgid rest targets='' own_pgid IFS
+  [ -n "$dir" ] || return 0
+  own_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+  case "$own_pgid" in ''|*[!0-9]*) own_pgid='' ;; esac
+  # shellcheck disable=SC2009 # pgrep -f takes a pattern; this must match literally.
+  targets=$(ps -axo pid=,ppid=,pgid=,command= 2>/dev/null \
+    | grep -F -- "$dir" \
+    | while read -r pid ppid pgid rest; do
+        [ "$pid" = "$$" ] && continue
+        fm_test_pid_is_loose "$ppid" || continue
+        printf '%s %s\n' "$pid" "$pgid"
+      done) || true
+  [ -n "$targets" ] || return 0
+  printf '%s\n' "$targets" | while read -r pid pgid; do
+    [ -n "$pid" ] || continue
+    if fm_test_pgid_signalable "$pgid" "$own_pgid"; then
+      kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    else
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+  sleep 0.2
+  printf '%s\n' "$targets" | while read -r pid pgid; do
+    [ -n "$pid" ] || continue
+    # The group is signalled whether or not its leader survived TERM: a member
+    # that traps TERM outlives a leader that does not.
+    if fm_test_pgid_signalable "$pgid" "$own_pgid"; then
+      kill -KILL -- "-$pgid" 2>/dev/null || true
+    fi
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  done
+  return 0
+}
+
+# fm_test_pgid_signalable <pgid> <own-pgid>: whether <pgid> is a process group
+# this shell may signal as a group. 0 is "this caller's own group" and 1 is
+# "everything this user may signal", so neither is ever treated as one, nor is
+# the group this shell belongs to, nor anything at all when this shell's own
+# group could not be read.
+fm_test_pgid_signalable() {
+  case "$1" in ''|*[!0-9]*|0|1) return 1 ;; esac
+  [ -n "$2" ] && [ "$1" != "$2" ]
+}
+
+# fm_test_pid_is_loose <ppid>: whether nothing is left to stop a process with
+# this parent - it is gone, or is init, or is a subreaper that adopts orphans in
+# init's place (`systemd --user` on a Linux session, which is why a bare
+# `ppid = 1` test is not portable).
+fm_test_pid_is_loose() {
+  local ppid=$1 comm grandparent
+  case "$ppid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$ppid" = 1 ] && return 0
+  # Gone, rather than merely beyond this user's reach: kill -0 also fails with
+  # EPERM for a live process of another user's.
+  [ -n "$(ps -o pid= -p "$ppid" 2>/dev/null)" ] || return 0
+  comm=$(ps -o comm= -p "$ppid" 2>/dev/null | tr -d ' ')
+  case "${comm##*/}" in
+    init|systemd|launchd) ;;
+    *) return 1 ;;
+  esac
+  # A real subreaper is init's own child; an executable that merely carries the
+  # name is not, and its children are its own.
+  grandparent=$(ps -o ppid= -p "$ppid" 2>/dev/null | tr -d ' ')
+  [ "$grandparent" = 1 ]
+}
+
 fm_test_cleanup() {
   local d
   fm_test_reap_procevent_homes
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
-    [ -n "$d" ] && rm -rf "$d"
+    [ -n "$d" ] || continue
+    fm_test_reap_fixture_processes "$d"
+    rm -rf "$d"
   done
   if [ -f "$FM_TEST_CLEANUP_REGISTRY" ]; then
     while IFS= read -r d; do
-      [ -n "$d" ] && rm -rf "$d"
+      [ -n "$d" ] || continue
+      fm_test_reap_fixture_processes "$d"
+      rm -rf "$d"
     done < "$FM_TEST_CLEANUP_REGISTRY"
     rm -f "$FM_TEST_CLEANUP_REGISTRY"
   fi
@@ -205,7 +300,7 @@ trap 'fm_test_cleanup; exit 131' QUIT
 FM_TEST_ORPHAN_MAX_AGE_SECONDS=${FM_TEST_ORPHAN_MAX_AGE_SECONDS:-3600}
 
 fm_test_reap_orphans() {
-  local marker dir mtime now owner_pid owner_identity current_identity
+  local marker dir physical mtime now owner_pid owner_identity current_identity
   now=$(date +%s)
   for marker in "${TMPDIR:-/tmp}"/fm-*/.fm-test-fixture; do
     [ -e "$marker" ] || continue
@@ -223,6 +318,16 @@ fm_test_reap_orphans() {
     mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null) || continue
     [ $((now - mtime)) -ge "$FM_TEST_ORPHAN_MAX_AGE_SECONDS" ] || continue
     dir=$(dirname "$marker")
+    # The owner is proven gone above, so whatever still runs out of this root is
+    # what a killed run left: a suite SIGKILLed on a timeout never reaches its
+    # own cleanup, and removing the files under a live worker is what turned
+    # leftovers into a host-wide process storm. Only the match needs the
+    # physical path, which is how the fixture's own processes name it (TMPDIR
+    # may carry a trailing slash, and is a symlink on macOS); what is removed
+    # stays exactly what the glob found, so a stale symlink is unlinked rather
+    # than followed into whatever it points at.
+    physical=$(CDPATH='' cd -P -- "$dir" 2>/dev/null && pwd -P) || physical=$dir
+    fm_test_reap_fixture_processes "$physical"
     if [ -d "$dir" ] && [ ! -L "$dir" ]; then
       find "$dir" -type d -exec chmod u+rwx {} + 2>/dev/null || true
     fi
