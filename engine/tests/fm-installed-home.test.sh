@@ -89,6 +89,28 @@ test_backlog_calls_and_history_work_by_relative_paths() {
   pass "the backlog, a call and its answer, both snapshots, and the history work from the home"
 }
 
+test_guard_hooks_apply_in_the_home() {
+  local cmd out rc
+  # Every PreToolUse hook .claude/settings.json runs for a Bash call, in order.
+  run_bash_hooks() {  # <shell command>
+    local payload hook status=0
+    payload=$(jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$command}}')
+    while IFS= read -r hook; do
+      printf '%s' "$payload" | in_home bash -c "$hook" 2>&1 || status=$?
+      [ "$status" = 0 ] || return "$status"
+    done < <(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$HOME_DIR/.claude/settings.json")
+  }
+  rc=0; out=$(run_bash_hooks 'cd projects/foo') || rc=$?
+  expect_code 2 "$rc" "a persistent cd must be blocked from the home: $out"
+  assert_contains "$out" '[persistent-cd]' "the cd guard names its reason"
+  rc=0; out=$(run_bash_hooks 'bin/fm-watch.sh') || rc=$?
+  expect_code 2 "$rc" "a direct watcher run must be blocked from the home: $out"
+  assert_contains "$out" 'watcher-direct' "the arm guard names its reason"
+  rc=0; out=$(run_bash_hooks 'bin/fm-tasks-axi.sh list') || rc=$?
+  expect_code 0 "$rc" "an ordinary command must pass the guards: $out"
+  pass "the cd and watcher-arm guards run from the home and block what they block in a checkout"
+}
+
 test_the_copy_is_untouched() {
   local after
   after=$(manifest)
@@ -107,5 +129,6 @@ test_nothing_is_left_running() {
 test_home_is_created_from_nothing
 test_session_start_hook_runs_from_the_home
 test_backlog_calls_and_history_work_by_relative_paths
+test_guard_hooks_apply_in_the_home
 test_the_copy_is_untouched
 test_nothing_is_left_running

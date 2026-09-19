@@ -238,16 +238,34 @@ test_inert_when_not_firstmate_repo() {
   pass "cd-guard: inert in a non-firstmate repo (no AGENTS.md)"
 }
 
-test_inert_when_not_a_git_repo() {
+test_fires_in_installed_copy() {
   local dir out rc
   dir="$TMP_ROOT/no-git"
   mkdir -p "$dir"
   : > "$dir/AGENTS.md"
-  install_cd_scripts "$dir"   # AGENTS.md + bin/ but no git repo
+  install_cd_scripts "$dir"   # AGENTS.md + bin/ and no .git: firstmate installed as a copy
   out=$("$dir/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
-  expect_code 0 "$rc" "cd-guard must be inert when the checkout is not a git repo"
-  [ -z "$out" ] || fail "cd-guard produced output in a non-git dir: $out"
-  pass "cd-guard: inert when not inside a git repo"
+  expect_code 2 "$rc" "cd-guard must fire in an installed copy with no .git"
+  assert_contains "$out" '[persistent-cd]' "an installed copy's block must carry the reason code"
+  pass "cd-guard: fires in firstmate installed as a copy outside git"
+}
+
+test_inert_when_git_cannot_read_the_checkout() {
+  local dir out rc fakebin="$TMP_ROOT/cd-failing-git"
+  dir="$TMP_ROOT/broken-link"
+  mkdir -p "$dir" "$fakebin"
+  : > "$dir/AGENTS.md"
+  install_cd_scripts "$dir"
+  printf 'gitdir: %s\n' "$TMP_ROOT/pruned/.git/worktrees/gone" > "$dir/.git"
+  out=$("$dir/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
+  expect_code 0 "$rc" "cd-guard must be inert in a worktree with a broken link"
+  [ -z "$out" ] || fail "cd-guard produced output in a worktree with a broken link: $out"
+  printf '#!/bin/sh\nexit 128\n' > "$fakebin/git"
+  chmod +x "$fakebin/git"
+  out=$(PATH="$fakebin:$PATH" "$PRIMARY/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
+  expect_code 0 "$rc" "cd-guard must be inert when git cannot read the checkout"
+  [ -z "$out" ] || fail "cd-guard produced output when git failed: $out"
+  pass "cd-guard: inert in a checkout git cannot read"
 }
 
 # --- end-to-end cwd-leak regression ----------------------------------------
@@ -389,7 +407,8 @@ test_full_acceptance_matrix
 test_fires_in_secondmate_home
 test_inert_in_child_worktree
 test_inert_when_not_firstmate_repo
-test_inert_when_not_a_git_repo
+test_fires_in_installed_copy
+test_inert_when_git_cannot_read_the_checkout
 test_e2e_cwd_leak_regression
 test_fail_open_empty_stdin
 test_fail_open_unparseable_json
