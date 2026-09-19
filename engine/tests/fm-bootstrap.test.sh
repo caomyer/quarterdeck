@@ -426,7 +426,32 @@ test_quarterdeck_presentation_needs_no_lavish() {
     || fail "bootstrap must not fail for a Quarterdeck home"
   assert_not_contains "$out" 'PRESENTATION_UNAVAILABLE' "a home that presents in Quarterdeck needs no lavish-axi"
   [ -z "$out" ] || fail "a Quarterdeck home with its tools must be silent, got: $out"
-  pass "bootstrap does not ask a Quarterdeck home for lavish-axi"
+  # Without jq, which presenting a page needs, the home is told so, and not
+  # told about lavish-axi. The base PATH is copied without jq, which current
+  # macOS and Linux images ship in /usr/bin.
+  local nojq="$case_dir/nojq" dir tool
+  mkdir -p "$nojq"
+  for dir in $(printf '%s' "$BASE_PATH" | tr ':' ' '); do
+    for tool in "$dir"/*; do
+      [ -x "$tool" ] && [ ! -d "$tool" ] || continue
+      [ "${tool##*/}" = jq ] && continue
+      [ -e "$nojq/${tool##*/}" ] || ln -s "$tool" "$nojq/${tool##*/}"
+    done
+  done
+  rm -f "$fakebin/jq"
+  out=$(PATH="$fakebin:$nojq" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh") \
+    || fail "bootstrap must not fail for a Quarterdeck home without jq"
+  assert_contains "$out" 'MISSING: jq' "a Quarterdeck home without jq is told so"
+  assert_not_contains "$out" 'PRESENTATION_UNAVAILABLE' "and is not told about lavish-axi"
+  # A presentation value firstmate does not know is reported, not guessed at.
+  printf '%s\n' Quarterdeck > "$case_dir/home/config/presentation"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh") \
+    || fail "bootstrap must not fail for an unknown presentation value"
+  assert_contains "$out" "PRESENTATION_INVALID: config/presentation names unknown presentation mode 'Quarterdeck'" \
+    "an unknown presentation value is reported"
+  pass "bootstrap does not ask a Quarterdeck home for lavish-axi, checks it for jq, and reports a bad presentation value"
 }
 
 test_tasks_axi_min_version() {

@@ -563,9 +563,11 @@ cmd_list() {
 }
 
 [ $# -ge 1 ] || usage
-command -v jq >/dev/null 2>&1 || die "jq is required"
 sub=$1
 shift
+# `mode` only reads a setting, so bootstrap can ask it where pages go even when
+# jq, which every other subcommand needs, is missing.
+[ "$sub" = mode ] || command -v jq >/dev/null 2>&1 || die "jq is required"
 case "$sub" in
   present) cmd_present "$@" ;;
   list) cmd_list "$@" ;;

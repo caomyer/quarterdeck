@@ -1484,8 +1484,12 @@ detect_local_tools() {
   fi
   # Pages go where config/presentation says. Quarterdeck presents them itself
   # through bin/fm-artifact.sh, which needs jq; lavish-axi then plays no part.
-  local presentation
-  presentation=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-artifact.sh" mode 2>/dev/null) || presentation=lavish
+  local presentation presentation_error
+  if ! presentation=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-artifact.sh" mode 2>&1); then
+    presentation_error=${presentation#fm-artifact: }
+    echo "PRESENTATION_INVALID: $presentation_error"
+    presentation=lavish
+  fi
   if [ "$presentation" = quarterdeck ]; then
     command -v jq >/dev/null 2>&1 || missing_tool_diagnostic jq
   elif ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
