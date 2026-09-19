@@ -668,7 +668,7 @@ tests/fm-artifact.test.sh 12000
 tests/fm-captain-calls.test.sh 75000
 tests/fm-project-intake.test.sh 1500
 tests/fm-history.test.sh 15000
-tests/fm-home-init.test.sh 45000
+tests/fm-home-init.test.sh 70000
 tests/fm-installed-home.test.sh 15000
 tests/fm-watch-served-harness.test.sh 20000
 tests/fm-agy-signals-live-e2e.test.sh 23

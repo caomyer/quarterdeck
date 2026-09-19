@@ -279,8 +279,13 @@ test_a_wedged_lock_fails_soon_and_says_so() {
   local unusable_out unusable_rc=0 waiter
   FM_HOME_INIT_LOCK_TRIES=99999999999999999999 init "$CODE" "$home" > "$TMP_ROOT/unusable.out" 2>&1 &
   waiter=$!
-  # Past the announcement, which the default budget makes at its eighth try.
-  sleep 6
+  # Wait for the announcement itself, rather than for a time it usually lands by.
+  local announced=0
+  while [ "$announced" -lt 150 ]; do
+    grep -q 'waiting for another fm-home-init.sh' "$TMP_ROOT/unusable.out" 2>/dev/null && break
+    announced=$((announced + 1))
+    sleep 0.2
+  done
   kill "$holder" 2>/dev/null
   wait "$waiter" || unusable_rc=$?
   unusable_out=$(cat "$TMP_ROOT/unusable.out")
