@@ -17,6 +17,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-snapshot.sh`   | Print structured fleet snapshot JSON and refresh only its parent-side remote-ledger cache (schema `fm-fleet-snapshot.v1`) |
 | `fm-home-summary-refresh.sh` | Atomically publish this home's structured summary ledger                         |
 | `fm-history.sh`          | Page every closed task of this home, newest first, from the backlog's Done section and the done archive, with each captain call's answer (schema `fm-history.v1`) |
+| `fm-home-init.sh`        | Create or refresh a home that mirrors a read-only copy of firstmate outside git (as installed in an app): the code linked in, the home's own directories real; run on every launch |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
 | `fm-bearings-snapshot.sh` | Project the bounded remote-ledger fleet snapshot to compact TOON; `--include-prs` adds live GitHub enrichment |
 | `fm-decision-options.sh` | One-release shim mapping the retired `set` onto `fm-captain-hold.sh offer` |
