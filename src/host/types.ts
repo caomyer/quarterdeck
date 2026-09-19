@@ -106,6 +106,20 @@ export type Call = {
   decided: CallDecided | null;
 };
 
+/**
+ * A project's closed work, a page at a time, exactly as `bin/fm-history.sh --json` prints it: backlog rows in the
+ * snapshot's shape, newest first, from the backlog and its archive, with the calls among them.
+ */
+export type ProjectHistory = {
+  schema: string;
+  repo: string | null;
+  records: BacklogRecord[];
+  calls: Call[];
+  /** Pass as `after` for the next page; null on the last. */
+  next: string | null;
+  archive: { present: boolean; readable: boolean };
+};
+
 export type FleetTask = {
   id: string;
   kind: string;
@@ -295,6 +309,8 @@ export interface HostAdapter {
   cancelTurn(): Promise<void>;
   getState(): Promise<HostStateSnapshot>;
   paneCapture(taskId: string): Promise<PaneCapture>;
+  /** A page of a project's closed work, newest first; `null` from a firstmate that cannot list it. */
+  projectHistory(repo: string, options?: { after?: string | null; limit?: number }): Promise<ProjectHistory | null>;
   getHome(): Promise<HomeStatus>;
   /** Asks the captain for the folder; `null` when they cancel. */
   chooseHome(): Promise<HomeStatus | null>;

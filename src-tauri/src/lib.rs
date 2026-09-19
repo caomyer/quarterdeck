@@ -52,6 +52,7 @@ pub fn run() {
       snapshot::snapshot_refresh,
       snapshot::snapshot_latest,
       snapshot::pane_capture,
+      snapshot::project_history,
       review::review_get,
       review::review_comment,
       review::review_discard,

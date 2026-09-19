@@ -22,6 +22,7 @@ import type {
   HostStateSnapshot,
   OutboxStatus,
   PaneCapture,
+  ProjectHistory,
   ReasonKind,
   ReviewAnchor,
   ReviewSummary,
@@ -170,6 +171,7 @@ function mockArtifacts(home: string): MockHome {
   const records: BacklogRecord[] = [
     backlogRow(ARTIFACT_TASK, "Resonance: AI titles for snips", { kind: "scout", since: day(0) }),
     backlogRow(REPORT_TASK, "Resonance: which episodes already carry a transcript?", { kind: "scout", since: day(1) }),
+    backlogRow("res-lockscreen", "Resonance: snip from the Lock Screen and AirPods", { state: "queued", current_role: "queued", since: day(2), hold_reason: "Waits on the snip lifecycle work landing" }),
     backlogRow(REPORTED_TASK, "Resonance: how often do feeds change their artwork?", {
       kind: "scout", state: "done", current_role: "done", since: day(3), completion: { verb: "reported", date: day(1) }, report_path: `${home}/data/${REPORTED_TASK}/report.md`,
     }),
@@ -261,10 +263,50 @@ function mockArtifacts(home: string): MockHome {
       { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: planTask.project, name: "AI titles for snips", doing: "Revising the titles plan." },
       { id: REPORT_TASK, kind: "scout", state: "done", repo: reportTask.project, name: "Resonance: which episodes already carry a transcript?", doing: "" },
     ],
-    records,
+    // Every call is a backlog row in firstmate, held for the captain or closed with its answer.
+    records: [...records, ...calls.filter((item) => !records.some((record) => record.id === item.id)).map((item) => backlogRow(item.id, item.title, {
+      kind: "captain", hold_kind: "captain", repo: item.id.startsWith("foreman-") ? "foreman" : "resonance",
+      state: item.state === "open" ? "queued" : "done", current_role: item.state === "open" ? "held" : "done",
+      captain_actionable: item.captain_actionable === true, hold_reason: item.state === "open" ? item.question : null,
+      since: (item.raised_at ?? at(60)).slice(0, 10), completion: item.state === "open" ? { verb: null, date: null } : { verb: "done", date: (item.answer?.at ?? at(60)).slice(0, 10) },
+    }))],
     landed: [{ id: REPORTED_TASK, what: "Resonance: how often do feeds change their artwork?", artifact: `${home}/data/${REPORTED_TASK}/report.md`, owner: "(main)" }],
     reports: [{ id: REPORT_TASK, path: `${home}/data/${REPORT_TASK}/report.md` }, { id: REPORTED_TASK, path: `${home}/data/${REPORTED_TASK}/report.md` }],
   };
+}
+
+/**
+ * Resonance's older closed work, as `bin/fm-history.sh` lists it: newest first, most of it from the archive, spread
+ * over three months, with a call the captain answered, one the first mate settled, and a row that delivered nothing.
+ */
+function mockHistory(home: string): { records: BacklogRecord[]; calls: Call[] } {
+  const done = (id: string, title: string, verb: string, days: number, fields: Partial<BacklogRecord> = {}) =>
+    backlogRow(id, title, { state: "done", current_role: "done", since: localDate(days + 2), completion: { verb, date: localDate(days) }, ...fields });
+  const pr = (n: number) => `https://github.com/caomyer/Resonance/pull/${n}`;
+  const answered = (id: string, title: string, days: number, key: string, label: string, by: "captain" | "firstmate", via: string): Call => ({
+    id, title, question: `${title.replace(/^Resonance: (.)/, (_, first: string) => first.toUpperCase())}?`, options: [], on_answer: "done", state: "closed", bucket: null, captain_actionable: false,
+    origin: null, about: null, evidence: [], raised_by: "firstmate", raised_at: null, updated_at: null,
+    answer: { key, label, by, via, at: localDate(days) }, decided: null,
+  });
+  const records = [
+    done("res-caption-fix", "Resonance: stop the snip caption promising Lock Screen snipping", "merged", 0, { pr_url: pr(6) }),
+    done("res-next-scout", "Resonance: which audit improvement should come next", "reported", 0, { kind: "scout", report_path: `${home}/data/res-next-scout/report.md` }),
+    done("res-after-lifecycle", "Resonance: what should follow the snip lifecycle work", "done", 0, { kind: "captain", hold_kind: "captain" }),
+    done("res-audit", "Resonance: product and technical audit, with the most valuable improvements", "merged", 1, { pr_url: pr(5) }),
+    done("res-export-names", "Resonance: how exported snip files are named when two share a title", "done", 5, { kind: "captain", hold_kind: "captain" }),
+    done("res-share-spike", "Resonance: try a share-sheet extension for snips", "done", 9, { body_excerpt: "Dropped: the captain chose to wait for the lifecycle work." }),
+    done("res-waveform", "Resonance: draw the snip waveform from the cached transcript timing", "merged", 12, { pr_url: pr(4) }),
+    done("res-onboarding-scout", "Resonance: where new listeners give up during onboarding", "reported", 20, { kind: "scout", report_path: `${home}/data/res-onboarding-scout/report.md` }),
+    done("res-offline-queue", "Resonance: queue snips made offline and upload them later", "merged", 33, { pr_url: pr(3) }),
+    done("res-local-build", "Resonance: a local build script for TestFlight", "landed", 41),
+    done("res-feed-parse", "Resonance: parse podcast:transcript tags in feeds", "merged", 47, { pr_url: pr(2) }),
+    done("res-first-light", "Resonance: first light, the app records and plays a snip", "merged", 70, { pr_url: pr(1) }),
+  ];
+  const calls = [
+    answered("res-after-lifecycle", "Resonance: what should follow the snip lifecycle work", 0, "titles", "AI titles", "captain", "quarterdeck"),
+    answered("res-export-names", "Resonance: how exported snip files are named when two share a title", 5, "counter", "Number only on a collision", "firstmate", "decide"),
+  ];
+  return { records, calls };
 }
 
 /** An answer that can no longer change: recorded, or handed to the first mate to record before the app recorded answers. */
@@ -779,6 +821,24 @@ export class MockHostAdapter implements HostAdapter {
 
   async refreshSnapshot() {
     this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+  }
+
+  /**
+   * `?no-history`: a firstmate without `fm-history.sh`. `?history-page=<n>` pages by n rows, `?history-error` fails.
+   */
+  async projectHistory(repo: string, options: { after?: string | null; limit?: number } = {}): Promise<ProjectHistory | null> {
+    if (reviewFlag("no-history")) return null;
+    if (reviewFlag("history-error")) throw new Error("fm-history.sh exited with 1: cannot read the backlog");
+    const all = repo === "resonance" ? mockHistory(this.snapshot.fleet.fm_home) : { records: [], calls: [] };
+    const limit = Number(reviewValue("history-page")) || options.limit || 50;
+    const start = options.after ? all.records.findIndex((record) => record.id === options.after) + 1 : 0;
+    const records = all.records.slice(start, start + limit);
+    const next = start + limit < all.records.length ? records.at(-1)?.id ?? null : null;
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    return {
+      schema: "fm-history.v1", repo, records, next, archive: { present: true, readable: true },
+      calls: all.calls.filter((call) => records.some((record) => record.id === call.id)),
+    };
   }
 
   async paneCapture(taskId: string): Promise<PaneCapture> {

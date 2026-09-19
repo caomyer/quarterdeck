@@ -9,7 +9,10 @@
 //! The last finished snapshot is kept, so a window that subscribes after it
 //! was emitted can still show it.
 //!
-//! Commands: `snapshot_refresh`, `snapshot_latest`, `pane_capture`.
+//! Also lists a project's closed work through `bin/fm-history.sh`, on request
+//! rather than with every snapshot, since it reads the backlog's archive too.
+//!
+//! Commands: `snapshot_refresh`, `snapshot_latest`, `pane_capture`, `project_history`.
 //! Event: `snapshot`.
 
 use crate::envpath;
@@ -28,6 +31,9 @@ const DEBOUNCE: Duration = Duration::from_millis(750);
 const MIN_GAP: Duration = Duration::from_secs(2);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(90);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(20);
+const HISTORY_TIMEOUT: Duration = Duration::from_secs(30);
+/** `bin/fm-history.sh` refuses a page larger than this. */
+const HISTORY_MAX_LIMIT: u32 = 500;
 const CAPTURE_LINES: &str = "60";
 
 fn now_ms() -> u64 {
@@ -42,6 +48,13 @@ enum SnapCmd {
     Refresh,
     Latest { reply: oneshot::Sender<Value> },
     Capture { task_id: String, reply: oneshot::Sender<Result<Value, String>> },
+    History { request: HistoryRequest, reply: oneshot::Sender<Result<Value, String>> },
+}
+
+struct HistoryRequest {
+    repo: String,
+    after: Option<String>,
+    limit: Option<u32>,
 }
 
 /// Tauri-managed handle to the snapshot task.
@@ -112,6 +125,24 @@ pub async fn pane_capture(
         .map_err(|_| "the snapshot reader stopped before answering".to_string())?
 }
 
+/// A page of `repo`'s closed work, as `bin/fm-history.sh --json` prints it, or
+/// `null` from a firstmate that has no such script.
+#[tauri::command]
+pub async fn project_history(
+    repo: String,
+    after: Option<String>,
+    limit: Option<u32>,
+    snapshots: TauriState<'_, SnapshotHandle>,
+) -> Result<Value, String> {
+    let (reply, rx) = oneshot::channel();
+    snapshots
+        .tx
+        .send(SnapCmd::History { request: HistoryRequest { repo, after, limit }, reply })
+        .map_err(|_| "the snapshot reader is not running".to_string())?;
+    rx.await
+        .map_err(|_| "the snapshot reader stopped before answering".to_string())?
+}
+
 async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
     let (fs_tx, mut fs_rx) = mpsc::unbounded_channel::<PathBuf>();
     let mut home: Option<PathBuf> = None;
@@ -152,6 +183,12 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
                     let home = home.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = reply.send(capture(home, task_id).await);
+                    });
+                }
+                Some(SnapCmd::History { request, reply }) => {
+                    let home = home.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(history(home, request).await);
                     });
                 }
             },
@@ -347,9 +384,132 @@ async fn capture(home: Option<PathBuf>, task_id: String) -> Result<Value, String
     Ok(json!({"task_id": task_id, "text": text, "captured_at_ms": now_ms()}))
 }
 
+/// The arguments `bin/fm-history.sh` is run with, once the request is known to be safe to pass.
+fn history_args(request: &HistoryRequest) -> Result<Vec<String>, String> {
+    // A leading dash would read as a flag, whatever position it is passed in.
+    let safe = |value: &str| valid_task_id(value) && !value.starts_with('-');
+    if !safe(&request.repo) {
+        return Err(format!("'{}' is not a project name", request.repo));
+    }
+    let mut args = vec!["--json".to_string(), "--repo".to_string(), request.repo.clone()];
+    if let Some(after) = &request.after {
+        if !safe(after) {
+            return Err(format!("'{after}' is not a task id"));
+        }
+        args.extend(["--after".to_string(), after.clone()]);
+    }
+    if let Some(limit) = request.limit {
+        args.extend(["--limit".to_string(), limit.clamp(1, HISTORY_MAX_LIMIT).to_string()]);
+    }
+    Ok(args)
+}
+
+async fn history(home: Option<PathBuf>, request: HistoryRequest) -> Result<Value, String> {
+    let home = home.ok_or("no firstmate home has been selected")?;
+    let args = history_args(&request)?;
+    if !home.join("bin").join("fm-history.sh").is_file() {
+        return Ok(Value::Null);
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_script(&home, "fm-history.sh", &args, HISTORY_TIMEOUT).await?;
+    serde_json::from_str(&output).map_err(|e| format!("fm-history.sh printed invalid JSON: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_passes_only_safe_arguments() {
+        let request = |repo: &str, after: Option<&str>, limit: Option<u32>| HistoryRequest {
+            repo: repo.to_string(),
+            after: after.map(str::to_string),
+            limit,
+        };
+        assert_eq!(history_args(&request("resonance", None, None)).unwrap(), ["--json", "--repo", "resonance"]);
+        assert_eq!(
+            history_args(&request("resonance", Some("res-audit"), Some(50))).unwrap(),
+            ["--json", "--repo", "resonance", "--after", "res-audit", "--limit", "50"]
+        );
+        assert_eq!(history_args(&request("resonance", None, Some(9000))).unwrap()[4], "500");
+        assert_eq!(history_args(&request("resonance", None, Some(0))).unwrap()[4], "1");
+        assert!(history_args(&request("--help", None, None)).is_err());
+        assert!(history_args(&request("resonance", Some("-x"), None)).is_err());
+        assert!(history_args(&request("a b", None, None)).is_err());
+        assert!(history_args(&request("resonance", Some("x;rm"), None)).is_err());
+    }
+
+    /// Every file under `dir`, with its size and modification time, to show a read changed nothing.
+    fn tree(dir: &Path) -> Vec<(PathBuf, u64, Option<SystemTime>)> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else { return out };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(tree(&path));
+            } else if let Ok(meta) = entry.metadata() {
+                out.push((path, meta.len(), meta.modified().ok()));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Reads every registered project's history from a real scratch home through the command's own path,
+    /// pages through it one row at a time, and checks the home is untouched. Spends no model tokens.
+    #[tokio::test]
+    #[ignore = "live: runs the scratch home's bin/fm-history.sh"]
+    async fn history_e2e_live_scratch_home() {
+        let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+        let home = std::env::var("FM_E2E_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| buzz.join(".scratch/fm-artifacts/firstmate"));
+        let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+        assert!(home.starts_with(buzz.join(".scratch")), "only homes under ~/.buzz/.scratch are scratch homes");
+        assert!(home.join("bin/fm-history.sh").is_file(), "this scratch home's firstmate has no fm-history.sh");
+        let before = (tree(&home.join("state")), tree(&home.join("data")));
+
+        let projects = parse_projects(&home);
+        let names: Vec<String> = projects.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap().to_string()).collect();
+        assert!(!names.is_empty(), "the scratch home registers no projects");
+        let mut seen = 0;
+        for name in &names {
+            let request = |after: Option<String>, limit: Option<u32>| HistoryRequest { repo: name.clone(), after, limit };
+            let whole = history(Some(home.clone()), request(None, None)).await.expect("the history reads");
+            assert_eq!(whole["schema"], "fm-history.v1");
+            let records = whole["records"].as_array().unwrap();
+            for record in records {
+                assert_eq!(record["repo"].as_str(), Some(name.as_str()), "{name}'s history holds another project's row: {record}");
+                assert_eq!(record["state"], "done");
+            }
+            let dates: Vec<&str> = records.iter().map(|r| r["completion"]["date"].as_str().unwrap_or("")).collect();
+            assert!(dates.windows(2).all(|pair| pair[0] >= pair[1] || pair[1].is_empty()), "{name}'s history is not newest first: {dates:?}");
+            // One row at a time, the pages join into the whole list.
+            let mut paged = Vec::new();
+            let mut after = None;
+            loop {
+                let page = history(Some(home.clone()), request(after.clone(), Some(1))).await.expect("a page reads");
+                paged.extend(page["records"].as_array().unwrap().iter().map(|r| r["id"].clone()));
+                match page["next"].as_str() {
+                    Some(next) => after = Some(next.to_string()),
+                    None => break,
+                }
+            }
+            let ids: Vec<Value> = records.iter().map(|r| r["id"].clone()).collect();
+            assert_eq!(paged, ids, "{name}: paging one row at a time did not give the whole list");
+            println!("{name}: {} closed, {} calls", records.len(), whole["calls"].as_array().unwrap().len());
+            seen += records.len();
+        }
+        assert!(seen > 0, "no project in the scratch home has closed work to read");
+        assert_eq!((tree(&home.join("state")), tree(&home.join("data"))), before, "reading history changed the home");
+
+        // A firstmate without the script is not an error: the app shows only recent rows.
+        let bare = std::env::temp_dir().join(format!("qd-history-bare-{}", std::process::id()));
+        std::fs::create_dir_all(bare.join("bin")).unwrap();
+        let missing = history(Some(bare.clone()), HistoryRequest { repo: "demo".into(), after: None, limit: None }).await;
+        let _ = std::fs::remove_dir_all(&bare);
+        assert_eq!(missing, Ok(Value::Null));
+    }
 
     #[test]
     fn a_failed_read_keeps_the_last_good_projection() {
