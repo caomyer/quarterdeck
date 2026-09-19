@@ -451,6 +451,15 @@ test_quarterdeck_presentation_needs_no_lavish() {
     || fail "bootstrap must not fail for an unknown presentation value"
   assert_contains "$out" "PRESENTATION_INVALID: config/presentation names unknown presentation mode 'Quarterdeck'" \
     "an unknown presentation value is reported"
+  # A setting that cannot be read is one diagnostic line, not the reader's noise too.
+  chmod 000 "$case_dir/home/config/presentation"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh") \
+    || fail "bootstrap must not fail for an unreadable presentation setting"
+  chmod 644 "$case_dir/home/config/presentation"
+  [ "$(printf '%s\n' "$out" | grep -c 'PRESENTATION_INVALID')" = 1 ] \
+    || fail "an unreadable presentation setting must report one line, got: $out"
+  assert_not_contains "$out" 'fm-artifact:' "the diagnostic must not carry the reader's own prefix"
   pass "bootstrap does not ask a Quarterdeck home for lavish-axi, checks it for jq, and reports a bad presentation value"
 }
 

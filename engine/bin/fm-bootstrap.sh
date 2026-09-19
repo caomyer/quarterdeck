@@ -7,7 +7,8 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
 #                 "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=<floor>; install: <command>) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish",
-#                 "PRESENTATION_INVALID: <source> names unknown presentation mode '<value>' (expected lavish or quarterdeck)",
+#                 "PRESENTATION_INVALID: <reason>", the reason usually
+#                 "<source> names unknown presentation mode '<value>' (expected lavish or quarterdeck)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
@@ -1491,8 +1492,11 @@ detect_local_tools() {
   # through bin/fm-artifact.sh, which needs jq; lavish-axi then plays no part.
   local presentation presentation_error
   if ! presentation=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-artifact.sh" mode 2>&1); then
-    presentation_error=${presentation#fm-artifact: }
-    echo "PRESENTATION_INVALID: $presentation_error"
+    # One line per diagnostic: the reason is the last line it managed to print,
+    # which is the refusal itself when anything else (an unreadable config, a
+    # missing script) wrote to stderr first.
+    presentation_error=$(printf '%s\n' "$presentation" | tail -n 1)
+    echo "PRESENTATION_INVALID: ${presentation_error#fm-artifact: }"
     presentation=lavish
   fi
   if [ "$presentation" = quarterdeck ]; then
