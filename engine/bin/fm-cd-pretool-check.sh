@@ -154,7 +154,9 @@ FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." 2>/dev/null && pw
 # denies a shell command.
 # A root with no .git is firstmate installed as a copy (inside an app, whose
 # home bin/fm-home-init.sh mirrors it): the primary, with no task worktree to
-# tell apart, so the checkout test is skipped and the guard applies.
+# tell apart, so the checkout test is skipped and the guard applies - but only
+# for a session that has a home, as the shared primary predicate requires, so a
+# copy vendored into another project is left alone.
 [ -f "$FM_ROOT/AGENTS.md" ] || exit 0
 [ -d "$FM_ROOT/bin" ] || exit 0
 if [ -e "$FM_ROOT/.git" ] || [ -L "$FM_ROOT/.git" ]; then
@@ -162,6 +164,8 @@ if [ -e "$FM_ROOT/.git" ] || [ -L "$FM_ROOT/.git" ]; then
   GIT_DIR=$(git -C "$FM_ROOT" rev-parse --git-dir 2>/dev/null) || exit 0
   GIT_COMMON_DIR=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || exit 0
   [ "$GIT_DIR" = "$GIT_COMMON_DIR" ] || exit 0
+else
+  [ -d "${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}" ] || exit 0
 fi
 
 POLICY="$FM_ROOT/bin/fm-cd-command-policy.mjs"

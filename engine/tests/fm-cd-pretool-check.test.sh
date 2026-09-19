@@ -244,7 +244,12 @@ test_fires_in_installed_copy() {
   mkdir -p "$dir"
   : > "$dir/AGENTS.md"
   install_cd_scripts "$dir"   # AGENTS.md + bin/ and no .git: firstmate installed as a copy
-  out=$("$dir/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
+  # Without a home it is only a copy, vendored somewhere: left alone.
+  out=$(env -u FM_HOME -u FM_STATE_OVERRIDE "$dir/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
+  expect_code 0 "$rc" "cd-guard must be inert in a copy with no home"
+  [ -z "$out" ] || fail "cd-guard produced output in a copy with no home: $out"
+  mkdir -p "$TMP_ROOT/copy-home/state"
+  out=$(FM_HOME="$TMP_ROOT/copy-home" "$dir/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?
   expect_code 2 "$rc" "cd-guard must fire in an installed copy with no .git"
   assert_contains "$out" '[persistent-cd]' "an installed copy's block must carry the reason code"
   pass "cd-guard: fires in firstmate installed as a copy outside git"
