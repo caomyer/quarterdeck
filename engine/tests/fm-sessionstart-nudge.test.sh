@@ -28,6 +28,9 @@ fi
 
 unset NO_MISTAKES_GATE
 
+# The Pi cases run TypeScript through node, whose type-stripping warning on
+# Node 22-23 would read as hook output; the other Pi suites silence it the same way.
+export NODE_NO_WARNINGS=1
 TMP_ROOT=$(fm_test_tmproot fm-sessionstart-nudge)
 NUDGE="$ROOT/bin/fm-sessionstart-nudge.sh"
 RUN="$ROOT/bin/fm-sessionstart-run.sh"
