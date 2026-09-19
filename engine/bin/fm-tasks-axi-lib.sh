@@ -23,6 +23,8 @@
 # symlink, returns 2 with a path diagnostic on stderr and no backend on stdout.
 # fm_tasks_axi_backend delegates to that resolver and preserves its status;
 # callers must check it before selecting backend-specific flags or exemptions.
+# fm_tasks_axi_archive_resolve owns where a markdown backlog's done archive
+# lives, with the project-then-home precedence tasks-axi applies to it.
 #
 # This file is the single owner of FM_TASKS_AXI_MIN. bin/fm-bootstrap.sh turns a
 # failing check into the operator-facing MISSING diagnostic.
@@ -197,4 +199,78 @@ fm_tasks_axi_backend_available() {
   local config_dir=$1
   fm_backlog_backend_manual "$config_dir" && return 1
   fm_tasks_axi_compatible
+}
+
+# One `[markdown]` table key from a tasks-axi TOML file, read the way tasks-axi's
+# own minimal reader does: a `#` outside quotes starts a comment, the value must
+# be a quoted string, and a later assignment wins. Prints the value and returns
+# 0, or returns 1 when the file is absent or does not set the key.
+fm_tasks_axi_markdown_key_from_toml() {  # <toml-path> <key>
+  local toml=$1 key=$2
+  [ -f "$toml" ] || return 1
+  LC_ALL=C awk -v want="$key" '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function strip_comment(raw,    i, ch, quote) {
+      quote = ""
+      for (i = 1; i <= length(raw); i++) {
+        ch = substr(raw, i, 1)
+        if (quote != "") { if (ch == quote) quote = ""; continue }
+        if (ch == "\"" || ch == single) { quote = ch; continue }
+        if (ch == "#") return substr(raw, 1, i - 1)
+      }
+      return raw
+    }
+    BEGIN { table = "root"; found = 0; single = sprintf("%c", 39) }
+    {
+      line = trim(strip_comment($0))
+      if (line ~ /^\[[^]]+\]$/) {
+        table = trim(substr(line, 2, length(line) - 2))
+        next
+      }
+      if (table != "markdown") next
+      if (line !~ ("^" want "[[:space:]]*=")) next
+      sub(/^[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*/, "", line)
+      line = trim(line)
+      if (length(line) >= 2 &&
+          ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") ||
+           (substr(line, 1, 1) == single && substr(line, length(line), 1) == single))) {
+        value = substr(line, 2, length(line) - 2)
+        found = 1
+      }
+    }
+    END { if (!found) exit 1; print value }
+  ' "$toml"
+}
+
+# The done archive a markdown backlog prunes into, resolved with tasks-axi's own
+# precedence: `[markdown] archive` in the addressing root's .tasks.toml, then in
+# $HOME/.tasks-axi/config.toml, a relative value taken against the addressing
+# root (tasks-axi's working directory); with neither, `done-archive.md` beside
+# the backlog file. Prints the path. An empty configured value, which tasks-axi
+# itself refuses, returns 2 with a diagnostic on stderr.
+fm_tasks_axi_archive_resolve() {  # <tasks-axi-working-directory> <backlog-file>
+  local root=$1 backlog=$2 archive='' source=''
+  if archive=$(fm_tasks_axi_markdown_key_from_toml "$root/.tasks.toml" archive); then
+    source="$root/.tasks.toml"
+  elif [ -n "${HOME:-}" ] && archive=$(fm_tasks_axi_markdown_key_from_toml "$HOME/.tasks-axi/config.toml" archive); then
+    source="$HOME/.tasks-axi/config.toml"
+  else
+    printf '%s/done-archive.md\n' "${backlog%/*}"
+    return 0
+  fi
+  case "$archive" in
+    *[![:space:]]*) ;;
+    *)
+      printf 'markdown.archive must not be empty in %s\n' "$source" >&2
+      return 2
+      ;;
+  esac
+  case "$archive" in
+    /*) printf '%s\n' "$archive" ;;
+    *) printf '%s/%s\n' "${root%/}" "$archive" ;;
+  esac
 }

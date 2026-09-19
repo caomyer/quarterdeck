@@ -18,7 +18,8 @@
 #     data/backlog.md and cover In flight, Queued, and Done.
 #     Canonical tasks-axi rows are structured; free-form non-empty lines in
 #     those sections are preserved as unstructured records.
-#     bin/fm-backlog-parse-lib.sh is the parser.
+#     bin/fm-backlog-parse-lib.sh is the parser, shared with bin/fm-history.sh
+#     so a closed row reads the same on both surfaces.
 #     Structured rows preserve captain-hold metadata such as hold_kind,
 #     hold_reason, and hold_until when tasks-axi emits it. They also carry
 #     normalized current_role, requires_child_metadata, blocked_by_ids,

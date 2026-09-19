@@ -5,9 +5,9 @@
 #        fm_backlog_parse_json <path> <today> <now> <undated-hold-age-days> < <backlog-text>
 #
 # ONE OWNER for how a backlog row reads. bin/fm-fleet-snapshot.sh emits this
-# object as its `backlog` field (and alone under --backlog-json); any other
-# surface that returns backlog rows reads them here, so a row has exactly one
-# shape whichever surface returns it.
+# object as its `backlog` field (and alone under --backlog-json), and
+# bin/fm-history.sh runs the same program over the Done section and the done
+# archive, so a closed row has exactly one shape whichever surface returns it.
 # bin/fm-fleet-snapshot.sh's header owns the field contract.
 #
 # The text arrives on stdin rather than as a file, so a caller can hand in text
