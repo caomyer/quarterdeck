@@ -88,7 +88,15 @@ fi
 # --- main firstmate repo ---------------------------------------------------
 
 reread_firstmate="no"
-ff_target "$FM_ROOT" "firstmate" origin no no
+# Firstmate installed as a copy outside git (inside an app, with a home
+# bin/fm-home-init.sh mirrors) is updated by updating the app, never from here.
+if [ ! -e "$FM_ROOT/.git" ] && [ ! -L "$FM_ROOT/.git" ]; then
+  echo "firstmate: skipped: installed with the app; update the app to update firstmate"
+  FF_STATUS=skipped
+  FF_INSTR=
+else
+  ff_target "$FM_ROOT" "firstmate" origin no no
+fi
 if [ "$FF_STATUS" = "updated" ]; then
   if [ -n "$FF_INSTR" ]; then
     reread_firstmate="yes"

@@ -149,6 +149,15 @@ test_secondmates_are_refused_plainly() {
   pass "a secondmate cannot be seeded from an installed copy, and the refusal says so plainly"
 }
 
+test_update_points_at_the_app() {
+  local out rc=0
+  out=$(in_home bin/fm-update.sh 2>&1) || rc=$?
+  expect_code 0 "$rc" "updating from an installed copy must not fail: $out"
+  assert_contains "$out" "update the app to update firstmate" "the update says where updates come from"
+  assert_not_contains "$out" "fatal:" "the update shows no git errors"
+  pass "updating firstmate from an installed copy points at the app"
+}
+
 test_deferred_network_report_is_clean() {
   local status_file="$HOME_DIR/state/.startup-network.status" waited=0
   # Longer than the network budget in_home sets, so a slow network is waited out.
@@ -181,6 +190,7 @@ test_session_start_hook_runs_from_the_home
 test_backlog_calls_and_history_work_by_relative_paths
 test_guard_hooks_apply_in_the_home
 test_secondmates_are_refused_plainly
+test_update_points_at_the_app
 test_deferred_network_report_is_clean
 test_the_copy_is_untouched
 test_nothing_is_left_running
