@@ -63,6 +63,12 @@ function reviewValue(name: string) {
  *
  * `?legacy` drops calls[], as a home whose firstmate predates it. `?skip=<call>[,<call>]` has the intake skip those calls.
  */
+/** A calendar day `days` ago where the app runs, as a bare YYYY-MM-DD date. */
+function localDate(days: number) {
+  const day = new Date(Date.now() - days * 86_400_000);
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+}
+
 const ARTIFACT_TASK = "res-titles-scout";
 /** A task the fixture backlog records as done, so its page has somewhere settled to sit. */
 const LANDED_TASK = "foreman-rebase-before-review";
@@ -227,7 +233,8 @@ function mockArtifacts(home: string): MockHome {
       question: "Should uploads wait for Wi-Fi?", state: "closed", bucket: null, captain_actionable: false,
       options: [option("wifi-only", "Wi-Fi only, and say so in Settings", true), option("any", "Upload on any connection")],
       evidence: ["page:chat/uploads-wifi"], raised_at: at(4 * 24 * 60), updated_at: at(4 * 24 * 60),
-      answer: { key: "wifi-only", label: "Wi-Fi only, and say so in Settings", by: "captain", via: "chat", at: at(2 * 24 * 60) },
+      // A bare date, as answers carried over from before calls had times record it.
+      answer: { key: "wifi-only", label: "Wi-Fi only, and say so in Settings", by: "captain", via: "chat", at: localDate(2) },
     }),
     decidedCall("res-titles-keep-wide", 40, ARTIFACT_TASK, {
       kind: "review-finding", link: null,

@@ -92,7 +92,9 @@ const answeredCall = page.locator("[data-testid='landed-row'][data-landed-kind='
 check(await answeredCall.count() === 1, "an answered and closed call shows as done");
 check((await answeredCall.innerText()).includes("You chose Wi-Fi only, and say so in Settings · based on Should uploads wait for Wi-Fi?"), "the answered call says what the captain chose, and what it was based on");
 check(await answeredCall.locator("button.link-button", { hasText: "Should uploads wait for Wi-Fi?" }).count() === 1, "what the answer was based on is a link to it");
-check(/closed Sep \d+/.test(await answeredCall.innerText()), "the answered call says when it closed");
+// It was answered on a bare date two days ago, and has to read as that same calendar day here, not the evening before.
+const answeredDay = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(Date.now() - 2 * 86_400_000));
+check((await answeredCall.innerText()).includes(`closed ${answeredDay}`), `a call answered on a bare date reads as that day (${answeredDay})`);
 const shippedRow = page.locator("[data-testid='landed-row'][data-id='foreman-rebase-before-review']");
 check((await shippedRow.locator("a.landed-link").getAttribute("href")) === "https://github.com/caomyer/foreman/pull/24", "a landed PR links the PR");
 check(await shippedRow.locator("button.landed-link", { hasText: "The page" }).count() === 1, "a landed task with a page offers it");
@@ -136,10 +138,11 @@ await page.locator(".nav-item", { hasText: "Bearings" }).click();
 await ready.locator("button", { hasText: "Read the report" }).click();
 await page.locator(".artifact-stage iframe").waitFor();
 check((await page.locator(".page-heading span").innerText()).includes("res-transcripts-scout"), "Read the report opens the scout's page");
-check((await page.locator(".verdict-picker select").inputValue()) === "comment", "a finished task's page starts the review on Comment");
-check((await page.locator(".review-send small").innerText()) === "Thoughts only. Its task has finished, so nothing waits on this page.", "the hint says why nothing waits on a finished task's page");
-await page.locator(".verdict-picker select").selectOption("changes");
-check(!(await page.locator(".review-send small").innerText()).includes("keeps waiting"), "Request changes never claims a finished task is waiting");
+// The scout has finished, but its report argues a call that is still open, so the call waits on this page.
+check((await page.locator(".verdict-picker select").inputValue()) === "changes", "a finished scout's report that argues an open call starts on Request changes");
+check((await page.locator(".review-send small").innerText()) === "The first mate revises the case before you decide.", "the hint says the call waits on the page, not that nothing does");
+await page.locator(".verdict-picker select").selectOption("comment");
+check((await page.locator(".review-send small").innerText()).includes("the call stays open until you answer it"), "Comment says the call stays open");
 await page.locator(".back-button").click();
 check(await bearingsPage.count() === 1, "back from the report returns to Bearings");
 // The mock keeps reviews in memory, so a reload puts the report back to unread for the list below.
@@ -173,6 +176,15 @@ check(await landed.count() === 2, "the settled group opens on its own");
 check((await settled.innerText()).includes("Should uploads wait for Wi-Fi?"), "a chat page whose calls are all closed is settled, read or not");
 check((await landed.first().innerText()).includes("Rebase the subject before anybody reads it"), "the landed page is the one that landed");
 check(await landed.first().locator(".review-chip").count() === 0, "a landed page says nothing is waiting on it");
+// A landed page that argues nothing holds nothing up, so its review starts on Comment and says why.
+await landed.first().click();
+await page.locator(".artifact-stage iframe").waitFor();
+check((await page.locator(".verdict-picker select").inputValue()) === "comment", "a landed page that argues no call starts the review on Comment");
+check((await page.locator(".review-send small").innerText()) === "Thoughts only. Its task has already landed, so nothing waits on this page.", "the hint says why nothing waits on a landed page");
+await page.locator(".verdict-picker select").selectOption("changes");
+check(!(await page.locator(".review-send small").innerText()).includes("keeps waiting"), "Request changes never claims a landed task is waiting");
+await page.locator(".back-button").click();
+await settled.locator(".artifact-group-heading").click();
 await shot(page, "01b-list-groups");
 await settled.locator(".artifact-group-heading").click();
 check(await settled.locator(".artifact-row").count() === 0, "the settled group folds again");
@@ -462,11 +474,12 @@ await page.locator(".scene-open").click();
 const editor = page.locator(".scene-editor");
 await editor.waitFor();
 check((await editor.locator("> header h2").innerText()) === "Snip pipeline", "the editor opens the page's own diagram");
-await page.waitForTimeout(6000);
+// Wait for what each step needs rather than a fixed time: Excalidraw loads lazily and at its own pace.
+await editor.locator("canvas").first().waitFor({ timeout: 60_000 });
 check(await editor.locator("canvas").count() > 0, "the scene draws on a canvas");
 await shot(page, "17-diagram");
 await editor.getByRole("button", { name: "Propose these changes" }).click();
-await page.waitForTimeout(1500);
+await editor.getByText("Nothing has changed").waitFor();
 check((await editor.innerText()).includes("Nothing has changed"), "an unchanged diagram is not filed as a change");
 const canvas = await editor.locator("canvas").first().boundingBox();
 await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
@@ -475,7 +488,7 @@ await page.waitForTimeout(400);
 for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowDown");
 await page.waitForTimeout(600);
 await editor.getByRole("button", { name: "Propose these changes" }).click();
-await page.waitForTimeout(4000);
+await page.locator(".scene-editor").waitFor({ state: "detached", timeout: 30_000 });
 check(await page.locator(".scene-editor").count() === 0, "proposing closes the editor");
 const proposal = threads.last();
 const proposalText = await proposal.innerText();

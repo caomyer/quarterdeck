@@ -790,6 +790,9 @@ type LandedItem = {
 
 /** The local day of a moment, `yyyy-mm-dd`, as backlog dates are written. */
 function localDay(at: string) {
+  // A bare date already names the day; parsing it would read it as UTC midnight,
+  // which west of Greenwich is the evening before.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(at)) return at;
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return null;
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -1561,11 +1564,12 @@ function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string
     verdict: "comment",
     hints: { changes: `Asks for another revision. ${reason}`, approve: `Says it reads well. ${reason}`, comment: `Thoughts only. ${reason}` },
   });
-  if (!taskId) {
-    return calls.length > 0
-      ? { verdict: "changes", hints: { changes: "The first mate revises the case before you decide.", approve: "The case reads well as it is argued.", comment: "Thoughts only; the call stays open until you answer it." } }
-      : quiet("Nothing is waiting on this page.");
+  // A call this page argues waits on it whatever became of the task that wrote it: a finished
+  // scout's report is often exactly the argument an open call is decided from.
+  if (calls.length > 0) {
+    return { verdict: "changes", hints: { changes: "The first mate revises the case before you decide.", approve: "The case reads well as it is argued.", comment: "Thoughts only; the call stays open until you answer it." } };
   }
+  if (!taskId) return quiet("Nothing is waiting on this page.");
   if (backlog.get(taskId)?.state === "done") return quiet("Its task has already landed, so nothing waits on this page.");
   if (!task || !LIVE_STATES.has(task.current_state.state)) return quiet("Its task has finished, so nothing waits on this page.");
   if (calls.length === 0 && task.kind === "scout") return quiet("The scout carries on either way; this page argues no call.");
