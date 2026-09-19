@@ -383,7 +383,7 @@ family_for_basename() {
       printf '%s\n' afk
       ;;
     fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|fm-contributions.test.sh|\
-    fm-fleet-snapshot-view.test.sh|fm-home-summary-refresh.test.sh)
+    fm-fleet-snapshot-view.test.sh|fm-home-summary-refresh.test.sh|fm-history.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
@@ -667,6 +667,7 @@ tests/fm-agy-harness.test.sh 11000
 tests/fm-artifact.test.sh 12000
 tests/fm-captain-calls.test.sh 75000
 tests/fm-project-intake.test.sh 1500
+tests/fm-history.test.sh 15000
 tests/fm-watch-served-harness.test.sh 20000
 tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
@@ -1539,7 +1540,7 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     bin/fm-bearings-snapshot.sh|bin/fm-fleet-snapshot.sh|bin/fm-fleet-view.sh|bin/fm-contributions.sh|bin/fm-contributions.jq|\
-    bin/fm-home-summary-refresh.sh)
+    bin/fm-home-summary-refresh.sh|bin/fm-history.sh|bin/fm-backlog-parse-lib.sh)
       printf '%s\n' snapshot-bearings
       ;;
     bin/fm-captain-hold.sh|bin/fm-decision-options.sh)
