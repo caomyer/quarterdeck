@@ -152,35 +152,23 @@ fi
 
 mkdir -p -- "$HOME_DIR" || fail "cannot create $HOME_DIR"
 
-# Concurrent runs take turns. A lock is a directory holding its owner's pid; a
-# lock whose owner has died, or one left without a pid for over a minute, is
-# taken over by renaming it away first, so two waiters cannot both take it.
+# Concurrent runs take turns, under firstmate's own lock (bin/fm-wake-lib.sh),
+# which records its owner atomically and recovers a lock whose owner died.
+# Loaded only now, once nothing is refused, and told not to create the home's
+# state directory itself.
+FM_HOME=$HOME_DIR
+STATE="$HOME_DIR/state"
+FM_WAKE_READ_ONLY=1
+# shellcheck source=bin/fm-wake-lib.sh
+. "$CODE/bin/fm-wake-lib.sh"
 LOCK="$HOME_DIR/.fm-home-init.lock"
-LOCK_HELD=0
-release_lock() {
-  [ "$LOCK_HELD" = 1 ] && rm -rf -- "$LOCK"
-  LOCK_HELD=0
-}
-trap 'release_lock' EXIT
+trap 'fm_lock_release "$LOCK" >/dev/null 2>&1' EXIT
 lock_waited=0
-until mkdir -- "$LOCK" 2>/dev/null; do
-  holder=$(cat -- "$LOCK/pid" 2>/dev/null || true)
-  stale=0
-  if [ -n "$holder" ]; then
-    kill -0 "$holder" 2>/dev/null || stale=1
-  elif [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-    stale=1
-  fi
-  if [ "$stale" = 1 ] && mv -- "$LOCK" "$HOME_DIR/.fm-home-init.stale.$$" 2>/dev/null; then
-    rm -rf -- "$HOME_DIR/.fm-home-init.stale.$$"
-    continue
-  fi
+until fm_lock_try_acquire "$LOCK"; do
   lock_waited=$((lock_waited + 1))
-  [ "$lock_waited" -le 400 ] || fail "another fm-home-init.sh has held $LOCK for over a minute"
+  [ "$lock_waited" -le 600 ] || fail "another fm-home-init.sh has held $LOCK for over two minutes"
   sleep 0.2
 done
-LOCK_HELD=1
-printf '%s\n' "$$" > "$LOCK/pid"
 
 if [ ! -f "$HOME_DIR/$MARKER" ] && ! unclaimed "$HOME_DIR"; then
   fail "$HOME_DIR is not empty and is not a firstmate home"

@@ -56,7 +56,7 @@ test_fresh_home_mirrors_the_code() {
   [ -e "$home/.claude/skills/captain-hold-lifecycle/SKILL.md" ] || fail "the skills must resolve through the home"
   [ ! -e "$home/.git" ] || fail "the home must not carry git"
   grep -qx "code=$CODE" "$home/.fm-home" || fail "the marker must name the code"
-  [ ! -e "$home/.fm-home-init.lock" ] || fail "the lock must be released"
+  [ -z "$(find "$home" -maxdepth 1 -name '.fm-home-init*' -print -quit)" ] || fail "the lock and its owner record must be gone"
   pass "a fresh home links the code's entries, keeps its own directories real, and is marked"
 }
 
