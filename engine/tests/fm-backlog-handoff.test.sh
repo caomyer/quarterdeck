@@ -198,7 +198,7 @@ SH
 
 test_known_failure_restores_retry_after_reconciliation_race() {
   local home="$TMP_ROOT/reconcile-race-main" sub="$TMP_ROOT/reconcile-race-sub"
-  local basebin blockbin="$TMP_ROOT/reconcile-race-block" handoff i corr phase
+  local basebin blockbin="$TMP_ROOT/reconcile-race-block" handoff deadline corr phase
   setup_homes "$home" "$sub"
   mkdir -p "$sub/data" "$blockbin"
   cat > "$home/data/backlog.md" <<'EOF'
@@ -229,11 +229,12 @@ SH
     "$ROOT/bin/fm-backlog-handoff.sh" design reconcile-race \
     > "$TMP_ROOT/reconcile-race.out" 2>&1 &
   handoff=$!
-  i=0
+  # A wall-clock bound, not a poll count: a loaded CI runner can take several
+  # seconds to start the handoff, and the test only cares that it gets there.
+  deadline=$((SECONDS + 60))
   while [ ! -f "$TMP_ROOT/reconcile-race.entered" ]; do
     kill -0 "$handoff" 2>/dev/null || fail "reconciliation-race handoff exited before backend delivery"
-    i=$((i + 1))
-    [ "$i" -le 250 ] || fail "reconciliation-race handoff never reached backend delivery"
+    [ "$SECONDS" -lt "$deadline" ] || fail "reconciliation-race handoff never reached backend delivery"
     sleep 0.02
   done
   corr=$(cut -d: -f2- "$home/state/.backlog-handoff-design.wake-pending")
