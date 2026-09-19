@@ -153,6 +153,12 @@ test_secondmates_are_refused_plainly() {
   assert_not_contains "$out" "fatal:" "the refusal shows no git errors"
   after=$(cd "$HOME_DIR" && find . -print | LC_ALL=C sort)
   [ "$after" = "$before" ] || fail "a refused seed changed the home"
+  # A home the user keeps in git is still an installed copy's home.
+  git -C "$HOME_DIR" init -q || fail "could not put the home under git"
+  rc=0; out=$(in_home bin/fm-home-seed.sh mate - --no-projects 2>&1) || rc=$?
+  rm -rf "$HOME_DIR/.git"
+  expect_code 1 "$rc" "seeding from a home kept in git must be refused too: $out"
+  assert_contains "$out" "secondmates are not available here yet" "the refusal looks at the code, not the home"
   pass "a secondmate cannot be seeded from an installed copy, and the refusal says so plainly"
 }
 

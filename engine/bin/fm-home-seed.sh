@@ -826,7 +826,11 @@ seed_home() {
   # cloned from this home's code. Firstmate installed as a copy outside git
   # (inside an app, with a home bin/fm-home-init.sh mirrors) has no checkout to
   # give one, so seeding is refused before anything is created.
-  if [ ! -e "$FM_ROOT/.git" ] && [ ! -L "$FM_ROOT/.git" ]; then
+  # The code itself, by its physical path: from a mirrored home FM_ROOT is the
+  # home, which may be a git repository of the user's own.
+  local code_root
+  code_root=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -P -- "$SCRIPT_DIR/.." && pwd -P)} || return 1
+  if [ ! -e "$code_root/.git" ] && [ ! -L "$code_root/.git" ]; then
     echo "error: secondmate homes need firstmate as a git checkout, and this home runs firstmate installed as a copy outside git; secondmates are not available here yet" >&2
     return 1
   fi
