@@ -1496,7 +1496,9 @@ detect_local_tools() {
     # which is the refusal itself when anything else (an unreadable config, a
     # missing script) wrote to stderr first.
     presentation_error=$(printf '%s\n' "$presentation" | tail -n 1)
-    echo "PRESENTATION_INVALID: ${presentation_error#fm-artifact: }"
+    presentation_error=${presentation_error#fm-artifact: }
+    [ -n "$presentation_error" ] || presentation_error="could not read the presentation setting"
+    echo "PRESENTATION_INVALID: $presentation_error"
     presentation=lavish
   fi
   if [ "$presentation" = quarterdeck ]; then
