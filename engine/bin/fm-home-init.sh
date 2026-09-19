@@ -163,10 +163,18 @@ FM_WAKE_READ_ONLY=1
 . "$CODE/bin/fm-wake-lib.sh"
 LOCK="$HOME_DIR/.fm-home-init.lock"
 trap 'fm_lock_release "$LOCK" >/dev/null 2>&1' EXIT
+# A run takes about a second, and a launch starts one, so a wait of more than a
+# few seconds means the other run is wedged: say so, and give up soon enough to
+# be a clear failure rather than a silent launch stall (about 25s;
+# FM_HOME_INIT_LOCK_TRIES sets the number of 0.2s tries, for tests).
+lock_tries=${FM_HOME_INIT_LOCK_TRIES:-125}
+case "$lock_tries" in ''|*[!0-9]*) lock_tries=125 ;; esac
 lock_waited=0
 until fm_lock_try_acquire "$LOCK"; do
   lock_waited=$((lock_waited + 1))
-  [ "$lock_waited" -le 600 ] || fail "another fm-home-init.sh has held $LOCK for over two minutes"
+  [ "$lock_waited" != $(((lock_tries / 8) + 1)) ] \
+    || printf 'fm-home-init: waiting for another fm-home-init.sh to finish with %s\n' "$HOME_DIR" >&2
+  [ "$lock_waited" -le "$lock_tries" ] || fail "another fm-home-init.sh still holds $LOCK; nothing was changed"
   sleep 0.2
 done
 

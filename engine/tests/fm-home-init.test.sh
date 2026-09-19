@@ -262,6 +262,27 @@ test_leftovers_of_dead_runs_are_cleared() {
   pass "what dead runs leave behind is cleared, and a live run's is kept"
 }
 
+test_a_wedged_lock_fails_soon_and_says_so() {
+  local home="$TMP_ROOT/wedged" out rc=0 started elapsed holder
+  init "$CODE" "$home" >/dev/null 2>&1 || fail "first run failed"
+  # A lock held by a process that stays alive: sleep, whose pid the owner names.
+  sleep 120 & holder=$!
+  mkdir -p "$home/.fm-home-init.lock.owner.held"
+  printf '%s\n' "$holder" > "$home/.fm-home-init.lock.owner.held/pid"
+  ln -s "$home/.fm-home-init.lock.owner.held" "$home/.fm-home-init.lock"
+  started=$SECONDS
+  out=$(FM_HOME_INIT_LOCK_TRIES=10 init "$CODE" "$home" 2>&1) || rc=$?
+  elapsed=$((SECONDS - started))
+  kill "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null || true
+  rm -rf "$home/.fm-home-init.lock" "$home/.fm-home-init.lock.owner.held"
+  expect_code 1 "$rc" "a wedged lock must fail, not hang: $out"
+  [ "$elapsed" -le 20 ] || fail "a wedged lock took ${elapsed}s to give up with a short budget"
+  assert_contains "$out" "waiting for another fm-home-init.sh" "the wait says why it is waiting"
+  assert_contains "$out" "nothing was changed" "the failure says nothing was changed"
+  pass "a wedged lock says why it waits and gives up soon"
+}
+
 test_concurrent_first_runs_on_an_empty_folder() {
   local home="$TMP_ROOT/empty-race" i pids='' pid failed=0
   mkdir -p "$home"
@@ -343,6 +364,7 @@ test_paths_are_resolved_safely
 test_refusals_create_nothing
 test_a_cut_short_run_is_finished
 test_leftovers_of_dead_runs_are_cleared
+test_a_wedged_lock_fails_soon_and_says_so
 test_concurrent_first_runs_on_an_empty_folder
 test_every_recorded_code_is_known
 test_path_components_and_quotes
