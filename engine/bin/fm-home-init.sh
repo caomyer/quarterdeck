@@ -165,10 +165,13 @@ LOCK="$HOME_DIR/.fm-home-init.lock"
 trap 'fm_lock_release "$LOCK" >/dev/null 2>&1' EXIT
 # A run takes about a second, and a launch starts one, so a wait of more than a
 # few seconds means the other run is wedged: say so, and give up soon enough to
-# be a clear failure rather than a silent launch stall (about 25s;
-# FM_HOME_INIT_LOCK_TRIES sets the number of 0.2s tries, for tests).
+# be a clear failure rather than a silent launch stall. The budget is a number
+# of tries, not a deadline: 125 tries come to about half a minute at idle, and
+# longer under load, which is what a run queued behind several others needs.
+# FM_HOME_INIT_LOCK_TRIES sets the count, for tests.
 lock_tries=${FM_HOME_INIT_LOCK_TRIES:-125}
-case "$lock_tries" in ''|*[!0-9]*) lock_tries=125 ;; esac
+# A count this shell can compare; anything else is the default.
+case "$lock_tries" in ''|*[!0-9]*|??????*) lock_tries=125 ;; esac
 lock_waited=0
 until fm_lock_try_acquire "$LOCK"; do
   lock_waited=$((lock_waited + 1))

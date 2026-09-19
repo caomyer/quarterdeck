@@ -273,13 +273,26 @@ test_a_wedged_lock_fails_soon_and_says_so() {
   started=$SECONDS
   out=$(FM_HOME_INIT_LOCK_TRIES=10 init "$CODE" "$home" 2>&1) || rc=$?
   elapsed=$((SECONDS - started))
+  # A budget this shell could not compare must read as the default, not as an
+  # instant, silent give-up: it waits, says so, and takes the lock when the
+  # holder lets go.
+  local unusable_out unusable_rc=0 waiter
+  FM_HOME_INIT_LOCK_TRIES=99999999999999999999 init "$CODE" "$home" > "$TMP_ROOT/unusable.out" 2>&1 &
+  waiter=$!
+  # Past the announcement, which the default budget makes at its eighth try.
+  sleep 6
   kill "$holder" 2>/dev/null
+  wait "$waiter" || unusable_rc=$?
+  unusable_out=$(cat "$TMP_ROOT/unusable.out")
   wait "$holder" 2>/dev/null || true
-  rm -rf "$home/.fm-home-init.lock" "$home/.fm-home-init.lock.owner.held"
+  rm -rf "$home/.fm-home-init.lock.owner.held"
   expect_code 1 "$rc" "a wedged lock must fail, not hang: $out"
   [ "$elapsed" -le 20 ] || fail "a wedged lock took ${elapsed}s to give up with a short budget"
   assert_contains "$out" "waiting for another fm-home-init.sh" "the wait says why it is waiting"
   assert_contains "$out" "nothing was changed" "the failure says nothing was changed"
+  expect_code 0 "$unusable_rc" "an unusable budget must wait for the lock, not give up: $unusable_out"
+  assert_contains "$unusable_out" "waiting for another fm-home-init.sh" "an unusable budget still waits and says so"
+  assert_not_contains "$unusable_out" "integer expression" "an unusable budget must not leak a shell error"
   pass "a wedged lock says why it waits and gives up soon"
 }
 
