@@ -12,7 +12,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "artifacts": "node scripts/artifact-review.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs"
+    "projects": "node scripts/project-page.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",

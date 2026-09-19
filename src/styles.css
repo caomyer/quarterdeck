@@ -274,9 +274,40 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .project-card:hover { border-color: var(--sea); background: var(--surface-2); }
 .project-card div { display: flex; flex-direction: column; gap: 4px; }.project-card h2 { margin: 0; font-size: .82rem; letter-spacing: 0; }.project-card p { margin: 0; color: var(--muted); font-size: .65rem; line-height: 1.4; }.project-card div > span { margin-top: 3px; color: var(--blue); font-size: .6rem; font-weight: 680; }
 .posture-line { display: flex; align-items: center; gap: 7px; width: fit-content; min-height: 31px; padding: 0 10px; border-left: 3px solid var(--sea); color: var(--muted); background: var(--surface-2); font-size: .65rem; }
-.project-summary { display: flex; align-items: flex-end; justify-content: space-between; width: min(760px, 100%); padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+.project-summary { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; width: min(1120px, 100%); padding-bottom: 20px; border-bottom: 1px solid var(--border); }
 .project-summary > div:first-child > span { color: var(--sea); font-size: .59rem; font-weight: 800; text-transform: uppercase; }.project-summary h2 { margin: 4px 0 6px; font-size: 1.2rem; letter-spacing: 0; }.project-summary p { max-width: 550px; margin: 0; color: var(--muted); font-size: .68rem; line-height: 1.5; }
 .project-stat { display: flex; flex-direction: column; align-items: flex-end; }.project-stat strong { font-size: 1.5rem; }.project-stat span { color: var(--muted); font-size: .61rem; }
+.project-stats { display: flex; gap: 26px; }
+.project-stat strong.tone-coral { color: var(--coral); }
+.project-card div > span em { color: var(--coral); font-style: normal; }
+/* A row whose words are the point: the title takes the width, the chip only what it needs. */
+.task-row.wide { grid-template-columns: 28px minmax(0, 1fr) auto 18px; }
+.task-row.static { grid-template-columns: 28px minmax(0, 1fr) auto; cursor: default; }.task-row.static:hover { background: transparent; }
+
+/* The logbook: the project's closed work, filed by when it closed. */
+.logbook-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.logbook-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.logbook-filters button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .64rem; font-weight: 640; }
+.logbook-filters button span { color: var(--muted); font-size: .58rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.logbook-filters button:hover { border-color: var(--sea); }
+.logbook-filters button.selected { border-color: var(--sea); color: var(--sea); background: color-mix(in srgb, var(--sea) 8%, var(--surface)); }
+.logbook-filters button.selected span { color: var(--sea); }
+.logbook-search { display: flex; align-items: center; gap: 7px; width: min(280px, 100%); min-height: 30px; padding: 0 4px 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--surface); }
+.logbook-search:focus-within { border-color: var(--sea); }
+.logbook-search input { flex: 1; min-width: 0; height: 28px; border: 0; outline: 0; background: transparent; font-size: .65rem; }
+.logbook-search input::-webkit-search-cancel-button { display: none; }
+.logbook-search .icon-button { width: 22px; height: 22px; }
+.logbook-period + .logbook-period { margin-top: 16px; }
+.logbook-period h3 { margin: 0 0 7px; color: var(--muted); font-size: .6rem; font-weight: 760; letter-spacing: .02em; text-transform: uppercase; }
+.logbook-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.logbook-footer:empty { display: none; }
+.logbook-footer .landed-link { margin-left: auto; }
+.logbook-footer .landed-link:disabled { cursor: default; opacity: .6; }
+.logbook-note { margin: 10px 0 0; color: var(--muted); font-size: .62rem; }
+.empty-state .text-link { margin-left: auto; }
+.log-call dl { margin-top: 10px; }
+/* A call opened from a project page is pointed out on Bearings. */
+.decision-card.focused { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sea) 45%, transparent); transition: box-shadow .2s ease; }
 
 .chat-view { display: flex; width: min(760px, 100%); min-height: 0; flex: 1; flex-direction: column; align-self: center; }
 .chat-status { display: flex; align-items: center; gap: 10px; margin: 20px 24px 0; padding: 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
@@ -567,7 +598,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .dashboard-pair { grid-template-columns: 1fr; gap: 22px; }
   .task-row { grid-template-columns: 28px 1fr 18px; }.task-chip { grid-column: 2; justify-self: start; }.task-row > svg { grid-column: 3; grid-row: 1; }
   .chat-status { margin: 14px 13px 0; }.chat-messages { padding: 18px 13px; }.composer { margin: 0 13px 13px; }
-  .project-grid { grid-template-columns: 1fr; }.project-summary { align-items: flex-start; gap: 16px; }.project-summary p { max-width: 250px; }
+  .project-grid { grid-template-columns: 1fr; }.project-summary { flex-direction: column; align-items: flex-start; gap: 16px; }.project-summary p { max-width: none; }
+  .project-stats { gap: 22px; }.project-stat { align-items: flex-start; }
+  .task-row.wide { grid-template-columns: 28px minmax(0, 1fr) 18px; }.task-row.static { grid-template-columns: 28px minmax(0, 1fr); }
+  .logbook-search { width: 100%; }
   .decided-row { grid-template-columns: 26px minmax(0, 1fr); }.decided-actions { grid-column: 2; }
   .landed-row { grid-template-columns: 28px minmax(0, 1fr); }.compact-row > .landed-links { grid-column: 2; justify-content: flex-start; }
   .report-card .decision-actions, .decision-card[data-argued] .decision-actions { flex-wrap: wrap; }
@@ -592,11 +626,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .task-state.tone-coral, .task-chip.tone-coral, .compact-row > span.tone-coral { color: var(--coral); background: color-mix(in srgb, var(--coral) 12%, transparent); }
 .task-state.tone-amber, .task-chip.tone-amber, .compact-row > span.tone-amber { color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); }
 .task-state.tone-muted, .task-chip.tone-muted, .compact-row > span.tone-muted { color: var(--muted); background: var(--surface-2); }
+.task-state.tone-sea, .task-chip.tone-sea, .compact-row > span.tone-sea { color: var(--sea); background: color-mix(in srgb, var(--sea) 12%, transparent); }
 .drawer-status strong.tone-blue, .call-state.tone-blue { color: var(--blue); }
 .drawer-status strong.tone-green, .call-state.tone-green { color: var(--green); }
 .drawer-status strong.tone-coral, .call-state.tone-coral { color: var(--coral); }
 .drawer-status strong.tone-amber, .call-state.tone-amber { color: var(--amber); }
 .drawer-status strong.tone-muted, .call-state.tone-muted { color: var(--muted); }
+.drawer-status strong.tone-sea, .call-state.tone-sea { color: var(--sea); }
 /* A call's urgent outline is for a question still waiting on the captain; an answer that went through drops it. */
 .decision-card.call-tone-green, .decision-card.call-tone-amber { border-color: var(--border); }
 /* Running, but degraded: a usage limit or a rewake storm is never a green "Ready". */

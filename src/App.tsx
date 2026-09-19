@@ -9,6 +9,8 @@ import {
   CircleDot,
   CirclePause,
   CircleQuestionMark,
+  CircleSlash,
+  BookOpen,
   CircleX,
   Crop,
   Clock3,
@@ -46,8 +48,9 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
+import { callProject, filterLog, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "./calls";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 
@@ -83,7 +86,7 @@ function stateLabel(state: string) {
   return state.replaceAll("_", " ");
 }
 
-type Tone = "blue" | "green" | "coral" | "amber" | "muted";
+type Tone = "blue" | "green" | "coral" | "amber" | "muted" | "sea";
 
 /**
  * How a worker's state looks, from the states fm-fleet-snapshot.sh reports.
@@ -136,8 +139,8 @@ export function App() {
   const [reviews, setReviews] = useState<ReviewSummary>({});
 
   const projects = useMemo(() => {
-    const byName = new Map<string, { tasks: FleetTask[]; mode?: string; yolo?: boolean }>();
-    bridge.projects.forEach((project) => byName.set(project.name, { tasks: [], mode: project.mode, yolo: project.yolo }));
+    const byName = new Map<string, { tasks: FleetTask[]; mode?: string; yolo?: boolean; description?: string }>();
+    bridge.projects.forEach((project) => byName.set(project.name, { tasks: [], mode: project.mode, yolo: project.yolo, description: project.description }));
     fleet?.tasks.forEach((task) => {
       const name = projectName(task.project);
       const current = byName.get(name) ?? { tasks: [] };
@@ -147,6 +150,7 @@ export function App() {
       name,
       tasks: project.tasks,
       posture: project.mode ? postureForProject(project.mode, project.yolo === true) : postureFor(project.tasks[0]),
+      description: project.description ?? "",
     }));
   }, [bridge.projects, fleet]);
 
@@ -204,6 +208,23 @@ export function App() {
   const [dismissedDecided, setDismissedDecided] = useState<string[]>(readDismissed);
   const decidedCalls = decidedForCaptain(calls);
   const decided = decidedCalls.filter((item) => !dismissedDecided.includes(item.id));
+  // The project page reads its closed work from firstmate, and again whenever the home changes.
+  const history = useProjectHistory(view === "project" ? selectedProject : null, fleet?.generated);
+  const [logEntry, setLogEntry] = useState<LogEntry | null>(null);
+  useEffect(() => setLogEntry(null), [view, selectedProject]);
+  const waitingIn = (name: string) => waiting.filter((call) => callProject(call, records) === name);
+  // What a project has underway, the same wherever it is counted: a finished scout waiting to be read is not.
+  const underwayIn = (project: ProjectSummary) => project.tasks.filter((task) => !readyIds.has(task.id) && records.get(task.id)?.state !== "done");
+  // A call opened from a project page is shown on its card on Bearings, where it is answered.
+  const [focusedCall, setFocusedCall] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusedCall || view !== "bearings") return;
+    const card = document.querySelector<HTMLElement>(`.decision-card[data-call-id="${CSS.escape(focusedCall)}"]`);
+    card?.scrollIntoView({ block: "center", behavior: "smooth" });
+    card?.classList.add("focused");
+    const timer = window.setTimeout(() => { card?.classList.remove("focused"); setFocusedCall(null); }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [focusedCall, view]);
   const artifactRef = useMemo<ArtifactRef | null>(() => openArtifact ? { scope: openArtifact.scope, task: openArtifact.task, name: openArtifact.name } : null, [openArtifact]);
 
   // The review is read from the home when a page opens, so a draft written before a relaunch is still there.
@@ -396,7 +417,7 @@ export function App() {
           {projects.map((project) => (
             <button key={project.name} className={view === "project" && selectedProject === project.name ? "selected" : ""} onClick={() => openProject(project.name)}>
               <span className="project-sigil">{project.name.slice(0, 2).toUpperCase()}</span>
-              <span><strong>{project.name}</strong><small>{project.tasks.length} underway</small></span>
+              <span><strong>{project.name}</strong><small>{waitingIn(project.name).length > 0 && `${waitingIn(project.name).length} waiting · `}{underwayIn(project).length} underway</small></span>
             </button>
           ))}
         </div>
@@ -501,8 +522,24 @@ export function App() {
         )}
 
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
-        {view === "projects" && <ProjectsView projects={projects} onOpen={openProject} />}
-        {view === "project" && selectedProjectData && <ProjectView project={selectedProjectData} taskTitle={taskTitle} records={records} now={now} onOpenTask={setActiveTask} />}
+        {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} onOpen={openProject} />}
+        {view === "project" && selectedProjectData && <ProjectView
+          project={selectedProjectData}
+          now={now}
+          taskTitle={taskTitle}
+          records={records}
+          waiting={waitingIn(selectedProjectData.name)}
+          reports={readyReports.filter(({ task }) => projectName(task.project) === selectedProjectData.name)}
+          underway={underwayIn(selectedProjectData)}
+          queued={upNext(fleet?.backlog?.records ?? [], selectedProjectData.name)}
+          recent={fleet?.backlog?.records ?? []}
+          calls={calls}
+          history={history}
+          onOpenTask={setActiveTask}
+          onOpenCall={(id) => { navigate("bearings"); setFocusedCall(id); }}
+          onOpenReport={(item) => item.page ? showArtifact(item.page) : draftInChat(askAboutReport(taskTitle(item.task.id)))}
+          onOpenEntry={setLogEntry}
+        />}
         {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} backlog={records} calls={calls} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
           ? <ArtifactReview
@@ -533,6 +570,7 @@ export function App() {
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
       {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} onClose={() => setSettingsOpen(false)} />}
+      {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
       {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
     </div>
   );
@@ -1020,16 +1058,285 @@ function DecisionCard({ call, argument, seenArgument, answered, answeredIn, stat
   </article>;
 }
 
-function ProjectsView({ projects, onOpen }: { projects: { name: string; posture: string; tasks: FleetTask[] }[]; onOpen: (name: string) => void }) {
-  return <div className="content-scroll projects-page"><div className="project-grid">{projects.map((project) => <button key={project.name} className="project-card" onClick={() => onOpen(project.name)}><span className="project-sigil large">{project.name.slice(0, 2).toUpperCase()}</span><div><h2>{project.name}</h2><p>{project.posture}</p><span>{project.tasks.length} underway</span></div><ChevronRight size={18} /></button>)}</div></div>;
+type ProjectSummary = { name: string; posture: string; description: string; tasks: FleetTask[] };
+
+function ProjectsView({ projects, waitingIn, underwayIn, onOpen }: { projects: ProjectSummary[]; waitingIn: (name: string) => number; underwayIn: (project: ProjectSummary) => number; onOpen: (name: string) => void }) {
+  return <div className="content-scroll projects-page"><div className="project-grid">{projects.map((project) => {
+    const waiting = waitingIn(project.name);
+    return <button key={project.name} className="project-card" onClick={() => onOpen(project.name)}><span className="project-sigil large">{project.name.slice(0, 2).toUpperCase()}</span><div><h2>{project.name}</h2><p>{project.posture}</p><span>{waiting > 0 && <em>{waiting} waiting on you · </em>}{underwayIn(project)} underway</span></div><ChevronRight size={18} /></button>;
+  })}</div></div>;
 }
 
-function ProjectView({ project, taskTitle, records, now, onOpenTask }: { project: { name: string; posture: string; tasks: FleetTask[] }; taskTitle: (id: string) => string; records: Map<string, BacklogRecord>; now: number; onOpenTask: (task: FleetTask) => void }) {
-  return <div className="content-scroll project-page"><div className="posture-line"><Anchor size={15} /><span>{project.posture}</span></div><section className="project-summary"><div><span>Project</span><h2>{project.name}</h2><p>The first mate keeps this work within the project's standing delivery posture.</p></div><div className="project-stat"><strong>{project.tasks.length}</strong><span>Underway</span></div></section><DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={project.tasks.length}><div className="task-list">{project.tasks.map((task) => {
-    const status = taskStatus(task.current_state.state);
-    const started = startedAt(task, records.get(task.id));
-    return <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{taskTitle(task.id)}</strong><small>{task.kind} · {task.harness}{started && <> · {sinceLabel(started, now)}</>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(task.current_state.state)}</span><ChevronRight size={17} /></button>;
-  })}</div></DashboardSection></div>;
+/** A row's title without the project name it starts with, which the project page already says. */
+function withinProject(title: string, project: string) {
+  const match = title.match(/^([^:]{1,40}):\s+(.+)$/);
+  if (!match) return title;
+  const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const [prefix, name] = [squash(match[1]), squash(project)];
+  if (!prefix || !(name.startsWith(prefix) || prefix.startsWith(name))) return title;
+  return match[2].charAt(0).toUpperCase() + match[2].slice(1);
+}
+
+/** The project's closed work as the app has read it from firstmate, a page at a time. */
+type HistoryView = {
+  project: string | null;
+  records: BacklogRecord[];
+  calls: Call[];
+  next: string | null;
+  /** `unsupported`: this home's firstmate cannot list its history, so only the snapshot's recent rows show. */
+  status: "idle" | "loading" | "ready" | "unsupported" | "error";
+  error: string | null;
+  loadingMore: boolean;
+  schema: string | null;
+};
+
+const HISTORY_PAGE = 50;
+const NO_HISTORY: HistoryView = { project: null, records: [], calls: [], next: null, status: "idle", error: null, loadingMore: false, schema: null };
+
+/**
+ * Reads a project's closed work while its page is open, and again whenever the snapshot changes, keeping as many
+ * rows as the captain had already paged through. One read runs at a time: a change while it runs asks for one
+ * more read after it, so a busy home, whose snapshot changes every few seconds, still gets its answer.
+ */
+function useProjectHistory(project: string | null, stamp: string | undefined) {
+  const [view, setView] = useState<HistoryView>(NO_HISTORY);
+  const [attempt, setAttempt] = useState(0);
+  const reader = useRef({ project: null as string | null, count: 0, running: false, again: false });
+  useEffect(() => {
+    const state = reader.current;
+    if (!project) { state.project = null; return; }
+    if (state.project !== project) {
+      Object.assign(state, { project, count: 0, again: false });
+      setView({ ...NO_HISTORY, project, status: "loading" });
+    }
+    if (state.running) { state.again = true; return; }
+    const read = (name: string) => {
+      state.running = true;
+      state.again = false;
+      const limit = Math.min(500, Math.max(HISTORY_PAGE, state.count));
+      host.projectHistory(name, { limit }).then((page) => {
+        if (state.project !== name) return;
+        // Older rows paged in while this read ran: read again rather than drop them.
+        if (state.count > limit) { state.again = true; return; }
+        if (!page) return setView({ ...NO_HISTORY, project: name, status: "unsupported" });
+        state.count = page.records.length;
+        setView({ project: name, records: page.records, calls: page.calls, next: page.next, status: "ready", error: null, loadingMore: false, schema: page.schema });
+      }).catch((error: unknown) => {
+        // A failed re-read keeps what was already shown.
+        if (state.project === name) setView((current) => ({ ...current, project: name, status: current.project === name && current.status === "ready" ? "ready" : "error", error: String(error) }));
+      }).finally(() => {
+        state.running = false;
+        if (state.project && (state.again || state.project !== name)) read(state.project);
+      });
+    };
+    read(project);
+  }, [project, stamp, attempt]);
+
+  const more = () => {
+    if (!view.project || !view.next || view.loadingMore) return;
+    const { project: name, next } = view;
+    setView((current) => ({ ...current, loadingMore: true }));
+    host.projectHistory(name, { after: next, limit: HISTORY_PAGE }).then((page: ProjectHistory | null) => {
+      setView((current) => {
+        if (current.project !== name || !page) return { ...current, loadingMore: false };
+        const known = new Set(current.records.map((record) => record.id));
+        const records = [...current.records, ...page.records.filter((record) => !known.has(record.id))];
+        reader.current.count = records.length;
+        return { ...current, records, calls: [...current.calls, ...page.calls], next: page.next, loadingMore: false };
+      });
+    }).catch((error: unknown) => setView((current) => ({ ...current, loadingMore: false, error: String(error) })));
+  };
+  return { ...view, more, retry: () => setAttempt((count) => count + 1) };
+}
+
+type ProjectReport = { task: FleetTask; page?: Artifact; report: string | null };
+
+function ProjectView({ project, now, taskTitle, records, waiting, reports, underway, queued, recent, calls, history, onOpenTask, onOpenCall, onOpenReport, onOpenEntry }: {
+  project: ProjectSummary;
+  now: number;
+  taskTitle: (id: string) => string;
+  records: Map<string, BacklogRecord>;
+  waiting: Call[];
+  reports: ProjectReport[];
+  underway: FleetTask[];
+  queued: BacklogRecord[];
+  recent: BacklogRecord[];
+  calls: Call[];
+  history: ReturnType<typeof useProjectHistory>;
+  onOpenTask: (task: FleetTask) => void;
+  onOpenCall: (id: string) => void;
+  onOpenReport: (item: ProjectReport) => void;
+  onOpenEntry: (entry: LogEntry) => void;
+}) {
+  const needs = waiting.length + reports.length;
+  const title = (text: string) => withinProject(text, project.name);
+  return <div className="content-scroll project-page" data-testid="project-page">
+    <section className="project-summary">
+      <div><span>Project</span><h2>{project.name}</h2><p>{project.description || "The first mate keeps this work within the project's standing delivery posture."}</p></div>
+      <div className="project-stats">
+        <div className="project-stat" data-testid="stat-waiting"><strong className={needs ? "tone-coral" : ""}>{needs}</strong><span>Waiting on you</span></div>
+        <div className="project-stat"><strong>{underway.length}</strong><span>Underway</span></div>
+        <div className="project-stat"><strong>{queued.length}</strong><span>Up next</span></div>
+      </div>
+    </section>
+
+    {needs > 0 && <DashboardSection title="Needs you" icon={<Inbox size={17} />} tone="coral" count={needs}>
+      <div className="task-list" data-testid="project-needs">
+        {waiting.map((call) => {
+          const pick = recommended(call);
+          return <button className="task-row wide" key={call.id} data-call={call.id} onClick={() => onOpenCall(call.id)}><span className="task-state tone-coral"><ShieldQuestion size={16} /></span><span className="task-copy"><strong>{title(call.title)}</strong><small>{pick ? `Recommended: ${pick.label}` : call.question ?? "The first mate needs your answer."}</small></span><span className="task-chip tone-coral">Your call</span><ChevronRight size={17} /></button>;
+        })}
+        {reports.map((item) => <button className="task-row wide" key={item.task.id} onClick={() => onOpenReport(item)}><span className="task-state tone-blue"><FileText size={16} /></span><span className="task-copy"><strong>{title(taskTitle(item.task.id))}</strong><small>{item.page ? "The report is ready to read." : "The report is written, without a page."}</small></span><span className="task-chip tone-blue">Report</span><ChevronRight size={17} /></button>)}
+      </div>
+    </DashboardSection>}
+
+    <DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={underway.length}>
+      <div className="task-list">{underway.map((task) => {
+        const status = taskStatus(task.current_state.state);
+        const started = startedAt(task, records.get(task.id));
+        return <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{title(taskTitle(task.id))}</strong><small>{KIND_NAMES[task.kind] ?? task.kind} · {task.harness}{started && <> · {sinceLabel(started, now)}</>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(task.current_state.state)}</span><ChevronRight size={17} /></button>;
+      })}</div>
+      {underway.length === 0 && <EmptyState label="Nothing is underway in this project." />}
+    </DashboardSection>
+
+    {queued.length > 0 && <DashboardSection title="Up next" icon={<Clock3 size={17} />} tone="amber" count={queued.length}>
+      <div className="task-list" data-testid="project-queue">{queued.map((record) => {
+        const detail = [KIND_NAMES[record.kind ?? ""] ?? record.kind, record.since && `filed ${shortDay(record.since, now)}`, record.hold_reason].filter(Boolean).join(" · ");
+        return <div className="task-row wide static" key={record.id}><span className="task-state tone-amber"><Clock3 size={16} /></span><span className="task-copy"><strong>{title(record.title)}</strong><small>{detail}</small></span><span className={`task-chip tone-${record.hold_reason ? "amber" : "muted"}`}>{record.hold_reason ? "Waiting" : "Queued"}</span></div>;
+      })}</div>
+    </DashboardSection>}
+
+    <Logbook project={project.name} now={now} recent={recent} calls={calls} history={history} title={title} onOpen={onOpenEntry} />
+  </div>;
+}
+
+const LOG_FILTERS: { id: LogFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "shipped", label: "Shipped" },
+  { id: "report", label: "Reports" },
+  { id: "decision", label: "Decisions" },
+];
+
+const LOG_LOOK: Record<LogEntry["kind"], { tone: string; chip: string; icon: React.ReactNode }> = {
+  shipped: { tone: "green", chip: "Shipped", icon: <GitMerge size={16} /> },
+  report: { tone: "blue", chip: "Report", icon: <FileText size={16} /> },
+  decision: { tone: "sea", chip: "Decision", icon: <ShipWheel size={16} /> },
+  closed: { tone: "muted", chip: "Closed", icon: <CircleSlash size={16} /> },
+};
+
+/**
+ * Everything the project closed, newest first. The filters and the search are for this visit only: a filter
+ * remembered across visits reads as work gone missing.
+ */
+function Logbook({ project, now, recent, calls, history, title, onOpen }: { project: string; now: number; recent: BacklogRecord[]; calls: Call[]; history: ReturnType<typeof useProjectHistory>; title: (text: string) => string; onOpen: (entry: LogEntry) => void }) {
+  const [filter, setFilter] = useState<LogFilter>("all");
+  const [query, setQuery] = useState("");
+  const [includeClosed, setIncludeClosed] = useState(false);
+  useEffect(() => { setFilter("all"); setQuery(""); setIncludeClosed(false); }, [project]);
+  // The snapshot's calls are the newer read of a call the history also lists.
+  const allCalls = useMemo(() => {
+    const known = new Set(calls.map((call) => call.id));
+    return [...calls, ...history.calls.filter((call) => !known.has(call.id))];
+  }, [calls, history.calls]);
+  const entries = useMemo(() => logEntries(history.project === project ? history.records : [], recent, allCalls, project), [history.project, history.records, recent, allCalls, project]);
+  const counts = logCounts(entries, includeClosed);
+  const shown = filterLog(entries, filter, query, includeClosed);
+  const periods = logPeriods(shown, now);
+  // Until this project's first read answers, an empty list means "not read yet", never "nothing closed".
+  const read = history.project === project && history.status !== "loading" && history.status !== "idle";
+  const loading = !read && entries.length === 0;
+  const narrowed = filter !== "all" || query.trim() !== "";
+  // Older rows not read yet: every count is a floor, and a narrowed list says how far back it looked.
+  const more = history.next ? "+" : "";
+  const oldest = entries.at(-1)?.date;
+  return <section className="dashboard-section logbook" data-testid="logbook" data-state={read ? history.status : "loading"}>
+    <div className="section-heading"><span className="section-icon green"><BookOpen size={17} /></span><h2>Logbook</h2><span className="section-count" data-testid="log-count">{counts.all}{more}</span></div>
+    {entries.length > 0 && <div className="logbook-tools">
+      <div className="logbook-filters" role="group" aria-label="Show">
+        {LOG_FILTERS.map((item) => <button key={item.id} aria-pressed={filter === item.id} className={filter === item.id ? "selected" : ""} onClick={() => setFilter(item.id)}>{item.label}<span>{counts[item.id]}{more}</span></button>)}
+      </div>
+      <label className="logbook-search"><Search size={14} /><input type="search" value={query} placeholder="Search this project's work" aria-label="Search this project's work" onChange={(event) => setQuery(event.target.value)} />{query && <button className="icon-button" title="Clear the search" onClick={() => setQuery("")}><X size={13} /></button>}</label>
+    </div>}
+    {periods.map((group) => <div className="logbook-period" key={group.id} data-period={group.id}>
+      <h3>{group.title}</h3>
+      <div className="task-list">{group.entries.map((entry) => <LogRow key={entry.id} entry={entry} now={now} title={title(entry.title)} onOpen={() => onOpen(entry)} />)}</div>
+    </div>)}
+    {loading && <EmptyState label="Reading this project's logbook…" />}
+    {read && entries.length === 0 && history.status !== "error" && <EmptyState label="Nothing has closed in this project yet." />}
+    {entries.length > 0 && shown.length === 0 && <div className="empty-state"><CircleDot size={16} /><strong>Nothing closed matches.</strong>{narrowed && <button className="text-link" onClick={() => { setFilter("all"); setQuery(""); }}>Show everything</button>}</div>}
+    <div className="logbook-footer">
+      {counts.closed > 0 && <button className="text-link" data-testid="toggle-closed" onClick={() => setIncludeClosed((shown) => !shown)}>{includeClosed ? "Hide" : "Show"} {counts.closed} {counts.closed === 1 ? "task" : "tasks"} closed without a delivery</button>}
+      {history.next && !narrowed && <button className="landed-link" data-testid="log-more" disabled={history.loadingMore} onClick={history.more}>{history.loadingMore ? "Reading…" : "Show older"}</button>}
+    </div>
+    {narrowed && history.next && <p className="logbook-note" data-testid="log-partial">Looked back to {oldest ? shortDay(oldest, now) : "the rows read so far"}. <button className="text-link" data-testid="log-further" onClick={history.more} disabled={history.loadingMore}>{history.loadingMore ? "Reading…" : "Look further back"}</button></p>}
+    {history.status === "unsupported" && <p className="logbook-note">Only the most recent work shows. This home's firstmate can't list older work yet.</p>}
+    {history.status === "error" && <p className="logbook-note" data-testid="log-error">Couldn't read this project's older work. <button className="text-link" onClick={history.retry}>Try again</button></p>}
+  </section>;
+}
+
+function LogRow({ entry, now, title, onOpen }: { entry: LogEntry; now: number; title: string; onOpen: () => void }) {
+  const look = LOG_LOOK[entry.kind];
+  const chip = entry.kind === "shipped" && entry.pr ? linkLabel(entry.pr) : look.chip;
+  return <button className="task-row wide log-row" data-testid="log-row" data-kind={entry.kind} data-id={entry.id} onClick={onOpen}>
+    <span className={`task-state tone-${look.tone}`}>{look.icon}</span>
+    <span className="task-copy"><strong>{title}</strong><small>{outcomeLine(entry, now)}</small></span>
+    <span className={`task-chip tone-${look.tone}`}>{chip}</span>
+    <ChevronRight size={17} />
+  </button>;
+}
+
+/** How long a closed task was open, the way its kind finishes. */
+function tookLine(kind: LogEntry["kind"], days: number) {
+  const span = `${days} day${days === 1 ? "" : "s"}`;
+  if (kind === "decision") return days === 0 ? "answered the day it was raised" : `answered after ${span}`;
+  return days === 0 ? "done the day it was filed" : `took ${span}`;
+}
+
+/** How the timeline names the moment a task closed. */
+const CLOSED_AS: Record<LogEntry["kind"], (entry: LogEntry) => string> = {
+  shipped: (entry) => entry.record.completion?.verb === "landed" ? "Landed" : "Merged",
+  report: () => "Reported",
+  decision: () => "Answered",
+  closed: () => "Closed",
+};
+
+/** A closed task, read from its backlog row: what was asked, what it left behind, and how it closed. */
+function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpenArtifact, onAskReport, onClose }: { entry: LogEntry; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; onClose: () => void }) {
+  const look = LOG_LOOK[entry.kind];
+  const record = entry.record;
+  const call = entry.call;
+  const notes = (record.body_lines ?? []).map((line) => line.trim()).filter((line) => line && !BOOKKEEPING.test(line));
+  const ask = notes.length ? notes.join(" ") : record.body_excerpt && !BOOKKEEPING.test(record.body_excerpt) ? record.body_excerpt : null;
+  const days = record.since && entry.date ? Math.round((Date.parse(entry.date) - Date.parse(record.since)) / DAY_MS) : null;
+  const panel = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node)) close.current(); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close.current(); };
+    document.addEventListener("pointerdown", outside, true);
+    window.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside, true); window.removeEventListener("keydown", escape); };
+  }, []);
+  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="log-drawer">
+    <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(entry.title, project)}</h2><small className="drawer-id">{entry.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
+    <div className="drawer-status"><span className={`task-state tone-${look.tone}`}>{look.icon}</span><div><strong className={`tone-${look.tone}`}>{outcomeLine(entry, now)}</strong><span>{KIND_NAMES[record.kind ?? ""] ?? look.chip}{days !== null && days >= 0 && ` · ${tookLine(entry.kind, days)}`}</span></div></div>
+    <div className="drawer-scroll">
+      {call && <DrawerSection title="The call"><div className="brief-block log-call">
+        {call.question && <p>{call.question}</p>}
+        {call.answer && <dl><dt>Answer</dt><dd>{call.answer.label}</dd>{call.decided?.why && <><dt>Why</dt><dd>{call.decided.why}</dd></>}</dl>}
+      </div></DrawerSection>}
+      {ask && <DrawerSection title={call ? "From the backlog" : "What was asked"}><div className="brief-block"><p>{ask}</p></div></DrawerSection>}
+      {entry.pr && <DrawerSection title="PR"><div className="pr-block"><a href={entry.pr} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {entry.pr}</a></div></DrawerSection>}
+      {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
+      {entry.report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={entry.report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
+      <DrawerSection title="Timeline"><div className="timeline">
+        {record.since && <div><span className="timeline-icon"><GitBranch size={15} /></span><span><strong>Filed</strong><small>{KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task"}</small></span><time>{shortDay(record.since, now)}</time></div>}
+        <div><span className="timeline-icon">{look.icon}</span><span><strong>{call?.answer && entry.kind === "decision" ? answeredBy(call.answer) : CLOSED_AS[entry.kind](entry)}</strong><small>{call?.answer && entry.kind === "decision" ? call.answer.label : KIND_NAMES[record.kind ?? ""] ?? look.chip}</small></span><time>{entry.date ? shortDay(entry.date, now) : "Undated"}</time></div>
+      </div></DrawerSection>
+    </div>
+    <footer className="drawer-footer">From {source ?? "the fleet snapshot"}</footer>
+  </aside></div>;
 }
 
 type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision };
@@ -1280,7 +1587,7 @@ function HostHealthBanner({ warning, onRestart }: { warning: HealthWarning; onRe
   return <section className="offline-banner health-banner" role="alert" data-health-kind={warning.kind}><CircleAlert size={18} /><div><strong>{warning.message}</strong>{hint && <span>{hint}</span>}{open && warning.details && <pre className="banner-details">{warning.details}</pre>}</div>{hasActions && <div className="banner-actions">{warning.details && <button aria-expanded={open} onClick={() => setOpen((current) => !current)}>{open ? "Hide details" : "Show details"}</button>}{warning.kind === "kill_refused" && <button onClick={onRestart}>Restart</button>}</div>}</section>;
 }
 
-const KIND_NAMES: Record<string, string> = { scout: "Scout", ship: "Ship", secondmate: "Second mate" };
+const KIND_NAMES: Record<string, string> = { scout: "Scout", ship: "Ship", secondmate: "Second mate", captain: "Call" };
 
 /** Backlog body lines that are bookkeeping rather than anything a person wrote about the task. */
 const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:|Answer key:|Answered by:|Answered via:)/;

@@ -40,8 +40,12 @@ Agents do not work there and do not branch from it: each agent clones the remote
   Never commit that file, and never let a build write `src-tauri/target` inside the checkout.
   A build cache cannot be moved between checkout paths: Tauri bakes absolute paths into it, so after a move, delete the cache and rebuild.
 - Backend: `cd src-tauri && cargo clippy --all-targets && cargo test`.
-- How every screen reads captain calls (`src/calls.ts`): `pnpm test`, which needs no server.
+- How every screen reads captain calls (`src/calls.ts`) and how a project's logbook reads closed work (`src/logbook.ts`): `pnpm test`, which needs no server.
   Calls come only from the snapshot's `calls[]`, which `bin/fm-captain-hold.sh` owns; the app answers them through its `answers` intake (`src-tauri/src/calls.rs`) and never closes one itself.
+  Closed work beyond the snapshot's few recent rows comes only from `bin/fm-history.sh`, read when a project page opens; the app never parses the backlog or its archive itself.
+- Live test of a project's history, which spends no tokens and changes nothing in the home:
+  `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test history_e2e_live_scratch_home -- --ignored --nocapture`.
+  It reads every registered project's history through the app's own command, pages through it one row at a time, and checks `state/` and `data/` are untouched.
 - Live end-to-end test, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test host_e2e_live_scratch_home -- --ignored --nocapture`.
   It writes a summary and a replayable event recording to `~/.buzz/.scratch/firstmate-desktop-e2e/`.
   Name the test exactly: `host_e2e` also matches the lock probe, and two first mates in one home make the loser report the other as another session.
@@ -68,6 +72,10 @@ Agents do not work there and do not branch from it: each agent clones the remote
   The dev server appends `src-tauri/src/review-frame.js` to those pages exactly as the app's own scheme does, so commenting behaves the same in both.
   Set `ARTIFACT_SHOTS=<folder>` to also save screenshots.
   Run it after changing how artifacts are listed, opened or framed.
+- Check a project's page, in both themes: start Vite on your own port, then
+  `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm projects`.
+  It checks what waits on the captain in the project, what is underway and up next, and the logbook: its filters, search, the rows closed without a delivery, a closed task's details, paging, and a firstmate that cannot list its history or fails to.
+  Run it after changing the project page or the mock's history.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.
