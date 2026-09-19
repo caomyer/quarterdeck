@@ -101,6 +101,10 @@ test("options changed after a page was presented say so", () => {
   assert.equal(optionsUpdatedSince(call("x", { updated_at: ago(2) }), ago(1)), false);
   assert.equal(optionsUpdatedSince(call("x", { updated_at: null }), ago(1)), false);
   assert.equal(optionsUpdatedSince(call("x", { updated_at: "not a time" }), ago(1)), false);
+  // Raised after the page with its options set as it was raised: nothing the page showed changed.
+  assert.equal(optionsUpdatedSince(call("x", { raised_at: ago(0.5), updated_at: ago(0.5) }), ago(1)), false);
+  // Raised before the page and offered new options after it: they did change.
+  assert.equal(optionsUpdatedSince(call("x", { raised_at: ago(3), updated_at: ago(0.5) }), ago(1)), true);
 });
 
 test("the recommendation is the option marked so", () => {

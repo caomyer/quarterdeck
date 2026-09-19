@@ -255,7 +255,8 @@ function mockArtifacts(home: string): MockHome {
   return {
     artifacts,
     tasks: [planTask, reportTask],
-    calls,
+    // `?plain-report`: the transcripts scout's report argues no call, so it is offered on its own card.
+    calls: reviewFlag("plain-report") ? calls.filter((call) => call.origin !== REPORT_TASK) : calls,
     inFlight: [
       { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: planTask.project, name: "AI titles for snips", doing: "Revising the titles plan." },
       { id: REPORT_TASK, kind: "scout", state: "done", repo: reportTask.project, name: "Resonance: which episodes already carry a transcript?", doing: "" },

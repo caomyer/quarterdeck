@@ -189,13 +189,16 @@ export function App() {
   const taskTitle = (id: string) => records.get(id)?.title || bearings?.in_flight.find((item) => item.id === id)?.name || id;
   const evidenceOf = (call: Call) => resolveEvidence(call, artifacts, taskTitle);
   // A scout that finished with something to read, which the backlog has not closed yet, is the captain's to read.
-  const readyReports = useMemo(() => (fleet?.tasks ?? []).flatMap((task) => {
-    if (task.kind !== "scout" || task.current_state.state !== "done" || records.get(task.id)?.state === "done") return [];
+  // A scout whose work already argues an open call is offered through that call's card, not a second one.
+  const arguing = useMemo(() => new Set(openCalls(calls).flatMap((call) => [call.origin, ...call.evidence.map((ref) => ref.match(/^(?:report:|page:task\/)([^/]+)/)?.[1])]).filter((id): id is string => Boolean(id))), [calls]);
+  const scoutsDone = useMemo(() => (fleet?.tasks ?? []).filter((task) => task.kind === "scout" && task.current_state.state === "done" && records.get(task.id)?.state !== "done"), [fleet, records]);
+  const readyReports = useMemo(() => scoutsDone.flatMap((task) => {
+    if (arguing.has(task.id)) return [];
     const page = latestTaskPage(artifacts, task.id);
     const report = task.paths.report.present ? task.paths.report.path : bearings?.reports?.find((item) => item.id === task.id)?.path ?? null;
     return page || report ? [{ task, page, report }] : [];
-  }), [fleet, records, artifacts, bearings]);
-  const readyIds = new Set(readyReports.map((item) => item.task.id));
+  }), [scoutsDone, arguing, artifacts, bearings]);
+  const readyIds = new Set([...readyReports.map((item) => item.task.id), ...scoutsDone.filter((task) => arguing.has(task.id)).map((task) => task.id)]);
   const underway = (bearings?.in_flight ?? []).filter((item) => !readyIds.has(item.id));
   const landedRows = landedItems(bearings?.landed ?? [], records, artifacts, answeredByCaptain(calls, now), evidenceOf);
   const [dismissedDecided, setDismissedDecided] = useState<string[]>(readDismissed);
@@ -508,7 +511,7 @@ export function App() {
               revision={shownRevision}
               url={host.artifactUrl(shownRevision)}
               review={review}
-              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records, calls)}
+              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records, calls, (review?.answers ?? []).filter((answer) => answer.sent_at === null && answer.option).map((answer) => answer.decision))}
               sendReady={bridge.sendReady}
               runtime={runtime.state}
               onRevision={(rev) => showArtifact(shownArtifact, rev)}
@@ -1556,7 +1559,7 @@ const LIVE_STATES = new Set(["working", "blocked", "parked", "paused", "unknown"
  * task has finished or landed, a scout's report that argues no call, or a chat page with no open call holds
  * nothing up, so it starts on Comment, and every hint says what the verdict does for this page, not in general.
  */
-function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>, known: Call[]): ReviewStake {
+function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>, known: Call[], staged: string[] = []): ReviewStake {
   const calls = callsArguedBy(known, artifact).filter(isOpen);
   const taskId = artifact.scope === "task" ? artifact.task : null;
   const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
@@ -1566,6 +1569,10 @@ function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string
   });
   // A call this page argues waits on it whatever became of the task that wrote it: a finished
   // scout's report is often exactly the argument an open call is decided from.
+  // Once every call this page argues has an answer waiting to go, the captain has decided from the case as argued.
+  if (calls.length > 0 && calls.every((call) => staged.includes(call.id))) {
+    return { verdict: "approve", hints: { approve: "The case reads well, and your answer is recorded as it is sent.", changes: "Asks for another revision; your answer is still recorded as it is sent.", comment: "Thoughts only; your answer is still recorded as it is sent." } };
+  }
   if (calls.length > 0) {
     return { verdict: "changes", hints: { changes: "The first mate revises the case before you decide.", approve: "The case reads well as it is argued.", comment: "Thoughts only; the call stays open until you answer it." } };
   }
@@ -1631,6 +1638,11 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   const [openScene, setOpenScene] = useState<{ place: ScenePlace; scene: { elements: never[] } } | null>(null);
   const [sceneProblem, setSceneProblem] = useState<string | null>(null);
   const [verdict, setVerdict] = useState<ReviewVerdict>(stake.verdict);
+  // The verdict follows what the page is waiting on (an answer staged turns it to Approve) until the captain picks one.
+  const [verdictChosen, setVerdictChosen] = useState(false);
+  useEffect(() => {
+    if (!verdictChosen) setVerdict(stake.verdict);
+  }, [stake.verdict, verdictChosen]);
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -1779,7 +1791,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
         <div className="review-send">
           {problem && <p className="review-problem" role="alert">{problem}</p>}
           {lastSent && draftCount === 0 && <p className="review-last">Sent {formatWhen(new Date(lastSent.at).toISOString())} · {VERDICTS.find((item) => item.id === lastSent.verdict)?.label ?? lastSent.verdict}</p>}
-          <label className="verdict-picker"><span className="sr-only">Verdict</span><select value={verdict} onChange={(event) => setVerdict(event.target.value as ReviewVerdict)}>{VERDICTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown size={14} /></label>
+          <label className="verdict-picker"><span className="sr-only">Verdict</span><select value={verdict} onChange={(event) => { setVerdictChosen(true); setVerdict(event.target.value as ReviewVerdict); }}>{VERDICTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown size={14} /></label>
           <button className="send-review" disabled={!sendReady || sending} title={sendHint} onClick={() => void send()}><Send size={15} /> {sending ? "Sending…" : draftCount > 0 ? `Send review · ${draftCount}` : "Send review"}</button>
           <small>{sendHint}</small>
         </div>

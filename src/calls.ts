@@ -97,6 +97,9 @@ export function optionsUpdatedSince(call: Call, presentedAt: string) {
   if (!call.updated_at) return false;
   const updated = Date.parse(call.updated_at);
   const presented = Date.parse(presentedAt);
+  // A call raised after the page, with its options set as it was raised, changed nothing the page showed.
+  const raised = Date.parse(call.raised_at ?? "");
+  if (Number.isFinite(raised) && Number.isFinite(updated) && updated <= raised) return false;
   return Number.isFinite(updated) && Number.isFinite(presented) && updated > presented;
 }
 

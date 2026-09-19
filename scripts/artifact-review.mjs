@@ -47,12 +47,13 @@ await page.waitForFunction(() => !document.querySelector(".app-loading"));
 // Bearings: what waits on the captain, what was decided for them, what landed, and how long work has been going.
 const bearingsPage = page.locator("[data-screen='bearings']");
 const callSection = page.locator(".dashboard-section", { hasText: "Captain's Call" });
-check((await callSection.locator(".section-count").innerText()) === "5", "Captain's Call counts a finished report beside the four open calls");
-check((await page.locator(".nav-item", { hasText: "Bearings" }).locator("em").innerText()) === "5", "the sidebar counts the report as waiting on the captain");
+// The finished transcripts scout's report is the argument of an open call, so it is offered through that call, once.
+check((await callSection.locator(".section-count").innerText()) === "4", "Captain's Call counts the four open calls, and a report that argues one is not counted again");
+check((await page.locator(".nav-item", { hasText: "Bearings" }).locator("em").innerText()) === "4", "the sidebar counts the same four");
 const ready = page.locator("[data-testid='report-ready']");
-check(await ready.count() === 1, "a finished scout's report is offered where the captain looks first");
-check((await ready.innerText()).includes("Which episodes already carry a transcript?") || (await ready.innerText()).includes("which episodes already carry a transcript?"), "the report card names the task by its title");
-check((await ready.innerText()).includes("2 of 9281 sampled episodes"), "the report card says what the scout found");
+check(await ready.count() === 0, "a finished scout whose report argues an open call is not offered twice");
+const transcriptsCall = callSection.locator(".decision-card", { hasText: "Where should Resonance get an episode's transcript?" });
+check((await transcriptsCall.innerText()).includes("Argued by Which episodes already carry a transcript?"), "the call names the scout's report as its argument");
 const underwayRows = page.locator(".dashboard-section", { hasText: "Underway" }).locator(".task-row");
 check(await underwayRows.count() === 1, "a finished scout leaves Underway once its report is offered");
 check(/started 1 h 3\d min ago/.test(await underwayRows.first().locator("[data-testid='underway-for']").innerText()), `Underway says how long a task has been going (${await underwayRows.first().locator("[data-testid='underway-for']").innerText()})`);
@@ -135,14 +136,19 @@ await page.mouse.click(chatNav.x + chatNav.width / 2, chatNav.y + chatNav.height
 check(await drawer.count() === 0, "a click outside the drawer closes it");
 check(await page.locator(".chat-view").count() === 1, "a click on the sidebar while the drawer is open is not swallowed");
 await page.locator(".nav-item", { hasText: "Bearings" }).click();
-await ready.locator("button", { hasText: "Read the report" }).click();
+await transcriptsCall.locator("button", { hasText: "Read the argument" }).click();
 await page.locator(".artifact-stage iframe").waitFor();
-check((await page.locator(".page-heading span").innerText()).includes("res-transcripts-scout"), "Read the report opens the scout's page");
+check((await page.locator(".page-heading span").innerText()).includes("res-transcripts-scout"), "Read the argument opens the scout's report");
 // The scout has finished, but its report argues a call that is still open, so the call waits on this page.
 check((await page.locator(".verdict-picker select").inputValue()) === "changes", "a finished scout's report that argues an open call starts on Request changes");
 check((await page.locator(".review-send small").innerText()) === "The first mate revises the case before you decide.", "the hint says the call waits on the page, not that nothing does");
+// Answering the call there means the captain decided from the case as argued, so the review turns to Approve.
+await page.locator("[data-testid='decision-answer'] .decision-choices button").first().click();
+await page.locator("[data-testid='decision-answer'] .decision-staged").waitFor();
+check((await page.locator(".verdict-picker select").inputValue()) === "approve", "answering every call the page argues turns the review to Approve");
+check((await page.locator(".review-send small").innerText()) === "The case reads well, and your answer is recorded as it is sent.", "the Approve hint says the answer goes with it");
 await page.locator(".verdict-picker select").selectOption("comment");
-check((await page.locator(".review-send small").innerText()).includes("the call stays open until you answer it"), "Comment says the call stays open");
+check((await page.locator(".review-send small").innerText()) === "Thoughts only; your answer is still recorded as it is sent.", "a verdict the captain picks stays theirs, and still carries the answer");
 await page.locator(".back-button").click();
 check(await bearingsPage.count() === 1, "back from the report returns to Bearings");
 // The mock keeps reviews in memory, so a reload puts the report back to unread for the list below.
@@ -657,6 +663,22 @@ await resumed.close();
   check(await legacy.locator("[data-testid='decision-answer']").count() === 0, "no call cards in the rail without calls[]");
   await legacy.close();
 }
+
+// `?plain-report`: a finished scout whose report argues no call is offered on a card of its own.
+const plain = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+await plain.goto(`${baseUrl}/?artifacts&plain-report`);
+await plain.waitForFunction(() => !document.querySelector(".app-loading"));
+const plainCalls = plain.locator(".dashboard-section", { hasText: "Captain's Call" });
+check((await plainCalls.locator(".section-count").innerText()) === "4", "Captain's Call counts a finished report beside the three open calls");
+const plainReady = plain.locator("[data-testid='report-ready']");
+check(await plainReady.count() === 1, "a finished scout's report is offered where the captain looks first");
+check((await plainReady.innerText()).toLowerCase().includes("which episodes already carry a transcript?"), "the report card names the task by its title");
+check((await plainReady.innerText()).includes("2 of 9281 sampled episodes"), "the report card says what the scout found");
+await plainReady.locator("button", { hasText: "Read the report" }).click();
+await plain.locator(".artifact-stage iframe").waitFor();
+check((await plain.locator(".verdict-picker select").inputValue()) === "comment", "a finished scout's report that argues nothing starts the review on Comment");
+check((await plain.locator(".review-send small").innerText()) === "Thoughts only. Its task has finished, so nothing waits on this page.", "the hint says why nothing waits on it");
+await plain.close();
 
 await browser.close();
 if (failures.length) {
