@@ -174,33 +174,37 @@ if [ ! -f "$HOME_DIR/$MARKER" ] && ! unclaimed "$HOME_DIR"; then
   fail "$HOME_DIR is not empty and is not a firstmate home"
 fi
 
-# A run killed partway leaves its temporary links and marker, and a lock owner
-# record, behind. Under the lock, clear those whose process is gone: a
-# temporary entry names its run's pid, and an owner record holds its pid (or,
-# if it died before writing one, is over a minute old). A live run's are kept.
+# A run killed partway leaves its temporary links and marker behind, and the
+# lock leaves owner and steal records. Under the lock, clear the ones whose run
+# is gone: an entry that names its run's pid, or holds one in a pid file, is
+# gone when that process is; one that names no pid at all (a record whose owner
+# died before writing it) is gone once it is over a minute old, which no live
+# run's is. The live lock and its owner are always kept.
 LIVE_OWNER=$(fm_lock_link_owner "$LOCK" 2>/dev/null || true)
-for entry in "$HOME_DIR"/.fm-home-init.*; do
-  [ -e "$entry" ] || [ -L "$entry" ] || continue
-  case "${entry##*/}" in
-    .fm-home-init.lock) continue ;;
-    .fm-home-init.lock.owner.*)
-      [ "$entry" = "$LIVE_OWNER" ] && continue
-      owner_pid=$(cat -- "$entry/pid" 2>/dev/null || true)
-      if [ -n "$owner_pid" ]; then
-        kill -0 "$owner_pid" 2>/dev/null && continue
-      elif [ -z "$(find "$entry" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-        continue
-      fi
-      ;;
-    *)
-      owner_pid=${entry##*/.fm-home-init.}
-      owner_pid=${owner_pid%%.*}
-      case "$owner_pid" in ''|*[!0-9]*) continue ;; esac
-      kill -0 "$owner_pid" 2>/dev/null && continue
-      ;;
-  esac
-  rm -rf -- "$entry"
-done
+sweep_leftovers() {  # <dir>
+  local entry name owner_pid
+  for entry in "$1"/.fm-home-init.*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name=${entry##*/}
+    [ "$name" = .fm-home-init.lock ] && continue
+    [ "$entry" = "$LIVE_OWNER" ] && continue
+    owner_pid=${name#.fm-home-init.}
+    owner_pid=${owner_pid%%.*}
+    case "$owner_pid" in
+      ''|*[!0-9]*) owner_pid=$(cat -- "$entry/pid" 2>/dev/null || true) ;;
+    esac
+    case "$owner_pid" in
+      ''|*[!0-9]*)
+        # No pid to ask about: only age tells a dead record from a live one.
+        [ -n "$(find "$entry" -maxdepth 0 -mmin +1 2>/dev/null)" ] || continue
+        ;;
+      *) kill -0 "$owner_pid" 2>/dev/null && continue ;;
+    esac
+    rm -rf -- "$entry"
+  done
+}
+sweep_leftovers "$HOME_DIR"
+sweep_leftovers "$HOME_DIR/.claude"
 
 # Every code this home has mirrored, current first. A link into any of them is
 # this script's; a recorded path that now holds something other than firstmate

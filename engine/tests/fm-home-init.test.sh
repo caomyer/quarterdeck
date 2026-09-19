@@ -238,6 +238,12 @@ test_leftovers_of_dead_runs_are_cleared() {
   printf '%s\n' "$dead" > "$home/.fm-home-init.lock.owner.deadbeef/pid"
   mkdir "$home/.fm-home-init.lock.owner.nopid"
   touch -t 200001010000 "$home/.fm-home-init.lock.owner.nopid"
+  # The lock's own records, and entries under .claude/, are swept the same way.
+  mkdir "$home/.fm-home-init.lock.steal.owner.dead"
+  printf '%s\n' "$dead" > "$home/.fm-home-init.lock.steal.owner.dead/pid"
+  mkdir "$home/.fm-home-init.stale.$dead"
+  touch -t 200001010000 "$home/.fm-home-init.stale.$dead"
+  ln -s "$CODE/.claude/settings.json" "$home/.claude/.fm-home-init.$dead.settings.json"
   # A live process's entries are another run's and stay.
   printf 'x\n' > "$home/.fm-home-init.$$.marker"
   mkdir "$home/.fm-home-init.lock.owner.fresh"
@@ -249,6 +255,9 @@ test_leftovers_of_dead_runs_are_cleared() {
   [ ! -e "$home/.fm-home-init.lock.owner.nopid" ] || fail "an old pid-less owner record was left"
   [ -e "$home/.fm-home-init.$$.marker" ] || fail "a live run's temporary entry was removed"
   [ -e "$home/.fm-home-init.lock.owner.fresh" ] || fail "a fresh owner record was removed"
+  [ ! -e "$home/.fm-home-init.lock.steal.owner.dead" ] || fail "a dead steal owner record was left"
+  [ ! -e "$home/.fm-home-init.stale.$dead" ] || fail "an old lock folder was left"
+  [ ! -L "$home/.claude/.fm-home-init.$dead.settings.json" ] || fail "a dead run's link under .claude was left"
   rm -rf "$home/.fm-home-init.$$.marker" "$home/.fm-home-init.lock.owner.fresh"
   pass "what dead runs leave behind is cleared, and a live run's is kept"
 }
