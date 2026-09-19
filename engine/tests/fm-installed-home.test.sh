@@ -58,7 +58,8 @@ BEFORE=$(manifest)
 in_home() {
   (cd "$HOME_DIR" && env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
     -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u TMUX -u TMUX_PANE -u GROK_AGENT -u GROK_HOOK_EVENT \
-    -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+    -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u GH_CONFIG_DIR \
+    -u GIT_CONFIG_GLOBAL -u SSH_AUTH_SOCK \
     -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME \
     HOME="$USER_HOME" TMPDIR="$TMP_ROOT/tmp" FM_STARTUP_NETWORK_TIMEOUT=30 \
     FM_HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$HOME_DIR" "$@")
@@ -136,9 +137,22 @@ test_guard_hooks_apply_in_the_home() {
   pass "the cd and watcher-arm guards run from the home and block what they block in a checkout"
 }
 
+test_secondmates_are_refused_plainly() {
+  local out rc=0 before after
+  before=$(cd "$HOME_DIR" && find . -print | LC_ALL=C sort)
+  out=$(in_home bin/fm-home-seed.sh mate - --no-projects 2>&1) || rc=$?
+  expect_code 1 "$rc" "seeding a secondmate from an installed copy must be refused: $out"
+  assert_contains "$out" "secondmates are not available here yet" "the refusal says why"
+  assert_not_contains "$out" "fatal:" "the refusal shows no git errors"
+  after=$(cd "$HOME_DIR" && find . -print | LC_ALL=C sort)
+  [ "$after" = "$before" ] || fail "a refused seed changed the home"
+  pass "a secondmate cannot be seeded from an installed copy, and the refusal says so plainly"
+}
+
 test_deferred_network_report_is_clean() {
   local status_file="$HOME_DIR/state/.startup-network.status" waited=0
-  while [ "$waited" -lt 100 ] && ! grep -q '^state=done' "$status_file" 2>/dev/null; do
+  # Longer than the network budget in_home sets, so a slow network is waited out.
+  while [ "$waited" -lt 200 ] && ! grep -q '^state=done' "$status_file" 2>/dev/null; do
     sleep 0.2
     waited=$((waited + 1))
   done
@@ -166,6 +180,7 @@ test_home_is_created_from_nothing
 test_session_start_hook_runs_from_the_home
 test_backlog_calls_and_history_work_by_relative_paths
 test_guard_hooks_apply_in_the_home
+test_secondmates_are_refused_plainly
 test_deferred_network_report_is_clean
 test_the_copy_is_untouched
 test_nothing_is_left_running

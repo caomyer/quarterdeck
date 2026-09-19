@@ -822,6 +822,14 @@ seed_home() {
   else
     [ $# -gt 0 ] || { echo "error: secondmate needs at least one project, or --no-projects for a project-less home" >&2; return 1; }
   fi
+  # A secondmate home is a firstmate checkout, leased with treehouse from or
+  # cloned from this home's code. Firstmate installed as a copy outside git
+  # (inside an app, with a home bin/fm-home-init.sh mirrors) has no checkout to
+  # give one, so seeding is refused before anything is created.
+  if [ ! -e "$FM_ROOT/.git" ] && [ ! -L "$FM_ROOT/.git" ]; then
+    echo "error: secondmate homes need firstmate as a git checkout, and this home runs firstmate installed as a copy outside git; secondmates are not available here yet" >&2
+    return 1
+  fi
 
   mkdir -p "$STATE" || return 1
   SEED_REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")
