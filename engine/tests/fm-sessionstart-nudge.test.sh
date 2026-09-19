@@ -118,6 +118,18 @@ test_linked_secondmate_primary_nudges() {
   pass "fm-sessionstart-nudge: a marked linked secondmate home is a primary"
 }
 
+test_installed_copy_nudges() {
+  local root="$TMP_ROOT/installed-copy" out status=0
+  mkdir -p "$root/bin" "$root/state"
+  : > "$root/AGENTS.md"
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    && fail "the installed-copy fixture must not sit inside a git work tree"
+  out=$(run_nudge "$root") || status=$?
+  expect_code 0 "$status" "installed copy nudge"
+  [ "$out" = "$NUDGE_LINE" ] || fail "an installed copy printed unexpected output: $out"
+  pass "fm-sessionstart-nudge: firstmate installed as a copy outside git is a primary"
+}
+
 test_missing_state_is_silent() {
   local root="$TMP_ROOT/missing-state"
   make_primary "$root"
@@ -1056,6 +1068,7 @@ test_gate_env_is_silent
 test_gate_common_dir_is_silent
 test_unmarked_linked_worktree_is_silent
 test_linked_secondmate_primary_nudges
+test_installed_copy_nudges
 test_missing_state_is_silent
 test_owned_lock_is_silent
 test_namespace_pid1_lock_holder_is_silent
