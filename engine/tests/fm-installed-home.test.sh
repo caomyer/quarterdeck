@@ -12,7 +12,23 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-installed-home)
 mkdir -p "$TMP_ROOT"
-trap 'chmod -R u+w "$TMP_ROOT" 2>/dev/null; rm -rf "$TMP_ROOT"' EXIT
+
+# left_running: the pids of processes still running from this test's files.
+# Session start leaves its deferred network checks running detached, as it does
+# for a real first mate; the test waits for them, and anything still here at the
+# end is stopped by pid before the files go.
+left_running() {
+  pgrep -f -- "$TMP_ROOT" 2>/dev/null | grep -vx "$$" || true
+}
+reap() {
+  local pid
+  for pid in $(left_running); do
+    kill "$pid" 2>/dev/null || true
+  done
+  chmod -R u+w "$TMP_ROOT" 2>/dev/null
+  rm -rf "$TMP_ROOT"
+}
+trap reap EXIT
 
 if ! command -v tasks-axi >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
   pass "SKIP (tasks-axi and jq are required): installed-copy home end to end"
@@ -36,12 +52,16 @@ manifest() {
 BEFORE=$(manifest)
 
 # in_home <cmd...>: run as the app's first mate does - from the home, with only
-# FM_HOME naming it, and none of this checkout's or the caller's firstmate
-# settings leaking in.
+# FM_HOME naming it, none of this checkout's or the caller's firstmate or
+# harness settings leaking in, and no credentials: the network checks run
+# against a user with no GitHub login, and give up quickly.
 in_home() {
   (cd "$HOME_DIR" && env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE \
-    -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u TMUX -u TMUX_PANE \
-    HOME="$USER_HOME" TMPDIR="$TMP_ROOT/tmp" FM_HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$HOME_DIR" "$@")
+    -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u TMUX -u TMUX_PANE -u GROK_AGENT -u GROK_HOOK_EVENT \
+    -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+    -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME \
+    HOME="$USER_HOME" TMPDIR="$TMP_ROOT/tmp" FM_STARTUP_NETWORK_TIMEOUT=30 \
+    FM_HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$HOME_DIR" "$@")
 }
 
 test_home_is_created_from_nothing() {
@@ -61,6 +81,8 @@ test_session_start_hook_runs_from_the_home() {
   assert_contains "$out" "SESSION START - $HOME_DIR" "the hook ran session start in the home"
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS" "the digest reached the supervision instructions"
   [ -f "$HOME_DIR/state/.session-start-complete" ] || fail "session start did not complete in the home's state"
+  # A copy outside git has no branch to read; the first mate must not be shown git errors.
+  assert_not_contains "$out" "fatal:" "the digest shows no git errors"
   pass "the exact session-start hook command runs the full digest from the home"
 }
 
@@ -91,14 +113,15 @@ test_backlog_calls_and_history_work_by_relative_paths() {
 
 test_guard_hooks_apply_in_the_home() {
   local cmd out rc
-  # Every PreToolUse hook .claude/settings.json runs for a Bash call, in order.
+  # Every PreToolUse hook .claude/settings.json runs for a Bash call: those
+  # matching Bash and the catch-all. Any one blocking blocks the call.
   run_bash_hooks() {  # <shell command>
     local payload hook status=0
     payload=$(jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$command}}')
     while IFS= read -r hook; do
       printf '%s' "$payload" | in_home bash -c "$hook" 2>&1 || status=$?
       [ "$status" = 0 ] || return "$status"
-    done < <(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$HOME_DIR/.claude/settings.json")
+    done < <(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash" or .matcher == ".*") | .hooks[].command' "$HOME_DIR/.claude/settings.json")
   }
   rc=0; out=$(run_bash_hooks 'cd projects/foo') || rc=$?
   expect_code 2 "$rc" "a persistent cd must be blocked from the home: $out"
@@ -106,9 +129,22 @@ test_guard_hooks_apply_in_the_home() {
   rc=0; out=$(run_bash_hooks 'bin/fm-watch.sh') || rc=$?
   expect_code 2 "$rc" "a direct watcher run must be blocked from the home: $out"
   assert_contains "$out" 'watcher-direct' "the arm guard names its reason"
+  rc=0; out=$(run_bash_hooks '(cd projects/foo && git status)') || rc=$?
+  expect_code 0 "$rc" "a cd scoped to a subshell must pass the guards: $out"
   rc=0; out=$(run_bash_hooks 'bin/fm-tasks-axi.sh list') || rc=$?
   expect_code 0 "$rc" "an ordinary command must pass the guards: $out"
   pass "the cd and watcher-arm guards run from the home and block what they block in a checkout"
+}
+
+test_deferred_network_report_is_clean() {
+  local status_file="$HOME_DIR/state/.startup-network.status" waited=0
+  while [ "$waited" -lt 100 ] && ! grep -q '^state=done' "$status_file" 2>/dev/null; do
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  grep -q '^state=done' "$status_file" 2>/dev/null || fail "the deferred network checks never finished: $(cat "$status_file" 2>/dev/null)"
+  assert_no_grep "fatal:" "$HOME_DIR/state/.startup-network.report" "the network report shows no git errors"
+  pass "the deferred network checks finish in the home without git errors"
 }
 
 test_the_copy_is_untouched() {
@@ -121,8 +157,8 @@ test_the_copy_is_untouched() {
 
 test_nothing_is_left_running() {
   local pids
-  pids=$(pgrep -f -- "$TMP_ROOT" | tr '\n' ' ' || true)
-  [ -z "${pids// /}" ] || fail "processes outlived the test: $(ps -o pid=,command= -p "${pids// /,}")"
+  pids=$(left_running | tr '\n' ' ')
+  [ -z "${pids// /}" ] || fail "processes outlived the test: $(ps -o pid=,command= -p "$(printf '%s' "$pids" | tr ' ' ',' | sed 's/,$//')")"
   pass "nothing started from the home is left running"
 }
 
@@ -130,5 +166,6 @@ test_home_is_created_from_nothing
 test_session_start_hook_runs_from_the_home
 test_backlog_calls_and_history_work_by_relative_paths
 test_guard_hooks_apply_in_the_home
+test_deferred_network_report_is_clean
 test_the_copy_is_untouched
 test_nothing_is_left_running
