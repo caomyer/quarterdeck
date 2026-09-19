@@ -28,7 +28,7 @@ It is a silent no-op (exit 0, no output) everywhere else, so it never interferes
 A plain, non-worktree checkout has `git rev-parse --git-dir` equal to `git rev-parse --git-common-dir`.
 A crewmate or scout task worktree - the shape `bin/fm-spawn.sh` always hands out - is a linked git worktree where the two differ, so the guard is inert there.
 The checkout must also carry `AGENTS.md` and `bin/`, and any failure to confirm the primary is treated as inert, never as a block.
-An installed copy has no task worktree to tell apart, so a root with no `.git` skips the git test, and applies only when the session's home has a state directory, as the shared primary predicate requires; a root whose `.git` git cannot read (git missing, a broken worktree link) stays inert.
+An installed copy has no task worktree to tell apart, so a root with no `.git` skips the git test, and applies only when the session's home (`FM_HOME`, else the directory the hook was reached through, such as a home's `bin/` link) has a state directory, as the shared primary predicate requires; a root whose `.git` git cannot read (git missing, a broken worktree link) stays inert.
 
 The cd-guard does not inspect `.fm-secondmate-home`.
 It therefore applies in a git-cloned secondmate home where git-dir equals git-common-dir, but remains inert in a treehouse-leased secondmate home that is itself a linked worktree.

@@ -120,7 +120,11 @@ test_guard_hooks_apply_in_the_home() {
     local payload hook status=0
     payload=$(jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$command}}')
     while IFS= read -r hook; do
-      printf '%s' "$payload" | in_home bash -c "$hook" 2>&1 || status=$?
+      if [ -n "${NO_FM_HOME:-}" ]; then
+        printf '%s' "$payload" | in_home env -u FM_HOME bash -c "$hook" 2>&1 || status=$?
+      else
+        printf '%s' "$payload" | in_home bash -c "$hook" 2>&1 || status=$?
+      fi
       [ "$status" = 0 ] || return "$status"
     done < <(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash" or .matcher == ".*") | .hooks[].command' "$HOME_DIR/.claude/settings.json")
   }
@@ -134,6 +138,9 @@ test_guard_hooks_apply_in_the_home() {
   expect_code 0 "$rc" "a cd scoped to a subshell must pass the guards: $out"
   rc=0; out=$(run_bash_hooks 'bin/fm-tasks-axi.sh list') || rc=$?
   expect_code 0 "$rc" "an ordinary command must pass the guards: $out"
+  # A session started in the home by hand, without FM_HOME, is guarded too.
+  rc=0; out=$(NO_FM_HOME=1 run_bash_hooks 'cd projects/foo') || rc=$?
+  expect_code 2 "$rc" "a persistent cd must be blocked without FM_HOME: $out"
   pass "the cd and watcher-arm guards run from the home and block what they block in a checkout"
 }
 

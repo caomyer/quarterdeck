@@ -165,7 +165,10 @@ if [ -e "$FM_ROOT/.git" ] || [ -L "$FM_ROOT/.git" ]; then
   GIT_COMMON_DIR=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || exit 0
   [ "$GIT_DIR" = "$GIT_COMMON_DIR" ] || exit 0
 else
-  [ -d "${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}" ] || exit 0
+  # Without FM_HOME the home is the directory this hook was reached through
+  # (a home's bin/ link), not the physical code, which has no state/.
+  REACHED_ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd) || exit 0
+  [ -d "${FM_STATE_OVERRIDE:-${FM_HOME:-$REACHED_ROOT}/state}" ] || exit 0
 fi
 
 POLICY="$FM_ROOT/bin/fm-cd-command-policy.mjs"

@@ -172,7 +172,11 @@ done
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || exit 0
 FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd -P)} || exit 0
-FM_HOME=${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}
+# Without FM_HOME the home is the directory the hook was reached through, not
+# the physical code: in a home that mirrors an installed copy
+# (bin/fm-home-init.sh) the two differ, and only the home has state/.
+REACHED_ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd) || exit 0
+FM_HOME=${FM_HOME:-${FM_ROOT_OVERRIDE:-$REACHED_ROOT}}
 STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 
 # Scope to a genuine primary home, exactly as the session-start nudge and the
