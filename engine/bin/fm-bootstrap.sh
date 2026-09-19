@@ -7,6 +7,7 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
 #                 "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=<floor>; install: <command>) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish",
+#                 "PRESENTATION_INVALID: <source> names unknown presentation mode '<value>' (expected lavish or quarterdeck)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
@@ -63,6 +64,10 @@
 #          Missing or incompatible lavish-axi reports PRESENTATION_UNAVAILABLE:
 #          nonvisual dispatch continues with plain-text decisions and reports,
 #          but Lavish use still requires a compatible build at or above its floor.
+#          A home whose config/presentation says quarterdeck presents its pages
+#          in Quarterdeck through bin/fm-artifact.sh: it is checked for jq
+#          instead of lavish-axi. An unknown presentation value reports
+#          PRESENTATION_INVALID and the home is then treated as lavish.
 #          tasks-axi feature probes remain a separate defense-in-depth check.
 #          tasks-axi and quota-axi are essential bootstrap tools.
 #          A compatible tasks-axi default backend is silent.
@@ -1491,7 +1496,9 @@ detect_local_tools() {
     presentation=lavish
   fi
   if [ "$presentation" = quarterdeck ]; then
-    command -v jq >/dev/null 2>&1 || missing_tool_diagnostic jq
+    # A backend that needs jq has reported it missing already.
+    fm_backend_list_contains "$BACKEND_TOOLS" jq \
+      || command -v jq >/dev/null 2>&1 || missing_tool_diagnostic jq
   elif ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
     echo "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=$LAVISH_AXI_MIN; install: $(install_cmd lavish-axi)) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish"
   fi
