@@ -99,7 +99,8 @@ That alternative expands trust and writes outside this repository, so Firstmate 
 
 ## Regression coverage
 
-`tests/fm-sessionstart-nudge.test.sh` proves the nudge wrapper's silence for both gate signals, an unmarked linked worktree, a missing state directory, and an already-owned lock, plus its exact U+2063 `FIRSTMATE_OP:`-prefixed, `session-start`-typed one-line output.
+`tests/fm-sessionstart-nudge.test.sh` proves the nudge wrapper's silence for both gate signals, an unmarked linked worktree, a linked worktree git cannot read (a failing git, a broken worktree link), a missing state directory, and an already-owned lock, plus its exact U+2063 `FIRSTMATE_OP:`-prefixed, `session-start`-typed one-line output.
+It proves an installed copy with no `.git` is primary, both on its own and inside another project's work tree, and that the shared predicate itself refuses an unreadable worktree.
 It separately proves the run wrapper's silence for the gate environment and an unmarked linked worktree, including the internal Pi prerequisite's explicit silent stand-down.
 It proves the run wrapper's source routing end to end against a real `fm-session-start.sh`, including completion-gated `--reemit` selection, resume delegation, Pi CLI continuation classification, an unrecognized source falling through to the full digest, and bounded loud delivery of an oversized Pi digest.
 The same portable suite proves provider exclusion until settlement, exactly-one execution and context delivery, interruption, process-tree retirement, two rapid replacements, stale completion, eligible empty output, spawn error, wrapper timeout output, truncation, ineligible stand-down, and compaction cancellation through the extension's public event surface.

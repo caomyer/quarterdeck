@@ -130,6 +130,48 @@ test_installed_copy_nudges() {
   pass "fm-sessionstart-nudge: firstmate installed as a copy outside git is a primary"
 }
 
+test_installed_copy_inside_a_foreign_repo_nudges() {
+  local repo="$TMP_ROOT/foreign-repo" root out status=0
+  fm_git_init_commit "$repo"
+  root="$repo/vendor/firstmate"
+  mkdir -p "$root/bin" "$root/state"
+  : > "$root/AGENTS.md"
+  out=$(run_nudge "$root") || status=$?
+  expect_code 0 "$status" "nested installed copy nudge"
+  [ "$out" = "$NUDGE_LINE" ] || fail "a copy inside another project's work tree printed: $out"
+  pass "fm-sessionstart-nudge: an installed copy inside another project's work tree is a primary"
+}
+
+test_unreadable_linked_worktree_is_silent() {
+  local base="$TMP_ROOT/unreadable-base" root="$TMP_ROOT/unreadable-child" fakebin="$TMP_ROOT/failing-git"
+  fm_git_worktree "$base" "$root" fm/sessionstart-unreadable
+  mkdir -p "$root/bin" "$root/state" "$fakebin"
+  : > "$root/AGENTS.md"
+  # git that cannot answer, as when it is missing or refuses the directory.
+  printf '#!/bin/sh\nexit 128\n' > "$fakebin/git"
+  chmod +x "$fakebin/git"
+  expect_silent_zero "worktree with failing git" env PATH="$fakebin:$PATH" \
+    FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$NUDGE"
+  # A worktree whose link into the main repository is broken.
+  printf 'gitdir: %s\n' "$TMP_ROOT/pruned/.git/worktrees/gone" > "$root/.git"
+  expect_silent_zero "worktree with a broken link" run_nudge "$root"
+  # The turn-end guard, auto-arm, and subagent check have no other gate than the
+  # predicate itself, so it must refuse both on its own.
+  primary_scope() {  # <root> [env...]
+    local dir=$1
+    shift
+    # shellcheck disable=SC2016 # the inner shell expands its own arguments.
+    env "$@" bash -c '. "$1/bin/fm-primary-scope-lib.sh"; fm_primary_scope_matches "$2" "$2/state"' _ "$ROOT" "$dir"
+  }
+  primary_scope "$root" && fail "a worktree with a broken link must not be primary"
+  fm_git_worktree "$TMP_ROOT/unreadable-base2" "$TMP_ROOT/unreadable-child2" fm/sessionstart-unreadable2
+  mkdir -p "$TMP_ROOT/unreadable-child2/bin" "$TMP_ROOT/unreadable-child2/state"
+  : > "$TMP_ROOT/unreadable-child2/AGENTS.md"
+  primary_scope "$TMP_ROOT/unreadable-child2" PATH="$fakebin:$PATH" && fail "a worktree git cannot read must not be primary"
+  primary_scope "$TMP_ROOT/unreadable-child2" && fail "a readable linked worktree must not be primary"
+  pass "fm-sessionstart-nudge: a linked worktree git cannot read stays silent"
+}
+
 test_missing_state_is_silent() {
   local root="$TMP_ROOT/missing-state"
   make_primary "$root"
@@ -1069,6 +1111,8 @@ test_gate_common_dir_is_silent
 test_unmarked_linked_worktree_is_silent
 test_linked_secondmate_primary_nudges
 test_installed_copy_nudges
+test_installed_copy_inside_a_foreign_repo_nudges
+test_unreadable_linked_worktree_is_silent
 test_missing_state_is_silent
 test_owned_lock_is_silent
 test_namespace_pid1_lock_holder_is_silent
