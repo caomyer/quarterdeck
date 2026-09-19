@@ -22,21 +22,24 @@
 # The home is --home, else FM_HOME. The code is the copy this script belongs to,
 # by its physical path, however the script was reached (a home's bin/ link
 # included). A home this script lays out carries a `.fm-home` marker naming the
-# code it last mirrored.
+# code it mirrors and every code it mirrored before; the marker is written
+# before anything is laid out, so a run cut short leaves a home the next run
+# finishes.
 #
 # Run it on every launch: it is idempotent, and it repoints its links when the
 # code has moved (an app update or a moved app), links entries a newer code
 # added, and removes its links to entries the code no longer has. Its links are
-# exactly those that point at the entry of the same name in this code or in the
-# code the marker names; every other file and link in the home is the home's
+# exactly those that point at the entry of the same name in this code or in a
+# code the marker records; every other file and link in the home is the home's
 # own and is never changed, only reported as `kept` where the code has an entry
 # of that name. Links are swapped in by rename, so a first mate already running
 # in the home never sees an entry missing, and concurrent runs take turns.
 #
 # Refused, with nothing created or changed: a home that is the code, lies
 # inside it, or contains it; an existing directory that is neither empty nor
-# already a firstmate home (a checkout, a user's home directory, /); a home path
-# that exists and is not a directory.
+# already a firstmate home (a checkout, a user's home directory, /; a Finder
+# .DS_Store does not count); a home path that exists and is not a directory; a
+# home path with a . or .. component.
 #
 # Output: `home: <path>`, `code: <path>`, then one line per change -
 # `linked: <name>`, `relinked: <name>`, `unlinked: <name>`, `kept: <name> (...)`
@@ -83,6 +86,9 @@ case "$home" in
   /*) ;;
   *) home="$PWD/$home" ;;
 esac
+case "/$home/" in
+  */./*|*/../*) usage_fail "name the home without . or .. in its path: $home" ;;
+esac
 
 MARKER=.fm-home
 
@@ -121,40 +127,97 @@ esac
 case "$CODE/" in
   "${HOME_DIR%/}/"*) fail "the code $CODE lies inside the home $HOME_DIR" ;;
 esac
+# unclaimed <dir>: whether <dir> holds nothing but what a concurrent run of this
+# script or the Finder leaves there, so it may become a home.
+unclaimed() {
+  local entry name
+  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name=${entry##*/}
+    case "$name" in
+      .fm-home-init.*|.DS_Store) continue ;;
+    esac
+    return 1
+  done
+  return 0
+}
+
 # Only an empty or missing directory becomes a home, and only a home this
 # script laid out is refreshed: a checkout, a user's home directory, or any
-# other folder with contents is never taken over.
-if [ -d "$HOME_DIR" ] && [ ! -f "$HOME_DIR/$MARKER" ]; then
-  for entry in "$HOME_DIR"/* "$HOME_DIR"/.[!.]* "$HOME_DIR"/..?*; do
-    [ -e "$entry" ] || [ -L "$entry" ] || continue
-    fail "$HOME_DIR is not empty and is not a firstmate home"
-  done
-fi
-
-# The code the marker names, when the home was laid out before.
-PREVIOUS=''
-if [ -f "$HOME_DIR/$MARKER" ]; then
-  PREVIOUS=$(sed -n 's/^code=//p' "$HOME_DIR/$MARKER" | head -n 1)
+# other folder with contents is never taken over. Checked before anything is
+# created, and again under the lock.
+if [ -d "$HOME_DIR" ] && [ ! -f "$HOME_DIR/$MARKER" ] && ! unclaimed "$HOME_DIR"; then
+  fail "$HOME_DIR is not empty and is not a firstmate home"
 fi
 
 mkdir -p -- "$HOME_DIR" || fail "cannot create $HOME_DIR"
 
-# Concurrent runs take turns. A lock whose holder has died is taken over.
+# Concurrent runs take turns. A lock is a directory holding its owner's pid; a
+# lock whose owner has died, or one left without a pid for over a minute, is
+# taken over by renaming it away first, so two waiters cannot both take it.
 LOCK="$HOME_DIR/.fm-home-init.lock"
+LOCK_HELD=0
+release_lock() {
+  [ "$LOCK_HELD" = 1 ] && rm -rf -- "$LOCK"
+  LOCK_HELD=0
+}
+trap 'release_lock' EXIT
 lock_waited=0
 until mkdir -- "$LOCK" 2>/dev/null; do
   holder=$(cat -- "$LOCK/pid" 2>/dev/null || true)
-  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-    rm -rf -- "$LOCK"
+  stale=0
+  if [ -n "$holder" ]; then
+    kill -0 "$holder" 2>/dev/null || stale=1
+  elif [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+    stale=1
+  fi
+  if [ "$stale" = 1 ] && mv -- "$LOCK" "$HOME_DIR/.fm-home-init.stale.$$" 2>/dev/null; then
+    rm -rf -- "$HOME_DIR/.fm-home-init.stale.$$"
     continue
   fi
   lock_waited=$((lock_waited + 1))
-  [ "$lock_waited" -le 300 ] || fail "another fm-home-init.sh has held $LOCK for over a minute"
+  [ "$lock_waited" -le 400 ] || fail "another fm-home-init.sh has held $LOCK for over a minute"
   sleep 0.2
 done
+LOCK_HELD=1
 printf '%s\n' "$$" > "$LOCK/pid"
-# shellcheck disable=SC2064 # expand now: the path is fixed for this run
-trap "rm -rf -- '$LOCK'" EXIT
+
+if [ ! -f "$HOME_DIR/$MARKER" ] && ! unclaimed "$HOME_DIR"; then
+  fail "$HOME_DIR is not empty and is not a firstmate home"
+fi
+
+# Every code this home has mirrored, current first. A link into any of them is
+# this script's; a recorded path that now holds something other than firstmate
+# is not trusted. The marker is rewritten before anything is laid out, so a run
+# cut short leaves a home the next run recognises and finishes.
+KNOWN=''
+if [ -f "$HOME_DIR/$MARKER" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      code=/*|previous=/*) path=${line#*=} ;;
+      *) continue ;;
+    esac
+    [ "$path" = "$CODE" ] && continue
+    if [ -e "$path" ] && ! is_firstmate_code "$path"; then
+      continue
+    fi
+    case "
+$KNOWN
+" in
+      *"
+$path
+"*) ;;
+      *) KNOWN="${KNOWN:+$KNOWN
+}$path" ;;
+    esac
+  done < "$HOME_DIR/$MARKER"
+fi
+marker_tmp="$HOME_DIR/.fm-home-init.$$.marker"
+{
+  printf 'firstmate-home=1\ncode=%s\n' "$CODE"
+  [ -z "$KNOWN" ] || printf '%s\n' "$KNOWN" | sed 's/^/previous=/'
+} > "$marker_tmp" || fail "cannot write $HOME_DIR/$MARKER"
+mv -f -- "$marker_tmp" "$HOME_DIR/$MARKER" || { rm -f -- "$marker_tmp"; fail "cannot write $HOME_DIR/$MARKER"; }
 
 printf 'home: %s\n' "$HOME_DIR"
 printf 'code: %s\n' "$CODE"
@@ -180,12 +243,16 @@ home_owned() {  # <name>
 
 # ours <link-path> <rel>: whether the link at <link-path> is one this script
 # made for <rel>, a path relative to a code root: it points at <rel> in this
-# code or in the code the marker names.
+# code or in a code the marker records.
 ours() {
-  local current
+  local current known
   current=$(readlink -- "$1") || return 1
   [ "$current" = "$CODE/$2" ] && return 0
-  [ -n "$PREVIOUS" ] && [ "$current" = "$PREVIOUS/$2" ] && return 0
+  while IFS= read -r known; do
+    [ -n "$known" ] && [ "$current" = "$known/$2" ] && return 0
+  done <<EOF_KNOWN
+$KNOWN
+EOF_KNOWN
   return 1
 }
 
@@ -248,12 +315,6 @@ claude_skip() { [ "$1" = settings.local.json ]; }
 mirror "" top_skip
 if [ -d "$CODE/.claude" ]; then
   mirror .claude claude_skip
-fi
-
-marker_tmp="$HOME_DIR/.fm-home-init.$$.marker"
-if ! { printf 'firstmate-home=1\ncode=%s\n' "$CODE" > "$marker_tmp" && mv -f -- "$marker_tmp" "$HOME_DIR/$MARKER"; }; then
-  rm -f -- "$marker_tmp"
-  fail "cannot write $HOME_DIR/$MARKER"
 fi
 
 printf 'ok\n'

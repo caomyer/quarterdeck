@@ -205,6 +205,81 @@ test_refusals_create_nothing() {
   pass "a home that is, holds, or sits in the code, a non-empty folder, or a file is refused, creating nothing"
 }
 
+test_a_cut_short_run_is_finished() {
+  local home="$TMP_ROOT/cut" out dead
+  mkdir -p "$home/.fm-home-init.lock"
+  # As a first run leaves it when killed after the marker: a lock whose owner
+  # is gone, the marker, and part of the layout.
+  sh -c 'exit 0' & dead=$!
+  wait "$dead"
+  printf '%s\n' "$dead" > "$home/.fm-home-init.lock/pid"
+  printf 'firstmate-home=1\ncode=%s\n' "$CODE" > "$home/.fm-home"
+  ln -s "$CODE/AGENTS.md" "$home/AGENTS.md"
+  out=$(init "$CODE" "$home" 2>&1) || fail "a cut-short home was not finished: $out"
+  [ -L "$home/bin" ] || fail "the rest of the layout was not made"
+  [ ! -e "$home/.fm-home-init.lock" ] || fail "the dead run's lock was not taken over and released"
+  # A lock left without a pid is taken over once it is a minute old.
+  mkdir "$home/.fm-home-init.lock"
+  touch -t 200001010000 "$home/.fm-home-init.lock"
+  out=$(init "$CODE" "$home" 2>&1) || fail "an old pid-less lock was not taken over: $out"
+  pass "a run cut short, and a lock its owner left behind, are finished by the next run"
+}
+
+test_concurrent_first_runs_on_an_empty_folder() {
+  local home="$TMP_ROOT/empty-race" i pids='' pid failed=0
+  mkdir -p "$home"
+  : > "$home/.DS_Store"
+  for i in 1 2 3 4 5 6; do
+    init "$CODE" "$home" >"$TMP_ROOT/empty-race-$i.out" 2>&1 &
+    pids="$pids $!"
+  done
+  for pid in $pids; do
+    wait "$pid" || failed=$((failed + 1))
+  done
+  [ "$failed" = 0 ] || fail "concurrent first runs failed: $(cat "$TMP_ROOT"/empty-race-*.out)"
+  [ -L "$home/bin" ] || fail "the folder was not laid out"
+  pass "concurrent first runs on an empty folder (a Finder .DS_Store aside) all succeed"
+}
+
+test_every_recorded_code_is_known() {
+  local home="$TMP_ROOT/history" a="$TMP_ROOT/copies/a" b="$TMP_ROOT/copies/b" out
+  mkdir -p "$a/bin" "$b/bin" "$home"
+  : > "$a/AGENTS.md"
+  : > "$b/AGENTS.md"
+  # An update from a to b was cut short after rewriting the marker: every link
+  # still points at a, which the marker records only as previous.
+  printf 'firstmate-home=1\ncode=%s\nprevious=%s\n' "$b" "$a" > "$home/.fm-home"
+  ln -s "$a/AGENTS.md" "$home/AGENTS.md"
+  ln -s "$a/bin" "$home/bin"
+  ln -s "$a/GONE.md" "$home/GONE.md"
+  out=$(init "$CODE" "$home" 2>&1) || fail "the run after an interrupted update failed: $out"
+  assert_contains "$out" "relinked: AGENTS.md" "a link into an older recorded code is relinked"
+  assert_contains "$out" "unlinked: GONE.md" "a link into an older recorded code the code dropped is unlinked"
+  assert_not_contains "$out" "kept: bin" "no link into a recorded code is kept as the home's own"
+  { grep -qx "previous=$b" "$home/.fm-home" && grep -qx "previous=$a" "$home/.fm-home"; } \
+    || fail "the marker must keep every code it mirrored: $(cat "$home/.fm-home")"
+  # A recorded path that now holds something else is not trusted.
+  printf 'firstmate-home=1\ncode=%s\nprevious=%s\n' "$CODE" "$TMP_ROOT/user-files" > "$home/.fm-home"
+  mkdir -p "$TMP_ROOT/user-files"
+  rm -f "$home/README.md"
+  ln -s "$TMP_ROOT/user-files/README.md" "$home/README.md"
+  out=$(init "$CODE" "$home" 2>&1) || fail "init failed: $out"
+  assert_contains "$out" "kept: README.md (the home's own link" "a link into an untrusted recorded path is the home's"
+  pass "every code the marker records is known, and a path that is no longer firstmate is not"
+}
+
+test_path_components_and_quotes() {
+  local out status quoted="$TMP_ROOT/it's home"
+  status=0; out=$(init "$CODE" "$TMP_ROOT/nope/../user-home2" 2>&1) || status=$?
+  expect_code 2 "$status" "a home path with .."
+  [ ! -e "$TMP_ROOT/nope" ] && [ ! -e "$TMP_ROOT/user-home2" ] || fail "a refused .. path must create nothing"
+  status=0; out=$(init "$CODE" "$TMP_ROOT/./dot-home" 2>&1) || status=$?
+  expect_code 2 "$status" "a home path with ."
+  out=$(init "$CODE" "$quoted" 2>&1) || fail "a home path with a quote failed: $out"
+  [ -L "$quoted/bin" ] && [ ! -e "$quoted/.fm-home-init.lock" ] || fail "a quoted home was not laid out, or its lock was left"
+  pass "a . or .. component is refused, and a quote in the path is safe"
+}
+
 test_home_owned_names_match_gitignore() {
   local owned line name
   owned=$(sed -n "s/^HOME_OWNED='\(.*\)'$/\1/p" "$ROOT/bin/fm-home-init.sh")
@@ -229,4 +304,8 @@ test_the_homes_own_files_and_links_are_never_changed
 test_concurrent_runs_take_turns
 test_paths_are_resolved_safely
 test_refusals_create_nothing
+test_a_cut_short_run_is_finished
+test_concurrent_first_runs_on_an_empty_folder
+test_every_recorded_code_is_known
+test_path_components_and_quotes
 test_home_owned_names_match_gitignore
