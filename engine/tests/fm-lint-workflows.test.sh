@@ -216,6 +216,39 @@ test_empty_workflows_dir_fails() {
   pass "empty workflows directory fails closed"
 }
 
+# The engine ships inside the app's repository as engine/, and GitHub runs
+# workflows only from a repository's root, so the files to lint are one level
+# above the engine. Standing alone the engine's own root still holds them.
+test_default_root_climbs_to_the_holding_repository() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-above)
+  mkdir -p "$tmp/repo/.github/workflows" "$tmp/repo/engine/bin"
+  write_valid_workflow "$tmp/repo/.github/workflows/engine.yml"
+  cp "$LINT_WF" "$tmp/repo/engine/bin/fm-lint-workflows.sh"
+  chmod +x "$tmp/repo/engine/bin/fm-lint-workflows.sh"
+  rc=0
+  out=$("$tmp/repo/engine/bin/fm-lint-workflows.sh" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "default path did not find the holding repository's workflows"$'\n'"$out"
+  assert_contains "$out" "1 workflow files valid" \
+    "default path did not lint the workflow one level up"
+  pass "the default path finds the workflows of the repository holding the engine"
+}
+
+# --root names exactly one directory. It must never climb, or a caller asking
+# about one tree would silently be answered about another.
+test_explicit_root_never_climbs() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-noclimb)
+  mkdir -p "$tmp/.github/workflows" "$tmp/inner/.github/workflows"
+  write_valid_workflow "$tmp/.github/workflows/engine.yml"
+  rc=0
+  out=$("$LINT_WF" --root "$tmp/inner" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an explicit empty --root climbed to its parent"$'\n'"$out"
+  assert_contains "$out" "no GitHub workflow files found" \
+    "an explicit empty --root did not report the missing files"
+  pass "an explicit --root is taken exactly, never its parent"
+}
+
 test_explicit_broken_path_fails() {
   local tmp broken out rc
   tmp=$(fm_test_tmproot fm-lint-wf-path)
@@ -519,6 +552,8 @@ test_current_workflows_pass
 test_col0_heredoc_fails_with_clear_error
 test_valid_fixture_passes
 test_empty_workflows_dir_fails
+test_default_root_climbs_to_the_holding_repository
+test_explicit_root_never_climbs
 test_explicit_broken_path_fails
 test_non_mapping_root_fails
 test_missing_actionlint_fails_closed

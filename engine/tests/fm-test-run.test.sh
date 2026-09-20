@@ -1665,7 +1665,7 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
   command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+    || fail "ruby is required to parse .github/workflows/engine.yml as YAML"
   local json job_timeout step_timeout
   json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
@@ -1679,8 +1679,8 @@ puts JSON.generate(
   "job_timeout" => job.fetch("timeout-minutes"),
   "step_timeout" => step.fetch("timeout-minutes")
 )
-' "$ROOT/.github/workflows/ci.yml") \
-    || fail "could not parse tests-herdr timeouts from ci.yml"
+' "$ROOT/../.github/workflows/engine.yml") \
+    || fail "could not parse tests-herdr timeouts from engine.yml"
   job_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_timeout"])' <<<"$json") \
     || fail "could not read job timeout from parsed workflow"
   step_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["step_timeout"])' <<<"$json") \

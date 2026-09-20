@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Contract tests for .github/workflows/ci.yml's runner-spend safeguards.
+# Contract tests for the engine workflow's runner-spend safeguards.
+#
+# The engine lives inside the app's repository, and GitHub runs workflows only
+# from a repository's root, so the file under test is one level above the
+# engine's own root, at .github/workflows/engine.yml.
 #
 # Origin: the 2026-09-12 GitHub Actions starvation incident. firstmate CI had no
 # concurrency deduplication, so every superseded PR head kept its full job
@@ -15,11 +19,11 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
+CI_WORKFLOW="$ROOT/../.github/workflows/engine.yml"
 
-assert_present "$CI_WORKFLOW" ".github/workflows/ci.yml is missing"
+assert_present "$CI_WORKFLOW" ".github/workflows/engine.yml is missing"
 command -v ruby >/dev/null 2>&1 \
-  || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  || fail "ruby is required to parse .github/workflows/engine.yml as YAML"
 
 # Resolve the workflow's concurrency contract under one simulated event and
 # print "<group><TAB><cancel-in-progress>". Only the two expression constructs
@@ -110,9 +114,9 @@ YAML.load_file(ARGV[0]).fetch("jobs").each do |name, job|
   next if timeout.is_a?(Integer) && timeout > 0
   puts "#{name}: #{timeout.inspect}"
 end
-' "$CI_WORKFLOW") || fail "could not read job timeouts from ci.yml"
+' "$CI_WORKFLOW") || fail "could not read job timeouts from engine.yml"
   [ -z "$reported" ] || fail "these CI jobs have no finite hang tripwire:"$'\n'"$reported"
-  pass "every ci.yml job carries a finite timeout"
+  pass "every engine.yml job carries a finite timeout"
 }
 
 # The four jobs the incident found unbounded, at the report's recommended caps.

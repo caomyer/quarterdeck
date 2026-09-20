@@ -1,13 +1,27 @@
-name: CI
+name: Engine
 
+# The engine's checks. They run from engine/, where the first mate's code lives
+# inside this repository, and only when something there changes: the lanes below
+# are thirteen jobs, too much to spend on a change to the app's CSS.
 on:
   push:
     branches: [main]
+    paths:
+      - 'engine/**'
+      - '.github/workflows/engine.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'engine/**'
+      - '.github/workflows/engine.yml'
 
 permissions:
   contents: read
+
+# Every `run` below is spelled as the engine spells it, from the engine's root.
+defaults:
+  run:
+    working-directory: engine
 
 # Per-PR supersession: a new push to the same PR replaces that PR's in-flight
 # CI instead of letting superseded heads keep 13 jobs of hosted-runner work.
@@ -16,8 +30,6 @@ permissions:
 # main push gets its own group and is never cancelled. Cancellation is likewise
 # limited to pull_request events. Evidence and rationale: the September 12
 # Actions starvation report, section 3 "Workflow mechanics to ship first".
-# The compliance workflow deliberately keeps its own event-specific groups; do
-# not collapse it onto this simpler shape.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

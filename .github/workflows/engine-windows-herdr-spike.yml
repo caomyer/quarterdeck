@@ -1,10 +1,16 @@
 name: Windows Herdr automation spike
 
+# A measurement the captain starts by hand; nothing runs it on a push.
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Every `run` below is spelled as the engine spells it, from the engine's root.
+defaults:
+  run:
+    working-directory: engine
 
 jobs:
   measure:

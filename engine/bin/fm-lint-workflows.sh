@@ -2,14 +2,14 @@
 # fm-lint-workflows.sh - owner of firstmate's GitHub workflow lint.
 #
 # Runs pinned actionlint on every .github/workflows/*.{yml,yaml} so a malformed
-# workflow, including a self-broken ci.yml, fails in the local and no-mistakes
-# lint lane before merge. A broken ci.yml cannot report its own breakage, so
-# this check must not live only as a step inside that workflow. bin/fm-lint.sh
+# workflow, including a self-broken engine workflow, fails in the local and
+# no-mistakes lint lane before merge. A broken workflow cannot report its own
+# breakage, so this check must not live only as a step inside it. bin/fm-lint.sh
 # invokes this owner on its default (no explicit-path) path, which CI and
 # commands.lint both use.
 #
 # Usage:
-#   fm-lint-workflows.sh                 lint workflows under this repo
+#   fm-lint-workflows.sh                 lint the holding repository's workflows
 #   fm-lint-workflows.sh --root <dir>    lint workflows under <dir>
 #   fm-lint-workflows.sh <path>...       lint explicit workflow files
 #   fm-lint-workflows.sh --required-version
@@ -95,7 +95,16 @@ if [ "$#" -gt 0 ]; then
     FILES+=("$path")
   done
 else
+  # GitHub runs workflows only from the root of the repository that holds them.
+  # The engine's live at its own root when it stands alone, and one level up
+  # when it sits inside the app's repository as engine/. Whichever directory
+  # actually holds workflow files is the one linted; an explicit --root always
+  # means exactly that directory.
   workflow_dir="$ROOT/.github/workflows"
+  if [ -z "$EXPLICIT_ROOT" ] && [ -z "$(collect_workflow_files "$workflow_dir")" ]; then
+    above="$(cd "$ROOT/.." && pwd)/.github/workflows"
+    [ -z "$(collect_workflow_files "$above")" ] || workflow_dir="$above"
+  fi
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     FILES+=("$path")
