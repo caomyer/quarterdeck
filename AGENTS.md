@@ -2,7 +2,7 @@
 
 A desktop app that hosts the firstmate first mate over ACP and renders its state natively.
 Quarterdeck is the code name: the deck a captain commands from.
-The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
+The UI (React and Vite) is in `src/`, the Tauri backend is in `src-tauri/`, and the first mate's own code is in `engine/`.
 James's checkout lives at `~/Documents/projects/quarterdeck`, inside iCloud Drive.
 Agents do not work there and do not branch from it: each agent clones the remote to `~/.buzz/REPOS/quarterdeck-<agent>` on local disk.
 
@@ -15,6 +15,23 @@ Agents do not work there and do not branch from it: each agent clones the remote
 - The remote is `https://github.com/caomyer/quarterdeck`, private, under James's account.
   Push `main` and any branch worth keeping; do not make the repository public or add another remote without James's say-so.
 - Never use em dashes in code, docs, or commit messages.
+
+## The engine
+
+`engine/` is firstmate: the bash fleet supervisor the app runs.
+It was its own repository at `caomyer/firstmate` until 2026-09-20, when it moved here with all 720 of its commits, paths rewritten, so `git log` and `git blame` read its whole past from this repo.
+It is not a vendored dependency and not a submodule: it is ours, edited here, and a change that crosses the line between the app and the first mate is one commit.
+
+- Its checks are its own, and they run from `engine/`: `cd engine && bin/fm-test-run.sh --changed` for what your change touches, `bin/fm-lint.sh` for the shell, `bin/fm-test-run.sh --all` for the full 221-script regression.
+  They need pinned ShellCheck and actionlint on PATH; `engine/bin/fm-install-shellcheck.sh <dir>` and `engine/bin/fm-install-actionlint.sh <dir>` fetch the versions CI uses.
+- GitHub runs workflows only from a repository root, so the engine's live at `.github/workflows/engine.yml`, running from `engine/` and firing only on changes under it.
+  `.github/workflows/app.yml` is the app's own, and skips a change confined to `engine/`.
+- `engine/AGENTS.md` is the first mate's job description, addressed to the first mate at work in a fleet.
+  It is not instructions for an agent working on this repository, and a harness that loads it because you edited a file under `engine/` is showing you the product, not your brief.
+  This file is your brief.
+- firstmate's `Require no-mistakes` workflow did not come across: it forced every pull request to be raised through the no-mistakes gate, which was that repository's contribution policy.
+  Nothing imposes it here.
+  Ask James before adding it back.
 
 ## Firstmate homes
 
