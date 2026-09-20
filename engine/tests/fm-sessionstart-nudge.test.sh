@@ -142,6 +142,22 @@ test_installed_copy_inside_a_foreign_repo_nudges() {
   pass "fm-sessionstart-nudge: an installed copy inside another project's work tree is a primary"
 }
 
+# The engine ships as a subdirectory of the app's repository, so a copy with no
+# .git of its own can still sit inside a linked task worktree: a disposable
+# tree where arming a watcher or running session start would be wrong.
+test_copy_inside_a_linked_worktree_is_silent() {
+  local base="$TMP_ROOT/copy-wt-base" tree="$TMP_ROOT/copy-wt-tree" root
+  fm_git_worktree "$base" "$tree" fm/sessionstart-copy-wt
+  root="$tree/engine"
+  mkdir -p "$root/bin" "$root/state"
+  : > "$root/AGENTS.md"
+  [ ! -e "$root/.git" ] || fail "the nested-copy fixture must carry no .git of its own"
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || fail "the nested-copy fixture must sit inside a git work tree"
+  expect_silent_zero "copy inside a linked worktree" run_nudge "$root"
+  pass "fm-sessionstart-nudge: a copy inside a linked task worktree is silent"
+}
+
 test_unreadable_linked_worktree_is_silent() {
   local base="$TMP_ROOT/unreadable-base" root="$TMP_ROOT/unreadable-child" fakebin="$TMP_ROOT/failing-git"
   fm_git_worktree "$base" "$root" fm/sessionstart-unreadable
@@ -1112,6 +1128,7 @@ test_unmarked_linked_worktree_is_silent
 test_linked_secondmate_primary_nudges
 test_installed_copy_nudges
 test_installed_copy_inside_a_foreign_repo_nudges
+test_copy_inside_a_linked_worktree_is_silent
 test_unreadable_linked_worktree_is_silent
 test_missing_state_is_silent
 test_owned_lock_is_silent
