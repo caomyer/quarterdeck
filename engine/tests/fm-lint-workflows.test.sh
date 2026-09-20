@@ -226,6 +226,9 @@ test_default_root_climbs_to_the_holding_repository() {
   write_valid_workflow "$tmp/repo/.github/workflows/engine.yml"
   cp "$LINT_WF" "$tmp/repo/engine/bin/fm-lint-workflows.sh"
   chmod +x "$tmp/repo/engine/bin/fm-lint-workflows.sh"
+  # The climb happens because git says the engine is a subdirectory of a
+  # repository, so the fixture has to be one.
+  git -C "$tmp/repo" init -q
   rc=0
   out=$("$tmp/repo/engine/bin/fm-lint-workflows.sh" 2>&1) || rc=$?
   [ "$rc" -eq 0 ] || fail "default path did not find the holding repository's workflows"$'\n'"$out"
@@ -236,6 +239,25 @@ test_default_root_climbs_to_the_holding_repository() {
 
 # --root names exactly one directory. It must never climb, or a caller asking
 # about one tree would silently be answered about another.
+# The climb is for an engine that is a subdirectory of a repository. A
+# standalone repository with no workflows of its own must not reach past itself
+# into whatever happens to sit beside it.
+test_default_root_does_not_climb_out_of_its_own_repository() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-standalone)
+  mkdir -p "$tmp/beside/.github/workflows" "$tmp/repo/bin"
+  write_valid_workflow "$tmp/beside/.github/workflows/engine.yml"
+  cp "$LINT_WF" "$tmp/repo/bin/fm-lint-workflows.sh"
+  chmod +x "$tmp/repo/bin/fm-lint-workflows.sh"
+  git -C "$tmp/repo" init -q
+  rc=0
+  out=$("$tmp/repo/bin/fm-lint-workflows.sh" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a standalone repository linted the directory above it"$'\n'"$out"
+  assert_contains "$out" "no GitHub workflow files found" \
+    "a standalone repository did not report its own missing workflows"
+  pass "a standalone repository never climbs out of itself"
+}
+
 test_explicit_root_never_climbs() {
   local tmp out rc
   tmp=$(fm_test_tmproot fm-lint-wf-noclimb)
@@ -553,6 +575,7 @@ test_col0_heredoc_fails_with_clear_error
 test_valid_fixture_passes
 test_empty_workflows_dir_fails
 test_default_root_climbs_to_the_holding_repository
+test_default_root_does_not_climb_out_of_its_own_repository
 test_explicit_root_never_climbs
 test_explicit_broken_path_fails
 test_non_mapping_root_fails

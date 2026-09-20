@@ -97,11 +97,15 @@ if [ "$#" -gt 0 ]; then
 else
   # GitHub runs workflows only from the root of the repository that holds them.
   # The engine's live at its own root when it stands alone, and one level up
-  # when it sits inside the app's repository as engine/. Whichever directory
-  # actually holds workflow files is the one linted; an explicit --root always
-  # means exactly that directory.
+  # when it sits inside the app's repository as engine/. The climb is for that
+  # second case only, so it happens when git says the engine is a subdirectory
+  # of a repository, never merely because the engine holds no workflows of its
+  # own: a standalone repository with none would otherwise lint whatever sat in
+  # the directory above it. An explicit --root always means exactly that
+  # directory and never climbs.
   workflow_dir="$ROOT/.github/workflows"
-  if [ -z "$EXPLICIT_ROOT" ] && [ -z "$(collect_workflow_files "$workflow_dir")" ]; then
+  if [ -z "$EXPLICIT_ROOT" ] && [ -z "$(collect_workflow_files "$workflow_dir")" ] \
+    && [ -n "$(git -C "$ROOT" rev-parse --show-prefix 2>/dev/null)" ]; then
     above="$(cd "$ROOT/.." && pwd)/.github/workflows"
     [ -z "$(collect_workflow_files "$above")" ] || workflow_dir="$above"
   fi
