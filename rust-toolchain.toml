@@ -1,2 +1,7 @@
 [toolchain]
 channel = "1.95.0"
+# CI runners install rustup with the minimal profile, which carries no clippy,
+# and the profile chosen at install time is what a newly pinned toolchain gets.
+# Without this, the first cargo call installs 1.95.0 without clippy and the
+# lint step dies saying clippy is not installed for the toolchain.
+components = ["clippy"]

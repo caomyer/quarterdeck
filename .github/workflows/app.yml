@@ -1,10 +1,17 @@
 name: App
 
+# The app's own checks. They skip a change confined to engine/, which the
+# Engine workflow covers, and can also be started by hand.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'engine/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'engine/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,9 +41,15 @@ jobs:
         run: pnpm exec tsc --noEmit
       - name: Unit tests
         run: pnpm test
+      # The only step that runs the bundler; nothing else would catch a build
+      # that type-checks and still fails to bundle.
+      - name: Build
+        run: pnpm build
       - name: Install the browser the page checks drive
         run: pnpm exec playwright install chromium
       - name: Page checks against the browser mock
+        env:
+          ARTIFACT_SHOTS: ${{ runner.temp }}/shots
         run: |
           set -eu
           pnpm dev --port 4191 --strictPort >"$RUNNER_TEMP/vite.log" 2>&1 &
@@ -44,15 +57,33 @@ jobs:
           attempt=0
           until curl -fsS http://127.0.0.1:4191 >/dev/null 2>&1; do
             attempt=$((attempt + 1))
-            [ "$attempt" -lt 150 ] || {
+            [ "$attempt" -lt 300 ] || {
               echo "::error::the dev server never came up"
               cat "$RUNNER_TEMP/vite.log" || true
               exit 1
             }
             sleep 0.2
           done
-          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm projects
-          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
+          # Each suite runs whatever the one before it did, so a red run reports
+          # every page that is wrong, not only the first.
+          failed=
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm projects || failed="$failed projects"
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts || failed="$failed artifacts"
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm tones || failed="$failed tones"
+          [ -z "$failed" ] || {
+            echo "::error::page checks failed:$failed"
+            exit 1
+          }
+      - name: What the dev server said
+        if: failure()
+        run: cat "$RUNNER_TEMP/vite.log" || true
+      - name: Keep the pages the checks saw
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: page-check-screenshots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
       - name: Stop the dev server
         if: always()
         run: |
@@ -64,22 +95,16 @@ jobs:
   rust:
     name: Rust
     runs-on: macos-latest
-    # Hang tripwire: a cold build and the suite measure around ten minutes.
+    # Hang tripwire: a cold toolchain install and build measure around ten
+    # minutes, and the first run of all pays for a cold cargo cache.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # tauri_build reads the built frontend, so the bundle has to exist first.
-      - name: Build the frontend
-        run: pnpm build
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Otherwise a red run saves nothing and the next one builds cold again.
+          cache-on-failure: true
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
