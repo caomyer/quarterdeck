@@ -254,6 +254,11 @@ export function App() {
     : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
   // Everything waiting on the captain: open calls, and finished reports nobody has closed.
   const openCallCount = waiting.length + readyReports.length;
+  // A home nothing has happened in yet: the app built it on this launch, or the
+  // captain pointed at an empty one. "Welcome back" and an offer to catch them
+  // up read strangely to someone who has not been anywhere yet.
+  const nothingYet = openCallCount === 0 && underway.length === 0 && landedRows.length === 0
+    && decided.length === 0 && projects.length === 0 && (fleet?.tasks.length ?? 0) === 0;
   const approvalCount = bridge.permissionRequests.length;
   // Failed and not-sent messages aren't being worked on.
   const pendingCount = Object.values(outbox).filter((item) => item.status !== "picked_up" && !item.error).length;
@@ -452,7 +457,7 @@ export function App() {
             {ahoyVisible && (
               <section className="ahoy-card">
                 <div className="ahoy-mark"><ShipWheel size={22} /></div>
-                <div><span>Ahoy</span><h2>Welcome back.</h2><p>The first mate can catch you up and take you through what's waiting.</p><strong>{openCallCount} waiting on you · {underway.length} underway</strong></div>
+                <div><span>Ahoy</span><h2>{nothingYet ? "Welcome aboard." : "Welcome back."}</h2><p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : "The first mate can catch you up and take you through what's waiting."}</p>{nothingYet ? <strong>A new home, nothing waiting</strong> : <strong>{openCallCount} waiting on you · {underway.length} underway</strong>}</div>
                 <div className="ahoy-actions"><button onClick={runAhoy}>Ahoy</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
               </section>
             )}

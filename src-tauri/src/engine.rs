@@ -130,8 +130,8 @@ pub(crate) fn claim_presentation(home: &Path) -> Result<bool, String> {
 
 /// What the first mate says this machine is missing, as a list the app can show.
 ///
-/// This is the engine's own detection, not a second list kept here that would
-/// drift from it. It is asked for detection only and with the network phase
+/// The engine's own detection, not a second list kept here that would drift
+/// from it, plus the one thing the app needs that the engine does not. It is asked for detection only and with the network phase
 /// skipped, so it reads this machine and changes nothing: no fleet refresh, no
 /// secondmate work, no network. `gh` being unauthenticated is a network
 /// question and is deliberately not among the answers.
@@ -159,7 +159,30 @@ pub(crate) fn missing_tools(engine: &Path, home: &Path) -> Result<Vec<Value>, St
         let why = if said.is_empty() { "it gave no reason" } else { &said };
         return Err(format!("the first mate could not check this machine: {why}"));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).lines().filter_map(needed).collect())
+    let mut missing: Vec<Value> = adapter_missing().into_iter().collect();
+    missing.extend(String::from_utf8_lossy(&output.stdout).lines().filter_map(needed));
+    Ok(missing)
+}
+
+/// The one thing the app itself cannot run without.
+///
+/// The engine's list is the engine's, and it is right not to name this: the
+/// first mate does not need an ACP adapter, the app does, to talk to it at all.
+/// Nobody else would tell the captain, and they would find out by pressing
+/// Start and being told about a tool no checklist mentioned. It goes first
+/// because without it nothing else on the list matters.
+fn adapter_missing() -> Option<Value> {
+    let name = std::env::var("ACP_ADAPTER").unwrap_or_else(|_| "claude-agent-acp".to_string());
+    if crate::envpath::resolve(&name).is_some() {
+        return None;
+    }
+    let how = "npm i -g @agentclientprotocol/claude-agent-acp";
+    Some(json!({
+        "tool": name,
+        "how": how,
+        "kind": "install",
+        "says": format!("MISSING: {name} (install: {how})"),
+    }))
 }
 
 /// One line of the first mate's own report, as something the app can draw.
@@ -356,6 +379,30 @@ mod tests {
         assert!(needed("   ").is_none());
         // Work it did, not something the captain must act on.
         assert!(needed("BOOTSTRAP_INFO: nudged fm-x with 'hello'").is_none());
+    }
+
+    /// The app names the adapter it cannot run without, in the shape the rest of
+    /// the checklist uses, so the captain hears about it from the checklist
+    /// rather than from a failed Start.
+    #[test]
+    fn the_app_names_the_adapter_it_cannot_run_without() {
+        // Resolved the way the host resolves it, so the checklist and the thing
+        // that actually launches can never disagree about what is missing.
+        let named = adapter_missing();
+        let present = crate::envpath::resolve("claude-agent-acp").is_some();
+        assert_eq!(named.is_none(), present, "the checklist disagrees with what the host would find");
+        if let Some(needed) = named {
+            assert_eq!(needed["tool"], "claude-agent-acp");
+            assert_eq!(needed["kind"], "install");
+            assert!(needed["how"].as_str().is_some_and(|how| how.contains("claude-agent-acp")));
+            // Same shape as the engine's own lines, so the app draws it the same way.
+            assert_eq!(needed["says"], needed_line(&needed));
+        }
+    }
+
+    /// The `MISSING: <tool> (install: <how>)` line a value describes.
+    fn needed_line(needed: &Value) -> String {
+        format!("MISSING: {} (install: {})", needed["tool"].as_str().unwrap(), needed["how"].as_str().unwrap())
     }
 
     /// The engine's own check, against a home the engine laid out. It reads
