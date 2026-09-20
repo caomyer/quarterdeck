@@ -173,6 +173,15 @@ fn lay_out_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String
     let home = crate::engine::managed_home(app)?;
     let said = crate::engine::prepare_home(&engine, &home)?;
     log::info!("the first mate's home is ready at {}: {}", home.display(), said.replace('\n', "; "));
+    // An app update replaces the engine's bytes at the same path, which is the
+    // case that leaves a watch armed against a copy that no longer exists. It
+    // fails no launch: a home with no watches has nothing to do, and a watch
+    // broken some other way is a thing to report.
+    match crate::engine::rebind_watches(&home) {
+        Ok(said) if said.is_empty() => {}
+        Ok(said) => log::info!("the first mate's watches follow the engine now installed: {}", said.replace('\n', "; ")),
+        Err(problem) => log::warn!("{problem}"),
+    }
     check_home(&home)
 }
 

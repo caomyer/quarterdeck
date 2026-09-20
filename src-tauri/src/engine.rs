@@ -104,6 +104,36 @@ pub(crate) fn prepare_home(engine: &Path, home: &Path) -> Result<String, String>
     Ok(told)
 }
 
+/// Rebinds the home's registered watches to the engine's current bytes.
+///
+/// A watch records the hash of the executable it will run, so a watch armed
+/// against a previous copy of the engine is refused on its next fire and dies
+/// without saying so. Updating the app replaces those bytes at the same path,
+/// which is exactly that case, so this runs after every layout. It is
+/// idempotent: a watch whose action already matches is left alone.
+///
+/// A home with no watches, and a watch broken for some other reason, are both
+/// things to report rather than to fail a launch over.
+pub(crate) fn rebind_watches(home: &Path) -> Result<String, String> {
+    let script = home.join("bin/fm-procevent-when.sh");
+    if !script.is_file() {
+        return Ok(String::new());
+    }
+    let output = Command::new(&script)
+        .arg("rebind-all")
+        .current_dir(home)
+        .env("FM_HOME", home)
+        .env("PATH", crate::envpath::search_path())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", script.display()))?;
+    let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let told = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() {
+        return Err(format!("the first mate's watches could not be rebound: {}", if said.is_empty() { told } else { said }));
+    }
+    Ok(if told.is_empty() { said } else { told })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +185,33 @@ mod tests {
         let engine = fake_engine(&dir, "#!/bin/sh\nprintf 'fm-home-init: not empty\\n' >&2\nexit 1\n");
         let problem = prepare_home(&engine, &dir.join("home")).unwrap_err();
         assert!(problem.contains("not empty"), "{problem}");
+    }
+
+    /// A home whose watches were armed against an older copy of the engine.
+    #[test]
+    fn the_homes_watches_are_rebound_to_the_engine_now_installed() {
+        let dir = scratch("rebind");
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        // Nothing to rebind is not a failure: a home may have no watches, and
+        // a home the captain chose may predate the script entirely.
+        assert_eq!(rebind_watches(&home).unwrap(), "");
+
+        let script = home.join("bin/fm-procevent-when.sh");
+        std::fs::write(&script, "#!/bin/sh\nprintf 'rebound %s in %s\\n' \"$1\" \"$FM_HOME\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let said = rebind_watches(&home).unwrap();
+        assert!(said.starts_with("rebound rebind-all in "), "{said}");
+        assert!(said.ends_with(home.to_str().unwrap()), "the home was not the one rebound: {said}");
+
+        std::fs::write(&script, "#!/bin/sh\nprintf 'a watch is broken\\n' >&2\nexit 1\n").unwrap();
+        let problem = rebind_watches(&home).unwrap_err();
+        assert!(problem.contains("a watch is broken"), "{problem}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every file under a directory, by path, size and last change.
