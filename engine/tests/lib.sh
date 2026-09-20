@@ -264,6 +264,35 @@ fm_test_pid_is_loose() {
   [ "$grandparent" = 1 ]
 }
 
+# True when firstmate's code is the top of its own git checkout. That is what a
+# secondmate home is cloned or leased from: inside the app's repository the
+# code is a directory in somebody else's checkout, and inside an installed app
+# it is no checkout at all. bin/fm-home-seed.sh refuses both.
+fm_test_code_is_own_checkout() {
+  local top
+  top=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$top" ] || return 1
+  [ "$(CDPATH='' cd -P -- "$top" 2>/dev/null && pwd -P)" \
+    = "$(CDPATH='' cd -P -- "$ROOT" 2>/dev/null && pwd -P)" ]
+}
+
+# For one case in a suite whose other cases do not seed: prints the reason and
+# returns 0 when the case must stand down, so the caller can `&& return 0`.
+fm_test_skip_without_own_checkout() {
+  fm_test_code_is_own_checkout && return 1
+  echo "skip: firstmate is not the top of its own checkout, so bin/fm-home-seed.sh cannot clone or lease a secondmate home"
+  return 0
+}
+
+# Stands a whole suite down when seeding cannot work in this layout, in the
+# runner's own gate-skip spelling, so the reason is on the record instead of a
+# red lane. Call it before anything else prints.
+fm_test_require_own_checkout() {
+  fm_test_code_is_own_checkout && return 0
+  echo "skip: firstmate is not the top of its own checkout, so bin/fm-home-seed.sh cannot clone or lease a secondmate home"
+  exit 0
+}
+
 fm_test_cleanup() {
   local d
   fm_test_reap_procevent_homes

@@ -823,15 +823,23 @@ seed_home() {
     [ $# -gt 0 ] || { echo "error: secondmate needs at least one project, or --no-projects for a project-less home" >&2; return 1; }
   fi
   # A secondmate home is a firstmate checkout, leased with treehouse from or
-  # cloned from this home's code. Firstmate installed as a copy outside git
-  # (inside an app, with a home bin/fm-home-init.sh mirrors) has no checkout to
-  # give one, so seeding is refused before anything is created.
+  # cloned from this home's code, so the code has to be the top of a checkout
+  # of its own. Two layouts are not: firstmate installed as a read-only copy
+  # inside an app, with a home bin/fm-home-init.sh mirrors, and firstmate
+  # shipped as a directory inside another repository, where cloning the code
+  # is cloning something else. Seeding is refused before anything is created.
   # The code itself, by its physical path: from a mirrored home FM_ROOT is the
   # home, which may be a git repository of the user's own.
-  local code_root
+  local code_root code_top
   code_root=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -P -- "$SCRIPT_DIR/.." && pwd -P)} || return 1
-  if [ ! -e "$code_root/.git" ] && [ ! -L "$code_root/.git" ]; then
-    echo "error: secondmate homes need firstmate as a git checkout, and this home runs firstmate installed as a copy outside git; secondmates are not available here yet" >&2
+  code_top=$(git -C "$code_root" rev-parse --show-toplevel 2>/dev/null) || code_top=
+  [ -z "$code_top" ] || code_top=$(CDPATH='' cd -P -- "$code_top" 2>/dev/null && pwd -P) || code_top=
+  if [ "$code_top" != "$code_root" ]; then
+    if [ -n "$code_top" ]; then
+      echo "error: secondmate homes are cloned or leased from firstmate's own checkout, and this firstmate is a directory inside $code_top; secondmates are not available in this layout" >&2
+    else
+      echo "error: secondmate homes are cloned or leased from firstmate's own checkout, and this home runs firstmate installed as a copy outside git; secondmates are not available here" >&2
+    fi
     return 1
   fi
 

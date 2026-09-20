@@ -27,6 +27,9 @@ set -u
 # shellcheck source=tests/secondmate-helpers.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh"
 
+# Every case here seeds a secondmate, which needs firstmate's own checkout.
+fm_test_require_own_checkout
+
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-lifecycle)
 export FM_BACKEND=tmux
 

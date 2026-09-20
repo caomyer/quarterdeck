@@ -34,6 +34,9 @@ set -u
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
+# Every case here seeds a secondmate, which needs firstmate's own checkout.
+fm_test_require_own_checkout
+
 TMP_ROOT=$(fm_test_tmproot fm-remote-parent-binding)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)

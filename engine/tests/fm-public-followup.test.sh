@@ -721,6 +721,7 @@ test_delivery_requires_registration_before_posting() {
 
 test_secondmate_teardown_requires_parent_binding() {
   local parent child registry_before marker_before
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home teardown-parent)
   child=$(make_home teardown-child)
   printf '%s\n' mate > "$child/.fm-secondmate-home"
@@ -794,6 +795,7 @@ assert_local_secondmate_parent_record() {
 
 test_local_secondmate_seed_publishes_parent_before_identity() {
   local parent child parent_resolved fakebin entered release manifest_out real_mv seed_pid wait_count
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home seed-publication-parent relay-off)
   child="$TMP_ROOT/seed-publication-child"
   parent_resolved=$(cd "$parent" && pwd -P)
@@ -845,6 +847,7 @@ SH
 
 test_secondmate_teardown_resolves_parent_from_durable_record_when_env_lost() {
   local parent child parent_resolved
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home teardown-durable-parent)
   child="$TMP_ROOT/teardown-durable-child"
   FM_SECONDMATE_CHARTER='Durable-record regression charter.' \
@@ -882,6 +885,7 @@ test_secondmate_teardown_resolves_parent_from_durable_record_when_env_lost() {
 
 test_secondmate_teardown_durable_record_missing_parent_registration_still_refuses() {
   local parent child parent_resolved
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home teardown-durable-missing-parent relay-off)
   child="$TMP_ROOT/teardown-durable-missing-child"
   FM_SECONDMATE_CHARTER='Durable-record missing-registration regression charter.' \
@@ -913,6 +917,7 @@ test_secondmate_teardown_durable_record_missing_parent_registration_still_refuse
 
 test_secondmate_teardown_durable_record_with_unknown_field_succeeds() {
   local parent parent_alias child parent_resolved rc out
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home teardown-durable-clean-parent relay-off)
   child="$TMP_ROOT/teardown-durable-clean-child"
   FM_SECONDMATE_CHARTER='Durable-record clean-cleanup regression charter.' \
@@ -947,6 +952,7 @@ test_secondmate_teardown_durable_record_with_unknown_field_succeeds() {
 
 test_secondmate_teardown_rejects_conflicting_live_and_durable_parent_bindings() {
   local durable_parent live_parent child parent_resolved
+  fm_test_skip_without_own_checkout && return 0
   durable_parent=$(make_home teardown-durable-conflict-recorded relay-off)
   live_parent=$(make_home teardown-durable-conflict-live relay-off)
   child="$TMP_ROOT/teardown-durable-conflict-child"
@@ -980,6 +986,7 @@ test_secondmate_teardown_rejects_conflicting_live_and_durable_parent_bindings() 
 
 test_secondmate_teardown_rejects_unsafe_durable_parent_records() {
   local case_name parent child parent_record
+  fm_test_skip_without_own_checkout && return 0
   for case_name in symlink invalid-route duplicate-route remote-parent-home local-parent-host; do
     parent=$(make_home "teardown-durable-$case_name-parent" relay-off)
     child="$TMP_ROOT/teardown-durable-$case_name-child"
@@ -1042,6 +1049,7 @@ test_secondmate_teardown_rejects_unsafe_durable_parent_records() {
 # not the fixture refusing for some unrelated reason.
 test_secondmate_teardown_rejects_nul_bearing_durable_parent_record() {
   local parent child parent_resolved pre suf record
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home teardown-durable-nul-parent relay-off)
   child="$TMP_ROOT/teardown-durable-nul-child"
   FM_SECONDMATE_CHARTER='Durable-record NUL regression charter.' \
@@ -1475,6 +1483,7 @@ test_typed_records_exclude_raw_public_material() {
 
 test_dropped_baton_now_surfaces_open_loop() {
   local parent child log
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home baton-parent)
   child="$TMP_ROOT/baton-child"
   FM_SECONDMATE_CHARTER='Baton repro charter.' FM_HOME="$parent" \
@@ -1525,6 +1534,7 @@ test_dropped_baton_now_surfaces_open_loop() {
 
 test_control_registered_followon_is_guarded() {
   local parent child
+  fm_test_skip_without_own_checkout && return 0
   parent=$(make_home baton-control-parent)
   child="$TMP_ROOT/baton-control-child"
   FM_SECONDMATE_CHARTER='Baton control charter.' FM_HOME="$parent" \
