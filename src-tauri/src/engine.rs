@@ -250,6 +250,45 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("engine")
     }
 
+    /// Where the build put the copied resources: OUT_DIR is
+    /// <target>/<profile>/build/<crate>-<hash>/out, so the copy is three levels
+    /// up. This is the tree that ships, not the one in the repository.
+    fn copied_engine() -> Option<PathBuf> {
+        let out = Path::new(env!("OUT_DIR"));
+        let profile = out.parent()?.parent()?.parent()?;
+        let engine = profile.join("engine");
+        engine.is_dir().then_some(engine)
+    }
+
+    /// The copy, not the source. Tauri's resource copy decides an entry is a
+    /// directory by a question that follows symlinks, and then skips it, so the
+    /// engine's two directory links once arrived as nothing at all and the
+    /// bundled first mate had no skills. The source tree cannot see that: it
+    /// has the links.
+    #[test]
+    fn the_copy_that_ships_carries_what_the_links_point_at() {
+        let Some(engine) = copied_engine() else {
+            // Nothing to check before the resources have been copied once.
+            return;
+        };
+        let engine = check_engine(&engine).expect("the copied engine is not laid out as one");
+        let skills = engine.join(".claude/skills");
+        assert!(skills.is_dir(), "the copy has no .claude/skills, so the first mate ships with no skills");
+        assert!(skills.join("bearings/SKILL.md").is_file(), ".claude/skills arrived empty");
+        assert!(
+            engine.join(".agents/skills/firstmate-calm/.claude-plugin/plugin.json").is_file(),
+            "the copy has no firstmate-calm"
+        );
+
+        // And it lays out a home, which is the whole point of shipping it.
+        let dir = scratch("copy");
+        let home = dir.join("home");
+        let said = prepare_home(&engine, &home).unwrap();
+        assert!(said.contains("ok"), "the copy could not lay out a home: {said}");
+        assert!(home.join(".claude/skills/bearings/SKILL.md").is_file(), "the home cannot reach the first mate's skills");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The real script against the real engine: the app's whole first launch,
     /// minus the app. Nothing outside the scratch home is touched, and the
     /// engine is checked afterwards for having stayed read-only in practice.
