@@ -167,6 +167,30 @@ test_secondmates_are_refused_plainly() {
   pass "a secondmate cannot be seeded from an installed copy, and the refusal says so plainly"
 }
 
+# The backlog config says where this home's rows live, and every reader
+# resolves it and requires the result to be inside the home. Reached through a
+# link into the code it resolves outside, and the first crewmate dispatch is
+# refused - which is how a live run found this, after the home looked perfect.
+test_the_backlog_config_is_the_homes_own() {
+  local config="$HOME_DIR/.tasks.toml" resolved
+  [ -f "$config" ] || fail "the home has no backlog config"
+  [ ! -L "$config" ] || fail "the backlog config is a link into the code, and every dispatch reading it is refused"
+  resolved=$(cd "$(dirname "$config")" && pwd -P)/$(basename "$config")
+  case "$resolved" in
+    "$HOME_DIR"/*) ;;
+    *) fail "the backlog config resolves outside the home, at $resolved" ;;
+  esac
+  cmp -s "$config" "$CODE/.tasks.toml" || fail "the seeded config is not what the code ships"
+
+  # It is the captain's to edit: a later launch leaves it exactly as they left it.
+  printf '\n# the captain was here\n' >> "$config"
+  FM_HOME="$HOME_DIR" "$CODE/bin/fm-home-init.sh" >/dev/null 2>&1 \
+    || fail "a second layout failed"
+  [ "$(tail -1 "$config")" = "# the captain was here" ] \
+    || fail "a later launch overwrote the captain's own backlog config"
+  pass "the backlog config is the home's own file, seeded once and then left alone"
+}
+
 test_update_points_at_the_app() {
   local out rc=0
   out=$(in_home bin/fm-update.sh 2>&1) || rc=$?
@@ -208,6 +232,7 @@ test_session_start_hook_runs_from_the_home
 test_backlog_calls_and_history_work_by_relative_paths
 test_guard_hooks_apply_in_the_home
 test_secondmates_are_refused_plainly
+test_the_backlog_config_is_the_homes_own
 test_update_points_at_the_app
 test_deferred_network_report_is_clean
 test_the_copy_is_untouched

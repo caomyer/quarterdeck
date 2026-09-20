@@ -44,10 +44,20 @@ test_fresh_home_mirrors_the_code() {
   assert_contains "$out" "code: $CODE" "the code is named"
   assert_contains "$out" "linked: bin" "bin is linked"
   [ "$(printf '%s\n' "$out" | tail -1)" = ok ] || fail "the last line must be ok: $out"
-  for name in bin docs AGENTS.md CLAUDE.md .agents .tasks.toml; do
+  for name in bin docs AGENTS.md CLAUDE.md .agents; do
     [ -L "$home/$name" ] || fail "$name must be a link in the home"
     [ "$(readlink "$home/$name")" = "$CODE/$name" ] || fail "$name must link to the code's $name"
   done
+  # The backlog config is the home's own real file, seeded from the code. Every
+  # reader resolves it and requires the result to be inside the home, so a link
+  # into the code resolves outside it and the first dispatch is refused.
+  assert_contains "$out" "seeded: .tasks.toml" "the backlog config is seeded"
+  [ -f "$home/.tasks.toml" ] && [ ! -L "$home/.tasks.toml" ] \
+    || fail ".tasks.toml must be the home's own file, not a link into the code"
+  [ -w "$home/.tasks.toml" ] || fail ".tasks.toml must be the captain's to edit"
+  cmp -s "$home/.tasks.toml" "$CODE/.tasks.toml" || fail ".tasks.toml must be seeded from the code's"
+  printf '%s\n' "$out" | grep -qE '^(linked|relinked): \.tasks\.toml$' \
+    && fail ".tasks.toml must never be linked"
   for dir in data state config projects .claude; do
     [ -d "$home/$dir" ] && [ ! -L "$home/$dir" ] || fail "$dir must be a real directory in the home"
   done

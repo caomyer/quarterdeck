@@ -14,7 +14,10 @@
 # entry of the code (bin/, docs/, AGENTS.md, CLAUDE.md, .agents/, .tasks.toml,
 # ...) is a symlink into the code, and the home's own directories are real.
 # .claude/ is a real directory whose entries link into the code's .claude/, so
-# the harness can still write its own local settings there. A relative
+# the harness can still write its own local settings there. A few entries are
+# the home's own real files, copied from the code the first time and never
+# replaced: the backlog config, which every reader requires to resolve inside
+# the home, and which the captain may edit. A relative
 # `bin/...` path, a printed hint, and a hook command built from the project
 # directory all resolve from the home, and a write aimed at the code fails on
 # the read-only copy instead of changing it.
@@ -339,11 +342,47 @@ mirror() {
   done
 }
 
-top_skip() { home_owned "$1"; }
+# Entries the home must hold as its own real file, seeded from the code the
+# first time and never replaced. The backlog config says where this home's rows
+# live, and every reader resolves it and requires the result to be inside the
+# home; reached through a link into the code it resolves outside, and the first
+# crewmate dispatch is refused. It is the captain's file to edit after that.
+SEEDED='.tasks.toml'
+
+seeded() {  # <name>
+  case " $SEEDED " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+# seed <name>: give the home its own copy when it has none. Published by rename
+# so a first mate reading it never sees half a file, and left alone ever after.
+seed() {
+  local name=$1 tmp
+  if [ -e "$HOME_DIR/$name" ] || [ -L "$HOME_DIR/$name" ]; then
+    return 0
+  fi
+  [ -f "$CODE/$name" ] || return 0
+  tmp="$HOME_DIR/.fm-home-init.$$.${name}"
+  cp -- "$CODE/$name" "$tmp" || fail "cannot seed $name"
+  # The copy inherits the code's mode, and the code an app ships is read-only.
+  # This one is the captain's file: they have to be able to edit it.
+  # No -- here: BSD chmod does not take it, and $tmp is an absolute path of
+  # this script's own making, so it can never be read as an option.
+  chmod u+w "$tmp" || fail "cannot seed a writable $name"
+  mv -f -- "$tmp" "$HOME_DIR/$name" || { rm -f -- "$tmp"; fail "cannot seed $name"; }
+  printf 'seeded: %s\n' "$name"
+}
+
+top_skip() { home_owned "$1" || seeded "$1"; }
 # The harness writes its own local settings beside the tracked ones.
 claude_skip() { [ "$1" = settings.local.json ]; }
 
 mirror "" top_skip
+for seed_name in $SEEDED; do
+  seed "$seed_name"
+done
 if [ -d "$CODE/.claude" ]; then
   mirror .claude claude_skip
 fi
