@@ -48,7 +48,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { callProject, filterLog, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "./calls";
@@ -445,6 +445,7 @@ export function App() {
           <div className={`content-scroll bearings-page ${bridge.refreshing ? "snapshot-refreshing" : ""}`} data-screen="bearings" aria-busy={bridge.refreshing}>
             {hostBanners((question) => { navigate("chat"); void bridge.send(question); })}
             {bridge.snapshotHealth.errors.length > 0 && <SnapshotBanner health={bridge.snapshotHealth} refreshing={bridge.refreshing} onRetry={() => void bridge.refreshSnapshot()} />}
+            <NeedsBanner needs={bridge.needs} problem={bridge.needsProblem} checking={bridge.checkingTools} onCheck={() => void bridge.checkTools()} />
             {approvalCount > 0 && view === "bearings" && <ApprovalBanner count={approvalCount} onOpen={() => navigate("chat")} />}
             {!bearings && bridge.snapshotHealth.errors.length === 0 && <EmptyState label="Taking fresh bearings of this home…" />}
             {bearings && <>
@@ -582,6 +583,31 @@ function NavButton({ active, icon, label, detail, count, countTitle, onClick }: 
 
 function HomeSetup({ problem, choosing, onChoose, onUseApp }: { problem: string | null; choosing: boolean; onChoose: () => void; onUseApp: () => void }) {
   return <div className="home-setup"><section><div className="brand-mark"><Anchor size={21} /></div><h1>Where does firstmate live on this Mac?</h1><p>The app ships its own first mate and keeps it in the app's folder. It could not set that up this time, so you can point it at a firstmate folder of your own: the one with <code>AGENTS.md</code> and <code>bin</code> inside.</p>{problem && <HomeProblem problem={problem} />}<div className="home-actions"><button className="home-choose" disabled={choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose folder…"}</button><button className="home-revert" disabled={choosing} onClick={onUseApp}>Try the app's own again</button></div></section></div>;
+}
+
+/// What the first mate says this machine still needs, in its own order.
+function NeedsBanner({ needs, problem, checking, onCheck }: { needs: Needed[]; problem: string | null; checking: boolean; onCheck: () => void }) {
+  if (needs.length === 0 && !problem) return null;
+  return <section className="needs-banner" role="status" aria-label="What this Mac still needs">
+    <header>
+      <CircleAlert size={16} />
+      <div>
+        <strong>{problem ? "The first mate could not check this Mac" : needs.length === 1 ? "The first mate needs one more thing on this Mac" : `The first mate needs ${needs.length} more things on this Mac`}</strong>
+        <small>{problem ? "Until it can, what is missing here is unknown." : "It runs without them, but the work that uses them will stop."}</small>
+      </div>
+      <button className="icon-button" onClick={onCheck} disabled={checking} title="Check this Mac again">
+        <RefreshCw size={16} />
+      </button>
+    </header>
+    {problem ? <p className="needs-problem">{problem}</p> : <ul>
+      {needs.map((needed) => <li key={needed.says}>
+        {needed.tool ? <><code className="needs-tool">{needed.tool}</code>{needed.kind === "manual"
+          ? <span>install it yourself: <a href={needed.how ?? undefined} target="_blank" rel="noreferrer noopener">{needed.how}</a></span>
+          : needed.how ? <code className="needs-how">{needed.how}</code> : <span>no install command was offered</span>}</>
+          : <span className="needs-says">{needed.says}</span>}
+      </li>)}
+    </ul>}
+  </section>;
 }
 
 function HomeProblem({ problem }: { problem: string }) {

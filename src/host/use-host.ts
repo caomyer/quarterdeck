@@ -6,6 +6,7 @@ import type {
   HistoryItem,
   HomeStatus,
   HostAdapter,
+  Needed,
   HostEvent,
   HostRuntimeState,
   OutboxStatus,
@@ -136,6 +137,10 @@ export function useHost(adapter: HostAdapter) {
   const [choosingHome, setChoosingHome] = useState(false);
   /** False while the app's own home is in use, so the app can offer it back. */
   const [homeChosen, setHomeChosen] = useState(false);
+  /** What the first mate says this machine still needs, and whether it is being asked. */
+  const [needs, setNeeds] = useState<Needed[]>([]);
+  const [needsProblem, setNeedsProblem] = useState<string | null>(null);
+  const [checkingTools, setCheckingTools] = useState(false);
   const [hostHome, setHostHome] = useState<string | null>(null);
   const [bearings, setBearings] = useState<BearingsSnapshot | null>(null);
   const [fleet, setFleet] = useState<FleetSnapshot | null>(null);
@@ -516,6 +521,28 @@ export function useHost(adapter: HostAdapter) {
     return adoptHome(status);
   }, [adapter, adoptHome]);
 
+  /** Asks the first mate what this machine is missing. Reads only. */
+  const checkTools = useCallback(async () => {
+    setCheckingTools(true);
+    try {
+      const answer = await adapter.toolsMissing();
+      setNeeds(answer.missing);
+      setNeedsProblem(answer.problem);
+    } catch (error) {
+      setNeeds([]);
+      setNeedsProblem(errorText(error));
+    } finally {
+      setCheckingTools(false);
+    }
+  }, [adapter]);
+
+  // Once the home is known, and again whenever it changes: a different home can
+  // want different tools, and the answer is about this machine, not this window.
+  useEffect(() => {
+    if (!home) return;
+    void checkTools();
+  }, [home, checkTools]);
+
   /** Gives the app's own home back, forgetting a folder the captain chose. */
   const useAppHome = useCallback(async (): Promise<string | null> => {
     setChoosingHome(true);
@@ -573,6 +600,10 @@ export function useHost(adapter: HostAdapter) {
     chooseHome,
     useAppHome,
     homeChosen,
+    needs,
+    needsProblem,
+    checkingTools,
+    checkTools,
     refreshSnapshot,
   };
 }

@@ -173,6 +173,15 @@ fn lay_out_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String
     let home = crate::engine::managed_home(app)?;
     let said = crate::engine::prepare_home(&engine, &home)?;
     log::info!("the first mate's home is ready at {}: {}", home.display(), said.replace('\n', "; "));
+    // The app's own home presents its pages through the app, so the first mate
+    // is told so before it is ever asked: left unsaid it means lavish-axi, and
+    // the captain would be asked on first launch to install a tool this app
+    // does not use.
+    match crate::engine::claim_presentation(&home) {
+        Ok(true) => log::info!("the first mate will present this home's pages in Quarterdeck"),
+        Ok(false) => {}
+        Err(problem) => log::warn!("{problem}"),
+    }
     // An app update replaces the engine's bytes at the same path, which is the
     // case that leaves a watch armed against a copy that no longer exists. It
     // fails no launch: a home with no watches has nothing to do, and a watch
@@ -241,6 +250,25 @@ pub async fn home_get(app: AppHandle) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || saved_status(&app))
         .await
         .map_err(|e| format!("the first mate's home could not be read: {e}"))
+}
+
+/// What the first mate says this machine still needs, for the app to show.
+/// Empty when nothing is missing. A home the captain chose is checked with the
+/// engine the app ships, which is the one that will run in it.
+#[tauri::command]
+pub async fn tools_missing(app: AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = crate::engine::bundled_engine(&app)?;
+        let Some(home) = saved_home(&app) else {
+            return Ok(json!({"missing": [], "problem": "there is no home to check"}));
+        };
+        match crate::engine::missing_tools(&engine, &home) {
+            Ok(missing) => Ok(json!({"missing": missing, "problem": null})),
+            Err(problem) => Ok(json!({"missing": [], "problem": problem})),
+        }
+    })
+    .await
+    .map_err(|e| format!("this machine could not be checked: {e}"))?
 }
 
 /// Gives the app's own home back, by forgetting the folder the captain chose.

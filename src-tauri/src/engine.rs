@@ -14,6 +14,7 @@
 //! and the managed home, so a test run uses a scratch pair and never the
 //! captain's own.
 
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -104,6 +105,81 @@ pub(crate) fn prepare_home(engine: &Path, home: &Path) -> Result<String, String>
     Ok(told)
 }
 
+/// Tells the home that Quarterdeck presents its pages, unless it already says
+/// something. The first mate reads `config/presentation` to decide where a
+/// report or a decision goes: left unset it means lavish-axi, a tool the app
+/// does not need and would otherwise ask the captain to install on first
+/// launch. Only written when absent, so a captain who changed it keeps it.
+pub(crate) fn claim_presentation(home: &Path) -> Result<bool, String> {
+    let config = home.join("config");
+    let setting = config.join("presentation");
+    if setting.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(&config).map_err(|e| format!("could not create {}: {e}", config.display()))?;
+    std::fs::write(&setting, "quarterdeck
+").map_err(|e| format!("could not write {}: {e}", setting.display()))?;
+    Ok(true)
+}
+
+/// What the first mate says this machine is missing, as a list the app can show.
+///
+/// This is the engine's own detection, not a second list kept here that would
+/// drift from it. It is asked for detection only and with the network phase
+/// skipped, so it reads this machine and changes nothing: no fleet refresh, no
+/// secondmate work, no network. `gh` being unauthenticated is a network
+/// question and is deliberately not among the answers.
+pub(crate) fn missing_tools(engine: &Path, home: &Path) -> Result<Vec<Value>, String> {
+    let script = engine.join("bin/fm-bootstrap.sh");
+    if !script.is_file() {
+        return Ok(Vec::new());
+    }
+    let output = Command::new(&script)
+        .current_dir(home)
+        .env("FM_HOME", home)
+        .env("FM_BOOTSTRAP_DETECT_ONLY", "1")
+        .env("FM_BOOTSTRAP_NETWORK_PHASE", "skip")
+        .env("PATH", crate::envpath::search_path())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", script.display()))?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("the first mate could not check this machine: {said}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).lines().filter_map(needed).collect())
+}
+
+/// One line of the first mate's own report, as something the app can draw.
+/// A line it does not know the shape of is still shown, in the first mate's
+/// words: hiding it would be the app deciding what the captain may know.
+fn needed(line: &str) -> Option<Value> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with("BOOTSTRAP_INFO:") {
+        return None;
+    }
+    if let Some(rest) = line.strip_prefix("MISSING: ") {
+        let (tool, how) = split_how(rest, "(install: ");
+        return Some(json!({"tool": tool, "how": how, "kind": "install", "says": line}));
+    }
+    if let Some(rest) = line.strip_prefix("MISSING_MANUAL: ") {
+        let (tool, how) = split_how(rest, "(instructions: ");
+        return Some(json!({"tool": tool, "how": how, "kind": "manual", "says": line}));
+    }
+    Some(json!({"tool": null, "how": null, "kind": "other", "says": line}))
+}
+
+/// `<tool> (install: <command>)` split into its two halves. A line that does
+/// not carry the opener is all name and no remedy, which is still worth saying.
+fn split_how(rest: &str, opener: &str) -> (String, Option<String>) {
+    match rest.find(opener) {
+        Some(at) => {
+            let how = rest[at + opener.len()..].trim_end().trim_end_matches(')');
+            (rest[..at].trim().to_string(), Some(how.to_string()))
+        }
+        None => (rest.trim().to_string(), None),
+    }
+}
+
 /// Rebinds the home's registered watches to the engine's current bytes.
 ///
 /// A watch records the hash of the executable it will run, so a watch armed
@@ -192,6 +268,82 @@ mod tests {
         let engine = fake_engine(&dir, "#!/bin/sh\nprintf 'fm-home-init: not empty\\n' >&2\nexit 1\n");
         let problem = prepare_home(&engine, &dir.join("home")).unwrap_err();
         assert!(problem.contains("not empty"), "{problem}");
+    }
+
+    /// The first mate reads config/presentation to decide where a page goes.
+    #[test]
+    fn the_app_says_it_presents_this_homes_pages_unless_the_home_says_otherwise() {
+        let dir = scratch("presentation");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(claim_presentation(&home).unwrap(), "the setting was not written");
+        assert_eq!(std::fs::read_to_string(home.join("config/presentation")).unwrap(), "quarterdeck\n");
+        // A captain who changed it keeps it, on this launch and every one after.
+        std::fs::write(home.join("config/presentation"), "lavish\n").unwrap();
+        assert!(!claim_presentation(&home).unwrap(), "the captain's own setting was overwritten");
+        assert_eq!(std::fs::read_to_string(home.join("config/presentation")).unwrap(), "lavish\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first mate's own report, read as something the app can draw.
+    #[test]
+    fn what_is_missing_is_read_in_the_first_mates_own_words() {
+        let install = needed("MISSING: jq (install: brew install jq)").unwrap();
+        assert_eq!(install["tool"], "jq");
+        assert_eq!(install["how"], "brew install jq");
+        assert_eq!(install["kind"], "install");
+
+        let manual = needed("MISSING_MANUAL: herdr (instructions: https://example.invalid/herdr)").unwrap();
+        assert_eq!(manual["tool"], "herdr");
+        assert_eq!(manual["how"], "https://example.invalid/herdr");
+        assert_eq!(manual["kind"], "manual");
+
+        // A line with no remedy is all name, and still worth saying.
+        let bare = needed("MISSING: tasks-axi").unwrap();
+        assert_eq!(bare["tool"], "tasks-axi");
+        assert_eq!(bare["how"], Value::Null);
+
+        // Anything else the first mate reports is shown in its own words rather
+        // than dropped, because dropping it is the app deciding what may be known.
+        let other = needed("BACKEND_INVALID: zellij (known: tmux herdr)").unwrap();
+        assert_eq!(other["kind"], "other");
+        assert_eq!(other["tool"], Value::Null);
+        assert!(other["says"].as_str().unwrap().starts_with("BACKEND_INVALID"));
+
+        assert!(needed("").is_none());
+        assert!(needed("   ").is_none());
+        // Work it did, not something the captain must act on.
+        assert!(needed("BOOTSTRAP_INFO: nudged fm-x with 'hello'").is_none());
+    }
+
+    /// The engine's own check, against a home the engine laid out. It reads
+    /// this machine and changes nothing: no network, no fleet work.
+    #[test]
+    fn the_engine_says_what_this_machine_is_missing() {
+        let Ok(engine) = check_engine(&real_engine()) else { return };
+        let dir = scratch("missing");
+        let home = dir.join("home");
+        prepare_home(&engine, &home).expect("the engine could not lay out a home");
+        claim_presentation(&home).unwrap();
+        let before = manifest(&home.join("state"));
+
+        let missing = missing_tools(&engine, &home).expect("the check failed");
+        for needed in &missing {
+            assert!(needed["says"].as_str().is_some_and(|says| !says.is_empty()), "a line with nothing to say: {needed}");
+            // Not asserting that nothing lands in "other": run against this
+            // repository's own engine, the first mate reports the checkout it
+            // reads is on a branch rather than main, which is true and is the
+            // sort of thing the captain should see rather than have dropped.
+            assert!(needed["kind"].as_str().is_some(), "a line with no kind: {needed}");
+        }
+        // Nothing this machine is missing should be lavish-axi: the app presents
+        // its own pages, and the home was told so above.
+        assert!(
+            !missing.iter().any(|needed| needed["says"].as_str().is_some_and(|says| says.contains("lavish-axi"))),
+            "the captain was asked for a tool the app does not use: {missing:?}"
+        );
+        assert_eq!(manifest(&home.join("state")), before, "checking the machine changed the home");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A home whose watches were armed against an older copy of the engine.

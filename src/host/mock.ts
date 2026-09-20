@@ -15,6 +15,7 @@ import type {
   FleetTask,
   HistoryItem,
   HomeStatus,
+  Needed,
   HostAdapter,
   HostEvent,
   HostEventListener,
@@ -818,6 +819,23 @@ export class MockHostAdapter implements HostAdapter {
   async useAppHome(): Promise<HomeStatus> {
     this.homeChosen = false;
     return this.getHome();
+  }
+
+  /** `?needs` shows the first-launch checklist; `?needs=none` an answered one. */
+  async toolsMissing(): Promise<{ missing: Needed[]; problem: string | null }> {
+    const asked = new URLSearchParams(window.location.search).get("needs");
+    if (asked === null) return { missing: [], problem: null };
+    if (asked === "none") return { missing: [], problem: null };
+    if (asked === "unreadable") return { missing: [], problem: "the first mate could not check this machine: bin/fm-bootstrap.sh: permission denied" };
+    return {
+      missing: [
+        { tool: "jq", how: "brew install jq", kind: "install", says: "MISSING: jq (install: brew install jq)" },
+        { tool: "tasks-axi", how: "npm install -g tasks-axi", kind: "install", says: "MISSING: tasks-axi (install: npm install -g tasks-axi)" },
+        { tool: "herdr", how: "https://example.invalid/herdr", kind: "manual", says: "MISSING_MANUAL: herdr (instructions: https://example.invalid/herdr)" },
+        { tool: null, how: null, kind: "other", says: "BACKEND_INVALID: zellij (known: tmux herdr cmux orca zellij)" },
+      ],
+      problem: null,
+    };
   }
 
   async answerPermission(id: string, optionId: string) {

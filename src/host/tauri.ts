@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { artifactPath } from "./types";
-import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, SnapshotEvent } from "./types";
+import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -156,6 +156,10 @@ export class TauriHostAdapter implements HostAdapter {
 
   useAppHome() {
     return invoke<HomeReply>("home_use_app").then(homeStatus);
+  }
+
+  toolsMissing() {
+    return invoke<{ missing: Needed[]; problem: string | null }>("tools_missing");
   }
 
   refreshSnapshot() {

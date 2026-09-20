@@ -383,6 +383,25 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .home-setup p { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.55; }
 .home-setup code, .settings-path { padding: 1px 4px; border-radius: 4px; color: var(--ink); background: var(--surface-2); font: .64rem ui-monospace, "SFMono-Regular", monospace; }
 .home-choose { display: flex; align-items: center; gap: 7px; min-height: 34px; margin-top: 8px; padding: 0 12px; border: 0; border-radius: 6px; color: var(--on-accent); background: var(--sea); font-size: .68rem; font-weight: 720; }
+/* What this Mac still needs: present, readable, and never the loudest thing on
+   the page - the first mate runs without these and says so. */
+.needs-banner { margin: 0 0 12px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--amber) 7%, var(--surface)); }
+.needs-banner header { display: grid; grid-template-columns: 16px 1fr auto; gap: 9px; align-items: start; color: var(--amber); }
+.needs-banner header strong { display: block; color: var(--ink); font-size: .7rem; font-weight: 700; }
+.needs-banner header small { display: block; margin-top: 2px; color: var(--muted); font-size: .62rem; }
+/* Two columns so every remedy starts in the same place: a checklist is read
+   down the second column, not across ragged rows. */
+.needs-banner ul { display: grid; grid-template-columns: auto 1fr; gap: 6px 9px; margin: 10px 0 0; padding: 0 0 0 25px; list-style: none; }
+.needs-banner li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; color: var(--muted); font-size: .64rem; }
+.needs-banner li > span, .needs-banner li > code:last-child { grid-column: 2; justify-self: start; }
+.needs-banner a { color: var(--sea); font-weight: 640; text-decoration-color: color-mix(in srgb, var(--sea) 45%, transparent); text-underline-offset: 2px; overflow-wrap: anywhere; }
+.needs-banner a:hover { text-decoration-color: var(--sea); }
+.needs-tool { padding: 1px 6px; border-radius: 4px; color: var(--ink); background: color-mix(in srgb, var(--amber) 16%, transparent); font-weight: 700; }
+.needs-how { padding: 1px 6px; border-radius: 4px; color: var(--ink); background: color-mix(in srgb, var(--ink) 7%, transparent); overflow-wrap: anywhere; user-select: all; }
+/* A line that names no tool spans both columns rather than sitting in the
+   remedy column under names it has nothing to do with. */
+.needs-banner li > .needs-says { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.needs-problem { margin: 10px 0 0 25px; color: var(--muted); font-size: .64rem; overflow-wrap: anywhere; }
 .home-actions { display: flex; align-items: center; gap: 8px; }
 /* The way back to the app's own first mate: available, never the loud choice. */
 .home-revert { min-height: 34px; margin-top: 8px; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: transparent; font-size: .68rem; font-weight: 640; }

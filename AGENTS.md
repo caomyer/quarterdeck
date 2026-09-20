@@ -93,6 +93,11 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm projects`.
   It checks what waits on the captain in the project, what is underway and up next, and the logbook: its filters, search, the rows closed without a delivery, a closed task's details, paging, and a firstmate that cannot list its history or fails to.
   Run it after changing the project page or the mock's history.
+- Check what the app tells a captain their Mac still needs, in both themes: start Vite on your own port, then
+  `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm onboarding`.
+  It checks the checklist the first mate's own detection produces, the remedy beside each name, a line the app has no shape for shown in the first mate's words, a check that could not be made, and a Mac with nothing missing saying nothing.
+  The list is never kept here: `bin/fm-bootstrap.sh` owns what a home needs, and the app asks it for detection only with the network phase skipped, so the check reads the machine and changes nothing.
+  Run it after changing that banner or what the backend reads from bootstrap.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.
