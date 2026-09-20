@@ -103,6 +103,14 @@ await page.setViewportSize({ width: 1280, height: 900 });
 await page.goto(`${baseUrl}/?needs=none`);
 await page.waitForSelector("[data-screen='bearings']", { timeout: 20000 });
 check(await page.locator("[role='status'][aria-live='polite']").count() >= 1, "the region that says this is there before it says anything");
+// And takes no room while it is empty, or the page below it sits a gap lower
+// on every visit where there is nothing to say.
+const gap = await page.evaluate(() => {
+  const region = document.querySelector(".needs-region");
+  const first = document.querySelector("[data-screen='bearings']")?.firstElementChild;
+  return region && first ? Math.round(first.getBoundingClientRect().top - region.getBoundingClientRect().top) : -1;
+});
+check(gap === 0, `an empty checklist takes no room (${gap}px)`);
 
 check(errors.length === 0, `the page raised no errors${errors.length ? `: ${errors.join("; ")}` : ""}`);
 

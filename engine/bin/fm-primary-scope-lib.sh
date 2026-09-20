@@ -42,7 +42,7 @@ fm_root_is_mirrored_home() {
     # must not make a task worktree into a home.
     code=${code%$'\r'}
     [ -f "$code/AGENTS.md" ] && [ -d "$code/bin" ] && return 0
-  done < "$marker"
+  done < "$marker" 2>/dev/null
   return 1
 }
 

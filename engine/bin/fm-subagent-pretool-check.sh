@@ -188,11 +188,14 @@ STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 # inert (exit 0), never a block, so a broken environment never denies a call.
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
-# The home, not the physical code. In a home that mirrors an installed copy the
-# two differ, and it is the home that carries the state and the marker saying
-# what it is; asking about the code would make this the one guard of the six
-# that goes inert in such a home whenever git cannot answer.
-fm_primary_scope_matches "$FM_HOME" "$STATE" || exit 0
+# An override, else the root the hook was reached through: exactly what the
+# other five guards ask about. In a home that mirrors an installed copy it is the home, while the
+# physical code is the engine, and it is the home that carries the state and
+# the marker saying what it is. Not FM_HOME: that is inherited, and a crewmate
+# launched from a primary session carries the primary's, which would make this
+# guard deny the delegation calls a crewmate is entitled to make in its own
+# task worktree.
+fm_primary_scope_matches "${FM_ROOT_OVERRIDE:-$REACHED_ROOT}" "$STATE" || exit 0
 
 # Name the dedicated scout entry point only when this home carries it; degrade
 # to the two-step brief-then-spawn path when it does not, rather than naming a

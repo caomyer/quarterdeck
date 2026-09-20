@@ -383,6 +383,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .home-setup p { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.55; }
 .home-setup code, .settings-path { padding: 1px 4px; border-radius: 4px; color: var(--ink); background: var(--surface-2); font: .64rem ui-monospace, "SFMono-Regular", monospace; }
 .home-choose { display: flex; align-items: center; gap: 7px; min-height: 34px; margin-top: 8px; padding: 0 12px; border: 0; border-radius: 6px; color: var(--on-accent); background: var(--sea); font-size: .68rem; font-weight: 720; }
+/* The live region is always in the page so a reader is told when it fills: one
+   that appears already full has no change inside it to announce. Empty, it is
+   not a box of its own, or the page below it would sit a gap lower on every
+   visit where there is nothing to say. */
+.needs-region:empty { display: contents; }
 /* What this Mac still needs: present, readable, and never the loudest thing on
    the page - the first mate runs without these and says so. */
 .needs-banner { margin: 0 0 12px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--amber) 7%, var(--surface)); }

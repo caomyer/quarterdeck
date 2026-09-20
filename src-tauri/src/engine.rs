@@ -196,9 +196,10 @@ fn split_how(rest: &str, opener: &str) -> (String, Option<String>) {
         return (rest.trim().to_string(), None);
     };
     let after = &rest[at + opener.len()..];
-    // The remedy closes at its own bracket, not at the end of the line: a line
-    // may say more after it, and a command may carry brackets of its own.
-    let how = match after.find(')') {
+    // The remedy closes at the bracket that closes its parenthetical, the last
+    // one: a line may say more after it, and a command may carry brackets of
+    // its own, which closing at the first would cut in half.
+    let how = match after.rfind(')') {
         Some(close) => &after[..close],
         None => after,
     };
@@ -331,6 +332,18 @@ mod tests {
         let bare = needed("MISSING: tasks-axi").unwrap();
         assert_eq!(bare["tool"], "tasks-axi");
         assert_eq!(bare["how"], Value::Null);
+
+        // A command carrying brackets of its own keeps them: the remedy closes
+        // at the bracket that closes the parenthetical, not at the first one.
+        let bracketed = needed("MISSING: foo (install: sh -c 'f() { :; }; f')").unwrap();
+        assert_eq!(bracketed["how"], "sh -c 'f() { :; }; f'");
+
+        // A tool named inside a longer line is still a tool with a command, and
+        // what the line says after the parenthetical is not part of it.
+        let presentation = needed("PRESENTATION_UNAVAILABLE: lavish-axi (requires >=0.1.46; install: npm install -g lavish-axi && lavish-axi setup hooks) - nonvisual work may proceed").unwrap();
+        assert_eq!(presentation["tool"], "lavish-axi");
+        assert_eq!(presentation["how"], "npm install -g lavish-axi && lavish-axi setup hooks");
+        assert_eq!(presentation["kind"], "install");
 
         // Anything else the first mate reports is shown in its own words rather
         // than dropped, because dropping it is the app deciding what may be known.
@@ -544,6 +557,20 @@ mod tests {
         let resources = config["bundle"]["resources"].as_object().expect("the bundle names no resources");
         let arrives: Vec<&str> = resources.values().filter_map(Value::as_str).collect();
 
+        // Only what the engine tracks. A developer may keep a home, a checked
+        // out project, or a node_modules under engine/, none of which is in the
+        // bundle and none of which this is asking about.
+        let tracked = Command::new("git")
+            .args(["ls-files", "-z", "--", "."])
+            .current_dir(&engine)
+            .output()
+            .expect("git could not list the engine");
+        let tracked: std::collections::BTreeSet<PathBuf> = String::from_utf8_lossy(&tracked.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .flat_map(|path| Path::new(path).ancestors().map(Path::to_path_buf).collect::<Vec<_>>())
+            .collect();
+
         let mut named = Vec::new();
         let mut unnamed = Vec::new();
         let mut walk = vec![engine.clone()];
@@ -551,14 +578,17 @@ mod tests {
             let Ok(entries) = std::fs::read_dir(&here) else { continue };
             for entry in entries.flatten() {
                 let Ok(about) = entry.path().symlink_metadata() else { continue };
+                let at = entry.path().strip_prefix(&engine).unwrap().to_path_buf();
+                if !tracked.contains(&at) {
+                    continue;
+                }
                 if about.is_symlink() {
                     // Only a link to a directory is dropped; a link to a file is
                     // copied as the file it points at, which is what we want.
                     if !entry.path().is_dir() {
                         continue;
                     }
-                    let at = entry.path().strip_prefix(&engine).unwrap().to_string_lossy().to_string();
-                    let wanted = format!("engine/{at}");
+                    let wanted = format!("engine/{}", at.to_string_lossy());
                     if arrives.contains(&wanted.as_str()) {
                         named.push(wanted);
                     } else {

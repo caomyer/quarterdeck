@@ -606,7 +606,7 @@ function NeedsBanner({ needs, problem, checking, onCheck }: { needs: Needed[]; p
       : needed.how ? <code className="needs-how">{needed.how}</code> : <span>no install command was offered</span>}</>
       : <span className="needs-says">{needed.says}</span>}
   </li>;
-  return <div role="status" aria-live="polite" aria-label="What this Mac still needs">
+  return <div className="needs-region" role="status" aria-live="polite" aria-label="What this Mac still needs">
     {(needs.length > 0 || problem) && <section className="needs-banner">
       <header>
         <CircleAlert size={16} />

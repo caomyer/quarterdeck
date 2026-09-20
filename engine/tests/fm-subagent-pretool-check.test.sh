@@ -202,6 +202,17 @@ test_task_worktree_and_non_firstmate_repo_are_inert() {
   FM_ROOT_OVERRIDE="$plain" FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" \
     "$CHECK" --claude --tool Agent > "$OUT" 2> "$ERR" || rc=$?
   [ "$rc" -eq 0 ] || fail "a non-firstmate repo must be out of scope, got exit $rc"
+
+  # A crewmate is launched from a primary session, which exports its own
+  # FM_HOME, and nothing clears it for a crewmate. The guard must still be
+  # inert in the crewmate's own task worktree: asking about the inherited home
+  # rather than the tree the hook was reached through would deny every
+  # delegation call a crewmate is entitled to make.
+  rc=0
+  FM_ROOT_OVERRIDE="$child" FM_HOME="$PRIMARY" FM_STATE_OVERRIDE="$child/state" \
+    "$CHECK" --claude --tool Agent > "$OUT" 2> "$ERR" || rc=$?
+  [ "$rc" -eq 0 ] || fail "a crewmate carrying the primary's FM_HOME was denied, got exit $rc: $(cat "$ERR")"
+  [ ! -s "$OUT" ] || fail "crewmate with an inherited home wrote stdout: $(cat "$OUT")"
   pass "the guard is inert in a crewmate task worktree and in a non-firstmate repo"
 }
 
