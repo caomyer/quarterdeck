@@ -1,5 +1,6 @@
 mod artifact;
 mod calls;
+mod engine;
 mod envpath;
 mod host;
 #[cfg(test)]

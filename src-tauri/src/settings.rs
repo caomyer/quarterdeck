@@ -1,9 +1,11 @@
-//! The captain's firstmate home: asked for once, checked, and remembered in
-//! the app data folder.
+//! The captain's firstmate home: the one the app owns, or one they chose.
 //!
-//! Nothing is ever picked automatically: the captain chooses the folder. A
-//! saved home that still checks out is handed to the snapshot reader at
-//! launch, so Bearings shows real data before the first mate starts.
+//! The app ships the first mate's own code and builds a home for it in the app
+//! data folder, so a captain who has never heard of firstmate has a working one
+//! on first launch. `home_choose` still points the app at a folder of their own,
+//! and a saved choice always wins over the app's. Whichever it is, a home that
+//! still checks out is handed to the snapshot reader at launch, so Bearings
+//! shows real data before the first mate starts.
 //!
 //! Per home, the file also remembers whether the captain left the first mate
 //! running, so the app starts it again when it opens; a first mate the captain
@@ -128,13 +130,44 @@ pub(crate) fn saved_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<PathBu
     check_home(&saved).ok()
 }
 
+/// The home to use when the captain has not chosen one: the app's own, laid out
+/// from the engine it ships. Run on every launch, so a home built by an older
+/// copy of the app is repointed at the one now installed.
+///
+/// Returns the reason instead when there is no engine to lay it out from, or
+/// when the script refuses the folder; the captain can still choose their own.
+pub(crate) fn prepared_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    PREPARED.get_or_init(|| lay_out_home(app)).clone()
+}
+
+/// Once per launch: every later caller is answered from what this one found.
+static PREPARED: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+
+fn lay_out_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let engine = crate::engine::bundled_engine(app)?;
+    let home = crate::engine::managed_home(app)?;
+    let said = crate::engine::prepare_home(&engine, &home)?;
+    log::info!("the first mate's home is ready at {}: {}", home.display(), said.replace('\n', "; "));
+    check_home(&home)
+}
+
+
 /// The saved home, whether it still checks out, and whether the first mate was left
 /// running there, so the window can start it again once it is listening.
 fn saved_status(app: &AppHandle) -> Value {
     let Ok(dir) = settings_dir(app) else {
         return json!({"home": null, "problem": null, "start_on_launch": false});
     };
-    status_in(&dir)
+    // A folder the captain chose wins, whether or not it still checks out: they
+    // asked for that one, and being told why it no longer works beats being
+    // moved silently onto the app's own.
+    if read_saved_home(&dir).is_some() {
+        return status_in(&dir);
+    }
+    match prepared_home(app) {
+        Ok(home) => json!({"home": home.to_string_lossy(), "problem": null, "start_on_launch": was_running(&dir, &home)}),
+        Err(problem) => json!({"home": null, "problem": problem, "start_on_launch": false}),
+    }
 }
 
 fn status_in(dir: &Path) -> Value {
@@ -147,7 +180,9 @@ fn status_in(dir: &Path) -> Value {
     }
 }
 
-/// At launch: point the snapshot reader at the saved home, if it still checks out.
+/// At launch: point the snapshot reader at the home this launch reads, which is
+/// the captain's choice when they made one and otherwise the app's own, laid
+/// out from the engine before anything is read.
 pub fn load_saved_home(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let Some(home) = saved_status(&app).get("home").and_then(Value::as_str).map(PathBuf::from) else {
