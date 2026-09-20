@@ -216,11 +216,17 @@ case "$*" in
     fi
     exit 1
     ;;
-  "diff --name-only --diff-filter=ACMR -z "*)
+  "diff --name-only --relative --diff-filter=ACMR -z "*)
     if [ -n "${FM_TEST_GIT_DIFF_FILE:-}" ] && [ -f "$FM_TEST_GIT_DIFF_FILE" ]; then
       cat "$FM_TEST_GIT_DIFF_FILE"
     fi
     exit 0
+    ;;
+  "diff --name-only"*)
+    # The changed-file query is read through a process substitution, so a stub
+    # that merely failed here would look exactly like "nothing changed". Say so.
+    printf 'stub git: unrecognised changed-file query: %s\n' "$*" >&2
+    exit 97
     ;;
   *)
     exit 1
@@ -376,6 +382,34 @@ SH
   [ "$rc" -ne 0 ] || fail "fast lint mode passed a known-bad fixture"$'\n'"$out"
   assert_contains "$out" "SC1007" "fast lint mode did not report the expected ShellCheck finding"
   pass "fm-lint.sh --fast catches an ordinary shell lint defect"
+}
+
+# The engine ships inside the app's repository as engine/, so git names a
+# changed file from the repository root while this script knows it from the
+# engine. Asking git for paths relative to here is what keeps the two the same
+# name; without it every name missed and the gate lint ran on nothing at all.
+test_changed_mode_finds_files_when_the_engine_is_a_subdirectory() {
+  local tmp holder listed
+  tmp=$(fm_test_tmproot fm-lint-nested)
+  holder="$tmp/holder"
+  mkdir -p "$holder/engine/bin" "$holder/engine/tests" "$holder/app"
+  cp "$LINT" "$holder/engine/bin/fm-lint.sh"
+  chmod +x "$holder/engine/bin/fm-lint.sh"
+  printf '#!/usr/bin/env bash\ntrue\n' >"$holder/engine/bin/fm-probe.sh"
+  printf '#!/usr/bin/env bash\ntrue\n' >"$holder/engine/tests/fm-probe.test.sh"
+  : >"$holder/app/main.ts"
+  git -C "$holder" init -q -b main
+  git -C "$holder" add .
+  git -C "$holder" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
+  git -C "$holder" checkout -q -b feature
+  printf 'true\n' >>"$holder/engine/bin/fm-probe.sh"
+  git -C "$holder" add engine/bin/fm-probe.sh
+  git -C "$holder" -c user.name=test -c user.email=test@example.invalid commit -qm change
+
+  listed=$(cd "$holder/engine" && GITHUB_ACTIONS='' CI='' bin/fm-lint.sh --list-files 2>/dev/null)
+  [ "$listed" = "bin/fm-probe.sh" ] \
+    || fail "changed-file lint from a nested engine listed: $listed"
+  pass "changed-file lint finds the engine's own files when the engine is a subdirectory"
 }
 
 test_changed_mode_lints_only_the_changed_file() {
@@ -1397,6 +1431,7 @@ test_jobs_are_deterministic_and_complete
 test_worker_trees_stop_on_signal
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
+test_changed_mode_finds_files_when_the_engine_is_a_subdirectory
 test_ci_forces_full_lint_even_with_empty_diff
 test_main_branch_forces_full_lint
 test_explicit_path_bypasses_changed_logic

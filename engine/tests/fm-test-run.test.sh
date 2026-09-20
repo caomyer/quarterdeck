@@ -240,6 +240,42 @@ test_task_marker_refuses_the_primary_checkout() {
   pass "a task marker refuses execution in the primary checkout and leaves worktrees and inspection alone"
 }
 
+# The engine ships inside the app's repository as engine/, so git names a
+# changed file from the repository root (engine/bin/...) while the mapping
+# knows it from the engine (bin/...). Before the prefix was stripped, every
+# name missed: a changed-file run selected nothing and still exited 0.
+test_changed_selection_reads_an_engine_inside_a_repository() {
+  local tmp holder listed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-nested.XXXXXX")
+  holder="$tmp/holder"
+  mkdir -p "$holder/app"
+  init_changed_fixture_repo "$holder/engine"
+  # One repository, with the engine inside it rather than being it.
+  rm -rf "$holder/engine/.git"
+  : >"$holder/app/main.ts"
+  git -C "$holder" init -q
+  git -C "$holder" add .
+  git -C "$holder" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
+
+  printf '\n' >>"$holder/engine/bin/fm-test-run.sh"
+  listed=$(cd "$holder/engine" && bin/fm-test-run.sh --list --changed --base HEAD | LC_ALL=C sort)
+  case "$listed" in
+    *tests/fm-test-run.test.sh*) ;;
+    *) { rm -rf "$tmp"; fail "a change under engine/ selected nothing: $listed"; } ;;
+  esac
+
+  # A change outside the engine belongs to the app, whose own checks cover it.
+  git -C "$holder" add engine/bin/fm-test-run.sh
+  git -C "$holder" -c user.name=test -c user.email=test@example.invalid commit -qm engine-change
+  printf '\n' >>"$holder/app/main.ts"
+  listed=$(cd "$holder/engine" && bin/fm-test-run.sh --list --changed --base HEAD 2>/dev/null | LC_ALL=C sort)
+  [ -z "$listed" ] \
+    || { rm -rf "$tmp"; fail "a change outside the engine selected engine tests: $listed"; }
+
+  rm -rf "$tmp"
+  pass "a changed-file run reads the engine's own paths when the engine is a subdirectory"
+}
+
 test_changed_runner_surfaces_select_their_family() {
   local tmp repo listed
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-owner-scope.XXXXXX")
@@ -1742,6 +1778,7 @@ test_single_script_selection
 test_changed_file_selection_is_conservative
 test_task_marker_refuses_the_primary_checkout
 test_changed_runner_surfaces_select_their_family
+test_changed_selection_reads_an_engine_inside_a_repository
 test_shell_line_ending_policy_selects_runner_contract
 test_changed_dependency_selection_and_unmapped_failure
 test_changed_bin_reference_selects_per_script_not_per_family

@@ -484,6 +484,10 @@ fm_lint_changed_base_ref() {
 # fm_lint_is_canonical_root tests membership in the canonical set (a direct
 # *.sh child of bin/, bin/backends/, or tests/) without the shell case
 # statement's non-pathname wildcard matching a path separator by accident.
+# The names it takes are relative to the engine, which is why the changed-file
+# query below asks git for paths relative to here rather than to the root of
+# the repository holding the engine: inside the app's those differ by engine/,
+# and every name would miss.
 fm_lint_is_canonical_root() {
   local path=$1 dir base
   case "$path" in
@@ -528,7 +532,7 @@ else
       fm_lint_is_canonical_root "$changed_path" || continue
       [ -f "$changed_path" ] || continue
       ROOTS+=("$changed_path")
-    done < <(git diff --name-only --diff-filter=ACMR -z "$merge_base" -- 2>/dev/null | LC_ALL=C sort -z)
+    done < <(git diff --name-only --relative --diff-filter=ACMR -z "$merge_base" -- 2>/dev/null | LC_ALL=C sort -z)
   fi
 fi
 if [ "$CHANGED_MODE" -eq 1 ] && [ "$FAST" -eq 0 ]; then

@@ -1651,7 +1651,7 @@ families_for_changed_path() {
 }
 
 select_changed() {
-  local base=$1 path entry fam script_name s
+  local base=$1 path entry fam script_name s prefix
   local -a wanted_families=()
   local -a wanted_scripts=()
 
@@ -1659,8 +1659,24 @@ select_changed() {
     die "changed-file base ref not found: $base (pass --base <ref>)"
   fi
 
+  # git names changed paths from the root of the repository, while the mapping
+  # above names them from the engine. Standing alone those are the same place
+  # and the prefix is empty. Inside the app's repository the engine is engine/,
+  # so its own paths are stripped back to what the mapping knows, and a path
+  # outside it is the app's, which the app's own checks cover. The exception is
+  # the workflow that runs these lanes: it has to live at the repository root,
+  # and the engine's contract tests are what guard it.
+  prefix=$(git -C "$ROOT" rev-parse --show-prefix 2>/dev/null) || prefix=
+
   while IFS= read -r path; do
     [ -n "$path" ] || continue
+    if [ -n "$prefix" ]; then
+      case "$path" in
+        "$prefix"?*) path=${path#"$prefix"} ;;
+        .github/workflows/engine.yml) ;;
+        *) continue ;;
+      esac
+    fi
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
       case "$entry" in
@@ -1678,7 +1694,7 @@ select_changed() {
     done < <(families_for_changed_path "$path")
   done < <(git -C "$ROOT" diff --name-only "${base}...HEAD" 2>/dev/null; \
            git -C "$ROOT" diff --name-only HEAD 2>/dev/null; \
-           git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null)
+           git -C "$ROOT" ls-files --others --exclude-standard --full-name 2>/dev/null)
 
   # Dedup families
   local f seen_f
