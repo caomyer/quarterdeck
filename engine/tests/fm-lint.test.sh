@@ -203,6 +203,13 @@ case "$*" in
     printf '%s\n' "${FM_TEST_GIT_BRANCH:-feature}"
     exit 0
     ;;
+  "rev-parse --show-prefix"|"-C "*" rev-parse --show-prefix")
+    # Where the engine sits in the repository holding it: the workflow linter
+    # climbs to that repository's root only when this says it is a
+    # subdirectory, which in this tree it is.
+    printf '%s\n' "${FM_TEST_GIT_SHOW_PREFIX-engine/}"
+    exit 0
+    ;;
   "rev-parse --verify -q origin/main")
     [ "${FM_TEST_GIT_HAS_ORIGIN_MAIN:-1}" = 1 ] && exit 0 || exit 1
     ;;
