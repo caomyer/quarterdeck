@@ -116,6 +116,10 @@ end
 }
 
 # The four jobs the incident found unbounded, at the report's recommended caps.
+# Lint's is 40 rather than the report's 25: one ShellCheck worker peaks near
+# 4.5 GB on this tree, so a runner under 12 GB (a private repository's) runs
+# them in turn (bin/fm-lint.sh), which measured 22-24 minutes against the 14-16
+# the report saw with two.
 test_previously_unbounded_jobs_keep_their_caps() {
   local job expected actual
   while read -r job expected; do
@@ -124,7 +128,7 @@ test_previously_unbounded_jobs_keep_their_caps() {
     [ "$actual" = "$expected" ] \
       || fail "$job timeout must stay $expected minutes, got $actual"
   done <<'CAPS'
-lint 25
+lint 40
 test-coverage 5
 tests-timing-aggregate 5
 invariants 5
