@@ -22,6 +22,16 @@ const EVENT_NAMES = [
   "snapshot",
 ] as const;
 
+/** What the commands answer with, in the backend's own spelling. */
+type HomeReply = { home: string | null; problem: string | null; start_on_launch?: boolean; chosen?: boolean };
+
+const homeStatus = (status: HomeReply): HomeStatus => ({
+  home: status.home,
+  problem: status.problem,
+  startOnLaunch: status.start_on_launch === true,
+  chosen: status.chosen === true,
+});
+
 export class TauriHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
   private unlisten: UnlistenFn[] = [];
@@ -137,15 +147,15 @@ export class TauriHostAdapter implements HostAdapter {
   }
 
   getHome() {
-    return invoke<{ home: string | null; problem: string | null; start_on_launch?: boolean }>("home_get").then((status): HomeStatus => ({
-      home: status.home,
-      problem: status.problem,
-      startOnLaunch: status.start_on_launch === true,
-    }));
+    return invoke<HomeReply>("home_get").then(homeStatus);
   }
 
   chooseHome() {
-    return invoke<HomeStatus | null>("home_choose");
+    return invoke<HomeReply | null>("home_choose").then((status) => status && homeStatus(status));
+  }
+
+  useAppHome() {
+    return invoke<HomeReply>("home_use_app").then(homeStatus);
   }
 
   refreshSnapshot() {

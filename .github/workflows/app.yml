@@ -4,12 +4,11 @@ name: App
 # main, so these run on every branch, not only on main and not only where
 # someone opened a pull request; a check run attaches to its commit, so a pull
 # request over that branch shows the same result without a second run of the
-# same work. They skip a change confined to engine/, which the Engine workflow
-# covers, and can also be started by hand.
+# same work. They run on a change confined to engine/ as well: the app ships
+# the engine and one of these tests lays out a home with the engine's own
+# script, which is exactly the contract an engine change can break.
 on:
   push:
-    paths-ignore:
-      - 'engine/**'
   workflow_dispatch:
 
 permissions:

@@ -4,6 +4,7 @@ import type {
   BearingsSnapshot,
   FleetSnapshot,
   HistoryItem,
+  HomeStatus,
   HostAdapter,
   HostEvent,
   HostRuntimeState,
@@ -133,6 +134,8 @@ export function useHost(adapter: HostAdapter) {
   const [homeChecked, setHomeChecked] = useState(false);
   const [homeProblem, setHomeProblem] = useState<string | null>(null);
   const [choosingHome, setChoosingHome] = useState(false);
+  /** False while the app's own home is in use, so the app can offer it back. */
+  const [homeChosen, setHomeChosen] = useState(false);
   const [hostHome, setHostHome] = useState<string | null>(null);
   const [bearings, setBearings] = useState<BearingsSnapshot | null>(null);
   const [fleet, setFleet] = useState<FleetSnapshot | null>(null);
@@ -359,6 +362,7 @@ export function useHost(adapter: HostAdapter) {
       startOnLaunch.current = status.home !== null && status.startOnLaunch === true;
       setHome(status.home);
       setHomeProblem(status.problem);
+      setHomeChosen(status.chosen === true);
       setHomeChecked(true);
     }).catch((error: unknown) => {
       if (!active) return;
@@ -476,20 +480,10 @@ export function useHost(adapter: HostAdapter) {
   const paneCapture = useCallback((taskId: string) => adapter.paneCapture(taskId), [adapter]);
   const refreshSnapshot = useCallback(async () => { try { await adapter.refreshSnapshot(); } catch { /* the next snapshot event reports failures */ } }, [adapter]);
 
-  /** Resolves to the chosen home when the captain picked a valid folder, `null` otherwise. */
-  const chooseHome = useCallback(async (): Promise<string | null> => {
-    setChoosingHome(true);
-    let status;
-    try {
-      status = await adapter.chooseHome();
-    } catch (error) {
-      setHomeProblem(errorText(error));
-      return null;
-    } finally {
-      setChoosingHome(false);
-    }
-    if (!status) return null;
+  /** Takes up a home the backend reported, clearing what belonged to the last one. */
+  const adoptHome = useCallback((status: HomeStatus): string | null => {
     setHomeProblem(status.problem);
+    setHomeChosen(status.chosen === true);
     if (!status.home || status.home === homeRef.current) return status.home;
     homeRef.current = status.home;
     setHome(status.home);
@@ -504,7 +498,36 @@ export function useHost(adapter: HostAdapter) {
     outboxStatuses.current.clear();
     streamId.current = null;
     return status.home;
-  }, [adapter]);
+  }, []);
+
+  /** Resolves to the chosen home when the captain picked a valid folder, `null` otherwise. */
+  const chooseHome = useCallback(async (): Promise<string | null> => {
+    setChoosingHome(true);
+    let status;
+    try {
+      status = await adapter.chooseHome();
+    } catch (error) {
+      setHomeProblem(errorText(error));
+      return null;
+    } finally {
+      setChoosingHome(false);
+    }
+    if (!status) return null;
+    return adoptHome(status);
+  }, [adapter, adoptHome]);
+
+  /** Gives the app's own home back, forgetting a folder the captain chose. */
+  const useAppHome = useCallback(async (): Promise<string | null> => {
+    setChoosingHome(true);
+    try {
+      return adoptHome(await adapter.useAppHome());
+    } catch (error) {
+      setHomeProblem(errorText(error));
+      return null;
+    } finally {
+      setChoosingHome(false);
+    }
+  }, [adapter, adoptHome]);
 
   const answerPermission = useCallback(async (id: string, optionId: string) => {
     const patch = (change: Partial<PermissionView>) => setPermissionRequests((current) => current.map((request) => request.id === id ? { ...request, ...change } : request));
@@ -548,6 +571,8 @@ export function useHost(adapter: HostAdapter) {
     cancel,
     paneCapture,
     chooseHome,
+    useAppHome,
+    homeChosen,
     refreshSnapshot,
   };
 }

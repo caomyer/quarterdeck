@@ -383,6 +383,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .home-setup p { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.55; }
 .home-setup code, .settings-path { padding: 1px 4px; border-radius: 4px; color: var(--ink); background: var(--surface-2); font: .64rem ui-monospace, "SFMono-Regular", monospace; }
 .home-choose { display: flex; align-items: center; gap: 7px; min-height: 34px; margin-top: 8px; padding: 0 12px; border: 0; border-radius: 6px; color: var(--on-accent); background: var(--sea); font-size: .68rem; font-weight: 720; }
+.home-actions { display: flex; align-items: center; gap: 8px; }
+/* The way back to the app's own first mate: available, never the loud choice. */
+.home-revert { min-height: 34px; margin-top: 8px; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: transparent; font-size: .68rem; font-weight: 640; }
+.home-revert:hover:not(:disabled) { color: var(--ink); border-color: color-mix(in srgb, var(--sea) 45%, var(--border)); }
+.home-revert:disabled { opacity: .5; }
 .home-problem { display: grid; grid-template-columns: 16px 1fr; gap: 8px; width: 100%; margin-top: 4px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--coral) 55%, var(--border)); border-radius: 6px; color: var(--coral); background: color-mix(in srgb, var(--coral) 9%, var(--surface)); font-size: .64rem; line-height: 1.45; overflow-wrap: anywhere; }
 .home-problem span { color: var(--ink); }
 .settings-dialog { position: absolute; top: 50%; left: 50%; display: flex; width: min(480px, calc(100vw - 32px)); flex-direction: column; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); transform: translate(-50%, -50%); }

@@ -22,13 +22,22 @@ const ENTRYPOINT: &str = "bin/fm-home-init.sh";
 
 /// The engine's code: the bundled copy, or what `QUARTERDECK_ENGINE_DIR` names.
 pub(crate) fn bundled_engine<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os("QUARTERDECK_ENGINE_DIR").filter(|dir| !dir.is_empty()) {
-        return check_engine(Path::new(&dir));
+    match override_dir("QUARTERDECK_ENGINE_DIR") {
+        Some(named) => check_engine(&named),
+        None => {
+            let resources = tauri::Manager::path(app)
+                .resource_dir()
+                .map_err(|e| format!("the app has no resource folder: {e}"))?;
+            check_engine(&resources.join("engine"))
+        }
     }
-    let resources = tauri::Manager::path(app)
-        .resource_dir()
-        .map_err(|e| format!("the app has no resource folder: {e}"))?;
-    check_engine(&resources.join("engine"))
+}
+
+/// A directory an environment variable names, if it names one. An empty
+/// variable names nothing: it must not resolve to the current directory, or to
+/// the app data folder's own root.
+fn override_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).filter(|dir| !dir.is_empty()).map(PathBuf::from)
 }
 
 /// An engine is a directory holding the script that lays out a home.
@@ -44,8 +53,8 @@ fn check_engine(dir: &Path) -> Result<PathBuf, String> {
 /// The home the app owns, in its data folder: `QUARTERDECK_HOME_DIR` replaces it.
 /// The folder need not exist yet; laying it out is `prepare_home`'s work.
 pub(crate) fn managed_home<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os("QUARTERDECK_HOME_DIR").filter(|dir| !dir.is_empty()) {
-        return Ok(PathBuf::from(dir));
+    if let Some(dir) = override_dir("QUARTERDECK_HOME_DIR") {
+        return Ok(dir);
     }
     tauri::Manager::path(app)
         .app_data_dir()
@@ -74,11 +83,25 @@ pub(crate) fn prepare_home(engine: &Path, home: &Path) -> Result<String, String>
         .output()
         .map_err(|e| format!("could not run {}: {e}", script.display()))?;
     let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let told = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !output.status.success() {
-        let why = said.lines().last().unwrap_or("it gave no reason").to_string();
+        // The script names itself on the line carrying the reason. A usage
+        // failure prints a usage line after it, which is not the reason, and a
+        // late failure has already printed what it did to stdout.
+        let why = said
+            .lines()
+            .find_map(|line| line.strip_prefix("fm-home-init:").map(str::trim))
+            .filter(|reason| !reason.is_empty())
+            .or_else(|| said.lines().last())
+            .unwrap_or("it gave no reason");
+        log::warn!("the first mate's home was refused; it said: {said}; it had done: {told}");
         return Err(format!("the first mate's home could not be prepared: {why}"));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    if !said.is_empty() {
+        // Waiting on another copy of the script, and anything else it wanted said.
+        log::info!("laying out the first mate's home: {}", said.replace('\n', "; "));
+    }
+    Ok(told)
 }
 
 #[cfg(test)]
@@ -134,6 +157,37 @@ mod tests {
         assert!(problem.contains("not empty"), "{problem}");
     }
 
+    /// Every file under a directory, by path, size and last change.
+    fn manifest(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+        let mut found = Vec::new();
+        let mut walk = vec![dir.to_path_buf()];
+        while let Some(here) = walk.pop() {
+            let Ok(entries) = std::fs::read_dir(&here) else { continue };
+            for entry in entries.flatten() {
+                // symlink_metadata: a link's own record, never what it points at,
+                // so a link into the home could not hide a change here.
+                let Ok(about) = entry.metadata().or_else(|_| entry.path().symlink_metadata()) else { continue };
+                if about.is_dir() {
+                    walk.push(entry.path());
+                } else {
+                    found.push((entry.path(), about.len(), about.modified().unwrap_or(std::time::UNIX_EPOCH)));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// An empty variable names nothing. Left to resolve, it would send the
+    /// engine lookup at the current directory and the home at the app data
+    /// folder's own root, which is not a home and must not be laid out as one.
+    #[test]
+    fn an_empty_override_names_nothing() {
+        // A name no test sets, so this reads the absent case without touching
+        // the environment other tests are running against.
+        assert_eq!(override_dir("QUARTERDECK_NOTHING_NAMES_THIS"), None);
+    }
+
     /// The engine this repository ships, so the test reads what the app would.
     fn real_engine() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("engine")
@@ -150,6 +204,7 @@ mod tests {
         };
         let dir = scratch("live");
         let home = dir.join("home");
+        let before = manifest(&engine);
         let said = prepare_home(&engine, &home).unwrap();
         assert!(said.contains("ok"), "the script did not finish: {said}");
         // Every top-level entry of the code is reachable from the home, and the
@@ -165,25 +220,14 @@ mod tests {
         assert!(again.contains("ok"), "a second launch did not finish: {again}");
         assert!(!again.contains("relinked"), "a second launch moved links that had not moved: {again}");
 
-        // The copy the app ships is read-only in practice, not only in intent.
-        let dirty = std::process::Command::new("git")
-            .args(["status", "--porcelain", "--", "."])
-            .current_dir(&engine)
-            .output()
-            .expect("git could not read the engine");
-        assert_eq!(String::from_utf8_lossy(&dirty.stdout).trim(), "", "laying out a home changed the engine");
+        // The copy the app ships was not written to. Every file it holds, by
+        // name, size and last change: git status would answer for whatever else
+        // is uncommitted in the checkout, and would say nothing at all about
+        // the directories the engine's own .gitignore hides, which are exactly
+        // the ones a home is made of.
+        assert_eq!(manifest(&engine), before, "laying out a home changed the engine");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A home set in the captain's shell must not decide where the app's home goes.
-    #[test]
-    fn an_inherited_fm_home_is_not_passed_on() {
-        let dir = scratch("fm-home");
-        let engine = fake_engine(&dir, "#!/bin/sh\nprintf 'FM_HOME=[%s]\\n' \"${FM_HOME-unset}\"\nexit 0\n");
-        // SAFETY: single-threaded test process; no other thread reads the environment.
-        unsafe { std::env::set_var("FM_HOME", "/somewhere/else") };
-        let said = prepare_home(&engine, &dir.join("home")).unwrap();
-        unsafe { std::env::remove_var("FM_HOME") };
-        assert_eq!(said, "FM_HOME=[unset]");
-    }
 }

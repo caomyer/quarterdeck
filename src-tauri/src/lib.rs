@@ -50,6 +50,7 @@ pub fn run() {
       host::answer_permission,
       settings::home_get,
       settings::home_choose,
+      settings::home_use_app,
       snapshot::snapshot_refresh,
       snapshot::snapshot_latest,
       snapshot::pane_capture,
