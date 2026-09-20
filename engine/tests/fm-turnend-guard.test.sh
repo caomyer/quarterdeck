@@ -16,6 +16,10 @@ set -u
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-supervision-lib.sh"
 
+# The Pi cases run TypeScript through node, whose type-stripping warning on
+# Node 22-23 would read as hook output; the other Pi suites silence it the same way.
+export NODE_NO_WARNINGS=1
+
 TMP_ROOT=$(fm_test_tmproot fm-turnend-guard)
 fm_git_identity fmtest fmtest@example.invalid
 
@@ -1014,7 +1018,7 @@ exit 2
 EOF
   chmod +x "$worktree_dir/bin/fm-turnend-guard.sh"
   # Runtime module-format warnings are host noise; this assertion owns plugin output only.
-  out=$(NODE_NO_WARNINGS=1 PLUGIN="$plugin" DIRECTORY="$wrong_dir" WORKTREE="$worktree_dir" node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" DIRECTORY="$wrong_dir" WORKTREE="$worktree_dir" node 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
