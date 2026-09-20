@@ -177,7 +177,7 @@ fn lay_out_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String
     // case that leaves a watch armed against a copy that no longer exists. It
     // fails no launch: a home with no watches has nothing to do, and a watch
     // broken some other way is a thing to report.
-    match crate::engine::rebind_watches(&home) {
+    match crate::engine::rebind_watches(&engine, &home) {
         Ok(said) if said.is_empty() => {}
         Ok(said) => log::info!("the first mate's watches follow the engine now installed: {}", said.replace('\n', "; ")),
         Err(problem) => log::warn!("{problem}"),

@@ -160,6 +160,46 @@ test_copy_inside_a_linked_worktree_is_silent() {
   pass "fm-sessionstart-nudge: a copy inside a linked task worktree is silent"
 }
 
+# A home the app laid out says so in its own marker, so it is a home wherever
+# it sits. Somebody who keeps their home directory or their application support
+# folder in a git repository would otherwise lose all supervision silently.
+test_a_marked_home_inside_a_checkout_nudges() {
+  local repo="$TMP_ROOT/marked-repo" root out status=0
+  fm_git_init_commit "$repo"
+  root="$repo/app-data/home"
+  mkdir -p "$root/bin" "$root/state"
+  : > "$root/AGENTS.md"
+  printf 'firstmate-home=1\ncode=%s\n' "$TMP_ROOT/some-engine" > "$root/.fm-home"
+  out=$(run_nudge "$root") || status=$?
+  expect_code 0 "$status" "marked home nudge"
+  [ "$out" = "$NUDGE_LINE" ] || fail "a marked home inside a checkout printed: $out"
+  # A marker naming no code is no marker.
+  printf 'firstmate-home=1\n' > "$root/.fm-home"
+  expect_silent_zero "home whose marker names no code" run_nudge "$root"
+  pass "fm-sessionstart-nudge: a home the app marked is a primary wherever it sits"
+}
+
+# Without a git that runs, nothing can tell a checkout from a copy, and the
+# reading that arms watchers is the one that costs something to get wrong.
+test_without_a_working_git_an_unmarked_root_is_silent() {
+  local root="$TMP_ROOT/no-git-copy" fakebin="$TMP_ROOT/no-git-bin"
+  mkdir -p "$root/bin" "$root/state" "$fakebin"
+  : > "$root/AGENTS.md"
+  # A git that cannot run at all, as when it is not installed.
+  printf '#!/bin/sh\nexit 127\n' > "$fakebin/git"
+  chmod +x "$fakebin/git"
+  # With git, a copy outside any work tree is a primary; without one, silence.
+  [ -n "$(run_nudge "$root")" ] || fail "the fixture is not a primary to begin with"
+  expect_silent_zero "copy with no working git" env PATH="$fakebin:$PATH" \
+    FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$NUDGE"
+  # A home the app marked does not need git to say what it is.
+  printf 'firstmate-home=1\ncode=%s\n' "$TMP_ROOT/some-engine" > "$root/.fm-home"
+  [ -n "$(env PATH="$fakebin:$PATH" FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$NUDGE")" ] \
+    || fail "a marked home stayed silent with no working git"
+  rm -f "$root/.fm-home"
+  pass "fm-sessionstart-nudge: without a working git an unmarked root is not taken for a copy"
+}
+
 test_unreadable_linked_worktree_is_silent() {
   local base="$TMP_ROOT/unreadable-base" root="$TMP_ROOT/unreadable-child" fakebin="$TMP_ROOT/failing-git"
   fm_git_worktree "$base" "$root" fm/sessionstart-unreadable
@@ -1131,6 +1171,8 @@ test_linked_secondmate_primary_nudges
 test_installed_copy_nudges
 test_copy_inside_a_foreign_repo_is_silent
 test_copy_inside_a_linked_worktree_is_silent
+test_a_marked_home_inside_a_checkout_nudges
+test_without_a_working_git_an_unmarked_root_is_silent
 test_unreadable_linked_worktree_is_silent
 test_missing_state_is_silent
 test_owned_lock_is_silent

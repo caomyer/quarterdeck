@@ -112,10 +112,17 @@ pub(crate) fn prepare_home(engine: &Path, home: &Path) -> Result<String, String>
 /// which is exactly that case, so this runs after every layout. It is
 /// idempotent: a watch whose action already matches is left alone.
 ///
+/// The engine's own copy of the script is the one to run, not the home's.
+/// They are the same file, but the script takes the directory above itself as
+/// the code it may rebind, and reached through the home's `bin` link that is
+/// the home. A watch's action resolves to its physical path, inside the
+/// engine, so every one of them would be judged out of scope and the run would
+/// report success having rebound nothing.
+///
 /// A home with no watches, and a watch broken for some other reason, are both
 /// things to report rather than to fail a launch over.
-pub(crate) fn rebind_watches(home: &Path) -> Result<String, String> {
-    let script = home.join("bin/fm-procevent-when.sh");
+pub(crate) fn rebind_watches(engine: &Path, home: &Path) -> Result<String, String> {
+    let script = engine.join("bin/fm-procevent-when.sh");
     if !script.is_file() {
         return Ok(String::new());
     }
@@ -192,25 +199,85 @@ mod tests {
     fn the_homes_watches_are_rebound_to_the_engine_now_installed() {
         let dir = scratch("rebind");
         let home = dir.join("home");
-        std::fs::create_dir_all(home.join("bin")).unwrap();
-        // Nothing to rebind is not a failure: a home may have no watches, and
-        // a home the captain chose may predate the script entirely.
-        assert_eq!(rebind_watches(&home).unwrap(), "");
+        std::fs::create_dir_all(&home).unwrap();
+        let engine = dir.join("engine");
+        std::fs::create_dir_all(engine.join("bin")).unwrap();
+        // Nothing to rebind is not a failure: an engine may predate the script.
+        assert_eq!(rebind_watches(&engine, &home).unwrap(), "");
 
-        let script = home.join("bin/fm-procevent-when.sh");
-        std::fs::write(&script, "#!/bin/sh\nprintf 'rebound %s in %s\\n' \"$1\" \"$FM_HOME\"\n").unwrap();
+        let script = engine.join("bin/fm-procevent-when.sh");
+        let executable = |path: &Path| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        };
+        std::fs::write(&script, "#!/bin/sh\nprintf 'ran %s from %s in %s\\n' \"$1\" \"$0\" \"$FM_HOME\"\n").unwrap();
+        executable(&script);
+        // The home mirrors the engine, so the same script is reachable through
+        // the home's own bin. Running that copy is what leaves every watch out
+        // of scope, so the call must be the engine's.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let said = rebind_watches(&home).unwrap();
-        assert!(said.starts_with("rebound rebind-all in "), "{said}");
+        std::os::unix::fs::symlink(engine.join("bin"), home.join("bin")).unwrap();
+
+        let said = rebind_watches(&engine, &home).unwrap();
+        assert!(said.starts_with("ran rebind-all from "), "{said}");
+        assert!(
+            said.contains(engine.join("bin/fm-procevent-when.sh").to_str().unwrap()),
+            "the home's copy was run rather than the engine's: {said}"
+        );
         assert!(said.ends_with(home.to_str().unwrap()), "the home was not the one rebound: {said}");
 
         std::fs::write(&script, "#!/bin/sh\nprintf 'a watch is broken\\n' >&2\nexit 1\n").unwrap();
-        let problem = rebind_watches(&home).unwrap_err();
+        let problem = rebind_watches(&engine, &home).unwrap_err();
         assert!(problem.contains("a watch is broken"), "{problem}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole thing, against the engine's real script: a home laid out from
+    /// a copy of the engine, a watch armed on an action inside that copy, the
+    /// copy's bytes then changed as an app update changes them, and the watch
+    /// following. Reached through the home's own bin this reports success
+    /// having rebound nothing, which is the shape the bug had.
+    #[test]
+    fn a_real_watch_follows_a_real_engine_that_changed() {
+        let Ok(source) = check_engine(&real_engine()) else { return };
+        let dir = scratch("rebind-live");
+        let engine = dir.join("engine");
+        let copied = Command::new("cp").arg("-R").arg(&source).arg(&engine).status();
+        if !copied.map(|status| status.success()).unwrap_or(false) {
+            panic!("could not copy the engine");
+        }
+        let action = engine.join("bin/fm-rebind-probe.sh");
+        std::fs::write(&action, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&action, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let home = dir.join("home");
+        prepare_home(&engine, &home).expect("the copy could not lay out a home");
+
+        let armed = Command::new(home.join("bin/fm-procevent-when.sh"))
+            .args(["arm", "rebindprobe", "--condition", "/usr/bin/true", "--action"])
+            .arg(home.join("bin/fm-rebind-probe.sh"))
+            .current_dir(&home)
+            .env("FM_HOME", &home)
+            .env("PATH", crate::envpath::search_path())
+            .output()
+            .expect("could not arm a watch");
+        assert!(armed.status.success(), "could not arm a watch: {}", String::from_utf8_lossy(&armed.stderr));
+
+        // The app update: same path, different bytes.
+        std::fs::write(&action, "#!/usr/bin/env bash\n# the app updated\nexit 0\n").unwrap();
+        let said = rebind_watches(&engine, &home).expect("rebinding failed");
+        assert!(said.contains("rebound: when-rebindprobe"), "the watch did not follow the engine: {said}");
+        assert!(said.contains("1 rebound"), "{said}");
+
+        // Idempotent: nothing left to do on the launch after.
+        let again = rebind_watches(&engine, &home).expect("rebinding failed");
+        assert!(again.contains("0 rebound"), "a second launch rebound something again: {again}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
