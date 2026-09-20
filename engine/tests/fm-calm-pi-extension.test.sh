@@ -10,6 +10,14 @@ set -u
 # it the same way.
 export NODE_NO_WARNINGS=1
 
+# The rendered rows are box-drawing characters, three bytes each, and ${#text}
+# counts bytes under stock macOS bash 3.2 and under the C locale. A 100-column
+# row measured that way reads as 300. jq counts code points whatever the
+# locale, which is what a terminal cell is here.
+# The newline matters: with none, jq -R has no line to read and an empty row
+# would measure as nothing at all rather than as zero cells.
+cells() { printf '%s\n' "$1" | jq -Rr 'length'; }
+
 TMP_ROOT=$(fm_test_tmproot fm-calm-pi-extension)
 EXT="$ROOT/.pi/extensions/fm-calm.ts"
 ASSISTANT_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
@@ -3982,7 +3990,7 @@ JS
   while [ "$active_screen_wait" -lt 200 ]; do
     tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$boat_resized_snapshot"
     boat_hull_line=$(grep -F '╲▁▁▁╱' "$boat_resized_snapshot" | head -1)
-    if [ -n "$boat_hull_line" ] && [ "${#boat_hull_line}" -eq 100 ]; then
+    if [ -n "$boat_hull_line" ] && [ "$(cells "$boat_hull_line")" -eq 100 ]; then
       break
     fi
     sleep 0.05
@@ -3990,14 +3998,14 @@ JS
   done
   assert_contains "$(cat "$boat_resized_snapshot")" '╲▁▁▁╱' "the working ship left the screen after a resize"
   boat_hull_line=$(grep -F '╲▁▁▁╱' "$boat_resized_snapshot" | head -1)
-  [ "${#boat_hull_line}" -eq 100 ] \
-    || fail "after resizing to 100 columns the ship row was ${#boat_hull_line} cells instead of exactly 100"
+  [ "$(cells "$boat_hull_line")" -eq 100 ] \
+    || fail "after resizing to 100 columns the ship row was $(cells "$boat_hull_line") cells instead of exactly 100"
   # Exactly one wave row means the two-row sprite reflowed rather than wrapping.
   [ "$(grep -c -F '╲▁▁▁╱' "$boat_resized_snapshot")" -eq 1 ] \
     || fail "the working ship wrapped onto more than one water row after the resize"
   while IFS= read -r boat_line; do
-    [ "${#boat_line}" -le 100 ] \
-      || fail "a rendered line was ${#boat_line} cells after resizing to 100 columns"
+    [ "$(cells "$boat_line")" -le 100 ] \
+      || fail "a rendered line was $(cells "$boat_line") cells after resizing to 100 columns"
   done <"$boat_resized_snapshot"
   boat_column_one=$(awk 'index($0,"╲▁▁▁╱"){print index($0,"╲▁▁▁╱"); exit}' "$boat_resized_snapshot")
   [ "$boat_column_one" -le 96 ] \
@@ -4047,8 +4055,8 @@ JS
   [ "$boat_narrow_reversed" -eq 1 ] \
     || fail "the working ship never reversed direction on a narrow track"
   boat_hull_line=$(grep -F '╲▁▁▁╱' "$boat_narrow_snapshot" | head -1)
-  [ "${#boat_hull_line}" -eq 12 ] \
-    || fail "the narrow working-ship row was ${#boat_hull_line} cells instead of exactly 12"
+  [ "$(cells "$boat_hull_line")" -eq 12 ] \
+    || fail "the narrow working-ship row was $(cells "$boat_hull_line") cells instead of exactly 12"
   tmux -L "$TMUX_SOCKET" resize-window -t "$TMUX_SESSION" -x 100 -y 30
 
   # Typing still reaches the editor while the animation runs.
