@@ -1,14 +1,13 @@
 name: App
 
-# The app's own checks. They skip a change confined to engine/, which the
-# Engine workflow covers, and can also be started by hand.
+# The app's own checks. Work here lands by pushing a branch and fast-forwarding
+# main, so these run on every branch, not only on main and not only where
+# someone opened a pull request; a check run attaches to its commit, so a pull
+# request over that branch shows the same result without a second run of the
+# same work. They skip a change confined to engine/, which the Engine workflow
+# covers, and can also be started by hand.
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - 'engine/**'
-  pull_request:
-    branches: [main]
     paths-ignore:
       - 'engine/**'
   workflow_dispatch:
@@ -16,11 +15,12 @@ on:
 permissions:
   contents: read
 
-# One group per PR, so a new push replaces that PR's in-flight run; each push to
-# main keeps its own group and is never cancelled.
+# One group per branch, so a newer push to a branch replaces the run still going
+# for the one it superseded. Pushes to main are never cancelled: each is a
+# distinct state of the default branch and each deserves its own answer.
 concurrency:
-  group: app-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: app-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   web:
