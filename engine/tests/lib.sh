@@ -185,39 +185,51 @@ export FM_TEST_STUB_MAX_BLOCK_SECONDS
 # this shell belongs to is never signalled, and when this shell's own group
 # cannot be read nothing is signalled by group at all, so the suite and the
 # runner it shares a group with can never be caught by it.
+#
+# Both passes scan afresh, because a pid or group id read a moment ago can name
+# something else by the time the next one runs: an early version signalled its
+# first pass's ids again after a wait, and a recycled PID it killed that way
+# belonged to the suite running it, which died mid-cleanup with every check
+# passed. The residual cost is narrow: a process that ignores SIGTERM, whose own
+# command does not name the fixture, in a group where nothing that does name it
+# survives the first pass, is not escalated to - nothing found in this suite
+# has that shape.
 fm_test_reap_fixture_processes() {
-  local dir=$1 pid ppid pgid rest targets='' own_pgid IFS
+  local dir=$1 signal own_pgid targets pid pgid IFS
   [ -n "$dir" ] || return 0
   own_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
   case "$own_pgid" in ''|*[!0-9]*) own_pgid='' ;; esac
+  for signal in TERM KILL; do
+    # Scanned again for the second pass: between the two, a pid or group id the
+    # first pass read can belong to something else entirely, and signalling a
+    # recycled group is how this reaped the suite that was running it.
+    targets=$(fm_test_fixture_targets "$dir")
+    [ -n "$targets" ] || return 0
+    printf '%s\n' "$targets" | while read -r pid pgid; do
+      [ -n "$pid" ] || continue
+      if fm_test_pgid_signalable "$pgid" "$own_pgid"; then
+        kill -"$signal" -- "-$pgid" 2>/dev/null || kill -"$signal" "$pid" 2>/dev/null || true
+      else
+        kill -"$signal" "$pid" 2>/dev/null || true
+      fi
+    done
+    [ "$signal" = TERM ] && sleep 0.2
+  done
+  return 0
+}
+
+# fm_test_fixture_targets <dir>: the pid and process group of everything whose
+# command names <dir> and that nothing is left to stop.
+fm_test_fixture_targets() {
+  local dir=$1 pid ppid pgid rest IFS
   # shellcheck disable=SC2009 # pgrep -f takes a pattern; this must match literally.
-  targets=$(ps -axo pid=,ppid=,pgid=,command= 2>/dev/null \
+  ps -axo pid=,ppid=,pgid=,command= 2>/dev/null \
     | grep -F -- "$dir" \
     | while read -r pid ppid pgid rest; do
         [ "$pid" = "$$" ] && continue
         fm_test_pid_is_loose "$ppid" || continue
         printf '%s %s\n' "$pid" "$pgid"
-      done) || true
-  [ -n "$targets" ] || return 0
-  printf '%s\n' "$targets" | while read -r pid pgid; do
-    [ -n "$pid" ] || continue
-    if fm_test_pgid_signalable "$pgid" "$own_pgid"; then
-      kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-    else
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-  done
-  sleep 0.2
-  printf '%s\n' "$targets" | while read -r pid pgid; do
-    [ -n "$pid" ] || continue
-    # The group is signalled whether or not its leader survived TERM: a member
-    # that traps TERM outlives a leader that does not.
-    if fm_test_pgid_signalable "$pgid" "$own_pgid"; then
-      kill -KILL -- "-$pgid" 2>/dev/null || true
-    fi
-    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
-  done
-  return 0
+      done
 }
 
 # fm_test_pgid_signalable <pgid> <own-pgid>: whether <pgid> is a process group
@@ -268,6 +280,11 @@ fm_test_cleanup() {
     done < "$FM_TEST_CLEANUP_REGISTRY"
     rm -f "$FM_TEST_CLEANUP_REGISTRY"
   fi
+  # A cleanup handler never decides the suite's result. bash 3.2, which these
+  # suites run under, keeps the script's own status across an EXIT trap, but
+  # that is a promise of the shell rather than of this function, and tidying
+  # that finds nothing to do must not read as a failure wherever it runs.
+  return 0
 }
 
 fm_test_tmproot() {
