@@ -24,8 +24,14 @@ concurrency:
 jobs:
   web:
     name: Web
-    # The app ships for macOS, so its checks run where it runs.
-    runs-on: macos-latest
+    # Every job in this repository runs on the captain's own Mac, registered as
+    # a self-hosted runner. Two reasons, and the second is the stronger one.
+    # GitHub meters hosted runners and bills macOS at ten times Linux, which
+    # emptied a month of minutes in a day. And the app ships for macOS, so a
+    # check that runs here is a check that ran where the product runs, under the
+    # same stock Bash 3.2 the product gets. Self-hosted minutes are not metered
+    # and do not count against the spending limit.
+    runs-on: [self-hosted, macOS, ARM64]
     # Hang tripwire, not the expected wall: a healthy run is a few minutes.
     timeout-minutes: 25
     steps:
@@ -103,7 +109,7 @@ jobs:
 
   rust:
     name: Rust
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64]
     # Hang tripwire: a cold toolchain install and build measure around ten
     # minutes, and the first run of all pays for a cold cargo cache.
     timeout-minutes: 40

@@ -5,9 +5,14 @@
 
 ## Verification inputs
 
-Balance hints come from serial runs of the real lanes on `ubuntu-latest`.
+Balance hints come from serial runs of the real lanes in CI.
 The concurrent isolation proof in [fm-test-isolation-proof.md](fm-test-isolation-proof.md) establishes concurrency safety, not serial CI duration.
-Local timings are not interchangeable with CI timings: platform and machine load can affect each script differently and change their relative weights.
+
+The hints recorded below were measured on `ubuntu-latest`, and CI no longer runs there: every lane now runs on the captain's own Mac, registered as a self-hosted macOS runner.
+Two consequences follow, and neither is fixed by editing this file.
+The retained Ubuntu hints describe a machine the lanes no longer touch, so refresh every one of them from the first green self-hosted run rather than trusting the relative weights below.
+And the exception carved out for local macOS runs has lost its reason to exist: CI is now that machine, so a local timing and a CI timing differ only by machine load, not by platform.
+Machine load still matters, and it matters more than it did: the captain uses this Mac for other work while a lane runs on it.
 
 `tests/fm-artifact.test.sh` (12000), `tests/fm-captain-calls.test.sh` (75000), `tests/fm-project-intake.test.sh` (1500), and `tests/fm-history.test.sh` (15000) are the exception: their hints are rounded up from local macOS runs (9880ms on 2026-09-17, 69780ms under concurrent load and 878ms on 2026-09-18, 9818ms on 2026-09-19), because the scripts landed between CI refreshes and the coverage guard's unhinted share was already near its cap.
 Refresh all four from the next green run's timing artifacts.
