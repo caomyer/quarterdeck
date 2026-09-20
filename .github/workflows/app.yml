@@ -1,0 +1,88 @@
+name: App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One group per PR, so a new push replaces that PR's in-flight run; each push to
+# main keeps its own group and is never cancelled.
+concurrency:
+  group: app-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  web:
+    name: Web
+    # The app ships for macOS, so its checks run where it runs.
+    runs-on: macos-latest
+    # Hang tripwire, not the expected wall: a healthy run is a few minutes.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Types
+        run: pnpm exec tsc --noEmit
+      - name: Unit tests
+        run: pnpm test
+      - name: Install the browser the page checks drive
+        run: pnpm exec playwright install chromium
+      - name: Page checks against the browser mock
+        run: |
+          set -eu
+          pnpm dev --port 4191 --strictPort >"$RUNNER_TEMP/vite.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/vite.pid"
+          attempt=0
+          until curl -fsS http://127.0.0.1:4191 >/dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            [ "$attempt" -lt 150 ] || {
+              echo "::error::the dev server never came up"
+              cat "$RUNNER_TEMP/vite.log" || true
+              exit 1
+            }
+            sleep 0.2
+          done
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm projects
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
+      - name: Stop the dev server
+        if: always()
+        run: |
+          set -eu
+          [ -f "$RUNNER_TEMP/vite.pid" ] || exit 0
+          # By the pid this job started, never by a pattern that could match another process.
+          kill "$(cat "$RUNNER_TEMP/vite.pid")" 2>/dev/null || true
+
+  rust:
+    name: Rust
+    runs-on: macos-latest
+    # Hang tripwire: a cold build and the suite measure around ten minutes.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # tauri_build reads the built frontend, so the bundle has to exist first.
+      - name: Build the frontend
+        run: pnpm build
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test
