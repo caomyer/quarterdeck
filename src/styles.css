@@ -401,7 +401,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 /* A line that names no tool spans both columns rather than sitting in the
    remedy column under names it has nothing to do with. */
 .needs-banner li > .needs-says { grid-column: 1 / -1; overflow-wrap: anywhere; }
-.needs-problem { margin: 10px 0 0 25px; color: var(--muted); font-size: .64rem; overflow-wrap: anywhere; }
+.needs-aside { margin: 11px 0 0 25px; color: var(--muted); font-size: .62rem; }
+.needs-problem { white-space: pre-wrap; margin: 10px 0 0 25px; color: var(--muted); font-size: .64rem; overflow-wrap: anywhere; }
 .home-actions { display: flex; align-items: center; gap: 8px; }
 /* The way back to the app's own first mate: available, never the loud choice. */
 .home-revert { min-height: 34px; margin-top: 8px; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: transparent; font-size: .68rem; font-weight: 640; }

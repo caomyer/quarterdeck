@@ -521,18 +521,27 @@ export function useHost(adapter: HostAdapter) {
     return adoptHome(status);
   }, [adapter, adoptHome]);
 
-  /** Asks the first mate what this machine is missing. Reads only. */
+  /** Asks the first mate what this machine is missing. Reads only.
+   *
+   * The answer that arrives last is not the answer to the question asked last:
+   * a home changed twice, or a retry over a slow check, and an older answer
+   * would overwrite a newer one and unlock the button while it was still
+   * waiting. Only the newest question is allowed to answer. */
+  const asked = useRef(0);
   const checkTools = useCallback(async () => {
+    const mine = ++asked.current;
     setCheckingTools(true);
     try {
       const answer = await adapter.toolsMissing();
+      if (mine !== asked.current) return;
       setNeeds(answer.missing);
       setNeedsProblem(answer.problem);
     } catch (error) {
+      if (mine !== asked.current) return;
       setNeeds([]);
       setNeedsProblem(errorText(error));
     } finally {
-      setCheckingTools(false);
+      if (mine === asked.current) setCheckingTools(false);
     }
   }, [adapter]);
 

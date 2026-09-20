@@ -245,8 +245,10 @@ test_default_root_climbs_to_the_holding_repository() {
 test_default_root_does_not_climb_out_of_its_own_repository() {
   local tmp out rc
   tmp=$(fm_test_tmproot fm-lint-wf-standalone)
-  mkdir -p "$tmp/beside/.github/workflows" "$tmp/repo/bin"
-  write_valid_workflow "$tmp/beside/.github/workflows/engine.yml"
+  # The decoy goes exactly where the climb would look, one level above the
+  # repository: anywhere else and this case passes without the fix.
+  mkdir -p "$tmp/.github/workflows" "$tmp/repo/bin"
+  write_valid_workflow "$tmp/.github/workflows/engine.yml"
   cp "$LINT_WF" "$tmp/repo/bin/fm-lint-workflows.sh"
   chmod +x "$tmp/repo/bin/fm-lint-workflows.sh"
   git -C "$tmp/repo" init -q

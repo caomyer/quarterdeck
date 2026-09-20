@@ -169,13 +169,31 @@ test_a_marked_home_inside_a_checkout_nudges() {
   root="$repo/app-data/home"
   mkdir -p "$root/bin" "$root/state"
   : > "$root/AGENTS.md"
+  mkdir -p "$TMP_ROOT/some-engine/bin"
+  : > "$TMP_ROOT/some-engine/AGENTS.md"
   printf 'firstmate-home=1\ncode=%s\n' "$TMP_ROOT/some-engine" > "$root/.fm-home"
   out=$(run_nudge "$root") || status=$?
   expect_code 0 "$status" "marked home nudge"
   [ "$out" = "$NUDGE_LINE" ] || fail "a marked home inside a checkout printed: $out"
-  # A marker naming no code is no marker.
+  # A marker naming no code is no marker, and neither is one naming code that
+  # is not there: a file somebody left behind, or committed, must not make a
+  # checkout or a task worktree into a home.
   printf 'firstmate-home=1\n' > "$root/.fm-home"
   expect_silent_zero "home whose marker names no code" run_nudge "$root"
+  printf 'code=%s\n' "$TMP_ROOT/not-here" > "$root/.fm-home"
+  expect_silent_zero "home whose marker names code that is not there" run_nudge "$root"
+  printf 'code=%s\n' "$repo" > "$root/.fm-home"
+  expect_silent_zero "home whose marker names something that is not firstmate" run_nudge "$root"
+  printf 'code=engine\n' > "$root/.fm-home"
+  expect_silent_zero "home whose marker names code by a relative path" run_nudge "$root"
+  # The read is bounded: a marker that never says code= must not cost the file.
+  # Inside the checkout, so the marker is the only thing that could make it one.
+  local junk="$repo/marked-junk"
+  mkdir -p "$junk/bin" "$junk/state"
+  : > "$junk/AGENTS.md"
+  awk 'BEGIN { for (i = 0; i < 200; i++) print "junk" }' > "$junk/.fm-home"
+  printf 'code=%s\n' "$TMP_ROOT/some-engine" >> "$junk/.fm-home"
+  expect_silent_zero "home whose marker buries its code past the bound" run_nudge "$junk"
   pass "fm-sessionstart-nudge: a home the app marked is a primary wherever it sits"
 }
 

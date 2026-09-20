@@ -117,8 +117,14 @@ pub(crate) fn claim_presentation(home: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     std::fs::create_dir_all(&config).map_err(|e| format!("could not create {}: {e}", config.display()))?;
-    std::fs::write(&setting, "quarterdeck
-").map_err(|e| format!("could not write {}: {e}", setting.display()))?;
+    // Written whole or not at all: a first mate reading it between the create
+    // and the write would see an empty file, and empty is not a mode it knows.
+    let partial = config.join(format!("presentation.{}.tmp", std::process::id()));
+    std::fs::write(&partial, "quarterdeck\n").map_err(|e| format!("could not write {}: {e}", partial.display()))?;
+    std::fs::rename(&partial, &setting).map_err(|e| {
+        let _ = std::fs::remove_file(&partial);
+        format!("could not save {}: {e}", setting.display())
+    })?;
     Ok(true)
 }
 
@@ -132,19 +138,26 @@ pub(crate) fn claim_presentation(home: &Path) -> Result<bool, String> {
 pub(crate) fn missing_tools(engine: &Path, home: &Path) -> Result<Vec<Value>, String> {
     let script = engine.join("bin/fm-bootstrap.sh");
     if !script.is_file() {
-        return Ok(Vec::new());
+        // An engine that failed to bundle must not read as a Mac with nothing
+        // missing: from here those look identical, and only one is good news.
+        return Err(format!("the first mate's own checker is not where it should be: {}", script.display()));
     }
     let output = Command::new(&script)
         .current_dir(home)
         .env("FM_HOME", home)
         .env("FM_BOOTSTRAP_DETECT_ONLY", "1")
-        .env("FM_BOOTSTRAP_NETWORK_PHASE", "skip")
+        // FM_BOOTSTRAP_NETWORK is the name the script reads. It computes
+        // FM_BOOTSTRAP_NETWORK_PHASE from it and overwrites anything given
+        // under that name, so setting the phase directly does nothing, and the
+        // run asks GitHub whether gh is authenticated on every launch.
+        .env("FM_BOOTSTRAP_NETWORK", "skip")
         .env("PATH", crate::envpath::search_path())
         .output()
         .map_err(|e| format!("could not run {}: {e}", script.display()))?;
     if !output.status.success() {
         let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("the first mate could not check this machine: {said}"));
+        let why = if said.is_empty() { "it gave no reason" } else { &said };
+        return Err(format!("the first mate could not check this machine: {why}"));
     }
     Ok(String::from_utf8_lossy(&output.stdout).lines().filter_map(needed).collect())
 }
@@ -165,19 +178,35 @@ fn needed(line: &str) -> Option<Value> {
         let (tool, how) = split_how(rest, "(instructions: ");
         return Some(json!({"tool": tool, "how": how, "kind": "manual", "says": line}));
     }
+    // A presentation tool the home cannot use is a named tool with an install
+    // command, whatever the line calls itself. Left as prose it would be the
+    // longest thing on the page and the least actionable.
+    if let Some(rest) = line.strip_prefix("PRESENTATION_UNAVAILABLE: ") {
+        let (tool, how) = split_how(rest, "install: ");
+        return Some(json!({"tool": tool, "how": how, "kind": "install", "says": line}));
+    }
     Some(json!({"tool": null, "how": null, "kind": "other", "says": line}))
 }
 
 /// `<tool> (install: <command>)` split into its two halves. A line that does
-/// not carry the opener is all name and no remedy, which is still worth saying.
+/// not carry the opener is all name and no remedy, which is still worth saying,
+/// and so is a name whose remedy turns out to be empty.
 fn split_how(rest: &str, opener: &str) -> (String, Option<String>) {
-    match rest.find(opener) {
-        Some(at) => {
-            let how = rest[at + opener.len()..].trim_end().trim_end_matches(')');
-            (rest[..at].trim().to_string(), Some(how.to_string()))
-        }
-        None => (rest.trim().to_string(), None),
-    }
+    let Some(at) = rest.find(opener) else {
+        return (rest.trim().to_string(), None);
+    };
+    let after = &rest[at + opener.len()..];
+    // The remedy closes at its own bracket, not at the end of the line: a line
+    // may say more after it, and a command may carry brackets of its own.
+    let how = match after.find(')') {
+        Some(close) => &after[..close],
+        None => after,
+    };
+    // The name is what comes before the opener, without a bracket the opener
+    // followed and without a parenthetical of its own, as a version floor is.
+    let name = rest[..at].trim().trim_end_matches('(').trim();
+    let name = name.split(" (").next().unwrap_or(name).trim();
+    (name.to_string(), Some(how.trim().to_string()).filter(|how| !how.is_empty()))
 }
 
 /// Rebinds the home's registered watches to the engine's current bytes.
@@ -325,7 +354,7 @@ mod tests {
         let home = dir.join("home");
         prepare_home(&engine, &home).expect("the engine could not lay out a home");
         claim_presentation(&home).unwrap();
-        let before = manifest(&home.join("state"));
+        let before = manifest(&home);
 
         let missing = missing_tools(&engine, &home).expect("the check failed");
         for needed in &missing {
@@ -335,14 +364,29 @@ mod tests {
             // reads is on a branch rather than main, which is true and is the
             // sort of thing the captain should see rather than have dropped.
             assert!(needed["kind"].as_str().is_some(), "a line with no kind: {needed}");
+            // Every line the first mate wrote as MISSING must arrive as one
+            // the captain can act on, or the parser has quietly stopped working
+            // and everything would still look like a tidy list of prose.
+            if needed["says"].as_str().is_some_and(|says| says.starts_with("MISSING: ")) {
+                assert_eq!(needed["kind"], "install", "a MISSING line was not read as one: {needed}");
+                assert!(needed["tool"].as_str().is_some_and(|tool| !tool.contains(' ')), "the tool was not named: {needed}");
+                assert!(needed["how"].as_str().is_some_and(|how| !how.is_empty()), "no remedy was read: {needed}");
+            }
         }
+        // Nothing here asks the network. The check is meant to read this
+        // machine, and a captain on a bad connection must still be told what
+        // they are missing rather than waiting on a round trip.
+        assert!(
+            !missing.iter().any(|needed| needed["says"] == "NEEDS_GH_AUTH"),
+            "the check asked GitHub whether gh is signed in: {missing:?}"
+        );
         // Nothing this machine is missing should be lavish-axi: the app presents
         // its own pages, and the home was told so above.
         assert!(
             !missing.iter().any(|needed| needed["says"].as_str().is_some_and(|says| says.contains("lavish-axi"))),
             "the captain was asked for a tool the app does not use: {missing:?}"
         );
-        assert_eq!(manifest(&home.join("state")), before, "checking the machine changed the home");
+        assert_eq!(manifest(&home), before, "checking the machine changed the home");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -443,10 +487,9 @@ mod tests {
                 // symlink_metadata: a link's own record, never what it points at,
                 // so a link into the home could not hide a change here.
                 let Ok(about) = entry.metadata().or_else(|_| entry.path().symlink_metadata()) else { continue };
+                found.push((entry.path(), about.len(), about.modified().unwrap_or(std::time::UNIX_EPOCH)));
                 if about.is_dir() {
                     walk.push(entry.path());
-                } else {
-                    found.push((entry.path(), about.len(), about.modified().unwrap_or(std::time::UNIX_EPOCH)));
                 }
             }
         }
@@ -479,11 +522,60 @@ mod tests {
         engine.is_dir().then_some(engine)
     }
 
-    /// The copy, not the source. Tauri's resource copy decides an entry is a
-    /// directory by a question that follows symlinks, and then skips it, so the
-    /// engine's two directory links once arrived as nothing at all and the
-    /// bundled first mate had no skills. The source tree cannot see that: it
-    /// has the links.
+    /// Every directory link in the engine is named in the bundle's resources.
+    ///
+    /// Tauri's resource copy decides an entry is a directory by a question that
+    /// follows symlinks, and then skips it: a link to a directory is neither
+    /// copied nor descended into, and the bundled first mate had no skills at
+    /// all because of it. The remedy is an explicit entry copying what the link
+    /// points at to where the link is, and this fails when the engine grows a
+    /// directory link nobody added one for. It needs no build output, so unlike
+    /// the check below it runs everywhere.
+    #[test]
+    fn every_directory_link_in_the_engine_is_named_in_the_bundle() {
+        let engine = check_engine(&real_engine()).expect("the engine is not where it should be");
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json")).expect("no tauri.conf.json"),
+        )
+        .expect("tauri.conf.json is not JSON");
+        // The map is source to destination, and a link is answered by an entry
+        // that puts what it points at where the link is, so the destinations
+        // are what to look in.
+        let resources = config["bundle"]["resources"].as_object().expect("the bundle names no resources");
+        let arrives: Vec<&str> = resources.values().filter_map(Value::as_str).collect();
+
+        let mut named = Vec::new();
+        let mut unnamed = Vec::new();
+        let mut walk = vec![engine.clone()];
+        while let Some(here) = walk.pop() {
+            let Ok(entries) = std::fs::read_dir(&here) else { continue };
+            for entry in entries.flatten() {
+                let Ok(about) = entry.path().symlink_metadata() else { continue };
+                if about.is_symlink() {
+                    // Only a link to a directory is dropped; a link to a file is
+                    // copied as the file it points at, which is what we want.
+                    if !entry.path().is_dir() {
+                        continue;
+                    }
+                    let at = entry.path().strip_prefix(&engine).unwrap().to_string_lossy().to_string();
+                    let wanted = format!("engine/{at}");
+                    if arrives.contains(&wanted.as_str()) {
+                        named.push(wanted);
+                    } else {
+                        unnamed.push(wanted);
+                    }
+                } else if about.is_dir() {
+                    walk.push(entry.path());
+                }
+            }
+        }
+        assert!(unnamed.is_empty(), "these directory links would arrive as nothing at all: {unnamed:?}");
+        assert!(!named.is_empty(), "the engine has no directory links, so this guards nothing any more");
+    }
+
+    /// The copy, not the source: proof the entries above do what they say.
+    /// The source tree cannot show it, because the source has the links.
+    /// Skipped where no build output exists, which the check above covers.
     #[test]
     fn the_copy_that_ships_carries_what_the_links_point_at() {
         let Some(engine) = copied_engine() else {

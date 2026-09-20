@@ -586,28 +586,47 @@ function HomeSetup({ problem, choosing, onChoose, onUseApp }: { problem: string 
 }
 
 /// What the first mate says this machine still needs, in its own order.
+///
+/// The live region is always here, empty when there is nothing to say: a region
+/// that appears already full is not announced, because there was no change
+/// inside it to announce.
 function NeedsBanner({ needs, problem, checking, onCheck }: { needs: Needed[]; problem: string | null; checking: boolean; onCheck: () => void }) {
-  if (needs.length === 0 && !problem) return null;
-  return <section className="needs-banner" role="status" aria-label="What this Mac still needs">
-    <header>
-      <CircleAlert size={16} />
-      <div>
-        <strong>{problem ? "The first mate could not check this Mac" : needs.length === 1 ? "The first mate needs one more thing on this Mac" : `The first mate needs ${needs.length} more things on this Mac`}</strong>
-        <small>{problem ? "Until it can, what is missing here is unknown." : "It runs without them, but the work that uses them will stop."}</small>
-      </div>
-      <button className="icon-button" onClick={onCheck} disabled={checking} title="Check this Mac again">
-        <RefreshCw size={16} />
-      </button>
-    </header>
-    {problem ? <p className="needs-problem">{problem}</p> : <ul>
-      {needs.map((needed) => <li key={needed.says}>
-        {needed.tool ? <><code className="needs-tool">{needed.tool}</code>{needed.kind === "manual"
-          ? <span>install it yourself: <a href={needed.how ?? undefined} target="_blank" rel="noreferrer noopener">{needed.how}</a></span>
-          : needed.how ? <code className="needs-how">{needed.how}</code> : <span>no install command was offered</span>}</>
-          : <span className="needs-says">{needed.says}</span>}
-      </li>)}
-    </ul>}
-  </section>;
+  // Only a named tool is a thing the captain can go and get. The rest is what
+  // the first mate had to say, and counting it as a thing to install would be
+  // telling them a branch name is something to install.
+  const tools = needs.filter((needed) => needed.kind !== "other");
+  const said = needs.filter((needed) => needed.kind === "other");
+  const headline = problem ? "The first mate could not check this Mac"
+    : tools.length === 0 ? "The first mate has something to say about this Mac"
+    : tools.length === 1 ? "The first mate needs one more thing on this Mac"
+    : `The first mate needs ${tools.length} more things on this Mac`;
+  const row = (needed: Needed) => <li key={needed.says}>
+    {needed.tool ? <><code className="needs-tool">{needed.tool}</code>{needed.kind === "manual"
+      ? <span>install it yourself: {needed.how ? <a href={needed.how} target="_blank" rel="noreferrer noopener">{needed.how}</a> : "no instructions were offered"}</span>
+      : needed.how ? <code className="needs-how">{needed.how}</code> : <span>no install command was offered</span>}</>
+      : <span className="needs-says">{needed.says}</span>}
+  </li>;
+  return <div role="status" aria-live="polite" aria-label="What this Mac still needs">
+    {(needs.length > 0 || problem) && <section className="needs-banner">
+      <header>
+        <CircleAlert size={16} />
+        <div>
+          <strong>{headline}</strong>
+          <small>{problem ? "Until it can, what is missing here is unknown." : tools.length === 0 ? "Nothing here is a thing to install." : "It runs without them, but the work that uses them will stop."}</small>
+        </div>
+        <button className="icon-button" onClick={onCheck} disabled={checking} title="Check this Mac again">
+          <RefreshCw size={16} />
+        </button>
+      </header>
+      {problem ? <p className="needs-problem">{problem}</p> : <>
+        {tools.length > 0 && <ul>{tools.map(row)}</ul>}
+        {said.length > 0 && <>
+          <p className="needs-aside">{tools.length > 0 ? "And some things it could not put a name to:" : "It could not put a name to these:"}</p>
+          <ul>{said.map(row)}</ul>
+        </>}
+      </>}
+    </section>}
+  </div>;
 }
 
 function HomeProblem({ problem }: { problem: string }) {

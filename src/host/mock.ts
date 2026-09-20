@@ -828,10 +828,15 @@ export class MockHostAdapter implements HostAdapter {
     if (asked === "none") return { missing: [], problem: null };
     if (asked === "unreadable") return { missing: [], problem: "the first mate could not check this machine: bin/fm-bootstrap.sh: permission denied" };
     return {
+      // The shapes a real Mac produces, at the lengths it produces them: the
+      // long curl pipeline, the presentation line that is a tool in prose, and
+      // the two lines that name no tool at all.
       missing: [
-        { tool: "jq", how: "brew install jq", kind: "install", says: "MISSING: jq (install: brew install jq)" },
-        { tool: "tasks-axi", how: "npm install -g tasks-axi", kind: "install", says: "MISSING: tasks-axi (install: npm install -g tasks-axi)" },
+        { tool: "jq", how: "brew install jq  # or the platform's package manager", kind: "install", says: "MISSING: jq (install: brew install jq  # or the platform's package manager)" },
+        { tool: "no-mistakes", how: "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh", kind: "install", says: "MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)" },
+        { tool: "lavish-axi", how: "npm install -g lavish-axi && lavish-axi setup hooks", kind: "install", says: "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=0.1.46; install: npm install -g lavish-axi && lavish-axi setup hooks) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish" },
         { tool: "herdr", how: "https://example.invalid/herdr", kind: "manual", says: "MISSING_MANUAL: herdr (instructions: https://example.invalid/herdr)" },
+        { tool: null, how: null, kind: "other", says: "TANGLE: primary checkout on feature branch 'fm/example' (expected 'main'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock" },
         { tool: null, how: null, kind: "other", says: "BACKEND_INVALID: zellij (known: tmux herdr cmux orca zellij)" },
       ],
       problem: null,

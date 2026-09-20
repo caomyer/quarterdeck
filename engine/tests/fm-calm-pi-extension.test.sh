@@ -11,12 +11,15 @@ set -u
 export NODE_NO_WARNINGS=1
 
 # The rendered rows are box-drawing characters, three bytes each, and ${#text}
-# counts bytes under stock macOS bash 3.2 and under the C locale. A 100-column
-# row measured that way reads as 300. jq counts code points whatever the
-# locale, which is what a terminal cell is here.
+# counts bytes rather than characters wherever the shell has no multibyte
+# locale: the C locale does it, and so does a shell started with none, which is
+# how a test run usually starts. A 100-column row measured that way reads as
+# 300. jq counts code points whatever the locale, which is what a terminal cell
+# is here: every character the sprite uses is single width.
 # The newline matters: with none, jq -R has no line to read and an empty row
 # would measure as nothing at all rather than as zero cells.
 cells() { printf '%s\n' "$1" | jq -Rr 'length'; }
+command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (the rendered rows are measured in code points)"; exit 0; }
 
 TMP_ROOT=$(fm_test_tmproot fm-calm-pi-extension)
 EXT="$ROOT/.pi/extensions/fm-calm.ts"

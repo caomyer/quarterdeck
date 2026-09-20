@@ -22,13 +22,26 @@ fm_root_is_secondmate_home() {
 # sits: it is the app's own, in the app's data folder, which is nobody's
 # checkout until somebody puts their data folder under version control.
 fm_root_is_mirrored_home() {
-  local marker="$1/.fm-home" line LC_ALL=C
+  local marker="$1/.fm-home" line code seen=0 LC_ALL=C
   [ -L "$marker" ] && return 1
   [ -f "$marker" ] || return 1
+  # The marker's own shape, which bin/fm-home-init.sh writes: a line saying
+  # what this is, then the code, then a line per code it mirrored before. The
+  # read is bounded because it runs at every session start and every turn end,
+  # in six hooks, and a file that never says `code=` must not cost the whole
+  # file to find that out.
   while IFS= read -r line || [ -n "$line" ]; do
+    seen=$((seen + 1))
+    [ "$seen" -le 64 ] || return 1
     case "$line" in
-      code=?*) return 0 ;;
+      code=/?*) code=${line#code=} ;;
+      *) continue ;;
     esac
+    # Named, absolute, and actually a copy of firstmate. A marker naming code
+    # that is not there is a file somebody left behind or committed, and it
+    # must not make a task worktree into a home.
+    code=${code%$'\r'}
+    [ -f "$code/AGENTS.md" ] && [ -d "$code/bin" ] && return 0
   done < "$marker"
   return 1
 }

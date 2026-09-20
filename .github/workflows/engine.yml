@@ -2,21 +2,20 @@ name: Engine
 
 # The engine's checks. They run from engine/, where the first mate's code lives
 # inside this repository, and only when something there changes: the lanes below
-# are thirteen jobs, too much to spend on a change to the app's CSS. Any
-# workflow counts as something there: the Lint job is the only lane that runs
-# actionlint, over every workflow at the root, so a malformed one would
-# otherwise be caught by nothing.
+# are thirteen jobs, too much to spend on a change to the app's CSS, and too
+# much to spend on a change to another workflow: the App lane lints all of them
+# on every branch, for no job of its own.
 on:
   push:
     branches: [main]
     paths:
       - 'engine/**'
-      - '.github/workflows/**'
+      - '.github/workflows/engine.yml'
   pull_request:
     branches: [main]
     paths:
       - 'engine/**'
-      - '.github/workflows/**'
+      - '.github/workflows/engine.yml'
   workflow_dispatch:
 
 permissions:

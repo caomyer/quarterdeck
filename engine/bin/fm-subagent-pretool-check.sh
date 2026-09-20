@@ -188,7 +188,11 @@ STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 # inert (exit 0), never a block, so a broken environment never denies a call.
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
-fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
+# The home, not the physical code. In a home that mirrors an installed copy the
+# two differ, and it is the home that carries the state and the marker saying
+# what it is; asking about the code would make this the one guard of the six
+# that goes inert in such a home whenever git cannot answer.
+fm_primary_scope_matches "$FM_HOME" "$STATE" || exit 0
 
 # Name the dedicated scout entry point only when this home carries it; degrade
 # to the two-step brief-then-spawn path when it does not, rather than naming a

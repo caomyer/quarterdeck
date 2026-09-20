@@ -13,3 +13,7 @@ __pycache__/
 config/
 
 .tools/
+# The marker a home carries, naming the code it mirrors. It belongs to a home,
+# never to the code: committed, every checkout and every task worktree would
+# claim to be one.
+.fm-home

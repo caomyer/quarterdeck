@@ -36,6 +36,15 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Every workflow in the repository, on every branch. The Engine lane owns
+      # the engine's lint but only runs on main and on a pull request to it, so
+      # a malformed workflow on a branch would reach main before anything said
+      # so. The engine's linter is the single owner of what that lint is.
+      - name: Workflows
+        run: |
+          set -eu
+          engine/bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin" >/dev/null
+          PATH="$RUNNER_TEMP/bin:$PATH" engine/bin/fm-lint-workflows.sh
       - name: Types
         run: pnpm exec tsc --noEmit
       - name: Unit tests
