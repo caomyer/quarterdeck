@@ -215,18 +215,21 @@ test_orphan_sweep_unlinks_a_stale_link_without_following_it() {
   # not a fixture's to remove. The sweep must unlink it and leave the target.
   # Named outside the sweep's own fm-* glob: only the link is its business.
   keep=$(mktemp -d "${TMPDIR:-/tmp}/sweep-target.XXXXXX")
+  # Neither is a fixture root the sweep would ever collect, so this suite's own
+  # cleanup carries them even when a check below fails.
+  FM_TEST_CLEANUP_DIRS+=("$keep")
   printf 'important\n' > "$keep/important.txt"
   printf '%s\n%s\n' 999999 gone-identity > "$keep/.fm-test-fixture"
   touch -t 202001010000 "$keep/.fm-test-fixture"
   link="${TMPDIR:-/tmp}/fm-test-sweep-link.$$"
-  ln -s "$keep" "$link"
+  FM_TEST_CLEANUP_DIRS+=("$link")
+  ln -sfn "$keep" "$link" || fail "could not plant the stale fixture link"
   bash -c '
     # shellcheck source=tests/lib.sh
     . "'"$LIB"'"
   '
   [ -L "$link" ] && fail "the sweep left a stale fixture link in place"
   assert_present "$keep/important.txt" "the sweep removed what a stale link pointed at"
-  rm -rf "$link" "$keep"
   pass "the sweep unlinks a stale fixture link without following it"
 }
 

@@ -1264,9 +1264,21 @@ case "$sr_leader" in ''|*[!0-9]*) fail "could not read the state-root fixture le
 
 kill -KILL -"$sr_leader" 2>/dev/null || true
 kill -KILL "$sr_leader" 2>/dev/null || true
-for _ in $(seq 1 50); do kill -0 -"$sr_leader" 2>/dev/null || break; sleep 0.1; done
-kill -0 "$sr_leader" 2>/dev/null && fail "the state-root fixture leader survived SIGKILL"
+# Both the group and the leader itself, and a leader its parent has not reaped
+# yet still answers kill -0, so a zombie counts as gone: under load the wait for
+# the group can finish while the leader sits in that state for a moment.
+sr_gone() {
+  kill -0 -"$sr_leader" 2>/dev/null && return 1
+  kill -0 "$sr_leader" 2>/dev/null || return 0
+  case "$(ps -o state= -p "$sr_leader" 2>/dev/null | tr -d ' ')" in
+    Z*) return 0 ;;
+  esac
+  return 1
+}
+for _ in $(seq 1 50); do sr_gone && break; sleep 0.1; done
+sr_gone || fail "the state-root fixture leader survived SIGKILL"
 kill -0 -"$sr_leader" 2>/dev/null && fail "fixture invalid: the owned group outlived the whole generation"
+
 # Drift the live state root away from what the claim recorded.
 chmod 750 "$HSR/state" || fail "could not drift the state-root identity"
 
