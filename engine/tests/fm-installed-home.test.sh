@@ -74,14 +74,19 @@ test_home_is_created_from_nothing() {
 }
 
 test_session_start_hook_runs_from_the_home() {
-  local cmd out
+  local cmd out left
   cmd=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOME_DIR/.claude/settings.json") \
     || fail "could not read the session-start hook"
   out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' | in_home bash -c "$cmd" 2>&1) \
     || fail "the session-start hook failed: $out"
   assert_contains "$out" "SESSION START - $HOME_DIR" "the hook ran session start in the home"
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS" "the digest reached the supervision instructions"
-  [ -f "$HOME_DIR/state/.session-start-complete" ] || fail "session start did not complete in the home's state"
+  # fm-session-start.sh records completion only when it can read the session
+  # lock's pid, and says so in its own words when it cannot, so a failure here
+  # carries what it said rather than only the missing file.
+  left=$( (cd "$HOME_DIR/state" 2>/dev/null && shopt -s nullglob dotglob && printf '%s ' *) )
+  [ -f "$HOME_DIR/state/.session-start-complete" ] || fail \
+    "session start did not complete in the home's state"$'\n'"state: $left"$'\n'"$(printf '%s\n' "$out" | tail -25)"
   # A copy outside git has no branch to read; the first mate must not be shown git errors.
   assert_not_contains "$out" "fatal:" "the digest shows no git errors"
   pass "the exact session-start hook command runs the full digest from the home"

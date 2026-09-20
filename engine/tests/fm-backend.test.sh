@@ -45,6 +45,14 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-tests)
 SPAWN_HOME="$TMP_ROOT/user-home"
 mkdir -p "$SPAWN_HOME"
 
+# The firstmate home a spawn runs in. The Treehouse project lock is anchored in
+# the root home's own state directory, which FM_STATE_OVERRIDE does not move,
+# so a case that leaves FM_HOME to default is answered by whatever the code
+# root happens to hold: a checkout with a leftover state/ passes and a clean
+# one fails, which is how this read as green here and red on CI.
+SPAWN_FM_HOME="$TMP_ROOT/spawn-home"
+mkdir -p "$SPAWN_FM_HOME/state"
+
 write_spawn_brief() {  # <file> <id>
   cat > "$1" <<EOF
 # Task
@@ -119,15 +127,44 @@ resolve_base_ref() {
 BASE_REF=$(resolve_base_ref) \
   || fail "fm-backend baseline requires local main or origin/main; fetch the default branch before running this test"
 
-# Newest first-parent revision whose bin/backends/tmux.sh still uses the
-# pre-exact permissive kill-window target. Content-addressed from history so the
-# fixture stays historical on default-branch CI and on branches cut after the
-# exact-selector change, where merge-base with main is self-referential.
+# The engine ships as a subdirectory of the app's repository, and git resolves
+# `archive <rev>` and `show <rev>:<path>` from the repository root, not from
+# here. ENGINE_TREE names the engine's own tree at a revision, so both read the
+# engine's history whether it is the repository or a directory within it.
+ENGINE_PREFIX=$(git -C "$ROOT" rev-parse --show-prefix 2>/dev/null || true)
+# git resolves an archive's pathspec against the directory it runs in, so a run
+# from the engine would look for engine/bin inside the engine's own tree. From
+# the repository top the pathspec means what it says.
+GIT_TOP=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")
+engine_tree() {  # <rev> -> tree-ish of the engine at that revision
+  if [ -n "$ENGINE_PREFIX" ]; then
+    printf '%s:%s\n' "$1" "${ENGINE_PREFIX%/}"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+engine_path() {  # <path relative to the engine> -> path from the repository root
+  printf '%s%s\n' "$ENGINE_PREFIX" "$1"
+}
+# A branch that predates the engine has no engine to compare against: the cases
+# that need a historical bin/ say so and stand down rather than assert on a tree
+# that does not exist. True only until the engine reaches the default branch.
+HAVE_OLD_BIN=1
+git -C "$ROOT" rev-parse --verify -q "$(engine_tree "$BASE_REF")" >/dev/null 2>&1 || HAVE_OLD_BIN=0
+OLD_BIN_SKIP="skip: no engine baseline: $BASE_REF holds no $(engine_path bin)"
+
+# Newest revision whose bin/backends/tmux.sh still uses the pre-exact permissive
+# kill-window target. Content-addressed from history so the fixture stays
+# historical on default-branch CI and on branches cut after the exact-selector
+# change, where merge-base with main is self-referential.
+# The walk is not first-parent: the engine's own history reaches this
+# repository through the second parent of the commit that brought it in, and a
+# first-parent walk would stop at that merge and never see the engine's past.
 resolve_permissive_tmux_kill_ref() {
   local commit body
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
-    body=$(git -C "$ROOT" show "$commit:bin/backends/tmux.sh" 2>/dev/null) || continue
+    body=$(git -C "$ROOT" show "$commit:$(engine_path bin/backends/tmux.sh)" 2>/dev/null) || continue
     # shellcheck disable=SC2016
     case "$body" in
       *'tmux kill-window -t "=$session:=$window"'*) continue ;;
@@ -139,7 +176,7 @@ resolve_permissive_tmux_kill_ref() {
         return 0
         ;;
     esac
-  done < <(git -C "$ROOT" log --first-parent --format='%H' HEAD -- bin/backends/tmux.sh)
+  done < <(git -C "$ROOT" log --format='%H' HEAD -- bin/backends/tmux.sh)
   return 1
 }
 
@@ -161,7 +198,7 @@ build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry p
   root="$TMP_ROOT/$name"
   archive="$root/bin.tar"
   mkdir -p "$root"
-  git -C "$ROOT" archive --format=tar "$BASE_REF" bin > "$archive" \
+  git -C "$GIT_TOP" archive --format=tar "$(engine_tree "$BASE_REF")" bin > "$archive" \
     || fail "old-bin shim: could not archive bin/ from $BASE_REF"
   tar -xf "$archive" -C "$root" \
     || fail "old-bin shim: could not extract bin/ from $BASE_REF"
@@ -762,6 +799,10 @@ SH
 
 test_peek_conformance_old_vs_new() {
   local old_bin fb log_old log_new home out_old out_new payload neutral_root
+  if [ "$HAVE_OLD_BIN" -eq 0 ]; then
+    printf '%s\n' "$OLD_BIN_SKIP"
+    return 0
+  fi
   payload=$'line one\nline two\ncaptain on deck'
   old_bin=$(build_old_bin peek-old)
   fb=$(make_peek_fakebin "$TMP_ROOT/peek-fake" "$payload")
@@ -816,6 +857,7 @@ run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> 
   [ "${1:-}" = -- ] && shift
   : > "$log"
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$bin" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
+    FM_HOME="$SPAWN_FM_HOME" \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" FM_TMUX_LOG="$log" \
@@ -972,7 +1014,7 @@ test_teardown_conformance_old_vs_new() {
   old_tmux_ref=$(resolve_permissive_tmux_kill_ref) \
     || { BASE_REF=$saved_base_ref; fail "unable to locate a historical bin/backends/tmux.sh with permissive kill-window selectors"; }
   old_bin=$(build_old_bin teardown-old)
-  git -C "$ROOT" show "$old_tmux_ref:bin/backends/tmux.sh" > "$old_bin/bin/backends/tmux.sh" \
+  git -C "$ROOT" show "$old_tmux_ref:$(engine_path bin/backends/tmux.sh)" > "$old_bin/bin/backends/tmux.sh" \
     || { BASE_REF=$saved_base_ref; fail "could not materialize historical tmux adapter from $old_tmux_ref"; }
   BASE_REF=$saved_base_ref
   proj="$TMP_ROOT/teardown-project"; wt="$TMP_ROOT/teardown-wt"

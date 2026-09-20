@@ -234,14 +234,16 @@ test_orphan_sweep_unlinks_a_stale_link_without_following_it() {
 }
 
 test_orphan_sweep_reaps_a_killed_runs_processes() {
-  local harness dirfile child_dir pid tries worker
+  local harness dirfile child_dir pid tries worker tmp_base
+  # A runner need not set TMPDIR at all; Linux images do not.
+  tmp_base=${TMPDIR:-/tmp}
   harness=$(fm_test_tmproot fm-test-kill-harness)
   dirfile="$harness/child-dir"
   # A suite killed outright, as bin/fm-test-run.sh kills one that passes its
   # per-script bound: no trap runs, so its detached worker outlives it.
   # A trailing slash on TMPDIR, which is what exposed the sweep matching its
   # roots by the glob's path rather than the physical one.
-  TMPDIR="${TMPDIR%/}/" bash -c '
+  TMPDIR="${tmp_base%/}/" bash -c '
     # shellcheck source=tests/lib.sh
     . "'"$LIB"'"
     set -m
@@ -270,7 +272,7 @@ SH
   touch -t 202001010000 "$child_dir/.fm-test-fixture"
 
   # The next run's sweep is the only thing that sees it.
-  TMPDIR="${TMPDIR%/}/" bash -c '
+  TMPDIR="${tmp_base%/}/" bash -c '
     # shellcheck source=tests/lib.sh
     . "'"$LIB"'"
   '
