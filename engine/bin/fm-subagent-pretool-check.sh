@@ -170,13 +170,18 @@ done
 # in-session tool call can set it for the call that follows.
 [ "${FM_ALLOW_SUBAGENT:-}" != "1" ] || exit 0
 
+# The libraries come from the physical script directory; the root everything
+# else asks about is the one the hook was reached through. In a home that
+# mirrors an installed copy (bin/fm-home-init.sh) the two differ: the home is
+# what carries state/ and the marker saying what it is, and the physical code
+# is the engine. There is one root here on purpose, and it is the same one the
+# other five guards use: an override, else the reached root. Not FM_HOME, which
+# is inherited - a crewmate carries the primary session's, and asking about
+# that would deny the delegation calls a crewmate may make in its own worktree.
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || exit 0
-FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd -P)} || exit 0
-# Without FM_HOME the home is the directory the hook was reached through, not
-# the physical code: in a home that mirrors an installed copy
-# (bin/fm-home-init.sh) the two differ, and only the home has state/.
 REACHED_ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd) || exit 0
-FM_HOME=${FM_HOME:-${FM_ROOT_OVERRIDE:-$REACHED_ROOT}}
+FM_ROOT=${FM_ROOT_OVERRIDE:-$REACHED_ROOT}
+FM_HOME=${FM_HOME:-$FM_ROOT}
 STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 
 # Scope to a genuine primary home, exactly as the session-start nudge and the
@@ -188,14 +193,7 @@ STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 # inert (exit 0), never a block, so a broken environment never denies a call.
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
-# An override, else the root the hook was reached through: exactly what the
-# other five guards ask about. In a home that mirrors an installed copy it is the home, while the
-# physical code is the engine, and it is the home that carries the state and
-# the marker saying what it is. Not FM_HOME: that is inherited, and a crewmate
-# launched from a primary session carries the primary's, which would make this
-# guard deny the delegation calls a crewmate is entitled to make in its own
-# task worktree.
-fm_primary_scope_matches "${FM_ROOT_OVERRIDE:-$REACHED_ROOT}" "$STATE" || exit 0
+fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 # Name the dedicated scout entry point only when this home carries it; degrade
 # to the two-step brief-then-spawn path when it does not, rather than naming a

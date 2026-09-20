@@ -216,6 +216,55 @@ test_task_worktree_and_non_firstmate_repo_are_inert() {
   pass "the guard is inert in a crewmate task worktree and in a non-firstmate repo"
 }
 
+# The layout the app actually runs: a home bin/fm-home-init.sh laid out, whose
+# bin/ is a link into a read-only copy of the code, reached through that link
+# and with no override at all. Every other case here sets FM_ROOT_OVERRIDE,
+# which is why this guard could be wrong in the app's own layout three times
+# over while the suite stayed green.
+test_mirrored_home_is_guarded_with_no_override() {
+  local repo="$TMP_ROOT/mirror-repo" code="$TMP_ROOT/mirror-repo/engine" rc=0
+  local home="$TMP_ROOT/mirror-home"
+  # The code is a directory inside a repository, which is where the engine sits
+  # when the app runs from a checkout. Asking about the code rather than the
+  # home answers "a directory inside somebody's checkout", so the guard would
+  # stand down in a genuine primary home.
+  mkdir -p "$code/bin"
+  git -C "$repo" init -q
+  printf '# fixture\n' > "$code/AGENTS.md"
+  cp "$CHECK" "$code/bin/"
+  cp "$ROOT/bin/fm-primary-scope-lib.sh" "$ROOT/bin/fm-gate-refuse-lib.sh" "$code/bin/"
+  mkdir -p "$home/state"
+  ln -s "$code/bin" "$home/bin"
+  ln -s "$code/AGENTS.md" "$home/AGENTS.md"
+  printf 'firstmate-home=1\ncode=%s\n' "$code" > "$home/.fm-home"
+
+  : > "$OUT"
+  : > "$ERR"
+  # No FM_ROOT_OVERRIDE and no FM_HOME: everything is resolved from the path
+  # the hook was reached through, as it is when the harness runs it.
+  ( cd "$home" && env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_HOME \
+    ./bin/fm-subagent-pretool-check.sh --claude --tool Agent ) > "$OUT" 2> "$ERR" || rc=$?
+  [ "$rc" -eq 2 ] || fail "a mirrored home must be guarded, got exit $rc: $(cat "$OUT")$(cat "$ERR")"
+  [ ! -s "$OUT" ] || fail "a mirrored home's deny wrote stdout: $(cat "$OUT")"
+  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$ERR" >/dev/null 2>&1 \
+    || fail "a mirrored home did not deny: $(cat "$ERR")"
+
+  # And the crewmate case in the same layout: its own worktree, reached through
+  # its own bin, carrying the primary home in the environment.
+  local worktree="$TMP_ROOT/mirror-crew"
+  git -C "$PRIMARY" worktree add -q -b mirror-crew "$worktree"
+  mkdir -p "$worktree/bin" "$worktree/state"
+  printf '# fixture\n' > "$worktree/AGENTS.md"
+  cp "$code/bin/fm-subagent-pretool-check.sh" "$code/bin/fm-primary-scope-lib.sh" \
+    "$code/bin/fm-gate-refuse-lib.sh" "$worktree/bin/"
+  rc=0
+  : > "$OUT"
+  ( cd "$worktree" && env -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE FM_HOME="$home" \
+    ./bin/fm-subagent-pretool-check.sh --claude --tool Agent ) > "$OUT" 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] || fail "a crewmate worktree carrying a primary FM_HOME was denied, got exit $rc: $(cat "$OUT")"
+  pass "the guard reads the home it was reached through, with no override in play"
+}
+
 test_secondmate_home_is_in_scope() {
   local second="$TMP_ROOT/second" rc=0
   git -C "$PRIMARY" worktree add -q -b fixture-second "$second"
@@ -296,6 +345,7 @@ test_guard_never_classifies_mcp_tools
 test_deny_message_defers_to_intake_classification
 test_escape_hatch_allows_deliberate_use
 test_task_worktree_and_non_firstmate_repo_are_inert
+test_mirrored_home_is_guarded_with_no_override
 test_secondmate_home_is_in_scope
 test_stdin_transports_and_output_shapes
 test_malformed_transport_fails_open
