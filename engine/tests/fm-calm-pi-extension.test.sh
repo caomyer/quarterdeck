@@ -5,6 +5,11 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# The cases run TypeScript through node, whose type-stripping warning on Node 22
+# and 23 would read as the extension's own output; the other Pi suites silence
+# it the same way.
+export NODE_NO_WARNINGS=1
+
 TMP_ROOT=$(fm_test_tmproot fm-calm-pi-extension)
 EXT="$ROOT/.pi/extensions/fm-calm.ts"
 ASSISTANT_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"

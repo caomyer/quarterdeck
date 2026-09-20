@@ -130,16 +130,18 @@ test_installed_copy_nudges() {
   pass "fm-sessionstart-nudge: firstmate installed as a copy outside git is a primary"
 }
 
-test_installed_copy_inside_a_foreign_repo_nudges() {
-  local repo="$TMP_ROOT/foreign-repo" root out status=0
+# A copy of the code inside somebody's checkout is code, not a home. The engine
+# is exactly that, engine/ in the app's repository, and one stray state/ there
+# would otherwise open a session in a checkout of the app. An installed copy's
+# real home is the app's data folder, which is nobody's checkout.
+test_copy_inside_a_foreign_repo_is_silent() {
+  local repo="$TMP_ROOT/foreign-repo" root
   fm_git_init_commit "$repo"
   root="$repo/vendor/firstmate"
   mkdir -p "$root/bin" "$root/state"
   : > "$root/AGENTS.md"
-  out=$(run_nudge "$root") || status=$?
-  expect_code 0 "$status" "nested installed copy nudge"
-  [ "$out" = "$NUDGE_LINE" ] || fail "a copy inside another project's work tree printed: $out"
-  pass "fm-sessionstart-nudge: an installed copy inside another project's work tree is a primary"
+  expect_silent_zero "copy inside a foreign checkout" run_nudge "$root"
+  pass "fm-sessionstart-nudge: a copy inside another project's checkout is silent"
 }
 
 # The engine ships as a subdirectory of the app's repository, so a copy with no
@@ -1127,7 +1129,7 @@ test_gate_common_dir_is_silent
 test_unmarked_linked_worktree_is_silent
 test_linked_secondmate_primary_nudges
 test_installed_copy_nudges
-test_installed_copy_inside_a_foreign_repo_nudges
+test_copy_inside_a_foreign_repo_is_silent
 test_copy_inside_a_linked_worktree_is_silent
 test_unreadable_linked_worktree_is_silent
 test_missing_state_is_silent

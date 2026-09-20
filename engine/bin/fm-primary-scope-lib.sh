@@ -19,23 +19,29 @@ fm_root_is_secondmate_home() {
 
 # Return 0 when $1 is a genuine primary root whose effective state dir is $2.
 # A valid secondmate marker force-includes a linked secondmate home.
-# A root git places inside a work tree is judged as a checkout: only a plain
-# one is primary, never a linked task worktree, whether the root is that
-# checkout's top or a directory within it. A root with no work tree around it
-# is firstmate installed as a copy, inside an app whose home mirrors it, and is
-# primary wherever it sits. The difference is what git says, not whether the
-# root itself carries .git: the engine ships as a subdirectory of the app's
-# repository, so a root without .git of its own can still sit in a disposable
-# worktree, where arming a watcher would be wrong.
+# A root git places inside a work tree is judged as a checkout: primary only
+# when it is the top of that work tree and the work tree is a plain checkout,
+# never a linked task worktree and never a directory within either. A root git
+# places in no work tree at all is firstmate installed as a copy, inside an app
+# whose home mirrors it, and is primary wherever it sits; such a home lives in
+# the app's data folder, which is nobody's checkout.
+# The difference is what git says, not whether the root carries .git of its
+# own. The engine ships as a subdirectory of the app's repository, so a root
+# with no .git of its own can still sit in a checkout or in a disposable
+# worktree: engine/ is the first mate's code, not a home, and one stray state/
+# there must not turn a task worktree into one.
 # A root that carries .git but that git cannot answer for (git off PATH, a
 # broken worktree link) is refused rather than taken for a copy.
 fm_primary_scope_matches() {
-  local root=$1 state=$2 git_dir git_common_dir
+  local root=$1 state=$2 git_dir git_common_dir top
   if ! fm_root_is_secondmate_home "$root"; then
     if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      # Absolute on both sides: asked from a subdirectory of a checkout, git
-      # answers --git-dir absolute and --git-common-dir relative, and the two
-      # would never compare equal.
+      top=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null) || return 1
+      [ "$(CDPATH='' cd -- "$top" 2>/dev/null && pwd -P)" \
+        = "$(CDPATH='' cd -- "$root" 2>/dev/null && pwd -P)" ] || return 1
+      # Absolute on both sides: git answers --git-dir absolute and
+      # --git-common-dir relative in some layouts, and the two would never
+      # compare equal.
       git_dir=$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null) || return 1
       git_common_dir=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
       [ "$git_dir" = "$git_common_dir" ] || return 1
