@@ -73,11 +73,36 @@ test_home_is_created_from_nothing() {
   pass "an empty home is laid out from the installed copy"
 }
 
+# A shell this test owns, installed where a harness lives.
+# bin/fm-session-lock-lib.sh grants the session lock only to a process
+# descending from a known harness, so the hook has to run under one or
+# fm-session-start.sh correctly keeps the session read-only and records no
+# completion at all.
+#
+# in_home above scrubs every harness environment variable it can name, but a
+# process's ancestry is not an environment variable, and that is what leaked:
+# run from inside a real agent session this test inherited a harness from its
+# caller and passed for a reason that had nothing to do with the code under
+# test, while in CI - nothing but a runner above it - the same code failed.
+#
+# The identity has to come from the install PATH, not the command name. Per
+# that library's own evidence order, macOS reports argv[0] in `ps -o comm=`
+# while procps on Linux reports the kernel exec name and ignores argv[0]
+# entirely, so a shell merely *named* claude is a harness on a Mac and is not
+# one on Linux. A `claude` directory component is read the same way by both,
+# which is why tests/fm-session-lock-ancestry.test.sh installs its fixture
+# under a versioned Claude Code path; this mirrors it.
+HARNESS_DIR="$TMP_ROOT/claude-install/share/claude/versions"
+mkdir -p "$HARNESS_DIR"
+ln -sf /bin/bash "$HARNESS_DIR/2.1.220"
+HARNESS_BIN="$HARNESS_DIR/2.1.220"
+
 test_session_start_hook_runs_from_the_home() {
   local cmd out left
   cmd=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOME_DIR/.claude/settings.json") \
     || fail "could not read the session-start hook"
-  out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' | in_home bash -c "$cmd" 2>&1) \
+  out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' \
+    | in_home "$HARNESS_BIN" -c "$cmd" 2>&1) \
     || fail "the session-start hook failed: $out"
   assert_contains "$out" "SESSION START - $HOME_DIR" "the hook ran session start in the home"
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS" "the digest reached the supervision instructions"
