@@ -107,14 +107,39 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-mkdir -p "$LAB"
-git clone --quiet --no-hardlinks "$ROOT" "$PROJECT" || fail "could not create isolated Firstmate checkout"
-git -C "$PROJECT" checkout -q -B main "$TEST_COMMIT" \
-  || fail "could not check out isolated test ref $TEST_REF ($TEST_COMMIT)"
-git -C "$PROJECT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main \
-  || fail "could not set the isolated checkout's default branch"
+mkdir -p "$LAB" "$PROJECT"
+# The isolated checkout's root has to be the first mate's own root: the case
+# below writes $PROJECT/AGENTS.md and $PROJECT/bin, and commits them. Since the
+# engine moved into a holding repository that root is a subdirectory, and
+# `git clone "$ROOT"` fails with "repository does not exist". So lift the
+# engine's own tree at the test commit out of the holding repository and make it
+# a repository in its own right. The prefix is empty when the engine is the top
+# of its own checkout, and the branch below still does the right thing there.
+TOP=$(git -C "$ROOT" rev-parse --show-toplevel) \
+  || fail "could not find the repository holding the first mate's code"
+PREFIX=$(git -C "$ROOT" rev-parse --show-prefix)
+if [ -n "$PREFIX" ]; then
+  git -C "$TOP" archive --format=tar "$TEST_COMMIT" "${PREFIX%/}" \
+    | tar -x -C "$PROJECT" --strip-components=1 \
+    || fail "could not create isolated Firstmate checkout"
+else
+  git -C "$TOP" archive --format=tar "$TEST_COMMIT" | tar -x -C "$PROJECT" \
+    || fail "could not create isolated Firstmate checkout"
+fi
+git -C "$PROJECT" init -q -b main || fail "could not create isolated Firstmate checkout"
 git -C "$PROJECT" config user.email fmtest@example.invalid
 git -C "$PROJECT" config user.name fmtest
+git -C "$PROJECT" add -A || fail "could not stage isolated test ref $TEST_REF ($TEST_COMMIT)"
+git -C "$PROJECT" commit -q -m "test: the first mate's tree at $TEST_COMMIT" \
+  || fail "could not check out isolated test ref $TEST_REF ($TEST_COMMIT)"
+# No clone, so no origin is inherited. The code under test reads the default
+# branch, so give it one that resolves.
+git -C "$PROJECT" remote add origin "$TOP" \
+  || fail "could not set the isolated checkout's origin"
+git -C "$PROJECT" update-ref refs/remotes/origin/main HEAD \
+  || fail "could not set the isolated checkout's origin branch"
+git -C "$PROJECT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main \
+  || fail "could not set the isolated checkout's default branch"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/config"
 # Preserve the production wrapper's argv and exec it unchanged, while recording
 # the Pi extension's actual event source in this scratch home for the E2E gate.
