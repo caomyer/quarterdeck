@@ -105,26 +105,22 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
 
 ## Continuous integration
 
-- Where a job runs is decided by what the job needs, and the default is James's own Mac at `[self-hosted, macOS, ARM64]`, registered as a self-hosted runner.
-  GitHub meters hosted runners and bills macOS at ten times Linux, which emptied a month of minutes in a day; self-hosted minutes are not metered and do not count against the spending limit.
-  Both App jobs, the stock-Bash job, Lint, the coverage guard and Repo invariants run there.
-- The engine's four behaviour lanes stay on `ubuntu-latest`, and moving them to macOS is not an optimisation to retry.
+- Every job runs on a GitHub-hosted runner, and self-hosted runners are not used here.
+  That is a security boundary, not a preference: the repository is public, so anyone may fork it and open a pull request, and a pull request can change the workflow it runs under.
+  On a hosted runner that is a throwaway virtual machine; on a self-hosted runner it is arbitrary code on the owner's own machine, as the owner's user, with reach into the keychain, SSH keys and the iCloud checkout.
+  Standard hosted runners are free and unmetered for public repositories, macOS included, so self-hosting would buy nothing.
+  Two self-hosted runners were tried on 2026-09-20 while the repository was private and Actions minutes had run out; they were removed the same day when it went public.
+- Where a job runs is decided by what the job needs, and the default is `ubuntu-latest`.
+  Only three jobs name `macos-latest`: both App jobs, because the app ships for macOS, and the engine's stock-Bash job, because it asserts `/bin/bash` is exactly 3.2.57.
+- The engine's four behaviour lanes must stay on Linux, and moving them to macOS is not an optimisation to retry.
   They identify a harness by reading another process's environment, and macOS System Integrity Protection forbids that for platform binaries.
   On a Mac `fm-harness-precedence`, `fm-kimi-harness`, `fm-muse-harness`, `fm-cursor-harness` and `fm-remote-herdr-guard` all resolve an empty harness name and fail; `fm-remote-herdr-guard` names the reason itself.
-  This was measured on 2026-09-20 by moving the whole suite to the Mac and reading what came back.
-  Those lanes bill at 1x, which is a tenth of what a macOS job costs, so the saving the move was made for is almost entirely preserved.
-- The runner lives in `~/actions-runner/quarterdeck`, outside iCloud, and it checks the repository out into its own `_work` directory, so no CI run ever touches a checkout an agent is using.
-  `./run.sh` runs it in the foreground; there is deliberately no launchd service, so a reboot leaves nothing behind.
-  Checks only run while it is up: a push made with the runner stopped queues instead of failing, and the queued run starts when it comes back.
-- Each runner takes one job at a time, so the Mac's share of a run is serialized across however many are up.
-  There are two, in `~/actions-runner/quarterdeck` and `~/actions-runner/quarterdeck-2`; add more in sibling directories, each with its own `--name`.
-- `.github/workflows/engine-windows-herdr-spike.yml` names `windows-latest`.
-  It is `workflow_dispatch` only, so it costs nothing until James starts it by hand, and it measures Windows, which neither the Mac nor the Linux lane can answer for.
+  This was measured on 2026-09-20 by moving the whole suite to a Mac and reading what came back.
 - A CI job never installs into the machine's global npm prefix.
-  Each sets `npm_config_prefix` to its own `$RUNNER_TEMP/npm` in a first step, because two self-hosted jobs share one Mac and raced there on the first run: `npm error ENOTEMPTY ... rename '/opt/homebrew/lib/node_modules/tasks-axi'`.
+  Each sets `npm_config_prefix` to its own `$RUNNER_TEMP/npm` in a first step, so a job depends on no machine-global state.
   `npm root -g` inside `fm-pi-primary-types.test.sh` reads the same variable, so installs and lookups agree.
-- A job may not assume a tool the hosted image happened to provide.
-  The Mac has no global `tsc` and does not put `~/.cargo/bin` on the PATH a job receives, and the first self-hosted run failed on both.
-  Both are now installed or named explicitly, pinned like every other tool: `typescript@6.0.3`, matching what the app's own lockfile resolves.
-- The engine installs its own pinned tools in CI, and every installer supports darwin/arm64 as well as Linux: ShellCheck, actionlint, Herdr and Treehouse.
-  The lanes themselves are portable in the ways those installers are, but not in every way: see the harness-detection limit above, which no amount of configuration fixes.
+- A job may not assume a tool the runner image happened to provide.
+  `tests/fm-pi-primary-types.test.sh` needs a global `tsc` and the lane refuses to let it skip, so TypeScript is installed explicitly and pinned at `typescript@6.0.3`, the version the app's own lockfile resolves.
+- `.github/workflows/engine-windows-herdr-spike.yml` names `windows-latest`.
+  It is `workflow_dispatch` only, so nothing starts it but James, and it measures Windows, which neither other lane can answer for.
+- Fork pull requests from outside contributors require approval before any workflow runs.

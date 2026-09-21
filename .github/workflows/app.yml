@@ -24,15 +24,17 @@ concurrency:
 jobs:
   web:
     name: Web
-    # Both of this lane's jobs run on the captain's own Mac, registered as a
-    # self-hosted runner. Two reasons, and the second is the stronger one.
-    # GitHub meters hosted runners and bills macOS at ten times Linux, which
-    # emptied a month of minutes in a day. And the app ships for macOS, so a
-    # check that runs here is a check that ran where the product runs, under the
-    # same stock Bash 3.2 the product gets. Self-hosted minutes are not metered
-    # and do not count against the spending limit. The engine's behaviour lanes
-    # are the exception and stay on Linux; engine.yml says why.
-    runs-on: [self-hosted, macOS, ARM64]
+    # The app ships for macOS, so its checks run where it runs.
+    #
+    # Self-hosted runners are deliberately not used anywhere in this repository,
+    # and this is a security boundary rather than a preference. The repository
+    # is public: anyone may fork it and open a pull request, and a pull request
+    # can change the workflow it runs under. On a hosted runner that is a fresh
+    # virtual machine destroyed afterwards. On a self-hosted runner it is
+    # arbitrary code on the owner's own machine, as the owner's user. Standard
+    # hosted runners are free and unmetered for public repositories, macOS
+    # included, so self-hosting would buy nothing and cost exactly that.
+    runs-on: macos-latest
     # Hang tripwire, not the expected wall: a healthy run is a few minutes.
     timeout-minutes: 25
     steps:
@@ -110,26 +112,12 @@ jobs:
 
   rust:
     name: Rust
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-latest
     # Hang tripwire: a cold toolchain install and build measure around ten
     # minutes, and the first run of all pays for a cold cargo cache.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
-      # GitHub's hosted macOS image shipped Rust preinstalled. The self-hosted
-      # runner does not, and the PATH it hands a step is not the captain's
-      # interactive PATH, so cargo is present on the machine and invisible to
-      # the job: the first self-hosted run failed here with exit 127. This is
-      # the same gap AGENTS.md already works around for `pnpm tauri dev`.
-      # Named once, before the cache action, which shells out to cargo itself.
-      - name: Rust toolchain on PATH
-        run: |
-          set -eu
-          [ -x "$HOME/.cargo/bin/cargo" ] || {
-            echo "::error::cargo is not at ~/.cargo/bin on this runner; install rustup there"
-            exit 1
-          }
-          echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri

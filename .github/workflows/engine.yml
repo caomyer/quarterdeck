@@ -6,16 +6,19 @@ name: Engine
 # much to spend on a change to another workflow: the App lane lints all of them
 # on every branch, for no job of its own.
 #
-# Where a lane runs is decided by what the lane needs, not by what is cheapest.
-# The four behaviour lanes run on `ubuntu-latest`. They identify a harness by
-# reading another process's environment, and macOS System Integrity Protection
-# forbids that for platform binaries, so on a Mac they do not fail honestly:
-# fm-harness-precedence, fm-kimi-harness, fm-muse-harness, fm-cursor-harness and
-# fm-remote-herdr-guard all resolve an empty harness name. Proven on 2026-09-20,
-# when the whole suite was moved to a self-hosted Mac and those five reported it
-# in their own words. Everything else runs on the captain's Mac, where it costs
-# nothing: the two lanes that must see macOS, and the three that need neither
-# platform and so run wherever is free.
+# Where a lane runs is decided by what the lane needs. Only the stock-Bash job
+# needs macOS; everything here runs on `ubuntu-latest`.
+#
+# That the behaviour lanes need Linux is a finding, not a default. They identify
+# a harness by reading another process's environment, and macOS System Integrity
+# Protection forbids that for platform binaries, so on a Mac they do not fail
+# honestly: fm-harness-precedence, fm-kimi-harness, fm-muse-harness,
+# fm-cursor-harness and fm-remote-herdr-guard all resolve an empty harness name.
+# Measured on 2026-09-20 by moving the whole suite to a Mac and reading what came
+# back; fm-remote-herdr-guard names the reason in its own failure text. Do not
+# retry that move.
+#
+# Runners are hosted, never self-hosted: see the security note in app.yml.
 on:
   push:
     branches: [main]
@@ -38,10 +41,7 @@ defaults:
     working-directory: engine
 
 # Per-PR supersession: a new push to the same PR replaces that PR's in-flight
-# CI instead of letting superseded heads keep 13 jobs of work. The jobs on the
-# captain's Mac are serialized across however many runners are up, so there a
-# superseded head does not merely waste a runner, it stands in front of the head
-# that replaced it.
+# CI instead of letting superseded heads keep 13 jobs of hosted-runner work.
 # The group uses the PR number for pull_request events, so every run of one PR
 # shares a group, and falls back to the unique run id for push events, so each
 # main push gets its own group and is never cancelled. Cancellation is likewise
@@ -54,7 +54,7 @@ concurrency:
 jobs:
   lint:
     name: Lint
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     # Hang tripwire only: lint executions measured at 14-16 minutes in the
     # September 12 starvation report with two workers. A runner under 12 GB
     # (a private repository's) runs one worker to stay in memory, which takes
@@ -83,7 +83,7 @@ jobs:
   # and that the portable serial CI shards partition that serial lane exactly.
   test-coverage:
     name: Test coverage guard
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     # Hang tripwire: the coverage guard is a seconds-long local computation.
     timeout-minutes: 5
     steps:
@@ -444,7 +444,7 @@ jobs:
   # Aggregate per-lane timing into one summary artifact for critical-path review.
   tests-timing-aggregate:
     name: Behavior timing aggregate
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     # Hang tripwire: aggregation is seconds of work over lane artifacts.
     timeout-minutes: 5
     needs:
@@ -484,7 +484,7 @@ jobs:
 
   macos-stock-bash:
     name: Stock macOS Bash snapshot compatibility
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -547,7 +547,7 @@ jobs:
 
   invariants:
     name: Repo invariants
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     # Hang tripwire: the invariant checks are seconds-long file comparisons.
     timeout-minutes: 5
     steps:
