@@ -322,6 +322,15 @@ HTML
       echo "skip - fm-artifact.sh real Chrome layout check: install Chrome or Chromium to run it"
       return 0
       ;;
+    *"layout: skipped ("*)
+      # layout_check fails open for four different reasons and only one of them
+      # is a reason to stand down. A browser that was found and still produced
+      # nothing reports exit 0 here, which is indistinguishable from a clean
+      # page unless the reason is read out. It is the whole diagnosis, so it
+      # goes in the failure rather than being left for someone to guess at.
+      fail "real Chrome was found but the layout check could not run: $(
+        printf '%s' "$out" | sed -n 's/.*\(layout: skipped ([^)]*)\).*/\1/p')"
+      ;;
   esac
   expect_code 3 "$rc" "real Chrome finds the planted layout faults"
   assert_contains "$out" "layout: wide page-scrolls-sideways div.wide" "real Chrome names the over-wide element"
