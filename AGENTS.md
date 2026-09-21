@@ -105,15 +105,26 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
 
 ## Continuous integration
 
-- Every job in `.github/workflows/app.yml` and `.github/workflows/engine.yml` runs on `[self-hosted, macOS, ARM64]`: James's own Mac, registered as a self-hosted runner.
+- Where a job runs is decided by what the job needs, and the default is James's own Mac at `[self-hosted, macOS, ARM64]`, registered as a self-hosted runner.
   GitHub meters hosted runners and bills macOS at ten times Linux, which emptied a month of minutes in a day; self-hosted minutes are not metered and do not count against the spending limit.
-  The move also improved the signal, because the engine's lanes now run on the platform the app ships for, under the same stock Bash 3.2 the product gets.
+  Both App jobs, the stock-Bash job, Lint, the coverage guard and Repo invariants run there.
+- The engine's four behaviour lanes stay on `ubuntu-latest`, and moving them to macOS is not an optimisation to retry.
+  They identify a harness by reading another process's environment, and macOS System Integrity Protection forbids that for platform binaries.
+  On a Mac `fm-harness-precedence`, `fm-kimi-harness`, `fm-muse-harness`, `fm-cursor-harness` and `fm-remote-herdr-guard` all resolve an empty harness name and fail; `fm-remote-herdr-guard` names the reason itself.
+  This was measured on 2026-09-20 by moving the whole suite to the Mac and reading what came back.
+  Those lanes bill at 1x, which is a tenth of what a macOS job costs, so the saving the move was made for is almost entirely preserved.
 - The runner lives in `~/actions-runner/quarterdeck`, outside iCloud, and it checks the repository out into its own `_work` directory, so no CI run ever touches a checkout an agent is using.
   `./run.sh` runs it in the foreground; there is deliberately no launchd service, so a reboot leaves nothing behind.
   Checks only run while it is up: a push made with the runner stopped queues instead of failing, and the queued run starts when it comes back.
-- One runner takes jobs one at a time, so a pull request's thirteen engine jobs are serialized.
-  Register more runners in sibling directories to get the parallelism back; do not reach for hosted runners.
-- `.github/workflows/engine-windows-herdr-spike.yml` is the one exception and still names `windows-latest`.
-  It is `workflow_dispatch` only, so it costs nothing until James starts it by hand, and it measures Windows, which this Mac cannot answer for.
-- The engine installs its own pinned tools in CI, and every installer supports darwin/arm64: ShellCheck, actionlint, Herdr and Treehouse.
-  Nothing about the lanes needed changing for the move; they were written portable and they are.
+- Each runner takes one job at a time, so the Mac's share of a run is serialized across however many are up.
+  There are two, in `~/actions-runner/quarterdeck` and `~/actions-runner/quarterdeck-2`; add more in sibling directories, each with its own `--name`.
+- `.github/workflows/engine-windows-herdr-spike.yml` names `windows-latest`.
+  It is `workflow_dispatch` only, so it costs nothing until James starts it by hand, and it measures Windows, which neither the Mac nor the Linux lane can answer for.
+- A CI job never installs into the machine's global npm prefix.
+  Each sets `npm_config_prefix` to its own `$RUNNER_TEMP/npm` in a first step, because two self-hosted jobs share one Mac and raced there on the first run: `npm error ENOTEMPTY ... rename '/opt/homebrew/lib/node_modules/tasks-axi'`.
+  `npm root -g` inside `fm-pi-primary-types.test.sh` reads the same variable, so installs and lookups agree.
+- A job may not assume a tool the hosted image happened to provide.
+  The Mac has no global `tsc` and does not put `~/.cargo/bin` on the PATH a job receives, and the first self-hosted run failed on both.
+  Both are now installed or named explicitly, pinned like every other tool: `typescript@6.0.3`, matching what the app's own lockfile resolves.
+- The engine installs its own pinned tools in CI, and every installer supports darwin/arm64 as well as Linux: ShellCheck, actionlint, Herdr and Treehouse.
+  The lanes themselves are portable in the ways those installers are, but not in every way: see the harness-detection limit above, which no amount of configuration fixes.
