@@ -1,3 +1,5 @@
+import type { AttachResult } from "../attachments";
+
 export type BearingsTask = {
   id: string;
   kind: string;
@@ -317,6 +319,11 @@ export interface HostAdapter {
   hostStop(): Promise<void>;
   hostRestart(): Promise<void>;
   send(text: string): Promise<string>;
+  /**
+   * Asks the captain for files and copies each into the chosen home, for a message to name. `null` when they cancel;
+   * a file that cannot be attached comes back in `refused`, with why.
+   */
+  attachFiles(): Promise<AttachResult | null>;
   cancelTurn(): Promise<void>;
   getState(): Promise<HostStateSnapshot>;
   paneCapture(taskId: string): Promise<PaneCapture>;

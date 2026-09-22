@@ -100,6 +100,9 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   It checks the checklist the first mate's own detection produces, the remedy beside each name, a line the app has no shape for shown in the first mate's words, a check that could not be made, and a Mac with nothing missing saying nothing.
   The list is never kept here: `bin/fm-bootstrap.sh` owns what a home needs, and the app asks it for detection only with the network phase skipped, so the check reads the machine and changes nothing.
   Run it after changing that banner or what the backend reads from bootstrap.
+- Files the captain attaches travel as words: the host copies each into the home's `data/.attachments/` (`src-tauri/src/attach.rs`), and `src/attachments.ts` alone writes and reads the block naming those copies in the message, so the outbox, re-sends and history stay text.
+  Check the composer, the sent message and the refusals, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm attach`.
+  Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test attach_e2e_live_scratch_home -- --ignored --nocapture` has a real first mate read an attached file, and read it again after a restart mid-turn.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.

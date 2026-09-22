@@ -1143,3 +1143,168 @@ async fn review_e2e_live_decision() {
     let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
+
+// -------------------------------------------------------------- attach ---
+
+/// The message the UI sends with `files`, written by `src/attachments.ts` itself
+/// so this test sends exactly what the composer would.
+fn ui_message(text: &str, files: &[crate::attach::Attached]) -> String {
+    let files: Vec<Value> = files
+        .iter()
+        .map(|file| json!({"name": file.name, "path": file.path.to_string_lossy(), "source": file.source.to_string_lossy(), "bytes": file.bytes}))
+        .collect();
+    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/attachments.ts");
+    let script = "const [module, text, files] = process.argv.slice(1); const { withAttachments } = await import(module); process.stdout.write(withAttachments(text, JSON.parse(files)));";
+    let node = crate::envpath::resolve("node").expect("node is installed");
+    let output = std::process::Command::new(node)
+        .args(["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", script])
+        .arg(module.canonicalize().expect("src/attachments.ts"))
+        .arg(text)
+        .arg(Value::Array(files).to_string())
+        .output()
+        .expect("run node");
+    assert!(output.status.success(), "node: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).expect("the message is text")
+}
+
+/// A file the captain picks: a name with spaces, an apostrophe and characters
+/// beyond ASCII, holding a word the first mate can only know by reading it. The
+/// original is removed once copied, so only the copy in the home can answer.
+fn picked_file(home: &Path, dir: &Path, name: &str, word: &str) -> crate::attach::Attached {
+    let source = dir.join(name);
+    std::fs::write(&source, format!("Captain's attachment for the host test.\nThe code word is {word}.\n")).expect("write the file");
+    let file = crate::attach::stage(home, &source).expect("attach the file");
+    std::fs::remove_file(&source).expect("remove the original");
+    file
+}
+
+/// Live test of an attached file reaching the first mate. Spends model tokens:
+///
+/// ```sh
+/// cd src-tauri && FM_E2E_HOME=<scratch home> cargo test attach_e2e_live_scratch_home -- --ignored --nocapture
+/// ```
+///
+/// A file is attached the way the Attach button attaches one and sent in the
+/// message the composer writes; the first mate must answer with a word only the
+/// file holds. A second one is sent and the host restarted while the first mate
+/// works on it: it must be re-sent from the durable outbox and still be read.
+#[tokio::test]
+#[ignore = "live: runs the real claude-agent-acp against a firstmate scratch home"]
+async fn attach_e2e_live_scratch_home() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+    let before = lock_status(&home);
+    assert!(
+        before == "lock: free" || before.starts_with("lock: stale"),
+        "the scratch home's lock is not free ({before}); another host may be using it"
+    );
+
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
+    let run = now_ms();
+    let data_dir = out.join(format!("appdata-attach-{run}"));
+    std::fs::create_dir_all(&data_dir).expect("create the app data folder");
+    let picked = out.join(format!("picked-{run}"));
+    std::fs::create_dir_all(&picked).expect("create the folder files are picked from");
+    let recording = out.join(format!("attach-{run}.jsonl"));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).expect("create the recording")),
+        data_dir,
+        tx,
+    });
+    println!("home: {}\nrecording: {}", home.display(), recording.display());
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
+    let mut events = Events { rx, seen: Vec::new() };
+    let mut steps = Vec::new();
+
+    recorder.mark("1", "host_start");
+    let from = events.now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
+    let ready = match session {
+        Some(i) => events.find(i, Duration::from_secs(30), host_state(&["idle", "agent_turn"])).await,
+        None => None,
+    };
+    let running = started.is_ok() && ready.is_some();
+    record(&mut steps, "start: the first mate is running", running, format!("start={started:?}; state={}", events.body(ready)["state"]));
+
+    // 2. An attached file is read, and the answer comes from inside it.
+    if running {
+        recorder.mark("2", "send a message with an attached file; the reply names the word inside it");
+        let word = format!("LANTERN-{}", run % 100_000);
+        let file = picked_file(&home, &picked, "captain's notes 日本 résumé.txt", &word);
+        let text = ui_message(&format!("{GUARD} Read the attached file and reply with only the code word it gives."), std::slice::from_ref(&file));
+        let from = events.now();
+        let sent = send(&host, text.clone()).await;
+        let id = sent.clone().unwrap_or_default();
+        let picked_up = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
+        let reply = picked_up.map(|p| events.text_between(from, p)).unwrap_or_default();
+        record(
+            &mut steps,
+            "attach: the first mate reads the file and answers from it",
+            sent.is_ok() && picked_up.is_some() && reply.contains(&word),
+            format!("copy={}; message={text:?}; picked_up={}; reply={reply:?}", file.path.display(), picked_up.is_some()),
+        );
+    } else {
+        not_exercised(&mut steps, "attach: the first mate reads the file and answers from it", "the host did not start".into());
+    }
+
+    // 3. A message with a file survives a restart the way words do.
+    if running {
+        recorder.mark("3", "restart while the first mate works on an attached file; it is re-sent and read");
+        let word = format!("HARBOUR-{}", run % 100_000);
+        let file = picked_file(&home, &picked, "second file with spaces.md", &word);
+        let text = ui_message(
+            &format!("{GUARD} First count from 1 to 40, one number per line. Then read the attached file and end your reply with the code word it gives."),
+            std::slice::from_ref(&file),
+        );
+        let from = events.now();
+        let sent = send(&host, text).await;
+        let id = sent.clone().unwrap_or_default();
+        let dispatched = events.find(from, Duration::from_secs(60), outbox(&id, "sent")).await;
+        let busy = match dispatched {
+            Some(d) => events.find(d, Duration::from_secs(120), |e, _| e == "text" || e == "tool_call").await,
+            None => None,
+        };
+        let answered_first = events.any_between(from, events.seen.len(), outbox(&id, "picked_up"));
+        let restart_from = events.now();
+        let restarted = ask(&host, |reply| Cmd::Restart { reply }).await;
+        let requeued = events
+            .find(restart_from, Duration::from_secs(30), |e, b| outbox(&id, "requeued")(e, b) && b["resent_after_restart"] == true)
+            .await;
+        let picked_up = events.find(restart_from, REPLY_WAIT, outbox(&id, "picked_up")).await;
+        let reply = picked_up.map(|p| events.text_between(restart_from, p)).unwrap_or_default();
+        if answered_first {
+            not_exercised(&mut steps, "attach: re-sent after a restart and still read", "the first mate answered before the restart".into());
+        } else {
+            record(
+                &mut steps,
+                "attach: re-sent after a restart and still read",
+                busy.is_some() && restarted.is_ok() && requeued.is_some() && picked_up.is_some() && reply.contains(&word),
+                format!(
+                    "busy before restart={}; restart={restarted:?}; requeued={}; picked_up after restart={}; reply ends={:?}",
+                    busy.is_some(),
+                    events.body(requeued),
+                    picked_up.is_some(),
+                    reply.chars().rev().take(120).collect::<String>().chars().rev().collect::<String>()
+                ),
+            );
+        }
+    } else {
+        not_exercised(&mut steps, "attach: re-sent after a restart and still read", "the host did not start".into());
+    }
+
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    let _ = std::fs::remove_dir_all(&picked);
+    println!("\nrecording: {}", recording.display());
+    let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+    assert!(failed.is_empty(), "failed: {failed:?}");
+}

@@ -1,5 +1,6 @@
 import bearingsFixture from "../fixtures/bearings-snapshot.json";
 import fleetFixture from "../fixtures/fleet-snapshot.json";
+import type { AttachResult } from "../attachments";
 import recordedStream from "./mock-event-stream.json";
 import { artifactPath } from "./types";
 import type {
@@ -745,6 +746,28 @@ export class MockHostAdapter implements HostAdapter {
     if (this.state === "starting") this.deferred.push(run);
     else run();
     return id;
+  }
+
+  /**
+   * Stands in for the picker and the copy into the home: a brief and a screenshot, named with a space and with
+   * characters beyond ASCII. `?attach=cancel`: the captain cancels the picker. `?attach=refused`: of three files, one
+   * has been removed since and one is over the limit.
+   */
+  async attachFiles(): Promise<AttachResult | null> {
+    const asked = reviewValue("attach");
+    if (asked === "cancel") return null;
+    const folder = `${this.snapshot.fleet.fm_home}/data/.attachments/${Date.now()}-${++this.sequence}`;
+    const copy = (name: string, bytes: number) => ({ name, path: `${folder}/${name}`, source: `/Users/captain/Desktop/${name}`, bytes });
+    if (asked === "refused") {
+      return {
+        attached: [copy("crew notes.md", 5_120)],
+        refused: [
+          { source: "/Users/captain/Desktop/old plan.pdf", problem: "old plan.pdf is no longer there." },
+          { source: "/Users/captain/Movies/demo.mov", problem: "demo.mov is 2.4 GB, and files over 100 MB can't be attached. Tell the first mate where it is instead." },
+        ],
+      };
+    }
+    return { attached: [copy("Release brief v2.md", 18_432), copy("Écran 日本 2026-09-22.png", 1_540_000)], refused: [] };
   }
 
   /** Hands a message to the first mate: from here it's part of the session's conversation. */

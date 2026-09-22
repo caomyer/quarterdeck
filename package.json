@@ -14,7 +14,8 @@
     "artifacts": "node scripts/artifact-review.mjs",
     "projects": "node scripts/project-page.mjs",
     "onboarding": "node scripts/onboarding.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs"
+    "attach": "node scripts/attach.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",

@@ -1,4 +1,5 @@
 mod artifact;
+mod attach;
 mod calls;
 mod engine;
 mod envpath;
@@ -48,6 +49,7 @@ pub fn run() {
       host::cancel_turn,
       host::get_state,
       host::answer_permission,
+      attach::attach_pick,
       settings::home_get,
       settings::home_choose,
       settings::home_use_app,
