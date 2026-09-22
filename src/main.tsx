@@ -1,4 +1,6 @@
-import "@fontsource-variable/inter";
+import "@fontsource-variable/instrument-sans";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 

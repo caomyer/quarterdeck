@@ -3,7 +3,7 @@
 //   pnpm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callProject, filterLog, logCounts, logEntries, logKind, logPeriods, outcomeLine, upNext } from "../src/logbook.ts";
+import { callProject, filterLog, landedWithin, logCounts, logEntries, logKind, logPeriods, outcomeLine, upNext } from "../src/logbook.ts";
 
 const NOW = new Date(2026, 8, 18, 18, 0).getTime();
 
@@ -126,4 +126,26 @@ test("a call belongs to its own row's project, else its origin's", () => {
   assert.equal(callProject(call("about-it", null, { about: "q", origin: "scout" }), records), "demo");
   // A row with no project says nothing, so the next place is asked.
   assert.equal(callProject(call("bare", null, { origin: "scout" }), new Map([["bare", row("bare", { repo: null })], ...records])), "resonance");
+});
+
+test("what landed in a window counts delivered work, and says when it is a floor", () => {
+  const entries = logEntries([
+    row("shipped-today"),
+    row("reported", { kind: "scout", report_path: "data/r/report.md", completion: { verb: "reported", date: "2026-09-10" } }),
+    row("answered", { kind: "captain", hold_kind: "captain", completion: { verb: "done", date: "2026-09-12" } }),
+    row("dropped", { completion: { verb: "done", date: "2026-09-12" } }),
+    row("too-old", { completion: { verb: "merged", date: "2026-08-01" } }),
+  ], [], [], "resonance");
+  assert.deepEqual(landedWithin(entries, 30, NOW, "none"), { count: 2, floor: false });
+  // Older rows unread, but the oldest read is already outside the window: nothing unread can count.
+  assert.deepEqual(landedWithin(entries, 30, NOW, "older"), { count: 2, floor: false });
+  // The oldest read is inside the window, so older unread rows might count too.
+  assert.deepEqual(landedWithin(entries.slice(0, 4), 30, NOW, "older"), { count: 2, floor: true });
+  // History not read yet, or it could not be: only the snapshot's recent rows counted, so any unread row might count.
+  const snapshotOnly = logEntries([], [row("recent-shipped"), row("recent-old", { completion: { verb: "merged", date: "2026-08-01" } })], [], "resonance");
+  assert.deepEqual(landedWithin(snapshotOnly, 30, NOW, "any"), { count: 1, floor: true });
+  assert.deepEqual(landedWithin([], 30, NOW, "any"), { count: 0, floor: true });
+  // The window's first day counts whole: 30 days back from Sep 18 starts on Aug 20.
+  const edge = logEntries([row("edge", { completion: { verb: "merged", date: "2026-08-20" } }), row("outside", { completion: { verb: "merged", date: "2026-08-19" } })], [], [], "resonance");
+  assert.equal(landedWithin(edge, 30, NOW, "none").count, 1);
 });
