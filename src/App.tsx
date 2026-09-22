@@ -48,7 +48,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { callProject, filterLog, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "./calls";
@@ -254,6 +254,11 @@ export function App() {
     : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
   // Everything waiting on the captain: open calls, and finished reports nobody has closed.
   const openCallCount = waiting.length + readyReports.length;
+  // A home nothing has happened in yet: the app built it on this launch, or the
+  // captain pointed at an empty one. "Welcome back" and an offer to catch them
+  // up read strangely to someone who has not been anywhere yet.
+  const nothingYet = openCallCount === 0 && underway.length === 0 && landedRows.length === 0
+    && decided.length === 0 && projects.length === 0 && (fleet?.tasks.length ?? 0) === 0;
   const approvalCount = bridge.permissionRequests.length;
   // Failed and not-sent messages aren't being worked on.
   const pendingCount = Object.values(outbox).filter((item) => item.status !== "picked_up" && !item.error).length;
@@ -395,7 +400,7 @@ export function App() {
   }
 
   if (!bridge.homeChecked) return <div className="app-loading">Opening firstmate…</div>;
-  if (!bridge.home) return <HomeSetup problem={bridge.homeProblem} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} />;
+  if (!bridge.home) return <HomeSetup problem={bridge.homeProblem} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} />;
 
   return (
     <div className="app-shell">
@@ -445,13 +450,14 @@ export function App() {
           <div className={`content-scroll bearings-page ${bridge.refreshing ? "snapshot-refreshing" : ""}`} data-screen="bearings" aria-busy={bridge.refreshing}>
             {hostBanners((question) => { navigate("chat"); void bridge.send(question); })}
             {bridge.snapshotHealth.errors.length > 0 && <SnapshotBanner health={bridge.snapshotHealth} refreshing={bridge.refreshing} onRetry={() => void bridge.refreshSnapshot()} />}
+            <NeedsBanner needs={bridge.needs} problem={bridge.needsProblem} checking={bridge.checkingTools} onCheck={() => void bridge.checkTools()} />
             {approvalCount > 0 && view === "bearings" && <ApprovalBanner count={approvalCount} onOpen={() => navigate("chat")} />}
             {!bearings && bridge.snapshotHealth.errors.length === 0 && <EmptyState label="Taking fresh bearings of this home…" />}
             {bearings && <>
             {ahoyVisible && (
               <section className="ahoy-card">
                 <div className="ahoy-mark"><ShipWheel size={22} /></div>
-                <div><span>Ahoy</span><h2>Welcome back.</h2><p>The first mate can catch you up and take you through what's waiting.</p><strong>{openCallCount} waiting on you · {underway.length} underway</strong></div>
+                <div><span>Ahoy</span><h2>{nothingYet ? "Welcome aboard." : "Welcome back."}</h2><p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : "The first mate can catch you up and take you through what's waiting."}</p>{nothingYet ? <strong>A new home, nothing waiting</strong> : <strong>{openCallCount} waiting on you · {underway.length} underway</strong>}</div>
                 <div className="ahoy-actions"><button onClick={runAhoy}>Ahoy</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
               </section>
             )}
@@ -569,7 +575,7 @@ export function App() {
       </main>
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
-      {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => setSettingsOpen(false)} />}
       {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
       {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
     </div>
@@ -580,21 +586,65 @@ function NavButton({ active, icon, label, detail, count, countTitle, onClick }: 
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span><strong>{label}</strong>{detail && <small>{detail}</small>}</span>{count !== undefined && <em title={countTitle}>{count}</em>}</button>;
 }
 
-function HomeSetup({ problem, choosing, onChoose }: { problem: string | null; choosing: boolean; onChoose: () => void }) {
-  return <div className="home-setup"><section><div className="brand-mark"><Anchor size={21} /></div><h1>Where does firstmate live on this Mac?</h1><p>Choose your firstmate folder, the one with <code>AGENTS.md</code> and <code>bin</code> inside. The app runs the first mate there and reads Bearings from it.</p><p>You only do this once. You can change it later in Settings.</p>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose folder…"}</button></section></div>;
+function HomeSetup({ problem, choosing, onChoose, onUseApp }: { problem: string | null; choosing: boolean; onChoose: () => void; onUseApp: () => void }) {
+  return <div className="home-setup"><section><div className="brand-mark"><Anchor size={21} /></div><h1>Where does firstmate live on this Mac?</h1><p>The app ships its own first mate and keeps it in the app's folder. It could not set that up this time, so you can point it at a firstmate folder of your own: the one with <code>AGENTS.md</code> and <code>bin</code> inside.</p>{problem && <HomeProblem problem={problem} />}<div className="home-actions"><button className="home-choose" disabled={choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose folder…"}</button><button className="home-revert" disabled={choosing} onClick={onUseApp}>Try the app's own again</button></div></section></div>;
+}
+
+/// What the first mate says this machine still needs, in its own order.
+///
+/// The live region is always here, empty when there is nothing to say: a region
+/// that appears already full is not announced, because there was no change
+/// inside it to announce.
+function NeedsBanner({ needs, problem, checking, onCheck }: { needs: Needed[]; problem: string | null; checking: boolean; onCheck: () => void }) {
+  // Only a named tool is a thing the captain can go and get. The rest is what
+  // the first mate had to say, and counting it as a thing to install would be
+  // telling them a branch name is something to install.
+  const tools = needs.filter((needed) => needed.kind !== "other");
+  const said = needs.filter((needed) => needed.kind === "other");
+  const headline = problem ? "The first mate could not check this Mac"
+    : tools.length === 0 ? "The first mate has something to say about this Mac"
+    : tools.length === 1 ? "The first mate needs one more thing on this Mac"
+    : `The first mate needs ${tools.length} more things on this Mac`;
+  const row = (needed: Needed) => <li key={needed.says}>
+    {needed.tool ? <><code className="needs-tool">{needed.tool}</code>{needed.kind === "manual"
+      ? <span>install it yourself: {needed.how ? <a href={needed.how} target="_blank" rel="noreferrer noopener">{needed.how}</a> : "no instructions were offered"}</span>
+      : needed.how ? <code className="needs-how">{needed.how}</code> : <span>no install command was offered</span>}</>
+      : <span className="needs-says">{needed.says}</span>}
+  </li>;
+  return <div className="needs-region" role="status" aria-live="polite" aria-label="What this Mac still needs">
+    {(needs.length > 0 || problem) && <section className="needs-banner">
+      <header>
+        <CircleAlert size={16} />
+        <div>
+          <strong>{headline}</strong>
+          <small>{problem ? "Until it can, what is missing here is unknown." : tools.length === 0 ? "Nothing here is a thing to install." : "It runs without them, but the work that uses them will stop."}</small>
+        </div>
+        <button className="icon-button" onClick={onCheck} disabled={checking} title="Check this Mac again">
+          <RefreshCw size={16} />
+        </button>
+      </header>
+      {problem ? <p className="needs-problem">{problem}</p> : <>
+        {tools.length > 0 && <ul>{tools.map(row)}</ul>}
+        {said.length > 0 && <>
+          <p className="needs-aside">{tools.length > 0 ? "And some things it could not put a name to:" : "It could not put a name to these:"}</p>
+          <ul>{said.map(row)}</ul>
+        </>}
+      </>}
+    </section>}
+  </div>;
 }
 
 function HomeProblem({ problem }: { problem: string }) {
   return <div className="home-problem" role="alert"><CircleAlert size={16} /><span>{problem}</span></div>;
 }
 
-function SettingsDialog({ home, problem, running, choosing, onChoose, onClose }: { home: string; problem: string | null; running: boolean; choosing: boolean; onChoose: () => void; onClose: () => void }) {
+function SettingsDialog({ home, problem, running, choosing, chosen, onChoose, onUseApp, onClose }: { home: string; problem: string | null; running: boolean; choosing: boolean; chosen: boolean; onChoose: () => void; onUseApp: () => void; onClose: () => void }) {
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
-  return <div className="drawer-backdrop" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>Settings</span><h2>firstmate folder</h2></div><button className="icon-button" onClick={onClose} title="Close settings"><X size={18} /></button></header><div className="settings-body"><p>The first mate runs here, and Bearings is read from here.</p><code className="settings-path" title={home}>{home}</code>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={running || choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose a different folder…"}</button>{running && <small>Stop the first mate before choosing a different folder.</small>}</div></section></div>;
+  return <div className="drawer-backdrop" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>Settings</span><h2>firstmate folder</h2></div><button className="icon-button" onClick={onClose} title="Close settings"><X size={18} /></button></header><div className="settings-body"><p>{chosen ? "The first mate runs in the folder you chose, and Bearings is read from there." : "The app keeps its own first mate here, and Bearings is read from here."}</p><code className="settings-path" title={home}>{home}</code>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={running || choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose a different folder…"}</button>{chosen && <button className="home-revert" disabled={running || choosing} onClick={onUseApp}>Use the app's own first mate again</button>}{running && <small>Stop the first mate before changing which folder it runs in.</small>}</div></section></div>;
 }
 
 const SNAPSHOT_SOURCES: Record<string, { label: string; part: "bearingsAt" | "fleetAt" }> = {

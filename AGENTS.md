@@ -2,7 +2,7 @@
 
 A desktop app that hosts the firstmate first mate over ACP and renders its state natively.
 Quarterdeck is the code name: the deck a captain commands from.
-The UI (React and Vite) is in `src/`, and the Tauri backend is in `src-tauri/`.
+The UI (React and Vite) is in `src/`, the Tauri backend is in `src-tauri/`, and the first mate's own code is in `engine/`.
 James's checkout lives at `~/Documents/projects/quarterdeck`, inside iCloud Drive.
 Agents do not work there and do not branch from it: each agent clones the remote to `~/.buzz/REPOS/quarterdeck-<agent>` on local disk.
 
@@ -15,6 +15,23 @@ Agents do not work there and do not branch from it: each agent clones the remote
 - The remote is `https://github.com/caomyer/quarterdeck`, private, under James's account.
   Push `main` and any branch worth keeping; do not make the repository public or add another remote without James's say-so.
 - Never use em dashes in code, docs, or commit messages.
+
+## The engine
+
+`engine/` is firstmate: the bash fleet supervisor the app runs.
+It was its own repository at `caomyer/firstmate` until 2026-09-20, when it moved here with all 720 of its commits, paths rewritten, so `git log` and `git blame` read its whole past from this repo.
+It is not a vendored dependency and not a submodule: it is ours, edited here, and a change that crosses the line between the app and the first mate is one commit.
+
+- Its checks are its own, and they run from `engine/`: `cd engine && bin/fm-test-run.sh --changed` for what your change touches, `bin/fm-lint.sh` for the shell, `bin/fm-test-run.sh --all` for the full 221-script regression.
+  They need pinned ShellCheck and actionlint on PATH; `engine/bin/fm-install-shellcheck.sh <dir>` and `engine/bin/fm-install-actionlint.sh <dir>` fetch the versions CI uses.
+- GitHub runs workflows only from a repository root, so the engine's live at `.github/workflows/engine.yml`, running from `engine/` and firing only on changes under it.
+  `.github/workflows/app.yml` is the app's own, and skips a change confined to `engine/`.
+- `engine/AGENTS.md` is the first mate's job description, addressed to the first mate at work in a fleet.
+  It is not instructions for an agent working on this repository, and a harness that loads it because you edited a file under `engine/` is showing you the product, not your brief.
+  This file is your brief.
+- firstmate's `Require no-mistakes` workflow did not come across: it forced every pull request to be raised through the no-mistakes gate, which was that repository's contribution policy.
+  Nothing imposes it here.
+  Ask James before adding it back.
 
 ## Firstmate homes
 
@@ -76,7 +93,34 @@ Agents do not work there and do not branch from it: each agent clones the remote
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm projects`.
   It checks what waits on the captain in the project, what is underway and up next, and the logbook: its filters, search, the rows closed without a delivery, a closed task's details, paging, and a firstmate that cannot list its history or fails to.
   Run it after changing the project page or the mock's history.
+- Check what the app tells a captain their Mac still needs, in both themes: start Vite on your own port, then
+  `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm onboarding`.
+  It checks the checklist the first mate's own detection produces, the remedy beside each name, a line the app has no shape for shown in the first mate's words, a check that could not be made, and a Mac with nothing missing saying nothing.
+  The list is never kept here: `bin/fm-bootstrap.sh` owns what a home needs, and the app asks it for detection only with the network phase skipped, so the check reads the machine and changes nothing.
+  Run it after changing that banner or what the backend reads from bootstrap.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.
   Stop it by the PIDs you started, never with a `pkill` pattern: other agents run their own servers on this machine, and a pattern kill takes theirs down with yours.
+
+## Continuous integration
+
+- Every job runs on a GitHub-hosted runner, and self-hosted runners are not used here.
+  That is a security boundary, not a preference: the repository is public, so anyone may fork it and open a pull request, and a pull request can change the workflow it runs under.
+  On a hosted runner that is a throwaway virtual machine; on a self-hosted runner it is arbitrary code on the owner's own machine, as the owner's user, with reach into the keychain, SSH keys and the iCloud checkout.
+  Standard hosted runners are free and unmetered for public repositories, macOS included, so self-hosting would buy nothing.
+  Two self-hosted runners were tried on 2026-09-20 while the repository was private and Actions minutes had run out; they were removed the same day when it went public.
+- Where a job runs is decided by what the job needs, and the default is `ubuntu-latest`.
+  Only three jobs name `macos-latest`: both App jobs, because the app ships for macOS, and the engine's stock-Bash job, because it asserts `/bin/bash` is exactly 3.2.57.
+- The engine's four behaviour lanes must stay on Linux, and moving them to macOS is not an optimisation to retry.
+  They identify a harness by reading another process's environment, and macOS System Integrity Protection forbids that for platform binaries.
+  On a Mac `fm-harness-precedence`, `fm-kimi-harness`, `fm-muse-harness`, `fm-cursor-harness` and `fm-remote-herdr-guard` all resolve an empty harness name and fail; `fm-remote-herdr-guard` names the reason itself.
+  This was measured on 2026-09-20 by moving the whole suite to a Mac and reading what came back.
+- A CI job never installs into the machine's global npm prefix.
+  Each sets `npm_config_prefix` to its own `$RUNNER_TEMP/npm` in a first step, so a job depends on no machine-global state.
+  `npm root -g` inside `fm-pi-primary-types.test.sh` reads the same variable, so installs and lookups agree.
+- A job may not assume a tool the runner image happened to provide.
+  `tests/fm-pi-primary-types.test.sh` needs a global `tsc` and the lane refuses to let it skip, so TypeScript is installed explicitly and pinned at `typescript@6.0.3`, the version the app's own lockfile resolves.
+- `.github/workflows/engine-windows-herdr-spike.yml` names `windows-latest`.
+  It is `workflow_dispatch` only, so nothing starts it but James, and it measures Windows, which neither other lane can answer for.
+- Fork pull requests from outside contributors require approval before any workflow runs.

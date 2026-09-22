@@ -295,7 +295,18 @@ export type HostStateSnapshot = {
 };
 
 /** The captain's firstmate home: `home` once chosen and still valid, `problem` when a choice doesn't check out. */
-export type HomeStatus = { home: string | null; problem: string | null; /** The captain left the first mate running in this home when the app last closed, so the app starts it again. */ startOnLaunch?: boolean };
+export type HomeStatus = { home: string | null; problem: string | null; /** The captain left the first mate running in this home when the app last closed, so the app starts it again. */ startOnLaunch?: boolean; /** True when this is a folder the captain chose, false when it is the home the app owns. */ chosen?: boolean };
+
+/** One thing the first mate says this machine still needs. */
+export type Needed = {
+  /** The tool's name, or null for a line that names no tool. */
+  tool: string | null;
+  /** The command that installs it, a page that explains it, or null. */
+  how: string | null;
+  kind: "install" | "manual" | "other";
+  /** The first mate's own words, shown when the app has nothing better. */
+  says: string;
+};
 
 export type PaneCapture = { text: string; observed_at?: string };
 export type HostEventListener = (event: HostEvent) => void;
@@ -314,6 +325,10 @@ export interface HostAdapter {
   getHome(): Promise<HomeStatus>;
   /** Asks the captain for the folder; `null` when they cancel. */
   chooseHome(): Promise<HomeStatus | null>;
+  /** Forgets a chosen folder, so the app runs the first mate in the home it owns. */
+  useAppHome(): Promise<HomeStatus>;
+  /** What the first mate says this machine still needs. Reads only; changes nothing. */
+  toolsMissing(): Promise<{ missing: Needed[]; problem: string | null }>;
   refreshSnapshot(): Promise<void>;
   /** The last finished snapshot, for a window that subscribed after it was emitted. Waits for a read in progress. */
   latestSnapshot(): Promise<SnapshotEvent | null>;

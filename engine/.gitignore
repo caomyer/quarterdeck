@@ -1,0 +1,19 @@
+projects/
+state/
+data/
+scratchpad*
+.no-mistakes/
+.lavish/
+.fm-secondmate-home
+.fm-secondmate-parent
+.DS_Store
+__pycache__/
+*.pyc
+.env
+config/
+
+.tools/
+# The marker a home carries, naming the code it mirrors. It belongs to a home,
+# never to the code: committed, every checkout and every task worktree would
+# claim to be one.
+.fm-home

@@ -1,0 +1,131 @@
+name: App
+
+# The app's own checks. Work here lands by pushing a branch and fast-forwarding
+# main, so these run on every branch, not only on main and not only where
+# someone opened a pull request; a check run attaches to its commit, so a pull
+# request over that branch shows the same result without a second run of the
+# same work. They run on a change confined to engine/ as well: the app ships
+# the engine and one of these tests lays out a home with the engine's own
+# script, which is exactly the contract an engine change can break.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One group per branch, so a newer push to a branch replaces the run still going
+# for the one it superseded. Pushes to main are never cancelled: each is a
+# distinct state of the default branch and each deserves its own answer.
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  web:
+    name: Web
+    # The app ships for macOS, so its checks run where it runs.
+    #
+    # Self-hosted runners are deliberately not used anywhere in this repository,
+    # and this is a security boundary rather than a preference. The repository
+    # is public: anyone may fork it and open a pull request, and a pull request
+    # can change the workflow it runs under. On a hosted runner that is a fresh
+    # virtual machine destroyed afterwards. On a self-hosted runner it is
+    # arbitrary code on the owner's own machine, as the owner's user. Standard
+    # hosted runners are free and unmetered for public repositories, macOS
+    # included, so self-hosting would buy nothing and cost exactly that.
+    runs-on: macos-latest
+    # Hang tripwire, not the expected wall: a healthy run is a few minutes.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Every workflow in the repository, on every branch. The Engine lane owns
+      # the engine's lint but only runs on main and on a pull request to it, so
+      # a malformed workflow on a branch would reach main before anything said
+      # so. The engine's linter is the single owner of what that lint is.
+      - name: Workflows
+        run: |
+          set -eu
+          engine/bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin" >/dev/null
+          PATH="$RUNNER_TEMP/bin:$PATH" engine/bin/fm-lint-workflows.sh
+      - name: Types
+        run: pnpm exec tsc --noEmit
+      - name: Unit tests
+        run: pnpm test
+      # The only step that runs the bundler; nothing else would catch a build
+      # that type-checks and still fails to bundle.
+      - name: Build
+        run: pnpm build
+      - name: Install the browser the page checks drive
+        run: pnpm exec playwright install chromium
+      - name: Page checks against the browser mock
+        env:
+          ARTIFACT_SHOTS: ${{ runner.temp }}/shots
+        run: |
+          set -eu
+          pnpm dev --port 4191 --strictPort >"$RUNNER_TEMP/vite.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/vite.pid"
+          attempt=0
+          until curl -fsS http://127.0.0.1:4191 >/dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            [ "$attempt" -lt 300 ] || {
+              echo "::error::the dev server never came up"
+              cat "$RUNNER_TEMP/vite.log" || true
+              exit 1
+            }
+            sleep 0.2
+          done
+          # Each suite runs whatever the one before it did, so a red run reports
+          # every page that is wrong, not only the first.
+          failed=
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm projects || failed="$failed projects"
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts || failed="$failed artifacts"
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm tones || failed="$failed tones"
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm onboarding || failed="$failed onboarding"
+          [ -z "$failed" ] || {
+            echo "::error::page checks failed:$failed"
+            exit 1
+          }
+      - name: What the dev server said
+        if: failure()
+        run: cat "$RUNNER_TEMP/vite.log" || true
+      - name: Keep the pages the checks saw
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: page-check-screenshots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+      - name: Stop the dev server
+        if: always()
+        run: |
+          set -eu
+          [ -f "$RUNNER_TEMP/vite.pid" ] || exit 0
+          # By the pid this job started, never by a pattern that could match another process.
+          kill "$(cat "$RUNNER_TEMP/vite.pid")" 2>/dev/null || true
+
+  rust:
+    name: Rust
+    runs-on: macos-latest
+    # Hang tripwire: a cold toolchain install and build measure around ten
+    # minutes, and the first run of all pays for a cold cargo cache.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # Otherwise a red run saves nothing and the next one builds cold again.
+          cache-on-failure: true
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test

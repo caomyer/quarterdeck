@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { artifactPath } from "./types";
-import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, SnapshotEvent } from "./types";
+import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -21,6 +21,16 @@ const EVENT_NAMES = [
   "host_health",
   "snapshot",
 ] as const;
+
+/** What the commands answer with, in the backend's own spelling. */
+type HomeReply = { home: string | null; problem: string | null; start_on_launch?: boolean; chosen?: boolean };
+
+const homeStatus = (status: HomeReply): HomeStatus => ({
+  home: status.home,
+  problem: status.problem,
+  startOnLaunch: status.start_on_launch === true,
+  chosen: status.chosen === true,
+});
 
 export class TauriHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
@@ -137,15 +147,19 @@ export class TauriHostAdapter implements HostAdapter {
   }
 
   getHome() {
-    return invoke<{ home: string | null; problem: string | null; start_on_launch?: boolean }>("home_get").then((status): HomeStatus => ({
-      home: status.home,
-      problem: status.problem,
-      startOnLaunch: status.start_on_launch === true,
-    }));
+    return invoke<HomeReply>("home_get").then(homeStatus);
   }
 
   chooseHome() {
-    return invoke<HomeStatus | null>("home_choose");
+    return invoke<HomeReply | null>("home_choose").then((status) => status && homeStatus(status));
+  }
+
+  useAppHome() {
+    return invoke<HomeReply>("home_use_app").then(homeStatus);
+  }
+
+  toolsMissing() {
+    return invoke<{ missing: Needed[]; problem: string | null }>("tools_missing");
   }
 
   refreshSnapshot() {

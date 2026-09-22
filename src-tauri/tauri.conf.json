@@ -29,6 +29,11 @@
   },
   "bundle": {
     "active": true,
+    "resources": {
+      "../engine": "engine",
+      "../engine/.agents/skills": "engine/.claude/skills",
+      "../engine/.claude/mods/firstmate-calm": "engine/.agents/skills/firstmate-calm"
+    },
     "targets": "all",
     "icon": [
       "icons/32x32.png",

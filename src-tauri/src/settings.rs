@@ -1,9 +1,11 @@
-//! The captain's firstmate home: asked for once, checked, and remembered in
-//! the app data folder.
+//! The captain's firstmate home: the one the app owns, or one they chose.
 //!
-//! Nothing is ever picked automatically: the captain chooses the folder. A
-//! saved home that still checks out is handed to the snapshot reader at
-//! launch, so Bearings shows real data before the first mate starts.
+//! The app ships the first mate's own code and builds a home for it in the app
+//! data folder, so a captain who has never heard of firstmate has a working one
+//! on first launch. `home_choose` still points the app at a folder of their own,
+//! and a saved choice always wins over the app's. Whichever it is, a home that
+//! still checks out is handed to the snapshot reader at launch, so Bearings
+//! shows real data before the first mate starts.
 //!
 //! Per home, the file also remembers whether the captain left the first mate
 //! running, so the app starts it again when it opens; a first mate the captain
@@ -74,6 +76,17 @@ pub(crate) fn read_saved_home(dir: &Path) -> Option<PathBuf> {
     read_settings(dir).get("home").and_then(Value::as_str).filter(|s| !s.is_empty()).map(PathBuf::from)
 }
 
+/// Forgets the chosen home, keeping everything else the file holds. What the
+/// captain left running per home stays: it is keyed by home, and the folder
+/// they chose may be chosen again.
+pub(crate) fn forget_home(dir: &Path) -> Result<(), String> {
+    let mut settings = read_settings(dir);
+    if let Some(object) = settings.as_object_mut() {
+        object.remove("home");
+    }
+    write_settings(dir, &settings)
+}
+
 /// Remembers the chosen home, keeping everything else the file holds.
 pub(crate) fn save_home(dir: &Path, home: &Path) -> Result<(), String> {
     let mut settings = read_settings(dir);
@@ -122,10 +135,63 @@ fn settings_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String
     app.path().app_data_dir().map_err(|e| format!("no app data folder: {e}"))
 }
 
-/// The saved home when it still checks out.
+/// The home everything reads: the folder the captain chose when they chose one,
+/// and otherwise the app's own. Reviews and artifacts resolve their home through
+/// here, so a captain who never chose a folder still has both.
 pub(crate) fn saved_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
-    let saved = read_saved_home(&settings_dir(app).ok()?)?;
-    check_home(&saved).ok()
+    let dir = settings_dir(app).ok()?;
+    match read_saved_home(&dir) {
+        Some(saved) => check_home(&saved).ok(),
+        None => prepared_home(app).ok(),
+    }
+}
+
+/// The home to use when the captain has not chosen one: the app's own, laid out
+/// from the engine it ships. Run on every launch, so a home built by an older
+/// copy of the app is repointed at the one now installed.
+///
+/// Returns the reason instead when there is no engine to lay it out from, or
+/// when the script refuses the folder; the captain can still choose their own.
+pub(crate) fn prepared_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let mut ready = PREPARED.lock().unwrap_or_else(|held| held.into_inner());
+    if let Some(home) = ready.as_ref() {
+        return Ok(home.clone());
+    }
+    let home = lay_out_home(app)?;
+    *ready = Some(home.clone());
+    Ok(home)
+}
+
+/// The layout is done once per launch and every later caller is answered from
+/// it. Only success is kept: another copy of the script holding the home's lock
+/// is a passing thing, and one contended launch must not strand the captain on
+/// its error until they restart the app.
+static PREPARED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+fn lay_out_home<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let engine = crate::engine::bundled_engine(app)?;
+    let home = crate::engine::managed_home(app)?;
+    let said = crate::engine::prepare_home(&engine, &home)?;
+    log::info!("the first mate's home is ready at {}: {}", home.display(), said.replace('\n', "; "));
+    // The app's own home presents its pages through the app, so the first mate
+    // is told so before it is ever asked: left unsaid it means lavish-axi, and
+    // the captain would be asked on first launch to install a tool this app
+    // does not use.
+    match crate::engine::claim_presentation(&home) {
+        Ok(true) => log::info!("the first mate will present this home's pages in Quarterdeck"),
+        Ok(false) => {}
+        Err(problem) => log::warn!("{problem}"),
+    }
+    // An app update replaces the engine's bytes at the same path, which is the
+    // case that leaves a watch armed against a copy that no longer exists. It
+    // fails no launch: a home with no watches has nothing to do, and a watch
+    // broken some other way is a thing to report.
+    match crate::engine::rebind_watches(&engine, &home) {
+        Ok(said) if said.is_empty() => {}
+        Ok(said) => log::info!("the first mate's watches follow the engine now installed: {}", said.replace('\n', "; ")),
+        Err(problem) => log::warn!("{problem}"),
+    }
+    check_home(&home)
 }
 
 /// The saved home, whether it still checks out, and whether the first mate was left
@@ -134,7 +200,20 @@ fn saved_status(app: &AppHandle) -> Value {
     let Ok(dir) = settings_dir(app) else {
         return json!({"home": null, "problem": null, "start_on_launch": false});
     };
-    status_in(&dir)
+    // A folder the captain chose wins, whether or not it still checks out: they
+    // asked for that one, and being told why it no longer works beats being
+    // moved silently onto the app's own.
+    // The app's own home is not a choice the captain made, so the app can offer
+    // to go back to it; a folder they chose is theirs until they say otherwise.
+    if read_saved_home(&dir).is_some() {
+        let mut chosen = status_in(&dir);
+        chosen["chosen"] = json!(true);
+        return chosen;
+    }
+    match prepared_home(app) {
+        Ok(home) => json!({"home": home.to_string_lossy(), "problem": null, "start_on_launch": was_running(&dir, &home), "chosen": false}),
+        Err(problem) => json!({"home": null, "problem": problem, "start_on_launch": false, "chosen": false}),
+    }
 }
 
 fn status_in(dir: &Path) -> Value {
@@ -147,7 +226,9 @@ fn status_in(dir: &Path) -> Value {
     }
 }
 
-/// At launch: point the snapshot reader at the saved home, if it still checks out.
+/// At launch: point the snapshot reader at the home this launch reads, which is
+/// the captain's choice when they made one and otherwise the app's own, laid
+/// out from the engine before anything is read.
 pub fn load_saved_home(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let Some(home) = saved_status(&app).get("home").and_then(Value::as_str).map(PathBuf::from) else {
@@ -163,7 +244,56 @@ pub fn load_saved_home(app: AppHandle) {
 /// `problem` says why a saved home no longer does.
 #[tauri::command]
 pub async fn home_get(app: AppHandle) -> Result<Value, String> {
-    Ok(saved_status(&app))
+    // Answering this can run the engine's layout script, which on a contended
+    // launch waits on another copy of itself; none of that belongs on a thread
+    // that drives the app.
+    tauri::async_runtime::spawn_blocking(move || saved_status(&app))
+        .await
+        .map_err(|e| format!("the first mate's home could not be read: {e}"))
+}
+
+/// What the first mate says this machine still needs, for the app to show.
+/// Empty when nothing is missing. A home the captain chose is checked with the
+/// engine the app ships, which is the one that will run in it.
+#[tauri::command]
+pub async fn tools_missing(app: AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = crate::engine::bundled_engine(&app)?;
+        let Some(home) = saved_home(&app) else {
+            return Ok(json!({"missing": [], "problem": "there is no home to check"}));
+        };
+        match crate::engine::missing_tools(&engine, &home) {
+            Ok(missing) => Ok(json!({"missing": missing, "problem": null})),
+            Err(problem) => Ok(json!({"missing": [], "problem": problem})),
+        }
+    })
+    .await
+    .map_err(|e| format!("this machine could not be checked: {e}"))?
+}
+
+/// Gives the app's own home back, by forgetting the folder the captain chose.
+/// The first mate has to be stopped for the same reason choosing one does.
+#[tauri::command]
+pub async fn home_use_app(
+    app: AppHandle,
+    host: TauriState<'_, HostHandle>,
+    snapshots: TauriState<'_, SnapshotHandle>,
+) -> Result<Value, String> {
+    let state = host.call(|reply| Cmd::GetState { reply }).await?;
+    if state.get("state").and_then(Value::as_str).is_some_and(|name| RUNNING.contains(&name)) {
+        return Err("Stop the first mate before changing which folder it runs in.".to_string());
+    }
+    forget_home(&settings_dir(&app)?)?;
+    let status = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || saved_status(&app)
+    })
+    .await
+    .map_err(|e| format!("the first mate's home could not be read: {e}"))?;
+    if let Some(home) = status.get("home").and_then(Value::as_str) {
+        snapshots.point_at(PathBuf::from(home))?;
+    }
+    Ok(status)
 }
 
 /// Asks the captain for the folder. `null` when they cancel; `{home: null,
@@ -208,6 +338,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The captain's choice is theirs until they say otherwise, and saying so
+    /// is what gives the app's own home back. Everything else the file holds,
+    /// including what they left running per home, stays.
+    #[test]
+    fn forgetting_a_chosen_home_keeps_the_rest_of_the_file() {
+        let dir = scratch("forget");
+        let home = dir.join("chosen");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("AGENTS.md"), "# firstmate").unwrap();
+        save_home(&dir, &home).unwrap();
+        remember_running(&dir, &home, true).unwrap();
+        assert_eq!(read_saved_home(&dir).as_deref(), Some(home.as_path()));
+
+        forget_home(&dir).unwrap();
+        assert_eq!(read_saved_home(&dir), None, "the chosen home was not forgotten");
+        assert!(was_running(&dir, &home), "what was left running was forgotten with it");
+        // Forgetting twice is not an error, and neither is forgetting nothing.
+        forget_home(&dir).unwrap();
+        assert_eq!(read_saved_home(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

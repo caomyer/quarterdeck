@@ -1,0 +1,717 @@
+//! The first mate's own code, shipped inside the app, and the home it runs in.
+//!
+//! The engine is `engine/` in this repository, bundled as a resource, so the
+//! captain installs one app and never points it at a copy of firstmate they had
+//! to fetch themselves. That copy is read-only and is no git checkout, so it
+//! cannot be a home: `bin/fm-home-init.sh` builds one beside it, in the app's
+//! data folder, whose every top-level entry links back into the copy. To the
+//! harness and to every script that home looks exactly like a checkout.
+//!
+//! It runs on every launch, not only the first. It is idempotent, and it is
+//! what repoints a home at the engine after the app updates or moves.
+//!
+//! `QUARTERDECK_ENGINE_DIR` and `QUARTERDECK_HOME_DIR` replace the bundled copy
+//! and the managed home, so a test run uses a scratch pair and never the
+//! captain's own.
+
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// The marker that tells a directory holding the engine from any other.
+const ENTRYPOINT: &str = "bin/fm-home-init.sh";
+
+/// The engine's code: the bundled copy, or what `QUARTERDECK_ENGINE_DIR` names.
+pub(crate) fn bundled_engine<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    match override_dir("QUARTERDECK_ENGINE_DIR") {
+        Some(named) => check_engine(&named),
+        None => {
+            let resources = tauri::Manager::path(app)
+                .resource_dir()
+                .map_err(|e| format!("the app has no resource folder: {e}"))?;
+            check_engine(&resources.join("engine"))
+        }
+    }
+}
+
+/// A directory an environment variable names, if it names one. An empty
+/// variable names nothing: it must not resolve to the current directory, or to
+/// the app data folder's own root.
+fn override_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).filter(|dir| !dir.is_empty()).map(PathBuf::from)
+}
+
+/// An engine is a directory holding the script that lays out a home.
+fn check_engine(dir: &Path) -> Result<PathBuf, String> {
+    let resolved = std::fs::canonicalize(dir)
+        .map_err(|e| format!("{} can't be opened: {e}.", dir.display()))?;
+    if !resolved.join(ENTRYPOINT).is_file() {
+        return Err(format!("{} has no {ENTRYPOINT}, so it is not the first mate's code.", resolved.display()));
+    }
+    Ok(resolved)
+}
+
+/// The home the app owns, in its data folder: `QUARTERDECK_HOME_DIR` replaces it.
+/// The folder need not exist yet; laying it out is `prepare_home`'s work.
+pub(crate) fn managed_home<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    if let Some(dir) = override_dir("QUARTERDECK_HOME_DIR") {
+        return Ok(dir);
+    }
+    tauri::Manager::path(app)
+        .app_data_dir()
+        .map(|dir| dir.join("home"))
+        .map_err(|e| format!("no app data folder: {e}"))
+}
+
+/// Lays the home out from the engine, and returns what the script reported.
+///
+/// The script refuses a directory that is neither empty nor already one of its
+/// homes, so a captain's own firstmate folder is never rearranged by this: the
+/// refusal is returned as it was written, to be shown rather than guessed at.
+pub(crate) fn prepare_home(engine: &Path, home: &Path) -> Result<String, String> {
+    if let Some(parent) = home.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let script = engine.join(ENTRYPOINT);
+    let output = Command::new(&script)
+        .arg("--home")
+        .arg(home)
+        // The script reads FM_HOME when --home is absent; a stray one from the
+        // captain's shell must not decide where the app's home goes.
+        .env_remove("FM_HOME")
+        .env("PATH", crate::envpath::search_path())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", script.display()))?;
+    let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let told = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() {
+        // The script names itself on the line carrying the reason. A usage
+        // failure prints a usage line after it, which is not the reason, and a
+        // late failure has already printed what it did to stdout.
+        let why = said
+            .lines()
+            .find_map(|line| line.strip_prefix("fm-home-init:").map(str::trim))
+            .filter(|reason| !reason.is_empty())
+            .or_else(|| said.lines().last())
+            .unwrap_or("it gave no reason");
+        log::warn!("the first mate's home was refused; it said: {said}; it had done: {told}");
+        return Err(format!("the first mate's home could not be prepared: {why}"));
+    }
+    if !said.is_empty() {
+        // Waiting on another copy of the script, and anything else it wanted said.
+        log::info!("laying out the first mate's home: {}", said.replace('\n', "; "));
+    }
+    Ok(told)
+}
+
+/// Tells the home that Quarterdeck presents its pages, unless it already says
+/// something. The first mate reads `config/presentation` to decide where a
+/// report or a decision goes: left unset it means lavish-axi, a tool the app
+/// does not need and would otherwise ask the captain to install on first
+/// launch. Only written when absent, so a captain who changed it keeps it.
+pub(crate) fn claim_presentation(home: &Path) -> Result<bool, String> {
+    let config = home.join("config");
+    let setting = config.join("presentation");
+    if setting.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(&config).map_err(|e| format!("could not create {}: {e}", config.display()))?;
+    // Written whole or not at all: a first mate reading it between the create
+    // and the write would see an empty file, and empty is not a mode it knows.
+    let partial = config.join(format!("presentation.{}.tmp", std::process::id()));
+    std::fs::write(&partial, "quarterdeck\n").map_err(|e| format!("could not write {}: {e}", partial.display()))?;
+    std::fs::rename(&partial, &setting).map_err(|e| {
+        let _ = std::fs::remove_file(&partial);
+        format!("could not save {}: {e}", setting.display())
+    })?;
+    Ok(true)
+}
+
+/// What the first mate says this machine is missing, as a list the app can show.
+///
+/// The engine's own detection, not a second list kept here that would drift
+/// from it, plus the one thing the app needs that the engine does not. It is asked for detection only and with the network phase
+/// skipped, so it reads this machine and changes nothing: no fleet refresh, no
+/// secondmate work, no network. `gh` being unauthenticated is a network
+/// question and is deliberately not among the answers.
+pub(crate) fn missing_tools(engine: &Path, home: &Path) -> Result<Vec<Value>, String> {
+    let script = engine.join("bin/fm-bootstrap.sh");
+    if !script.is_file() {
+        // An engine that failed to bundle must not read as a Mac with nothing
+        // missing: from here those look identical, and only one is good news.
+        return Err(format!("the first mate's own checker is not where it should be: {}", script.display()));
+    }
+    let output = Command::new(&script)
+        .current_dir(home)
+        .env("FM_HOME", home)
+        .env("FM_BOOTSTRAP_DETECT_ONLY", "1")
+        // FM_BOOTSTRAP_NETWORK is the name the script reads. It computes
+        // FM_BOOTSTRAP_NETWORK_PHASE from it and overwrites anything given
+        // under that name, so setting the phase directly does nothing, and the
+        // run asks GitHub whether gh is authenticated on every launch.
+        .env("FM_BOOTSTRAP_NETWORK", "skip")
+        .env("PATH", crate::envpath::search_path())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", script.display()))?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let why = if said.is_empty() { "it gave no reason" } else { &said };
+        return Err(format!("the first mate could not check this machine: {why}"));
+    }
+    let mut missing: Vec<Value> = adapter_missing().into_iter().collect();
+    missing.extend(String::from_utf8_lossy(&output.stdout).lines().filter_map(needed));
+    Ok(missing)
+}
+
+/// The one thing the app itself cannot run without.
+///
+/// The engine's list is the engine's, and it is right not to name this: the
+/// first mate does not need an ACP adapter, the app does, to talk to it at all.
+/// Nobody else would tell the captain, and they would find out by pressing
+/// Start and being told about a tool no checklist mentioned. It goes first
+/// because without it nothing else on the list matters.
+fn adapter_missing() -> Option<Value> {
+    let name = std::env::var("ACP_ADAPTER").unwrap_or_else(|_| "claude-agent-acp".to_string());
+    if crate::envpath::resolve(&name).is_some() {
+        return None;
+    }
+    let how = "npm i -g @agentclientprotocol/claude-agent-acp";
+    Some(json!({
+        "tool": name,
+        "how": how,
+        "kind": "install",
+        "says": format!("MISSING: {name} (install: {how})"),
+    }))
+}
+
+/// One line of the first mate's own report, as something the app can draw.
+/// A line it does not know the shape of is still shown, in the first mate's
+/// words: hiding it would be the app deciding what the captain may know.
+fn needed(line: &str) -> Option<Value> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with("BOOTSTRAP_INFO:") {
+        return None;
+    }
+    if let Some(rest) = line.strip_prefix("MISSING: ") {
+        let (tool, how) = split_how(rest, "(install: ");
+        return Some(json!({"tool": tool, "how": how, "kind": "install", "says": line}));
+    }
+    if let Some(rest) = line.strip_prefix("MISSING_MANUAL: ") {
+        let (tool, how) = split_how(rest, "(instructions: ");
+        return Some(json!({"tool": tool, "how": how, "kind": "manual", "says": line}));
+    }
+    // A presentation tool the home cannot use is a named tool with an install
+    // command, whatever the line calls itself. Left as prose it would be the
+    // longest thing on the page and the least actionable.
+    if let Some(rest) = line.strip_prefix("PRESENTATION_UNAVAILABLE: ") {
+        let (tool, how) = split_how(rest, "install: ");
+        return Some(json!({"tool": tool, "how": how, "kind": "install", "says": line}));
+    }
+    Some(json!({"tool": null, "how": null, "kind": "other", "says": line}))
+}
+
+/// `<tool> (install: <command>)` split into its two halves. A line that does
+/// not carry the opener is all name and no remedy, which is still worth saying,
+/// and so is a name whose remedy turns out to be empty.
+fn split_how(rest: &str, opener: &str) -> (String, Option<String>) {
+    let Some(at) = rest.find(opener) else {
+        return (rest.trim().to_string(), None);
+    };
+    let after = &rest[at + opener.len()..];
+    // The remedy closes at the bracket that closes its parenthetical, the last
+    // one: a line may say more after it, and a command may carry brackets of
+    // its own, which closing at the first would cut in half.
+    let how = match after.rfind(')') {
+        Some(close) => &after[..close],
+        None => after,
+    };
+    // The name is what comes before the opener, without a bracket the opener
+    // followed and without a parenthetical of its own, as a version floor is.
+    let name = rest[..at].trim().trim_end_matches('(').trim();
+    let name = name.split(" (").next().unwrap_or(name).trim();
+    (name.to_string(), Some(how.trim().to_string()).filter(|how| !how.is_empty()))
+}
+
+/// Rebinds the home's registered watches to the engine's current bytes.
+///
+/// A watch records the hash of the executable it will run, so a watch armed
+/// against a previous copy of the engine is refused on its next fire and dies
+/// without saying so. Updating the app replaces those bytes at the same path,
+/// which is exactly that case, so this runs after every layout. It is
+/// idempotent: a watch whose action already matches is left alone.
+///
+/// The engine's own copy of the script is the one to run, not the home's.
+/// They are the same file, but the script takes the directory above itself as
+/// the code it may rebind, and reached through the home's `bin` link that is
+/// the home. A watch's action resolves to its physical path, inside the
+/// engine, so every one of them would be judged out of scope and the run would
+/// report success having rebound nothing.
+///
+/// A home with no watches, and a watch broken for some other reason, are both
+/// things to report rather than to fail a launch over.
+pub(crate) fn rebind_watches(engine: &Path, home: &Path) -> Result<String, String> {
+    let script = engine.join("bin/fm-procevent-when.sh");
+    if !script.is_file() {
+        return Ok(String::new());
+    }
+    let output = Command::new(&script)
+        .arg("rebind-all")
+        .current_dir(home)
+        .env("FM_HOME", home)
+        .env("PATH", crate::envpath::search_path())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", script.display()))?;
+    let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let told = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() {
+        return Err(format!("the first mate's watches could not be rebound: {}", if said.is_empty() { told } else { said }));
+    }
+    Ok(if told.is_empty() { said } else { told })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qd-engine-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An engine whose entrypoint is a script the test can watch.
+    fn fake_engine(dir: &Path, body: &str) -> PathBuf {
+        let engine = dir.join("engine");
+        std::fs::create_dir_all(engine.join("bin")).unwrap();
+        let script = engine.join(ENTRYPOINT);
+        std::fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        engine
+    }
+
+    #[test]
+    fn a_directory_without_the_entrypoint_is_not_the_engine() {
+        let dir = scratch("not-engine");
+        let problem = check_engine(&dir).unwrap_err();
+        assert!(problem.contains("is not the first mate's code"), "{problem}");
+        assert!(check_engine(&dir.join("nowhere")).unwrap_err().contains("can't be opened"));
+        let engine = fake_engine(&dir, "#!/bin/sh\nexit 0\n");
+        assert_eq!(check_engine(&engine).unwrap(), std::fs::canonicalize(&engine).unwrap());
+    }
+
+    #[test]
+    fn the_home_is_laid_out_by_the_engines_own_script() {
+        let dir = scratch("prepare");
+        let engine = fake_engine(&dir, "#!/bin/sh\nprintf 'home: %s\\n' \"$2\"\nprintf 'ok\\n'\nexit 0\n");
+        let home = dir.join("data").join("home");
+        let said = prepare_home(&engine, &home).unwrap();
+        assert!(said.contains(home.to_str().unwrap()), "{said}");
+        assert!(dir.join("data").is_dir(), "the home's parent was not created");
+    }
+
+    #[test]
+    fn a_refusal_is_reported_in_the_scripts_own_words() {
+        let dir = scratch("refused");
+        let engine = fake_engine(&dir, "#!/bin/sh\nprintf 'fm-home-init: not empty\\n' >&2\nexit 1\n");
+        let problem = prepare_home(&engine, &dir.join("home")).unwrap_err();
+        assert!(problem.contains("not empty"), "{problem}");
+    }
+
+    /// The first mate reads config/presentation to decide where a page goes.
+    #[test]
+    fn the_app_says_it_presents_this_homes_pages_unless_the_home_says_otherwise() {
+        let dir = scratch("presentation");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(claim_presentation(&home).unwrap(), "the setting was not written");
+        assert_eq!(std::fs::read_to_string(home.join("config/presentation")).unwrap(), "quarterdeck\n");
+        // A captain who changed it keeps it, on this launch and every one after.
+        std::fs::write(home.join("config/presentation"), "lavish\n").unwrap();
+        assert!(!claim_presentation(&home).unwrap(), "the captain's own setting was overwritten");
+        assert_eq!(std::fs::read_to_string(home.join("config/presentation")).unwrap(), "lavish\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first mate's own report, read as something the app can draw.
+    #[test]
+    fn what_is_missing_is_read_in_the_first_mates_own_words() {
+        let install = needed("MISSING: jq (install: brew install jq)").unwrap();
+        assert_eq!(install["tool"], "jq");
+        assert_eq!(install["how"], "brew install jq");
+        assert_eq!(install["kind"], "install");
+
+        let manual = needed("MISSING_MANUAL: herdr (instructions: https://example.invalid/herdr)").unwrap();
+        assert_eq!(manual["tool"], "herdr");
+        assert_eq!(manual["how"], "https://example.invalid/herdr");
+        assert_eq!(manual["kind"], "manual");
+
+        // A line with no remedy is all name, and still worth saying.
+        let bare = needed("MISSING: tasks-axi").unwrap();
+        assert_eq!(bare["tool"], "tasks-axi");
+        assert_eq!(bare["how"], Value::Null);
+
+        // A command carrying brackets of its own keeps them: the remedy closes
+        // at the bracket that closes the parenthetical, not at the first one.
+        let bracketed = needed("MISSING: foo (install: sh -c 'f() { :; }; f')").unwrap();
+        assert_eq!(bracketed["how"], "sh -c 'f() { :; }; f'");
+
+        // A tool named inside a longer line is still a tool with a command, and
+        // what the line says after the parenthetical is not part of it.
+        let presentation = needed("PRESENTATION_UNAVAILABLE: lavish-axi (requires >=0.1.46; install: npm install -g lavish-axi && lavish-axi setup hooks) - nonvisual work may proceed").unwrap();
+        assert_eq!(presentation["tool"], "lavish-axi");
+        assert_eq!(presentation["how"], "npm install -g lavish-axi && lavish-axi setup hooks");
+        assert_eq!(presentation["kind"], "install");
+
+        // Anything else the first mate reports is shown in its own words rather
+        // than dropped, because dropping it is the app deciding what may be known.
+        let other = needed("BACKEND_INVALID: zellij (known: tmux herdr)").unwrap();
+        assert_eq!(other["kind"], "other");
+        assert_eq!(other["tool"], Value::Null);
+        assert!(other["says"].as_str().unwrap().starts_with("BACKEND_INVALID"));
+
+        assert!(needed("").is_none());
+        assert!(needed("   ").is_none());
+        // Work it did, not something the captain must act on.
+        assert!(needed("BOOTSTRAP_INFO: nudged fm-x with 'hello'").is_none());
+    }
+
+    /// The app names the adapter it cannot run without, in the shape the rest of
+    /// the checklist uses, so the captain hears about it from the checklist
+    /// rather than from a failed Start.
+    #[test]
+    fn the_app_names_the_adapter_it_cannot_run_without() {
+        // Resolved the way the host resolves it, so the checklist and the thing
+        // that actually launches can never disagree about what is missing.
+        let named = adapter_missing();
+        let present = crate::envpath::resolve("claude-agent-acp").is_some();
+        assert_eq!(named.is_none(), present, "the checklist disagrees with what the host would find");
+        if let Some(needed) = named {
+            assert_eq!(needed["tool"], "claude-agent-acp");
+            assert_eq!(needed["kind"], "install");
+            assert!(needed["how"].as_str().is_some_and(|how| how.contains("claude-agent-acp")));
+            // Same shape as the engine's own lines, so the app draws it the same way.
+            assert_eq!(needed["says"], needed_line(&needed));
+        }
+    }
+
+    /// The `MISSING: <tool> (install: <how>)` line a value describes.
+    fn needed_line(needed: &Value) -> String {
+        format!("MISSING: {} (install: {})", needed["tool"].as_str().unwrap(), needed["how"].as_str().unwrap())
+    }
+
+    /// The engine's own check, against a home the engine laid out. It reads
+    /// this machine and changes nothing: no network, no fleet work.
+    #[test]
+    fn the_engine_says_what_this_machine_is_missing() {
+        let Ok(engine) = check_engine(&real_engine()) else { return };
+        let dir = scratch("missing");
+        let home = dir.join("home");
+        prepare_home(&engine, &home).expect("the engine could not lay out a home");
+        claim_presentation(&home).unwrap();
+        let before = manifest(&home);
+
+        let missing = missing_tools(&engine, &home).expect("the check failed");
+        for needed in &missing {
+            assert!(needed["says"].as_str().is_some_and(|says| !says.is_empty()), "a line with nothing to say: {needed}");
+            // Not asserting that nothing lands in "other": run against this
+            // repository's own engine, the first mate reports the checkout it
+            // reads is on a branch rather than main, which is true and is the
+            // sort of thing the captain should see rather than have dropped.
+            assert!(needed["kind"].as_str().is_some(), "a line with no kind: {needed}");
+            // Every line the first mate wrote as MISSING must arrive as one
+            // the captain can act on, or the parser has quietly stopped working
+            // and everything would still look like a tidy list of prose.
+            if needed["says"].as_str().is_some_and(|says| says.starts_with("MISSING: ")) {
+                assert_eq!(needed["kind"], "install", "a MISSING line was not read as one: {needed}");
+                assert!(needed["tool"].as_str().is_some_and(|tool| !tool.contains(' ')), "the tool was not named: {needed}");
+                assert!(needed["how"].as_str().is_some_and(|how| !how.is_empty()), "no remedy was read: {needed}");
+            }
+        }
+        // Nothing here asks the network. The check is meant to read this
+        // machine, and a captain on a bad connection must still be told what
+        // they are missing rather than waiting on a round trip.
+        assert!(
+            !missing.iter().any(|needed| needed["says"] == "NEEDS_GH_AUTH"),
+            "the check asked GitHub whether gh is signed in: {missing:?}"
+        );
+        // Nothing this machine is missing should be lavish-axi: the app presents
+        // its own pages, and the home was told so above.
+        assert!(
+            !missing.iter().any(|needed| needed["says"].as_str().is_some_and(|says| says.contains("lavish-axi"))),
+            "the captain was asked for a tool the app does not use: {missing:?}"
+        );
+        assert_eq!(manifest(&home), before, "checking the machine changed the home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A home whose watches were armed against an older copy of the engine.
+    #[test]
+    fn the_homes_watches_are_rebound_to_the_engine_now_installed() {
+        let dir = scratch("rebind");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let engine = dir.join("engine");
+        std::fs::create_dir_all(engine.join("bin")).unwrap();
+        // Nothing to rebind is not a failure: an engine may predate the script.
+        assert_eq!(rebind_watches(&engine, &home).unwrap(), "");
+
+        let script = engine.join("bin/fm-procevent-when.sh");
+        let executable = |path: &Path| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        };
+        std::fs::write(&script, "#!/bin/sh\nprintf 'ran %s from %s in %s\\n' \"$1\" \"$0\" \"$FM_HOME\"\n").unwrap();
+        executable(&script);
+        // The home mirrors the engine, so the same script is reachable through
+        // the home's own bin. Running that copy is what leaves every watch out
+        // of scope, so the call must be the engine's.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(engine.join("bin"), home.join("bin")).unwrap();
+
+        let said = rebind_watches(&engine, &home).unwrap();
+        assert!(said.starts_with("ran rebind-all from "), "{said}");
+        assert!(
+            said.contains(engine.join("bin/fm-procevent-when.sh").to_str().unwrap()),
+            "the home's copy was run rather than the engine's: {said}"
+        );
+        assert!(said.ends_with(home.to_str().unwrap()), "the home was not the one rebound: {said}");
+
+        std::fs::write(&script, "#!/bin/sh\nprintf 'a watch is broken\\n' >&2\nexit 1\n").unwrap();
+        let problem = rebind_watches(&engine, &home).unwrap_err();
+        assert!(problem.contains("a watch is broken"), "{problem}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole thing, against the engine's real script: a home laid out from
+    /// a copy of the engine, a watch armed on an action inside that copy, the
+    /// copy's bytes then changed as an app update changes them, and the watch
+    /// following. Reached through the home's own bin this reports success
+    /// having rebound nothing, which is the shape the bug had.
+    #[test]
+    fn a_real_watch_follows_a_real_engine_that_changed() {
+        let Ok(source) = check_engine(&real_engine()) else { return };
+        let dir = scratch("rebind-live");
+        let engine = dir.join("engine");
+        let copied = Command::new("cp").arg("-R").arg(&source).arg(&engine).status();
+        if !copied.map(|status| status.success()).unwrap_or(false) {
+            panic!("could not copy the engine");
+        }
+        let action = engine.join("bin/fm-rebind-probe.sh");
+        std::fs::write(&action, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&action, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let home = dir.join("home");
+        prepare_home(&engine, &home).expect("the copy could not lay out a home");
+
+        let armed = Command::new(home.join("bin/fm-procevent-when.sh"))
+            .args(["arm", "rebindprobe", "--condition", "/usr/bin/true", "--action"])
+            .arg(home.join("bin/fm-rebind-probe.sh"))
+            .current_dir(&home)
+            .env("FM_HOME", &home)
+            .env("PATH", crate::envpath::search_path())
+            .output()
+            .expect("could not arm a watch");
+        assert!(armed.status.success(), "could not arm a watch: {}", String::from_utf8_lossy(&armed.stderr));
+
+        // The app update: same path, different bytes.
+        std::fs::write(&action, "#!/usr/bin/env bash\n# the app updated\nexit 0\n").unwrap();
+        let said = rebind_watches(&engine, &home).expect("rebinding failed");
+        assert!(said.contains("rebound: when-rebindprobe"), "the watch did not follow the engine: {said}");
+        assert!(said.contains("1 rebound"), "{said}");
+
+        // Idempotent: nothing left to do on the launch after.
+        let again = rebind_watches(&engine, &home).expect("rebinding failed");
+        assert!(again.contains("0 rebound"), "a second launch rebound something again: {again}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every file under a directory, by path, size and last change.
+    fn manifest(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+        let mut found = Vec::new();
+        let mut walk = vec![dir.to_path_buf()];
+        while let Some(here) = walk.pop() {
+            let Ok(entries) = std::fs::read_dir(&here) else { continue };
+            for entry in entries.flatten() {
+                // symlink_metadata: a link's own record, never what it points at,
+                // so a link into the home could not hide a change here.
+                let Ok(about) = entry.metadata().or_else(|_| entry.path().symlink_metadata()) else { continue };
+                found.push((entry.path(), about.len(), about.modified().unwrap_or(std::time::UNIX_EPOCH)));
+                if about.is_dir() {
+                    walk.push(entry.path());
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// An empty variable names nothing. Left to resolve, it would send the
+    /// engine lookup at the current directory and the home at the app data
+    /// folder's own root, which is not a home and must not be laid out as one.
+    #[test]
+    fn an_empty_override_names_nothing() {
+        // A name no test sets, so this reads the absent case without touching
+        // the environment other tests are running against.
+        assert_eq!(override_dir("QUARTERDECK_NOTHING_NAMES_THIS"), None);
+    }
+
+    /// The engine this repository ships, so the test reads what the app would.
+    fn real_engine() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("engine")
+    }
+
+    /// Where the build put the copied resources: OUT_DIR is
+    /// <target>/<profile>/build/<crate>-<hash>/out, so the copy is three levels
+    /// up. This is the tree that ships, not the one in the repository.
+    fn copied_engine() -> Option<PathBuf> {
+        let out = Path::new(env!("OUT_DIR"));
+        let profile = out.parent()?.parent()?.parent()?;
+        let engine = profile.join("engine");
+        engine.is_dir().then_some(engine)
+    }
+
+    /// Every directory link in the engine is named in the bundle's resources.
+    ///
+    /// Tauri's resource copy decides an entry is a directory by a question that
+    /// follows symlinks, and then skips it: a link to a directory is neither
+    /// copied nor descended into, and the bundled first mate had no skills at
+    /// all because of it. The remedy is an explicit entry copying what the link
+    /// points at to where the link is, and this fails when the engine grows a
+    /// directory link nobody added one for. It needs no build output, so unlike
+    /// the check below it runs everywhere.
+    #[test]
+    fn every_directory_link_in_the_engine_is_named_in_the_bundle() {
+        let engine = check_engine(&real_engine()).expect("the engine is not where it should be");
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json")).expect("no tauri.conf.json"),
+        )
+        .expect("tauri.conf.json is not JSON");
+        // The map is source to destination, and a link is answered by an entry
+        // that puts what it points at where the link is, so the destinations
+        // are what to look in.
+        let resources = config["bundle"]["resources"].as_object().expect("the bundle names no resources");
+        let arrives: Vec<&str> = resources.values().filter_map(Value::as_str).collect();
+
+        // Only what the engine tracks. A developer may keep a home, a checked
+        // out project, or a node_modules under engine/, none of which is in the
+        // bundle and none of which this is asking about.
+        let tracked = Command::new("git")
+            .args(["ls-files", "-z", "--", "."])
+            .current_dir(&engine)
+            .output()
+            .expect("git could not list the engine");
+        let tracked: std::collections::BTreeSet<PathBuf> = String::from_utf8_lossy(&tracked.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .flat_map(|path| Path::new(path).ancestors().map(Path::to_path_buf).collect::<Vec<_>>())
+            .collect();
+
+        let mut named = Vec::new();
+        let mut unnamed = Vec::new();
+        let mut walk = vec![engine.clone()];
+        while let Some(here) = walk.pop() {
+            let Ok(entries) = std::fs::read_dir(&here) else { continue };
+            for entry in entries.flatten() {
+                let Ok(about) = entry.path().symlink_metadata() else { continue };
+                let at = entry.path().strip_prefix(&engine).unwrap().to_path_buf();
+                if !tracked.contains(&at) {
+                    continue;
+                }
+                if about.is_symlink() {
+                    // Only a link to a directory is dropped; a link to a file is
+                    // copied as the file it points at, which is what we want.
+                    if !entry.path().is_dir() {
+                        continue;
+                    }
+                    let wanted = format!("engine/{}", at.to_string_lossy());
+                    if arrives.contains(&wanted.as_str()) {
+                        named.push(wanted);
+                    } else {
+                        unnamed.push(wanted);
+                    }
+                } else if about.is_dir() {
+                    walk.push(entry.path());
+                }
+            }
+        }
+        assert!(unnamed.is_empty(), "these directory links would arrive as nothing at all: {unnamed:?}");
+        assert!(!named.is_empty(), "the engine has no directory links, so this guards nothing any more");
+    }
+
+    /// The copy, not the source: proof the entries above do what they say.
+    /// The source tree cannot show it, because the source has the links.
+    /// Skipped where no build output exists, which the check above covers.
+    #[test]
+    fn the_copy_that_ships_carries_what_the_links_point_at() {
+        let Some(engine) = copied_engine() else {
+            // Nothing to check before the resources have been copied once.
+            return;
+        };
+        let engine = check_engine(&engine).expect("the copied engine is not laid out as one");
+        let skills = engine.join(".claude/skills");
+        assert!(skills.is_dir(), "the copy has no .claude/skills, so the first mate ships with no skills");
+        assert!(skills.join("bearings/SKILL.md").is_file(), ".claude/skills arrived empty");
+        assert!(
+            engine.join(".agents/skills/firstmate-calm/.claude-plugin/plugin.json").is_file(),
+            "the copy has no firstmate-calm"
+        );
+
+        // And it lays out a home, which is the whole point of shipping it.
+        let dir = scratch("copy");
+        let home = dir.join("home");
+        let said = prepare_home(&engine, &home).unwrap();
+        assert!(said.contains("ok"), "the copy could not lay out a home: {said}");
+        assert!(home.join(".claude/skills/bearings/SKILL.md").is_file(), "the home cannot reach the first mate's skills");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The real script against the real engine: the app's whole first launch,
+    /// minus the app. Nothing outside the scratch home is touched, and the
+    /// engine is checked afterwards for having stayed read-only in practice.
+    #[test]
+    fn the_real_engine_lays_out_a_real_home() {
+        let engine = match check_engine(&real_engine()) {
+            Ok(engine) => engine,
+            Err(why) => panic!("the engine this app ships is not where it should be: {why}"),
+        };
+        let dir = scratch("live");
+        let home = dir.join("home");
+        let before = manifest(&engine);
+        let said = prepare_home(&engine, &home).unwrap();
+        assert!(said.contains("ok"), "the script did not finish: {said}");
+        // Every top-level entry of the code is reachable from the home, and the
+        // home's own directories are real, which is what makes it a home.
+        assert!(std::fs::symlink_metadata(home.join("bin")).unwrap().is_symlink(), "bin is not a link into the code");
+        assert!(home.join("bin/fm-home-init.sh").is_file(), "the link does not reach the code");
+        assert!(home.join("state").is_dir() && !std::fs::symlink_metadata(home.join("state")).unwrap().is_symlink(), "state is not the home's own");
+        assert!(home.join("AGENTS.md").is_file(), "the home cannot read the first mate's job description");
+        assert!(home.join(".fm-home").is_file(), "the home carries no marker naming the code it mirrors");
+
+        // Idempotent: a second launch repoints nothing and refuses nothing.
+        let again = prepare_home(&engine, &home).unwrap();
+        assert!(again.contains("ok"), "a second launch did not finish: {again}");
+        assert!(!again.contains("relinked"), "a second launch moved links that had not moved: {again}");
+
+        // The copy the app ships was not written to. Every file it holds, by
+        // name, size and last change: git status would answer for whatever else
+        // is uncommitted in the checkout, and would say nothing at all about
+        // the directories the engine's own .gitignore hides, which are exactly
+        // the ones a home is made of.
+        assert_eq!(manifest(&engine), before, "laying out a home changed the engine");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+}

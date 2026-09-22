@@ -15,6 +15,7 @@ import type {
   FleetTask,
   HistoryItem,
   HomeStatus,
+  Needed,
   HostAdapter,
   HostEvent,
   HostEventListener,
@@ -805,14 +806,41 @@ export class MockHostAdapter implements HostAdapter {
 
   /** The browser review path keeps the fixtures, so it reports the fixture's home. `?first-launch` shows the folder question instead. */
   async getHome(): Promise<HomeStatus> {
-    if (reviewFlag("first-launch") && !this.homeChosen) return { home: null, problem: null };
+    if (reviewFlag("first-launch") && !this.homeChosen) return { home: null, problem: null, chosen: false };
     // `?start-on-launch`, with `?relaunch`: the first mate was running when the app closed, so the app starts it again on its own.
-    return { home: this.snapshot.fleet.fm_home, problem: null, startOnLaunch: reviewFlag("start-on-launch") };
+    return { home: this.snapshot.fleet.fm_home, problem: null, startOnLaunch: reviewFlag("start-on-launch"), chosen: this.homeChosen };
   }
 
   async chooseHome(): Promise<HomeStatus | null> {
     this.homeChosen = true;
     return this.getHome();
+  }
+
+  async useAppHome(): Promise<HomeStatus> {
+    this.homeChosen = false;
+    return this.getHome();
+  }
+
+  /** `?needs` shows the first-launch checklist; `?needs=none` an answered one. */
+  async toolsMissing(): Promise<{ missing: Needed[]; problem: string | null }> {
+    const asked = new URLSearchParams(window.location.search).get("needs");
+    if (asked === null) return { missing: [], problem: null };
+    if (asked === "none") return { missing: [], problem: null };
+    if (asked === "unreadable") return { missing: [], problem: "the first mate could not check this machine: bin/fm-bootstrap.sh: permission denied" };
+    return {
+      // The shapes a real Mac produces, at the lengths it produces them: the
+      // long curl pipeline, the presentation line that is a tool in prose, and
+      // the two lines that name no tool at all.
+      missing: [
+        { tool: "jq", how: "brew install jq  # or the platform's package manager", kind: "install", says: "MISSING: jq (install: brew install jq  # or the platform's package manager)" },
+        { tool: "no-mistakes", how: "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh", kind: "install", says: "MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)" },
+        { tool: "lavish-axi", how: "npm install -g lavish-axi && lavish-axi setup hooks", kind: "install", says: "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=0.1.46; install: npm install -g lavish-axi && lavish-axi setup hooks) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish" },
+        { tool: "herdr", how: "https://example.invalid/herdr", kind: "manual", says: "MISSING_MANUAL: herdr (instructions: https://example.invalid/herdr)" },
+        { tool: null, how: null, kind: "other", says: "TANGLE: primary checkout on feature branch 'fm/example' (expected 'main'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock" },
+        { tool: null, how: null, kind: "other", says: "BACKEND_INVALID: zellij (known: tmux herdr cmux orca zellij)" },
+      ],
+      problem: null,
+    };
   }
 
   async answerPermission(id: string, optionId: string) {
