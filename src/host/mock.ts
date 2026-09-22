@@ -776,8 +776,12 @@ export class MockHostAdapter implements HostAdapter {
     return { picked: [pick("Release brief v2.md", 18_432), pick("Écran 日本 2026-09-22.png", 1_540_000)], refused: [] };
   }
 
-  /** Stands in for the copy into the home as a message is sent. `?attach=gone`: the brief was removed after it was picked. */
+  /**
+   * Stands in for the copy into the home as a message is sent. `?attach=gone`: the brief was removed after it was picked.
+   * `?attach=slow`: the copy takes a moment, as a large file does.
+   */
   async copyFiles(sources: string[]): Promise<CopyResult> {
+    if (reviewValue("attach") === "slow") await new Promise((resolve) => setTimeout(resolve, 1500));
     const name = (source: string) => source.split("/").pop() ?? source;
     const gone = sources.filter((source) => !this.pickable.has(source) || (reviewValue("attach") === "gone" && name(source) === "Release brief v2.md"));
     if (gone.length > 0) return { attached: [], refused: gone.map((source) => ({ source, problem: `${name(source)} is no longer there.` })) };

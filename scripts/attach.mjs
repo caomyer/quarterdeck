@@ -123,6 +123,24 @@ check(await page.locator(".composer textarea").inputValue() === "The brief went 
 check(await composerFiles().count() === 2, "and so are the files");
 await shot("gone");
 
+// While the files are copied as a message is sent, the composer holds still, so what goes is what the captain saw.
+await openChat("?attach=slow");
+await page.locator(".attach-button").click();
+await composerFiles().first().waitFor({ timeout: 5000 });
+await page.locator(".composer textarea").fill("Sent as it stood");
+const sentBefore = await page.locator(".captain-message").count();
+await page.locator(".send-button").click();
+await page.waitForSelector(".send-button:has-text('Sending')", { timeout: 1000 });
+check(await page.locator(".composer textarea").evaluate((area) => area.readOnly), "while a send copies its files, the words are read-only");
+await page.locator(".composer textarea").press("x");
+check(await page.locator(".composer textarea").inputValue() === "Sent as it stood", "and typing changes nothing");
+check(await page.locator(".attach-button").isDisabled(), "Attach waits");
+check(await page.getByRole("button", { name: "Remove Release brief v2.md" }).isDisabled(), "and no file can be taken back");
+check(await page.locator(".send-button").isDisabled(), "and Send is not pressed twice");
+await page.waitForFunction((count) => document.querySelectorAll(".captain-message").length === count + 1, sentBefore, { timeout: 5000 });
+check((await lastCaptain().locator("p").innerText()) === "Sent as it stood" && (await lastCaptain().locator(".file-chip").count()) === 2, "the message goes as it stood when Send was pressed");
+check(await page.locator(".composer textarea").evaluate((area) => !area.readOnly) && await page.locator(".attach-button").isEnabled(), "and the composer is free again");
+
 // Cancelling the picker changes nothing.
 await openChat("?attach=cancel");
 await page.locator(".composer textarea").fill("Words kept");
