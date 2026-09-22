@@ -2555,24 +2555,41 @@ HFLOOR="$TMP_ROOT/launch-floor"; new_home "$HFLOOR"
 fm_test_track_procevent_home "$HFLOOR"
 pe_register "$HFLOOR" lavish floor-src -- \
   "$STORM_SOURCE" "$TMP_ROOT/launch-times" "$HFLOOR" "$ROOT"
-FM_PROCEVENT_OWNER_LEASE_SECONDS=4 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
-  FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1 pe "$HFLOOR" reconcile >/dev/null
-floor_deadline=$((SECONDS + 12))
+# Nothing refreshes the owner lease after this reconcile: the storm's own
+# reconciles run under the runner's marker, which may not. So the lease is the
+# grace window, and the owner guard ends the storm when it lapses. Size it so
+# three launches always fit however slowly this machine turns a launch around,
+# judge each gap against the floor, then end the window as a dead owner does.
+# The floor sits well above a runner's own turnaround, which can approach two
+# seconds on a loaded machine, so a lost floor shows as a short gap.
+FLOOR_SECONDS=3
+FM_PROCEVENT_OWNER_LEASE_SECONDS=60 FM_PROCEVENT_OWNER_CHECK_SECONDS=1 \
+  FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=$FLOOR_SECONDS pe "$HFLOOR" reconcile >/dev/null
+floor_deadline=$((SECONDS + 40))
 while :; do
   floor_count=0
   [ ! -f "$TMP_ROOT/launch-times" ] \
     || floor_count=$(wc -l < "$TMP_ROOT/launch-times" | tr -d ' ')
   [ "$floor_count" -ge 3 ] && break
   [ "$SECONDS" -lt "$floor_deadline" ] \
-    || fail "the orphan-storm fixture did not relaunch its source command"
+    || fail "the orphan-storm fixture did not relaunch its source command (launches: $floor_count)"
   sleep 0.1
 done
-launch_count=$(wc -l < "$TMP_ROOT/launch-times" | tr -d ' ')
-launch_span=$(perl -e '@t=<>; printf "%.3f", $t[-1] - $t[0]' "$TMP_ROOT/launch-times")
-perl -e 'exit($ARGV[0] >= ($ARGV[1] - 1) * 0.8 ? 0 : 1)' "$launch_span" "$launch_count" \
-  || fail "an orphaned source launched $launch_count times in only ${launch_span}s"
-[ "$launch_count" -le 6 ] \
-  || fail "an orphaned source stormed $launch_count launches during its owner-dead grace window"
+perl -e '$f=shift; @t=<>; for (1..$#t) { exit 1 if $t[$_] - $t[$_-1] < $f * 0.9 } exit 0' "$FLOOR_SECONDS" "$TMP_ROOT/launch-times" \
+  || fail "an orphaned source relaunched inside its launch floor: $(tr '\n' ' ' < "$TMP_ROOT/launch-times")"
+# The owner has been gone since boot: the guard must end the storm.
+printf '0\n' > "$HFLOOR/state/procevent/.owner-lease"
+floor_deadline=$((SECONDS + 15))
+until [ ! -e "$FM_PROCEVENT_CLAIM_ROOT/floor-src.claim" ] \
+  && launch_count=$(wc -l < "$TMP_ROOT/launch-times" | tr -d ' ') \
+  && sleep 2 && [ ! -e "$FM_PROCEVENT_CLAIM_ROOT/floor-src.claim" ] \
+  && [ "$(wc -l < "$TMP_ROOT/launch-times" | tr -d ' ')" = "$launch_count" ]; do
+  [ "$SECONDS" -lt "$floor_deadline" ] \
+    || fail "an orphaned source kept launching after its owner lease lapsed ($(wc -l < "$TMP_ROOT/launch-times" | tr -d ' ') launches)"
+  sleep 0.1
+done
+perl -e '$f=shift; @t=<>; for (1..$#t) { exit 1 if $t[$_] - $t[$_-1] < $f * 0.9 } exit 0' "$FLOOR_SECONDS" "$TMP_ROOT/launch-times" \
+  || fail "an orphaned source relaunched inside its launch floor: $(tr '\n' ' ' < "$TMP_ROOT/launch-times")"
 pass "an orphaned source command obeys the launch floor during its grace window"
 
 HPACE="$TMP_ROOT/registration-pacing"; new_home "$HPACE"

@@ -101,8 +101,14 @@ test_session_start_hook_runs_from_the_home() {
   local cmd out left
   cmd=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOME_DIR/.claude/settings.json") \
     || fail "could not read the session-start hook"
+  # The harness runs the hook as its own child, the way Claude Code does, and
+  # stays alive above it. Running the hook as the harness process itself is not
+  # the same: the command ends in `exec`, which replaces that process, so the
+  # hook's ancestry holds no harness at all and the lock is correctly refused.
+  # shellcheck disable=SC2016 # $1, $2 and $$ expand inside the harness shell.
   out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' \
-    | in_home "$HARNESS_BIN" -c "$cmd" 2>&1) \
+    | in_home "$HARNESS_BIN" -c 'printf "%s\n" "$$" > "$2"; /bin/bash -c "$1"; status=$?; exit "$status"' \
+      harness "$cmd" "$TMP_ROOT/harness.pid" 2>&1) \
     || fail "the session-start hook failed: $out"
   assert_contains "$out" "SESSION START - $HOME_DIR" "the hook ran session start in the home"
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS" "the digest reached the supervision instructions"
@@ -116,6 +122,10 @@ test_session_start_hook_runs_from_the_home() {
   # that out of the failure turns one CI round into several.
   [ -f "$HOME_DIR/state/.session-start-complete" ] || fail \
     "session start did not complete in the home's state"$'\n'"state: $left"$'\n'"--- lock ---"$'\n'"$(printf '%s\n' "$out" | sed -n '/^LOCK$/,/^$/p;1,40p' | head -45)"$'\n'"--- tail ---"$'\n'"$(printf '%s\n' "$out" | tail -25)"
+  # The lock names this test's own harness, never one inherited from whatever
+  # launched the test: that leak is how this case once passed for the wrong reason.
+  [ "$(sed -n '1p' "$HOME_DIR/state/.lock" 2>/dev/null)" = "$(cat "$TMP_ROOT/harness.pid" 2>/dev/null)" ] \
+    || fail "the session lock names $(sed -n '1p' "$HOME_DIR/state/.lock" 2>/dev/null), not the harness the test started ($(cat "$TMP_ROOT/harness.pid" 2>/dev/null))"
   # A copy outside git has no branch to read; the first mate must not be shown git errors.
   assert_not_contains "$out" "fatal:" "the digest shows no git errors"
   pass "the exact session-start hook command runs the full digest from the home"

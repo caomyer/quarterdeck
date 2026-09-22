@@ -212,18 +212,26 @@ test_new_harness_is_not_disturbed_by_the_old_chain() {
   start_harness "$home"
   new=$HARNESS_PID
   fire_stop "$home"
-  wait_for_watcher_serving "$home" "$new" || fail "successor: the new first mate's Stop deferred to the orphan's claim or never armed"
+  # The new first mate's first Stop runs one whole cycle: its watcher binds to
+  # the new harness, finds the old watcher's close as downtime, and closes at
+  # once to surface it. The binding in the watcher's lock therefore lives only
+  # for that short cycle, and polling for it races the watcher's own exit.
+  # Wait for the hook to finish instead, and read what the cycle left behind.
+  # A hook that deferred to the orphan's claim exits 0 and claims nothing.
+  i=0
+  while [ "$i" -lt 200 ] && [ ! -s "$home/stop-exits" ]; do sleep 0.1; i=$((i + 1)); done
+  [ -s "$home/stop-exits" ] || fail "successor: the new first mate's Stop never finished"
+  assert_equals 2 "$(sed -n '1p' "$home/stop-exits" 2>/dev/null)" \
+    "successor: the new first mate's Stop deferred to the orphan's claim, or was not woken for the recovered downtime"
   wait_all_gone 100 "$old_watcher" "$old_arm" "$old_hook" \
     || fail "successor: the old chain outlived its harness (watcher=$old_watcher arm=$old_arm hook=$old_hook)"
   assert_grep "session_pid=$new" "$home/state/.claude-autoarm-epoch" \
     "successor: the new first mate's claim does not name its own session"
+  grep -v "watcher_pid=$old_watcher	" "$home/state/.watch-cycle-exits.log" 2>/dev/null | grep -q 'reason=actionable-check' \
+    || fail "successor: no watcher of the new first mate's own ran a cycle: $(cat "$home/state/.watch-cycle-exits.log" 2>/dev/null)"
 
-  # The old watcher's close is watcher downtime, which the new first mate's
-  # first cycle surfaces for recovery. Handle it as the new session would, then
-  # let its next Stop arm the steady cycle.
-  i=0
-  while [ "$i" -lt 100 ] && [ ! -s "$home/stop-exits" ]; do sleep 0.1; i=$((i + 1)); done
-  assert_equals 2 "$(sed -n '1p' "$home/stop-exits" 2>/dev/null)" "successor: the new first mate was not woken for the recovered downtime"
+  # Handle the recovered downtime as the new session would, then let its next
+  # Stop arm the steady cycle.
   ack=$(FM_HOME="$home" "$home/bin/fm-wake-drain.sh" 2>&1 >/dev/null \
     | sed -n 's/^WAKE_ACK_REQUIRED:.*\(--ack-through [0-9][0-9]* --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p')
   [ -n "$ack" ] || fail "successor: the recovery wake offered no acknowledgement"
