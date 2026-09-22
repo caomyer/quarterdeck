@@ -1167,13 +1167,15 @@ fn ui_message(text: &str, files: &[crate::attach::Attached]) -> String {
     String::from_utf8(output.stdout).expect("the message is text")
 }
 
-/// A file the captain picks: a name with spaces, an apostrophe and characters
-/// beyond ASCII, holding a word the first mate can only know by reading it. The
-/// original is removed once copied, so only the copy in the home can answer.
-fn picked_file(home: &Path, dir: &Path, name: &str, word: &str) -> crate::attach::Attached {
+/// A file the captain picks and sends: a name with spaces, an apostrophe and
+/// characters beyond ASCII, holding a word the first mate can only know by
+/// reading it. It is checked when picked and copied into the home when sent, as
+/// the composer does; the original is then removed, so only the copy can answer.
+fn sent_file(home: &Path, dir: &Path, name: &str, word: &str) -> crate::attach::Attached {
     let source = dir.join(name);
     std::fs::write(&source, format!("Captain's attachment for the host test.\nThe code word is {word}.\n")).expect("write the file");
-    let file = crate::attach::stage(home, &source).expect("attach the file");
+    crate::attach::check(&source).expect("pick the file");
+    let file = crate::attach::copy_all(home, std::slice::from_ref(&source)).expect("attach the file").remove(0);
     std::fs::remove_file(&source).expect("remove the original");
     file
 }
@@ -1240,7 +1242,7 @@ async fn attach_e2e_live_scratch_home() {
     if running {
         recorder.mark("2", "send a message with an attached file; the reply names the word inside it");
         let word = format!("LANTERN-{}", run % 100_000);
-        let file = picked_file(&home, &picked, "captain's notes 日本 résumé.txt", &word);
+        let file = sent_file(&home, &picked, "captain's notes 日本 résumé.txt", &word);
         let text = ui_message(&format!("{GUARD} Read the attached file and reply with only the code word it gives."), std::slice::from_ref(&file));
         let from = events.now();
         let sent = send(&host, text.clone()).await;
@@ -1261,7 +1263,7 @@ async fn attach_e2e_live_scratch_home() {
     if running {
         recorder.mark("3", "restart while the first mate works on an attached file; it is re-sent and read");
         let word = format!("HARBOUR-{}", run % 100_000);
-        let file = picked_file(&home, &picked, "second file with spaces.md", &word);
+        let file = sent_file(&home, &picked, "second file with spaces.md", &word);
         let text = ui_message(
             &format!("{GUARD} First count from 1 to 40, one number per line. Then read the attached file and end your reply with the code word it gives."),
             std::slice::from_ref(&file),

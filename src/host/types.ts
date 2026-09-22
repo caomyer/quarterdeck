@@ -1,4 +1,4 @@
-import type { AttachResult } from "../attachments";
+import type { CopyResult, PickResult } from "../attachments";
 
 export type BearingsTask = {
   id: string;
@@ -320,10 +320,15 @@ export interface HostAdapter {
   hostRestart(): Promise<void>;
   send(text: string): Promise<string>;
   /**
-   * Asks the captain for files and copies each into the chosen home, for a message to name. `null` when they cancel;
-   * a file that cannot be attached comes back in `refused`, with why.
+   * Asks the captain for files and checks each can be attached, copying nothing. `null` when they cancel; a file that
+   * cannot be attached comes back in `refused`, with why.
    */
-  attachFiles(): Promise<AttachResult | null>;
+  pickFiles(): Promise<PickResult | null>;
+  /**
+   * Copies picked files into the chosen home as the message naming them is sent. All or nothing: if one cannot go,
+   * none is copied and `refused` says why.
+   */
+  copyFiles(sources: string[]): Promise<CopyResult>;
   cancelTurn(): Promise<void>;
   getState(): Promise<HostStateSnapshot>;
   paneCapture(taskId: string): Promise<PaneCapture>;

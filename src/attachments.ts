@@ -2,18 +2,22 @@
  * Files the captain attaches to a message, and how a message carries them.
  *
  * A message is words and nothing else: the host's durable outbox, the re-send after a restart and a resumed
- * session's history all carry text. So the host copies each attached file into the home when it is picked
+ * session's history all carry text. So the host copies each attached file into the home when the message is sent
  * (`src-tauri/src/attach.rs`), and the message ends with a block naming each copy's path for the first mate to
  * read. This module is the one place that writes that block and the one place that reads it back, so a message
  * shows its files the same way live, after a relaunch, and in a resumed session's history.
  */
 
+/** A file the captain picked for the message being written: checked, and not copied until the message is sent. */
+export type PickedFile = { name: string; source: string; bytes: number };
 /** A file copied into the home: `path` is the copy, `source` where the captain picked it from. */
 export type Attachment = { name: string; path: string; source: string; bytes: number };
 /** A file that could not be attached, and why, in words for the captain. */
 export type AttachRefusal = { source: string; problem: string };
-/** What attaching did: `null` from the adapter instead when the captain cancelled the picker. */
-export type AttachResult = { attached: Attachment[]; refused: AttachRefusal[] };
+/** What picking found: `null` from the adapter instead when the captain cancelled the picker. */
+export type PickResult = { picked: PickedFile[]; refused: AttachRefusal[] };
+/** What copying a message's files did: every file in `attached`, or none there and `refused` saying why. */
+export type CopyResult = { attached: Attachment[]; refused: AttachRefusal[] };
 /** A file as a sent message names it: what can be read back from the words alone. */
 export type AttachedFile = { name: string; path: string; size: string | null };
 

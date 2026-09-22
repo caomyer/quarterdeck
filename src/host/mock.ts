@@ -1,6 +1,6 @@
 import bearingsFixture from "../fixtures/bearings-snapshot.json";
 import fleetFixture from "../fixtures/fleet-snapshot.json";
-import type { AttachResult } from "../attachments";
+import type { CopyResult, PickResult } from "../attachments";
 import recordedStream from "./mock-event-stream.json";
 import { artifactPath } from "./types";
 import type {
@@ -748,26 +748,44 @@ export class MockHostAdapter implements HostAdapter {
     return id;
   }
 
+  /** Sizes of the files the mock's picker offers, by where they are. */
+  private pickable = new Map<string, number>();
+
   /**
-   * Stands in for the picker and the copy into the home: a brief and a screenshot, named with a space and with
-   * characters beyond ASCII. `?attach=cancel`: the captain cancels the picker. `?attach=refused`: of three files, one
-   * has been removed since and one is over the limit.
+   * Stands in for the picker: a brief and a screenshot, named with a space and with characters beyond ASCII.
+   * `?attach=cancel`: the captain cancels the picker. `?attach=refused`: of three files, one has been removed since
+   * and one is over the limit.
    */
-  async attachFiles(): Promise<AttachResult | null> {
+  async pickFiles(): Promise<PickResult | null> {
     const asked = reviewValue("attach");
     if (asked === "cancel") return null;
-    const folder = `${this.snapshot.fleet.fm_home}/data/.attachments/${Date.now()}-${++this.sequence}`;
-    const copy = (name: string, bytes: number) => ({ name, path: `${folder}/${name}`, source: `/Users/captain/Desktop/${name}`, bytes });
+    const pick = (name: string, bytes: number) => {
+      const source = `/Users/captain/Desktop/${name}`;
+      this.pickable.set(source, bytes);
+      return { name, source, bytes };
+    };
     if (asked === "refused") {
       return {
-        attached: [copy("crew notes.md", 5_120)],
+        picked: [pick("crew notes.md", 5_120)],
         refused: [
           { source: "/Users/captain/Desktop/old plan.pdf", problem: "old plan.pdf is no longer there." },
           { source: "/Users/captain/Movies/demo.mov", problem: "demo.mov is 2.4 GB, and files over 100 MB can't be attached. Tell the first mate where it is instead." },
         ],
       };
     }
-    return { attached: [copy("Release brief v2.md", 18_432), copy("Écran 日本 2026-09-22.png", 1_540_000)], refused: [] };
+    return { picked: [pick("Release brief v2.md", 18_432), pick("Écran 日本 2026-09-22.png", 1_540_000)], refused: [] };
+  }
+
+  /** Stands in for the copy into the home as a message is sent. `?attach=gone`: the brief was removed after it was picked. */
+  async copyFiles(sources: string[]): Promise<CopyResult> {
+    const name = (source: string) => source.split("/").pop() ?? source;
+    const gone = sources.filter((source) => !this.pickable.has(source) || (reviewValue("attach") === "gone" && name(source) === "Release brief v2.md"));
+    if (gone.length > 0) return { attached: [], refused: gone.map((source) => ({ source, problem: `${name(source)} is no longer there.` })) };
+    const attached = sources.map((source) => {
+      const folder = `${this.snapshot.fleet.fm_home}/data/.attachments/${Date.now()}-${++this.sequence}`;
+      return { name: name(source), path: `${folder}/${name(source)}`, source, bytes: this.pickable.get(source) ?? 0 };
+    });
+    return { attached, refused: [] };
   }
 
   /** Hands a message to the first mate: from here it's part of the session's conversation. */

@@ -3,11 +3,12 @@
 //! A message stays words: the durable outbox, the re-send after a restart and a
 //! resumed session's history all carry text and nothing else. So an attached
 //! file is copied into the home, under `data/.attachments/`, and the message
-//! names the copy's path for the first mate to read. The copy is taken when the
-//! file is picked, so what goes is what the captain chose even if the original
-//! moves or changes before the message is sent, and it is still there when a
-//! message is re-sent after a restart. The first mate works in the home, so it
-//! reads the copy without asking to reach outside it.
+//! names the copy's path for the first mate to read. Picking a file only checks
+//! it: the copy is taken when the message is sent, into the home it is sent to,
+//! so a file picked and then taken back leaves nothing behind, and what goes is
+//! the file as it is at that moment. The copy is still there when a message is
+//! re-sent after a restart, even if the original has moved. The first mate works
+//! in the home, so it reads the copy without asking to reach outside it.
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,14 @@ use tauri_plugin_dialog::DialogExt;
 /// home for a file no first mate could read whole anyway; the captain can tell
 /// it where the file is instead.
 pub const ATTACH_LIMIT: u64 = 100 * 1024 * 1024;
+
+/// A file the captain picked, checked and not yet copied.
+#[derive(Debug, PartialEq)]
+pub struct Picked {
+    pub name: String,
+    pub source: PathBuf,
+    pub bytes: u64,
+}
 
 /// One attached file: its copy in the home, and where it came from.
 #[derive(Debug, PartialEq)]
@@ -63,8 +72,9 @@ fn fresh_folder(home: &Path) -> Result<PathBuf, String> {
     Err(format!("could not find a free folder in {}", root.display()))
 }
 
-/// Copies one file into the home. The error is a sentence for the captain.
-pub fn stage(home: &Path, source: &Path) -> Result<Attached, String> {
+/// Checks that a file can be attached, without copying it. The error is a
+/// sentence for the captain.
+pub fn check(source: &Path) -> Result<Picked, String> {
     let shown = source.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| source.display().to_string());
     let meta = match std::fs::metadata(source) {
         Ok(meta) => meta,
@@ -84,13 +94,19 @@ pub fn stage(home: &Path, source: &Path) -> Result<Attached, String> {
             megabytes(ATTACH_LIMIT)
         ));
     }
+    Ok(Picked { name: safe_name(source), source: source.to_path_buf(), bytes: meta.len() })
+}
+
+/// Copies one file into the home. The error is a sentence for the captain.
+pub fn stage(home: &Path, source: &Path) -> Result<Attached, String> {
+    let picked = check(source)?;
     let folder = fresh_folder(home)?;
-    let name = safe_name(source);
-    let copy = folder.join(&name);
+    let copy = folder.join(&picked.name);
     match std::fs::copy(source, &copy) {
-        Ok(bytes) => Ok(Attached { name, path: copy, source: source.to_path_buf(), bytes }),
+        Ok(bytes) => Ok(Attached { name: picked.name, path: copy, source: picked.source, bytes }),
         Err(e) => {
             let _ = std::fs::remove_dir_all(&folder);
+            let shown = source.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| source.display().to_string());
             Err(match e.kind() {
                 std::io::ErrorKind::NotFound => format!("{shown} is no longer there."),
                 _ => format!("{shown} could not be copied into the home: {e}."),
@@ -99,36 +115,79 @@ pub fn stage(home: &Path, source: &Path) -> Result<Attached, String> {
     }
 }
 
-/// Stages every file, keeping the ones that went and saying why the others did not.
-pub fn stage_all(home: &Path, sources: &[PathBuf]) -> Value {
+/// Checks every picked file, keeping the ones that can go and saying why the others cannot.
+pub fn check_all(sources: &[PathBuf]) -> Value {
+    let mut picked = Vec::new();
+    let mut refused = Vec::new();
+    for source in sources {
+        match check(source) {
+            Ok(file) => picked.push(json!({"name": file.name, "source": file.source.to_string_lossy(), "bytes": file.bytes})),
+            Err(problem) => refused.push(json!({"source": source.to_string_lossy(), "problem": problem})),
+        }
+    }
+    json!({"picked": picked, "refused": refused})
+}
+
+/// Copies every file a message carries into the home, or none of them: if one
+/// cannot go, the copies this call made are removed and the refusals come back,
+/// so the message is not sent missing a file the captain meant it to carry.
+pub fn copy_all(home: &Path, sources: &[PathBuf]) -> Result<Vec<Attached>, Vec<(PathBuf, String)>> {
     let mut attached = Vec::new();
     let mut refused = Vec::new();
     for source in sources {
         match stage(home, source) {
-            Ok(file) => attached.push(json!({
-                "name": file.name,
-                "path": file.path.to_string_lossy(),
-                "source": file.source.to_string_lossy(),
-                "bytes": file.bytes,
-            })),
-            Err(problem) => refused.push(json!({"source": source.to_string_lossy(), "problem": problem})),
+            Ok(file) => attached.push(file),
+            Err(problem) => refused.push((source.clone(), problem)),
         }
     }
-    json!({"attached": attached, "refused": refused})
+    if refused.is_empty() {
+        return Ok(attached);
+    }
+    for file in &attached {
+        if let Some(folder) = file.path.parent() {
+            let _ = std::fs::remove_dir_all(folder);
+        }
+    }
+    Err(refused)
 }
 
-/// Asks the captain for files and copies them into the home messages go to.
-/// `null` when they cancel.
+/// Asks the captain for files and checks each can be attached. Nothing is
+/// copied until the message is sent. `null` when they cancel.
 #[tauri::command]
 pub async fn attach_pick(app: AppHandle, window: tauri::WebviewWindow) -> Result<Value, String> {
-    let home = crate::settings::saved_home(&app).ok_or_else(|| "Choose a firstmate folder before attaching files.".to_string())?;
     let Some(picked) = app.dialog().file().set_title("Attach files for the first mate").set_parent(&window).blocking_pick_files() else {
         return Ok(Value::Null);
     };
     let sources: Vec<PathBuf> = picked.into_iter().filter_map(|file| file.into_path().ok()).collect();
-    tauri::async_runtime::spawn_blocking(move || stage_all(&home, &sources))
+    tauri::async_runtime::spawn_blocking(move || check_all(&sources))
         .await
-        .map_err(|e| format!("the files could not be attached: {e}"))
+        .map_err(|e| format!("the files could not be checked: {e}"))
+}
+
+/// Copies a message's files into the home it is being sent to, as it is sent.
+/// Either every file is copied, or none is and `refused` says why.
+#[tauri::command]
+pub async fn attach_copy(app: AppHandle, sources: Vec<PathBuf>) -> Result<Value, String> {
+    let home = crate::settings::saved_home(&app).ok_or_else(|| "Choose a firstmate folder before attaching files.".to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(move || copy_all(&home, &sources))
+        .await
+        .map_err(|e| format!("the files could not be attached: {e}"))?;
+    Ok(match result {
+        Ok(attached) => json!({
+            "attached": attached
+                .iter()
+                .map(|file| json!({"name": file.name, "path": file.path.to_string_lossy(), "source": file.source.to_string_lossy(), "bytes": file.bytes}))
+                .collect::<Vec<_>>(),
+            "refused": [],
+        }),
+        Err(refused) => json!({
+            "attached": [],
+            "refused": refused
+                .iter()
+                .map(|(source, problem)| json!({"source": source.to_string_lossy(), "problem": problem}))
+                .collect::<Vec<_>>(),
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -205,13 +264,41 @@ mod tests {
         assert_eq!(stage(&dir.join("home"), &source).unwrap().bytes, ATTACH_LIMIT);
     }
 
+    fn folders(home: &Path) -> usize {
+        std::fs::read_dir(home.join("data").join(".attachments")).map(|entries| entries.count()).unwrap_or(0)
+    }
+
     #[test]
-    fn some_files_go_and_the_rest_say_why() {
-        let dir = scratch("mixed");
+    fn picking_checks_the_files_and_copies_nothing() {
+        let dir = scratch("pick");
         std::fs::write(dir.join("ok.txt"), "ok").unwrap();
-        let result = stage_all(&dir.join("home"), &[dir.join("ok.txt"), dir.join("missing.txt")]);
-        assert_eq!(result["attached"].as_array().unwrap().len(), 1);
-        assert_eq!(result["attached"][0]["name"], "ok.txt");
+        let result = check_all(&[dir.join("ok.txt"), dir.join("missing.txt")]);
+        assert_eq!(result["picked"].as_array().unwrap().len(), 1);
+        assert_eq!(result["picked"][0]["name"], "ok.txt");
+        assert_eq!(result["picked"][0]["bytes"], 2);
         assert_eq!(result["refused"][0]["problem"], "missing.txt is no longer there.");
+        assert!(!dir.join("home").join("data").exists(), "picking writes nothing into the home");
+    }
+
+    #[test]
+    fn a_message_copies_one_folder_per_file() {
+        let dir = scratch("copy-all");
+        let home = dir.join("home");
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join("b.txt"), "b").unwrap();
+        let attached = copy_all(&home, &[dir.join("a.txt"), dir.join("b.txt")]).unwrap();
+        assert_eq!(attached.len(), 2);
+        assert_eq!(folders(&home), 2);
+        assert_eq!(std::fs::read_to_string(&attached[1].path).unwrap(), "b");
+    }
+
+    #[test]
+    fn a_file_gone_by_send_time_leaves_no_copy_of_the_others() {
+        let dir = scratch("copy-refused");
+        let home = dir.join("home");
+        std::fs::write(dir.join("ok.txt"), "ok").unwrap();
+        let refused = copy_all(&home, &[dir.join("ok.txt"), dir.join("gone.txt")]).unwrap_err();
+        assert_eq!(refused, vec![(dir.join("gone.txt"), "gone.txt is no longer there.".to_string())]);
+        assert_eq!(folders(&home), 0, "the file that copied fine is removed with the message that did not go");
     }
 }
