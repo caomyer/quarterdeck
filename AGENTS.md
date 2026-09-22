@@ -57,6 +57,8 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Never commit that file, and never let a build write `src-tauri/target` inside the checkout.
   A build cache cannot be moved between checkout paths: Tauri bakes absolute paths into it, so after a move, delete the cache and rebuild.
 - Backend: `cd src-tauri && cargo clippy --all-targets && cargo test`.
+- The look is tokens: palette, type (Instrument Sans and IBM Plex Mono, bundled from `@fontsource`) and surfaces are declared once at the top of `src/styles.css`, light in `:root` and dark in `:root.dark`.
+  Style with the tokens, never a literal colour: `pnpm tones` compares what it sees against them.
 - How every screen reads captain calls (`src/calls.ts`) and how a project's logbook reads closed work (`src/logbook.ts`): `pnpm test`, which needs no server.
   Calls come only from the snapshot's `calls[]`, which `bin/fm-captain-hold.sh` owns; the app answers them through its `answers` intake (`src-tauri/src/calls.rs`) and never closes one itself.
   Closed work beyond the snapshot's few recent rows comes only from `bin/fm-history.sh`, read when a project page opens; the app never parses the backlog or its archive itself.
@@ -124,3 +126,10 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
 - `.github/workflows/engine-windows-herdr-spike.yml` names `windows-latest`.
   It is `workflow_dispatch` only, so nothing starts it but James, and it measures Windows, which neither other lane can answer for.
 - Fork pull requests from outside contributors require approval before any workflow runs.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
