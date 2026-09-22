@@ -170,7 +170,7 @@ check(await callPage.locator(".artifact-flag").count() === 0, "a clean page carr
 // The list groups by whose move it is, and files away pages whose task landed.
 const groups = page.locator(".artifact-group");
 check(await groups.count() === 2, "only the groups with pages in them show");
-check((await groups.nth(0).locator("h2").innerText()) === "Needs you", "pages waiting on the captain come first");
+check((await groups.nth(0).locator("h2").innerText()) === "Open for review", "pages waiting on the captain come first");
 check(await groups.nth(0).locator(".artifact-row").count() === 3, "every unread page needs the captain");
 const settled = groups.nth(1);
 check((await settled.locator("h2").innerText()) === "Settled", "a page whose task landed is settled");

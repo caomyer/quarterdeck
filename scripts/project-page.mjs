@@ -52,10 +52,10 @@ check((await page.locator("[data-testid='stat-waiting'] strong").innerText()) ==
 const needs = page.locator("[data-testid='project-needs'] .task-row");
 check(await needs.count() === 3, "Needs you lists resonance's three open calls");
 check(await page.locator("[data-testid='project-needs']").getByText("keep merging", { exact: false }).count() === 0, "another project's call is not listed");
-check(await page.locator(".dashboard-section", { hasText: "Underway" }).locator(".task-row").count() === 1, "a finished scout waiting to be read is not underway");
+check(await page.locator("[data-testid='project-underway'] .task-row").count() === 1, "a finished scout waiting to be read is not underway");
 const queue = page.locator("[data-testid='project-queue'] .task-row");
 check(await queue.count() === 2, "Up next lists the project's two queued rows");
-check((await queue.nth(1).innerText()).includes("Waiting"), "a queued row held on something says so");
+check(/\bwaiting\b/i.test(await queue.nth(1).locator(".task-chip").innerText()), "a queued row held on something says so");
 check(!(await page.locator("[data-testid='project-page']").innerText()).includes("Resonance:"), "titles drop the project name the page already says");
 await shot(page, "project");
 

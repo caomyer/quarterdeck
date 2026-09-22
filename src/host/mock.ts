@@ -897,7 +897,9 @@ export class MockHostAdapter implements HostAdapter {
     for (const item of events) {
       await new Promise((resolve) => this.later(Math.min(400, Math.round((item.t_ms - previous) / 50)), () => resolve(null)));
       previous = item.t_ms;
-      const raw = item.payload;
+      // A recording names the home it ran in on another machine. Played here, the host is running in this mock's
+      // home, and a state naming any other would leave the app refusing to send, as it must for a real mismatch.
+      const raw = item.type === "state" && typeof item.payload.home === "string" ? { ...item.payload, home: this.snapshot.fleet.fm_home } : item.payload;
       if (item.type === "outbox" && raw.state === "queued" && !raw.text && !queued.has(String(raw.id))) {
         queued.add(String(raw.id));
         if (!this.replaySent.has(String(raw.id))) await new Promise<string>((resolve) => { this.awaitingSend = resolve; });

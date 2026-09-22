@@ -1,5 +1,4 @@
 import {
-  Anchor,
   ArrowLeft,
   Check,
   ChevronDown,
@@ -10,18 +9,14 @@ import {
   CirclePause,
   CircleQuestionMark,
   CircleSlash,
-  BookOpen,
   CircleX,
   Crop,
   Clock3,
   ExternalLink,
   FileText,
-  FolderGit2,
   FolderOpen,
-  Gauge,
   GitBranch,
   GitMerge,
-  Inbox,
   ListPlus,
   Menu,
   MessageSquarePlus,
@@ -31,14 +26,11 @@ import {
   PanelsTopLeft,
   Radio,
   RefreshCw,
-  Reply,
   Search,
-  Send,
   Settings,
   ShieldQuestion,
   ShipWheel,
   Smartphone,
-  Sparkles,
   Trash2,
   Sun,
   TerminalSquare,
@@ -50,8 +42,8 @@ import remarkGfm from "remark-gfm";
 
 import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
-import { callProject, filterLog, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "./calls";
+import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
+import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
@@ -246,14 +238,17 @@ export function App() {
     : view === "artifacts" ? "Artifacts"
     : view === "artifact" ? shownRevision?.title ?? "Artifact"
     : selectedProject ?? "Project";
-  const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture
-    : view === "chat" ? "The first mate"
-    : view === "bearings" ? (bearings ? `As of ${formatTime(bearings.generated)}` : "")
-    : view === "artifacts" ? `${artifacts.length} page${artifacts.length === 1 ? "" : "s"} shared with you`
-    : view === "artifact" ? (shownArtifact && shownRevision ? `${artifactOwner(shownArtifact, fleet?.tasks ?? [])} · Rev ${shownRevision.rev} of ${shownArtifact.revisions.length}` : "")
-    : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
   // Everything waiting on the captain: open calls, and finished reports nobody has closed.
   const openCallCount = waiting.length + readyReports.length;
+  const shownCalls = shownArtifact ? callsArguedBy(calls, shownArtifact).filter(isOpen) : [];
+  const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture
+    : view === "chat" ? "You and the first mate"
+    : view === "bearings" ? (bearings ? `Everything the fleet is doing${openCallCount ? `, and the ${countWord(openCallCount, "thing")} that ${openCallCount === 1 ? "wants" : "want"} your word` : ""}` : "")
+    : view === "artifacts" ? "What the crew wrote for you to read"
+    : view === "artifact" ? (shownArtifact && shownRevision ? `${artifactOwner(shownArtifact, fleet?.tasks ?? [])} · Rev ${shownRevision.rev} of ${shownArtifact.revisions.length}${shownCalls.length ? " · a decision rides on this" : ""}` : "")
+    : capitalize(`${countWord(projects.length, "project")} under command`);
+  // When the snapshot on screen was read, for a captain who wants to know how fresh Bearings is.
+  const subtitleTitle = view === "bearings" && bearings ? `As of ${formatTime(bearings.generated)}` : undefined;
   // A home nothing has happened in yet: the app built it on this launch, or the
   // captain pointed at an empty one. "Welcome back" and an offer to catch them
   // up read strangely to someone who has not been anywhere yet.
@@ -407,24 +402,26 @@ export function App() {
       <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`}>
         <div className="window-drag" aria-hidden="true"><span /><span /><span /></div>
         <div className="brand-row">
-          <div className="brand-mark"><Anchor size={19} /></div>
-          <div><strong>firstmate</strong><span>desktop</span></div>
+          <div className="brand-mark">Q</div>
+          <div><strong>Quarterdeck</strong><span>firstmate · desktop</span></div>
           <button className="icon-button mobile-close" onClick={() => setMobileNavOpen(false)} title="Close navigation"><X size={18} /></button>
         </div>
         <nav className="primary-nav" aria-label="Main navigation">
-          <NavButton active={view === "bearings"} icon={<Gauge size={18} />} label="Bearings" count={openCallCount || undefined} onClick={() => navigate("bearings")} />
-          <NavButton active={view === "chat"} icon={<MessageSquareText size={18} />} label="Chat" detail="First Mate" count={approvalCount || undefined} countTitle={approvalCount ? `The first mate is waiting for your OK on ${approvalCount === 1 ? "one thing" : `${approvalCount} things`}` : undefined} onClick={() => navigate("chat")} />
-          <NavButton active={view === "projects" || view === "project"} icon={<FolderGit2 size={18} />} label="Projects" count={projects.length} onClick={() => navigate("projects")} />
-          <NavButton active={view === "artifacts" || view === "artifact"} icon={<PanelsTopLeft size={18} />} label="Artifacts" onClick={() => navigate("artifacts")} />
+          <NavButton active={view === "bearings"} letter="B" label="Bearings" count={openCallCount || undefined} onClick={() => navigate("bearings")} />
+          <NavButton active={view === "chat"} letter="C" label="Chat" count={approvalCount || undefined} countTitle={approvalCount ? `The first mate is waiting for your OK on ${approvalCount === 1 ? "one thing" : `${approvalCount} things`}` : undefined} status={approvalCount ? undefined : <i className={`nav-status state-${runtime.state} ${degraded ? "degraded" : ""}`} title={`First Mate: ${hostLabel}`} />} onClick={() => navigate("chat")} />
+          <NavButton active={view === "projects" || view === "project"} letter="P" label="Projects" count={projects.length} quietCount onClick={() => navigate("projects")} />
+          <NavButton active={view === "artifacts" || view === "artifact"} letter="A" label="Artifacts" onClick={() => navigate("artifacts")} />
         </nav>
-        <div className="sidebar-rule" />
+        {projects.length > 0 && <div className="sidebar-label">Projects</div>}
         <div className="project-shortcuts">
-          {projects.map((project) => (
-            <button key={project.name} className={view === "project" && selectedProject === project.name ? "selected" : ""} onClick={() => openProject(project.name)}>
+          {projects.map((project) => {
+            const waitingHere = waitingIn(project.name).length;
+            const underwayHere = underwayIn(project).length;
+            return <button key={project.name} className={view === "project" && selectedProject === project.name ? "selected" : ""} onClick={() => openProject(project.name)}>
               <span className="project-sigil">{project.name.slice(0, 2).toUpperCase()}</span>
-              <span><strong>{project.name}</strong><small>{waitingIn(project.name).length > 0 && `${waitingIn(project.name).length} waiting · `}{underwayIn(project).length} underway</small></span>
-            </button>
-          ))}
+              <span><strong>{project.name}</strong><small>{waitingHere > 0 && <><em>{waitingHere} waiting</em> · </>}{waitingHere === 0 && underwayHere === 0 ? "idle" : `${underwayHere} underway`}</small></span>
+            </button>;
+          })}
         </div>
         <div className="sidebar-footer">
           <div className="connection"><span className={`live-dot state-${runtime.state} ${degraded ? "degraded" : ""}`} /><span><strong>First Mate</strong><small>{hostLabel}</small></span></div>
@@ -438,11 +435,11 @@ export function App() {
           <button className="icon-button mobile-menu" onClick={() => setMobileNavOpen(true)} title="Open navigation"><Menu size={19} /></button>
           {view === "project" && <button className="icon-button back-button" onClick={() => navigate("projects")} title="Back to projects"><ArrowLeft size={18} /></button>}
           {view === "artifact" && <button className="icon-button back-button" onClick={() => navigate(artifactReturn)} title="Back"><ArrowLeft size={18} /></button>}
-          <div className="page-heading"><h1>{title}</h1><span>{subtitle}</span></div>
+          <div className="page-heading"><h1>{title}</h1><span title={subtitleTitle}>{subtitle}</span></div>
           <div className="top-actions">
-            {view === "bearings" && <button className="ahoy-button" onClick={runAhoy} title="Catch up on what happened since your last message"><Sparkles size={15} /> Ahoy</button>}
-            <button className="icon-button" title="Search"><Search size={18} /></button>
-            <button className="icon-button" onClick={toggleTheme} title={dark ? "Use light theme" : "Use dark theme"}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
+            <button className="icon-button" onClick={toggleTheme} title={dark ? "Use light theme" : "Use dark theme"}>{dark ? <Sun size={17} /> : <Moon size={17} />}</button>
+            <button className="search-button" title="Search"><Search size={15} /> Search</button>
+            <button className="ahoy-button" onClick={runAhoy} title="Catch up on what happened since your last message">Ahoy</button>
           </div>
         </header>
 
@@ -456,12 +453,15 @@ export function App() {
             {bearings && <>
             {ahoyVisible && (
               <section className="ahoy-card">
-                <div className="ahoy-mark"><ShipWheel size={22} /></div>
-                <div><span>Ahoy</span><h2>{nothingYet ? "Welcome aboard." : "Welcome back."}</h2><p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : "The first mate can catch you up and take you through what's waiting."}</p>{nothingYet ? <strong>A new home, nothing waiting</strong> : <strong>{openCallCount} waiting on you · {underway.length} underway</strong>}</div>
-                <div className="ahoy-actions"><button onClick={runAhoy}>Ahoy</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
+                <div>
+                  <span>Ahoy</span>
+                  <h2>{nothingYet ? "Welcome aboard." : `Welcome back. ${openCallCount ? `${capitalize(countWord(openCallCount, "thing"))} ${openCallCount === 1 ? "wants" : "want"} your word.` : "Nothing needs your word."}`}</h2>
+                  <p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : `${openCallCount ? "Everything else is moving. " : ""}The first mate can walk you through what changed since you were last here${openCallCount ? ", then take you through what's waiting" : ""}.`}</p>
+                </div>
+                <div className="ahoy-actions"><button onClick={runAhoy}>{nothingYet ? "Ahoy" : "Catch me up"}</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
               </section>
             )}
-            <DashboardSection title="Captain's Call" icon={<Inbox size={17} />} tone="coral" count={openCallCount}>
+            <DashboardSection title="Captain's call" tone="coral" count={openCallCount} countLabel="waiting on you">
               {waiting.map((call) => {
                 const evidence = evidenceOf(call);
                 const argument = argumentOf(evidence);
@@ -472,6 +472,8 @@ export function App() {
                 return <DecisionCard
                   key={call.id}
                   call={call}
+                  project={callProject(call, records)}
+                  now={now}
                   argument={argument}
                   seenArgument={seen}
                   answered={answered[call.id]}
@@ -492,7 +494,36 @@ export function App() {
               {openCallCount === 0 && <EmptyState label="Nothing needs your action right now." />}
             </DashboardSection>
 
-            {decided.length > 0 && <DashboardSection title="Decided for you" icon={<ShipWheel size={17} />} tone="sea" count={decided.length}>
+            <DashboardSection title="Underway" tone="blue" count={underway.length} countLabel={underway.length === 1 ? "worker" : "workers"}>
+              <div className="task-list">
+                {underway.map((item) => {
+                  const task = fleet?.tasks.find((candidate) => candidate.id === item.id);
+                  const status = taskStatus(item.state);
+                  const started = startedAt(task, records.get(item.id));
+                  return <button className="task-row" key={item.id} onClick={() => task && setActiveTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{item.name}</strong><small>{projectName(item.repo ?? "")} · {item.kind}{started && <> · <span data-testid="underway-for" title={`Started ${formatStart(started)}`}>{sinceLabel(started, now)}</span></>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(item.state)}</span><ChevronRight size={16} /></button>;
+                })}
+              </div>
+              {underway.length === 0 && <EmptyState label="Nothing is underway." />}
+            </DashboardSection>
+
+            <div className="dashboard-pair">
+              <DashboardSection title="Recently landed" tone="green" count={landedRows.length}>
+                <div className="row-list">
+                  {landedRows.map((row) => <LandedRow key={row.id} row={row} onOpenPage={row.page ? () => showArtifact(row.page!) : undefined} onAsk={row.report && !row.page ? () => draftInChat(askAboutReport(row.title)) : undefined} onBasis={row.basis ? () => openEvidence(row.basis!) : undefined} />)}
+                </div>
+                {landedRows.length === 0 && <EmptyState label="Nothing has landed recently." />}
+              </DashboardSection>
+
+              <DashboardSection title="Charted next" tone="muted" count={bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length}>
+                <div className="row-list">
+                  {bearings.gates.map((item) => <CompactRow key={item.id} title={item.title} detail={item.reason} tone="amber" badge="waiting" />)}
+                  {(bearings.unhealthy_endpoints ?? []).map((item) => <CompactRow key={`health-${item.id}`} title={`The first mate's records for ${projectName(fleet?.tasks.find((task) => task.id === item.id)?.project ?? item.id)} don't match.`} detail="Nothing to do on your side." tone="amber" badge="needs repair" />)}
+                </div>
+                {bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length === 0 && <EmptyState label="Nothing is queued." />}
+              </DashboardSection>
+            </div>
+
+            {decided.length > 0 && <DashboardSection title="Decided for you" tone="sea" count={decided.length}>
               <div className="decided-list" data-testid="decided">
                 {decided.map((call) => {
                   const item = decidedItem(call);
@@ -500,35 +531,12 @@ export function App() {
                 })}
               </div>
             </DashboardSection>}
-
-            <DashboardSection title="Recently Landed" icon={<Check size={17} />} tone="green" count={landedRows.length}>
-              {landedRows.map((row) => <LandedRow key={row.id} row={row} onOpenPage={row.page ? () => showArtifact(row.page!) : undefined} onAsk={row.report && !row.page ? () => draftInChat(askAboutReport(row.title)) : undefined} onBasis={row.basis ? () => openEvidence(row.basis!) : undefined} />)}
-              {landedRows.length === 0 && <EmptyState label="Nothing has landed recently." />}
-            </DashboardSection>
-
-            <DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={underway.length}>
-              <div className="task-list">
-                {underway.map((item) => {
-                  const task = fleet?.tasks.find((candidate) => candidate.id === item.id);
-                  const status = taskStatus(item.state);
-                  const started = startedAt(task, records.get(item.id));
-                  return <button className="task-row" key={item.id} onClick={() => task && setActiveTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{item.name}</strong><small>{projectName(item.repo ?? "")} · {item.kind}{started && <> · <span data-testid="underway-for" title={`Started ${formatStart(started)}`}>{sinceLabel(started, now)}</span></>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(item.state)}</span><ChevronRight size={17} /></button>;
-                })}
-              </div>
-              {underway.length === 0 && <EmptyState label="Nothing is underway." />}
-            </DashboardSection>
-
-            <DashboardSection title="Charted Next" icon={<Clock3 size={17} />} tone="amber" count={bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length}>
-              {bearings.gates.map((item) => <CompactRow key={item.id} title={item.title} detail={item.reason} icon={<Clock3 size={15} />} tone="amber" badge="waiting" />)}
-              {(bearings.unhealthy_endpoints ?? []).map((item) => <CompactRow key={`health-${item.id}`} title={`The first mate's records for ${projectName(fleet?.tasks.find((task) => task.id === item.id)?.project ?? item.id)} don't match.`} detail="Nothing to do on your side." icon={<CircleAlert size={15} />} tone="amber" badge="needs repair" />)}
-              {bearings.gates.length + (bearings.unhealthy_endpoints ?? []).length === 0 && <EmptyState label="Nothing is queued." />}
-            </DashboardSection>
             </>}
           </div>
         )}
 
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
-        {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} onOpen={openProject} />}
+        {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
           now={now}
@@ -582,12 +590,13 @@ export function App() {
   );
 }
 
-function NavButton({ active, icon, label, detail, count, countTitle, onClick }: { active: boolean; icon: React.ReactNode; label: string; detail?: string; count?: number; countTitle?: string; onClick: () => void }) {
-  return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span><strong>{label}</strong>{detail && <small>{detail}</small>}</span>{count !== undefined && <em title={countTitle}>{count}</em>}</button>;
+/** A main view in the sidebar. A count that waits on the captain is a gold badge; a plain tally stays quiet. */
+function NavButton({ active, letter, label, count, countTitle, quietCount, status, onClick }: { active: boolean; letter: string; label: string; count?: number; countTitle?: string; quietCount?: boolean; status?: React.ReactNode; onClick: () => void }) {
+  return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}><span className="nav-letter" aria-hidden="true">{letter}</span><strong>{label}</strong>{count !== undefined ? <em className={quietCount ? "quiet" : ""} title={countTitle}>{count}</em> : status}</button>;
 }
 
 function HomeSetup({ problem, choosing, onChoose, onUseApp }: { problem: string | null; choosing: boolean; onChoose: () => void; onUseApp: () => void }) {
-  return <div className="home-setup"><section><div className="brand-mark"><Anchor size={21} /></div><h1>Where does firstmate live on this Mac?</h1><p>The app ships its own first mate and keeps it in the app's folder. It could not set that up this time, so you can point it at a firstmate folder of your own: the one with <code>AGENTS.md</code> and <code>bin</code> inside.</p>{problem && <HomeProblem problem={problem} />}<div className="home-actions"><button className="home-choose" disabled={choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose folder…"}</button><button className="home-revert" disabled={choosing} onClick={onUseApp}>Try the app's own again</button></div></section></div>;
+  return <div className="home-setup"><section><div className="brand-mark">Q</div><h1>Where does firstmate live on this Mac?</h1><p>The app ships its own first mate and keeps it in the app's folder. It could not set that up this time, so you can point it at a firstmate folder of your own: the one with <code>AGENTS.md</code> and <code>bin</code> inside.</p>{problem && <HomeProblem problem={problem} />}<div className="home-actions"><button className="home-choose" disabled={choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose folder…"}</button><button className="home-revert" disabled={choosing} onClick={onUseApp}>Try the app's own again</button></div></section></div>;
 }
 
 /// What the first mate says this machine still needs, in its own order.
@@ -685,18 +694,31 @@ function timeAgo(ms: number) {
   return `${hours} hour${hours === 1 ? "" : "s"} ago`;
 }
 
-function DashboardSection({ title, icon, tone, count, children }: { title: string; icon: React.ReactNode; tone: string; count: number; children: React.ReactNode }) {
-  return <section className="dashboard-section"><div className="section-heading"><span className={`section-icon ${tone}`}>{icon}</span><h2>{title}</h2><span className="section-count">{count}</span></div>{children}</section>;
+/** A titled part of a page. The dot carries the section's tone; the count reads on in the words after it. */
+function DashboardSection({ title, tone, count, countLabel, children }: { title: string; tone: string; count: number; countLabel?: string; children: React.ReactNode }) {
+  return <section className="dashboard-section"><div className="section-heading"><span className={`section-dot ${tone}`} aria-hidden="true" /><h2>{title}</h2><span className="section-count">{count}</span>{countLabel && <span className="section-count-label">{countLabel}</span>}</div>{children}</section>;
+}
+
+const COUNT_WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+/** A count in words, the way a person says it: "two things", "12 projects". */
+function countWord(count: number, noun: string) {
+  return `${COUNT_WORDS[count] ?? count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function capitalize(text: string) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function EmptyState({ label }: { label: string }) {
   return <div className="empty-state"><CircleDot size={16} /><strong>{label}</strong></div>;
 }
 
-function CompactRow({ title, detail, icon, tone = "green", badge }: { title: string; detail: string; icon: React.ReactNode; tone?: Tone; badge?: string }) {
+/** A quiet row: a dot in its tone, what it is, and a word on the right saying where it stands. */
+function CompactRow({ title, detail, tone = "green", badge }: { title: string; detail: string; tone?: Tone; badge?: string }) {
   // firstmate's snapshots write "-" for an empty field; show nothing rather than a dash.
   const shown = detail.trim() === "-" ? "" : detail.trim();
-  return <div className="compact-row"><span className={`tone-${tone}`}>{icon}</span><div><strong>{title}</strong>{shown && <small>{shown}</small>}</div>{badge && <em>{badge}</em>}</div>;
+  return <div className="compact-row"><span className={`row-dot tone-${tone}`} aria-hidden="true" /><div><strong>{title}</strong>{shown && <small>{shown}</small>}</div>{badge && <em className={`tone-${tone}`}>{badge}</em>}</div>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -788,15 +810,14 @@ function ExternalAnchor({ href, children, className }: { href: string; children:
 /** A finished scout's report, offered where the captain looks first. */
 function ReportCard({ title, project, id, finished, page, report, onOpen, onAsk, onDetails }: { title: string; project: string; id: string; finished: string; page?: Artifact; report: string | null; onOpen?: () => void; onAsk: () => void; onDetails: () => void }) {
   return <article className="decision-card report-card" data-testid="report-ready" data-task-id={id}>
-    <div className="decision-meta"><span>Report ready</span><small>{project}</small></div>
-    <h3>{title}</h3>
-    {finished && <p>{finished}</p>}
-    <div className="decision-actions">
-      <span title={report ?? undefined}>{page ? `The scout presented it ${formatWhen(page.latest.presented_at)}` : "The scout wrote it up without a page"}</span>
-      <div className="report-actions">
-        <button className="quiet" onClick={onDetails}>Task details</button>
-        {onOpen ? <button onClick={onOpen}><PanelsTopLeft size={15} /> Read the report</button> : <button onClick={onAsk}><MessageSquareText size={15} /> Ask the first mate for it</button>}
-      </div>
+    <div className="decision-body">
+      <div className="decision-meta"><span>report ready</span><span>{project}</span><span title={report ?? undefined}>{page ? `presented ${formatWhen(page.latest.presented_at)}` : "written up without a page"}</span></div>
+      <h3>{title}</h3>
+      {finished && <p>{finished}</p>}
+    </div>
+    <div className="report-actions">
+      {onOpen ? <button onClick={onOpen}>Read the report</button> : <button onClick={onAsk}>Ask the first mate for it</button>}
+      <button className="quiet" onClick={onDetails}>Task details</button>
     </div>
   </article>;
 }
@@ -827,7 +848,7 @@ function decidedItem(call: Call): DecidedItem {
 /** One call the first mate made for the captain: what, why, and a way to disagree. */
 function DecidedRow({ item, taskTitle, onTask, onPushBack, onDismiss }: { item: DecidedItem; taskTitle: string | null; onTask?: () => void; onPushBack: () => void; onDismiss: () => void }) {
   return <article className="decided-row" data-decided-id={item.id}>
-    <span className="decided-icon">{(item.kind && DECIDED_ICONS[item.kind]) || <ShipWheel size={15} />}</span>
+    <span className="decided-icon">{(item.kind && DECIDED_ICONS[item.kind]) || <ShipWheel size={14} />}</span>
     <div className="decided-copy">
       <strong>{item.what}</strong>
       {item.why && <p>{item.why}</p>}
@@ -838,8 +859,8 @@ function DecidedRow({ item, taskTitle, onTask, onPushBack, onDismiss }: { item: 
       </small>
     </div>
     <div className="decided-actions">
-      <button onClick={onPushBack} title="Tell the first mate you see it differently"><Reply size={14} /> Push back</button>
-      <button className="icon-button" onClick={onDismiss} title="Dismiss"><X size={15} /></button>
+      <button onClick={onPushBack} title="Tell the first mate you see it differently">Push back</button>
+      <button className="quiet" onClick={onDismiss} title="Dismiss">Dismiss</button>
     </div>
   </article>;
 }
@@ -929,11 +950,10 @@ const LANDED_VERBS: Record<string, string> = { merged: "Merged", reported: "Repo
 function LandedRow({ row, onOpenPage, onAsk, onBasis }: { row: LandedItem; onOpenPage?: () => void; onAsk?: () => void; onBasis?: () => void }) {
   const when = row.date ? formatDay(row.date) : null;
   const meta = row.kind === "answered"
-    ? ["Your call", when && `${row.verb ?? "closed"} ${when}`, row.project].filter(Boolean).join(" · ")
-    : [row.verb && when ? `${LANDED_VERBS[row.verb] ?? row.verb} ${when}` : when, row.project].filter(Boolean).join(" · ");
+    ? [row.project, "Your call", when && `${row.verb ?? "closed"} ${when}`].filter(Boolean).join(" · ")
+    : [row.project, row.verb && when ? `${LANDED_VERBS[row.verb] ?? row.verb} ${when}` : when].filter(Boolean).join(" · ");
   const basis = row.basis;
   return <div className="compact-row landed-row" data-testid="landed-row" data-landed-kind={row.kind} data-id={row.id}>
-    <span className="tone-green">{row.kind === "answered" ? <Inbox size={15} /> : <Check size={15} />}</span>
     <div>
       <strong>{row.title}</strong>
       {row.kind === "answered" && <small className="landed-answer">You chose <em>{row.answer}</em>{basis && <> · based on {basis.kind === "url"
@@ -942,9 +962,9 @@ function LandedRow({ row, onOpenPage, onAsk, onBasis }: { row: LandedItem; onOpe
       {meta && <small>{meta}</small>}
     </div>
     <div className="landed-links">
-      {row.pr && <ExternalAnchor className="landed-link" href={row.pr}><GitMerge size={13} /> {linkLabel(row.pr)}</ExternalAnchor>}
-      {onOpenPage && <button className="landed-link" onClick={onOpenPage}><PanelsTopLeft size={13} /> The page</button>}
-      {onAsk && <button className="landed-link" onClick={onAsk} title={row.report ?? undefined}><FileText size={13} /> Report</button>}
+      {row.pr && <ExternalAnchor className="landed-link" href={row.pr}>{linkLabel(row.pr)}</ExternalAnchor>}
+      {onOpenPage && <button className="landed-link" onClick={onOpenPage}>The page</button>}
+      {onAsk && <button className="landed-link" onClick={onAsk} title={row.report ?? undefined}>Report</button>}
     </div>
   </div>;
 }
@@ -978,8 +998,19 @@ function questionBeyondTitle(call: Call) {
   return call.question && plain(call.question) !== plain(call.title) ? call.question : null;
 }
 
-function CallMeta({ call }: { call: Call }) {
-  return <div className="decision-meta"><span>Your call</span>{call.raised_at && <small>Raised {formatWhen(call.raised_at)}</small>}</div>;
+/** The line above a call: what it is, whose it is, and how long it has waited on the captain. */
+function CallMeta({ call, project, now }: { call: Call; project: string | null; now: number }) {
+  const raised = call.raised_at ? Date.parse(call.raised_at) : NaN;
+  return <div className="decision-meta"><span>decision</span>{project && <span>{project}</span>}{!Number.isNaN(raised) && <span title={`Raised ${formatWhen(call.raised_at!)}`}>held {heldFor(now - raised)}</span>}</div>;
+}
+
+/** How long something has waited, as short as a glance needs: 40m, 6h, 3d. */
+function heldFor(ms: number) {
+  const minutes = Math.max(0, Math.floor(ms / 60_000));
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 /** An answer the intake did not record, said as plainly as a recorded one. Nothing about it reached the first mate. */
@@ -992,8 +1023,10 @@ function NotRecorded({ note }: { note: AnswerNote }) {
  * right here too. A call nothing argues offers its options inline. An answer with a key goes through firstmate's
  * intake and the card says what it did; anything else is words to the first mate, tracked like any message.
  */
-function DecisionCard({ call, argument, seenArgument, answered, answeredIn, state, answerText, runtime, onSend, onAnswer, onStart, onReadArgument, onOpenPage }: {
+function DecisionCard({ call, project, now, argument, seenArgument, answered, answeredIn, state, answerText, runtime, onSend, onAnswer, onStart, onReadArgument, onOpenPage }: {
   call: Call;
+  project: string | null;
+  now: number;
   argument?: Evidence;
   /** Whether the captain has opened the page that argues it; null when the argument is not a page. */
   seenArgument: boolean | null;
@@ -1018,6 +1051,9 @@ function DecisionCard({ call, argument, seenArgument, answered, answeredIn, stat
   const keyed = call.options.length > 0 && Boolean(call.on_answer);
   const name = callName(call);
   const failed = answered && answered.result !== "closed" ? answered : undefined;
+  const meta = <CallMeta call={call} project={project} now={now} />;
+  // The meta line already names the project, so the title does not say it again.
+  const heading = project ? withinProject(call.title, project) : call.title;
 
   async function record(option: OptionChoice, words?: string) {
     setRecording(option.key);
@@ -1058,30 +1094,32 @@ function DecisionCard({ call, argument, seenArgument, answered, answeredIn, stat
     const icon = state.error ? <CircleAlert size={16} /> : read ? <Check size={16} /> : <Clock3 size={16} />;
     // After a relaunch the card is fresh, so what the captain chose lives in the message, not in this card's state.
     const resendText = preview === "…" ? answerText : preview;
-    return <article className={`decision-card ${read ? "read" : "queued"} call-tone-${tone}`} data-call-id={call.id}><CallMeta call={call} /><h3>{call.title}</h3>{answerText && <p className="call-answer" title={answerText}>{answerText}</p>}<div className={`call-state tone-${tone}`}>{icon}<span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent && resendText ? <button onClick={() => onSend(resendText)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></article>;
+    return <article className={`decision-card ${read ? "read" : "queued"} call-tone-${tone}`} data-call-id={call.id}><div className="decision-body">{meta}<h3>{heading}</h3>{answerText && <p className="call-answer" title={answerText}>{answerText}</p>}<div className={`call-state tone-${tone}`}>{icon}<span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent && resendText ? <button onClick={() => onSend(resendText)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></div></article>;
   }
   if (answered?.result === "closed") {
     // Recorded by firstmate itself; the card goes once the snapshot has the call closed.
     const told = answered.told ? "The first mate has been told, and does the follow-up." : answered.warning ?? "The first mate was not told. Tell it in chat so it does the follow-up.";
-    return <article className="decision-card read call-tone-green" data-call-id={call.id} data-recorded="true"><CallMeta call={call} /><h3 data-testid="decision-title">{call.title}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Recorded: {answered.label}</strong><small>{told}</small>{answered.unread && <small className="call-unread">You answered without opening the argument.</small>}</span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</div></article>;
+    return <article className="decision-card read call-tone-green" data-call-id={call.id} data-recorded="true"><div className="decision-body">{meta}<h3 data-testid="decision-title">{heading}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Recorded: {answered.label}</strong><small>{told}</small>{answered.unread && <small className="call-unread">You answered without opening the argument.</small>}</span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</div></div></article>;
   }
   if (answeredIn) {
     // Answered in a review; the card goes once the snapshot has the call closed.
-    return <article className="decision-card read call-tone-green" data-call-id={call.id} data-answered-in-review="true"><CallMeta call={call} /><h3 data-testid="decision-title">{call.title}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Answered in your review of “{answeredIn}”</strong><small>This leaves the list once firstmate has closed it.</small></span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</div></article>;
+    return <article className="decision-card read call-tone-green" data-call-id={call.id} data-answered-in-review="true"><div className="decision-body">{meta}<h3 data-testid="decision-title">{heading}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Answered in your review of “{answeredIn}”</strong><small>This leaves the list once firstmate has closed it.</small></span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</div></div></article>;
   }
   if (argument && onReadArgument) {
     // Something argues this one, so reading it comes first; answering here is for a captain who already knows.
     return <article className="decision-card" data-call-id={call.id} data-argued="true">
-      <CallMeta call={call} />
-      <h3 data-testid="decision-title">{call.title}</h3>
-      {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
-      <p className="call-argued" data-testid="argued-by">Argued by <strong>{argument.title}</strong></p>
-      {failed && <NotRecorded note={failed} />}
+      <div className="decision-body">
+        {meta}
+        <h3 data-testid="decision-title">{heading}</h3>
+        {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
+        <p className="call-argued" data-testid="argued-by">Argued by <strong>{argument.title}</strong></p>
+        {failed && <NotRecorded note={failed} />}
+      </div>
       <div className="decision-actions">
         <span>{optionSummary(call)}</span>
         <div className="report-actions">
           {keyed && <button className="quiet" aria-expanded={quickOpen} onClick={() => setQuickOpen((open) => !open)}>Answer now</button>}
-          <button onClick={onReadArgument}><PanelsTopLeft size={15} /> Read the argument</button>
+          <button onClick={onReadArgument}>Read the argument</button>
         </div>
       </div>
       {quickOpen && keyed && <div className="call-quick" data-testid="answer-now">
@@ -1094,26 +1132,39 @@ function DecisionCard({ call, argument, seenArgument, answered, answeredIn, stat
   const buttonLabel = recordPick ? (recording ? "Recording…" : "Record answer") : "Send";
   const hint = recordPick ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}` : preview !== "…" ? `→ sends: ${preview}` : "";
   return <article className="decision-card" data-call-id={call.id} data-inline="true">
-    <CallMeta call={call} />
-    <h3 data-testid="decision-title">{call.title}</h3>
-    {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
-    {failed && <NotRecorded note={failed} />}
-    <div className="suggestion-chips">
-      {call.options.map((option) => <button className={selection?.key === option.key ? "selected" : ""} key={option.key} disabled={recording !== null} onClick={() => { setSelection(option); setDateOpen(false); setDeferDate(""); }}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}
-      <button className={dateOpen ? "selected" : ""} disabled={recording !== null} onClick={() => { setDateOpen(true); setSelection(null); }}>Not now</button>
+    <div className="decision-body">
+      {meta}
+      <h3 data-testid="decision-title">{heading}</h3>
+      {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
+      {failed && <NotRecorded note={failed} />}
+      <div className="suggestion-chips">
+        {call.options.map((option) => <button className={selection?.key === option.key ? "selected" : ""} key={option.key} disabled={recording !== null} onClick={() => { setSelection(option); setDateOpen(false); setDeferDate(""); }}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}
+        <button className={dateOpen ? "selected" : ""} disabled={recording !== null} onClick={() => { setDateOpen(true); setSelection(null); }}>Not now</button>
+      </div>
+      {dateOpen && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} onChange={(event) => setDeferDate(event.target.value)} /></label>}
+      <label className="reply-field"><span>{recordPick ? "Anything to add for the first mate?" : call.options.length ? "Or answer in words" : "Answer in words"}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} /></label>
     </div>
-    {dateOpen && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} onChange={(event) => setDeferDate(event.target.value)} /></label>}
-    <label className="reply-field"><span>{recordPick ? "Anything to add for the first mate?" : "Or write your own answer"}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} /></label>
-    <div className="decision-actions"><span>{hint}</span><button disabled={recording !== null || (!recordPick && preview === "…")} onClick={() => recordPick ? void record(recordPick, note.trim() || undefined) : onSend(preview)}><Send size={15} /> {buttonLabel}</button></div>
+    <div className="decision-actions"><span>{hint}</span><button disabled={recording !== null || (!recordPick && preview === "…")} onClick={() => recordPick ? void record(recordPick, note.trim() || undefined) : onSend(preview)}>{buttonLabel}</button></div>
   </article>;
 }
 
 type ProjectSummary = { name: string; posture: string; description: string; tasks: FleetTask[] };
 
-function ProjectsView({ projects, waitingIn, underwayIn, onOpen }: { projects: ProjectSummary[]; waitingIn: (name: string) => number; underwayIn: (project: ProjectSummary) => number; onOpen: (name: string) => void }) {
+function ProjectsView({ projects, waitingIn, underwayIn, queuedIn, onOpen }: { projects: ProjectSummary[]; waitingIn: (name: string) => number; underwayIn: (project: ProjectSummary) => number; queuedIn: (name: string) => number; onOpen: (name: string) => void }) {
+  if (projects.length === 0) return <div className="content-scroll projects-page"><EmptyState label="No projects yet. Tell the first mate about one and it shows up here." /></div>;
   return <div className="content-scroll projects-page"><div className="project-grid">{projects.map((project) => {
     const waiting = waitingIn(project.name);
-    return <button key={project.name} className="project-card" onClick={() => onOpen(project.name)}><span className="project-sigil large">{project.name.slice(0, 2).toUpperCase()}</span><div><h2>{project.name}</h2><p>{project.posture}</p><span>{waiting > 0 && <em>{waiting} waiting on you · </em>}{underwayIn(project)} underway</span></div><ChevronRight size={18} /></button>;
+    const underway = underwayIn(project);
+    const queued = queuedIn(project.name);
+    return <button key={project.name} className="project-card" onClick={() => onOpen(project.name)}>
+      <span className="project-card-head"><span className="project-sigil large">{project.name.slice(0, 2).toUpperCase()}</span><h2>{project.name}</h2></span>
+      <p>{project.description || project.posture}</p>
+      <span className="project-counts">
+        {waiting > 0 && <em className="tone-coral">{waiting} waiting on you</em>}
+        {underway > 0 ? <em className="tone-blue">{underway} underway</em> : waiting === 0 && <em className="tone-muted">idle</em>}
+        {queued > 0 && <em className="tone-muted">{queued} queued</em>}
+      </span>
+    </button>;
   })}</div></div>;
 }
 
@@ -1220,43 +1271,50 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
 }) {
   const needs = waiting.length + reports.length;
   const title = (text: string) => withinProject(text, project.name);
+  // The snapshot's calls are the newer read of a call the history also lists.
+  const allCalls = useMemo(() => {
+    const known = new Set(calls.map((call) => call.id));
+    return [...calls, ...history.calls.filter((call) => !known.has(call.id))];
+  }, [calls, history.calls]);
+  const entries = useMemo(() => logEntries(history.project === project.name ? history.records : [], recent, allCalls, project.name), [history.project, history.records, recent, allCalls, project.name]);
+  const landed = landedWithin(entries, 30, now, Boolean(history.next));
   return <div className="content-scroll project-page" data-testid="project-page">
     <section className="project-summary">
-      <div><span>Project</span><h2>{project.name}</h2><p>{project.description || "The first mate keeps this work within the project's standing delivery posture."}</p></div>
-      <div className="project-stats">
-        <div className="project-stat" data-testid="stat-waiting"><strong className={needs ? "tone-coral" : ""}>{needs}</strong><span>Waiting on you</span></div>
-        <div className="project-stat"><strong>{underway.length}</strong><span>Underway</span></div>
-        <div className="project-stat"><strong>{queued.length}</strong><span>Up next</span></div>
-      </div>
+      <span className="project-sigil huge">{project.name.slice(0, 2).toUpperCase()}</span>
+      <div><h2>{project.name}</h2><p>{project.description || "The first mate keeps this work within the project's standing delivery posture."}</p></div>
+    </section>
+    <section className="project-stats">
+      <div className="project-stat" data-testid="stat-waiting"><span>Waiting on you</span><strong className={needs ? "tone-coral" : ""}>{needs}</strong></div>
+      <div className="project-stat"><span>Underway</span><strong className={underway.length ? "tone-blue" : ""}>{underway.length}</strong></div>
+      <div className="project-stat"><span>Queued</span><strong>{queued.length}</strong></div>
+      <div className="project-stat" data-testid="stat-landed" title="Shipped work and reports that closed in the last 30 days"><span>Landed, 30d</span><strong className={landed.count ? "tone-green" : ""}>{landed.count}{landed.floor ? "+" : ""}</strong></div>
     </section>
 
-    {needs > 0 && <DashboardSection title="Needs you" icon={<Inbox size={17} />} tone="coral" count={needs}>
-      <div className="task-list" data-testid="project-needs">
+    {needs > 0 && <DashboardSection title="Needs you" tone="coral" count={needs}>
+      <div className="task-list needs-list" data-testid="project-needs">
         {waiting.map((call) => {
           const pick = recommended(call);
-          return <button className="task-row wide" key={call.id} data-call={call.id} onClick={() => onOpenCall(call.id)}><span className="task-state tone-coral"><ShieldQuestion size={16} /></span><span className="task-copy"><strong>{title(call.title)}</strong><small>{pick ? `Recommended: ${pick.label}` : call.question ?? "The first mate needs your answer."}</small></span><span className="task-chip tone-coral">Your call</span><ChevronRight size={17} /></button>;
+          const raised = call.raised_at ? Date.parse(call.raised_at) : NaN;
+          return <button className="task-row wide" key={call.id} data-call={call.id} onClick={() => onOpenCall(call.id)}><span className="task-state tone-coral"><ShieldQuestion size={16} /></span><span className="task-copy"><strong>{title(call.title)}</strong><small>{[pick ? `Recommended: ${pick.label}` : call.question ?? "The first mate needs your answer.", !Number.isNaN(raised) && `held ${heldFor(now - raised)}`].filter(Boolean).join(" · ")}</small></span><span className="task-chip answer-chip">Answer</span></button>;
         })}
-        {reports.map((item) => <button className="task-row wide" key={item.task.id} onClick={() => onOpenReport(item)}><span className="task-state tone-blue"><FileText size={16} /></span><span className="task-copy"><strong>{title(taskTitle(item.task.id))}</strong><small>{item.page ? "The report is ready to read." : "The report is written, without a page."}</small></span><span className="task-chip tone-blue">Report</span><ChevronRight size={17} /></button>)}
+        {reports.map((item) => <button className="task-row wide" key={item.task.id} onClick={() => onOpenReport(item)}><span className="task-state tone-blue"><FileText size={16} /></span><span className="task-copy"><strong>{title(taskTitle(item.task.id))}</strong><small>{item.page ? "The report is ready to read." : "The report is written, without a page."}</small></span><span className="task-chip answer-chip">Read</span></button>)}
       </div>
     </DashboardSection>}
 
-    <DashboardSection title="Underway" icon={<Radio size={17} />} tone="blue" count={underway.length}>
-      <div className="task-list">{underway.map((task) => {
+    <DashboardSection title="Work" tone="blue" count={underway.length} countLabel={`underway · ${queued.length} queued`}>
+      <div className="task-list" data-testid="project-underway">{underway.map((task) => {
         const status = taskStatus(task.current_state.state);
         const started = startedAt(task, records.get(task.id));
-        return <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{title(taskTitle(task.id))}</strong><small>{KIND_NAMES[task.kind] ?? task.kind} · {task.harness}{started && <> · {sinceLabel(started, now)}</>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(task.current_state.state)}</span><ChevronRight size={17} /></button>;
+        return <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{title(taskTitle(task.id))}</strong><small>{KIND_NAMES[task.kind] ?? task.kind} · {task.harness}{started && <> · {sinceLabel(started, now)}</>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(task.current_state.state)}</span><ChevronRight size={16} /></button>;
       })}</div>
-      {underway.length === 0 && <EmptyState label="Nothing is underway in this project." />}
+      {queued.length > 0 && <div className="task-list" data-testid="project-queue">{queued.map((record) => {
+        const detail = [KIND_NAMES[record.kind ?? ""] ?? record.kind, record.since && `filed ${shortDay(record.since, now)}`, record.hold_reason].filter(Boolean).join(" · ");
+        return <div className="task-row wide static" key={record.id}><span className="task-state tone-muted"><Clock3 size={16} /></span><span className="task-copy"><strong>{title(record.title)}</strong><small>{detail}</small></span><span className={`task-chip tone-${record.hold_reason ? "amber" : "muted"}`}>{record.hold_reason ? "waiting" : "queued"}</span></div>;
+      })}</div>}
+      {underway.length + queued.length === 0 && <EmptyState label="Nothing is underway or queued in this project." />}
     </DashboardSection>
 
-    {queued.length > 0 && <DashboardSection title="Up next" icon={<Clock3 size={17} />} tone="amber" count={queued.length}>
-      <div className="task-list" data-testid="project-queue">{queued.map((record) => {
-        const detail = [KIND_NAMES[record.kind ?? ""] ?? record.kind, record.since && `filed ${shortDay(record.since, now)}`, record.hold_reason].filter(Boolean).join(" · ");
-        return <div className="task-row wide static" key={record.id}><span className="task-state tone-amber"><Clock3 size={16} /></span><span className="task-copy"><strong>{title(record.title)}</strong><small>{detail}</small></span><span className={`task-chip tone-${record.hold_reason ? "amber" : "muted"}`}>{record.hold_reason ? "Waiting" : "Queued"}</span></div>;
-      })}</div>
-    </DashboardSection>}
-
-    <Logbook project={project.name} now={now} recent={recent} calls={calls} history={history} title={title} onOpen={onOpenEntry} />
+    <Logbook project={project.name} now={now} entries={entries} history={history} title={title} onOpen={onOpenEntry} />
   </div>;
 }
 
@@ -1278,17 +1336,11 @@ const LOG_LOOK: Record<LogEntry["kind"], { tone: string; chip: string; icon: Rea
  * Everything the project closed, newest first. The filters and the search are for this visit only: a filter
  * remembered across visits reads as work gone missing.
  */
-function Logbook({ project, now, recent, calls, history, title, onOpen }: { project: string; now: number; recent: BacklogRecord[]; calls: Call[]; history: ReturnType<typeof useProjectHistory>; title: (text: string) => string; onOpen: (entry: LogEntry) => void }) {
+function Logbook({ project, now, entries, history, title, onOpen }: { project: string; now: number; entries: LogEntry[]; history: ReturnType<typeof useProjectHistory>; title: (text: string) => string; onOpen: (entry: LogEntry) => void }) {
   const [filter, setFilter] = useState<LogFilter>("all");
   const [query, setQuery] = useState("");
   const [includeClosed, setIncludeClosed] = useState(false);
   useEffect(() => { setFilter("all"); setQuery(""); setIncludeClosed(false); }, [project]);
-  // The snapshot's calls are the newer read of a call the history also lists.
-  const allCalls = useMemo(() => {
-    const known = new Set(calls.map((call) => call.id));
-    return [...calls, ...history.calls.filter((call) => !known.has(call.id))];
-  }, [calls, history.calls]);
-  const entries = useMemo(() => logEntries(history.project === project ? history.records : [], recent, allCalls, project), [history.project, history.records, recent, allCalls, project]);
   const counts = logCounts(entries, includeClosed);
   const shown = filterLog(entries, filter, query, includeClosed);
   const periods = logPeriods(shown, now);
@@ -1300,7 +1352,7 @@ function Logbook({ project, now, recent, calls, history, title, onOpen }: { proj
   const more = history.next ? "+" : "";
   const oldest = entries.at(-1)?.date;
   return <section className="dashboard-section logbook" data-testid="logbook" data-state={read ? history.status : "loading"}>
-    <div className="section-heading"><span className="section-icon green"><BookOpen size={17} /></span><h2>Logbook</h2><span className="section-count" data-testid="log-count">{counts.all}{more}</span></div>
+    <div className="section-heading"><span className="section-dot green" aria-hidden="true" /><h2>Logbook</h2><span className="section-count" data-testid="log-count">{counts.all}{more}</span><span className="section-count-label">closed</span></div>
     {entries.length > 0 && <div className="logbook-tools">
       <div className="logbook-filters" role="group" aria-label="Show">
         {LOG_FILTERS.map((item) => <button key={item.id} aria-pressed={filter === item.id} className={filter === item.id ? "selected" : ""} onClick={() => setFilter(item.id)}>{item.label}<span>{counts[item.id]}{more}</span></button>)}
@@ -1472,10 +1524,12 @@ function StepGroup({ steps, live, home }: { steps: ChatMessage[]; live: boolean;
   const visible = live && !open ? steps.slice(-LIVE_STEPS) : steps;
   const hidden = steps.length - visible.length;
   const summary = steps.length === 1 ? "1 step" : `${steps.length} steps`;
+  // What the steps were, at a glance: the first few, in the words each line would use.
+  const preview = steps.slice(0, 3).map((step) => { const { verb, detail } = describeStep(step, home); return verb ? `${verb.toLowerCase()} ${detail}` : detail; }).join(" · ") + (steps.length > 3 ? " · …" : "");
   // A step that errors is usually the first mate probing for something that isn't there, and it goes on from
   // there. The fact stays, told as quietly as the rest of the line.
   const note = failed ? `${failed === steps.length && failed === 1 ? "it" : failed} came back with an error` : "";
-  return <div className={`step-group ${live ? "live" : ""}`}>{!live && <button className="step-summary" aria-expanded={open} onClick={() => setOpen((current) => !current)} title={failed ? "A step that errors is often the first mate checking for something that isn't there. It carried on from there." : undefined}><ChevronRight size={13} className={open ? "rotated" : ""} /><span>{summary}</span>{note && <span className="step-note">· {note}</span>}</button>}{live && hidden > 0 && <button className="step-summary" onClick={() => setOpen(true)}><ChevronRight size={13} /><span>{hidden} earlier {hidden === 1 ? "step" : "steps"}</span></button>}{(live || open) && <ol className="step-lines">{visible.map((step) => <StepLine key={step.id} step={step} live={live} home={home} />)}</ol>}</div>;
+  return <div className={`step-group ${live ? "live" : ""}`}>{!live && <button className="step-summary" aria-expanded={open} onClick={() => setOpen((current) => !current)} title={failed ? "A step that errors is often the first mate checking for something that isn't there. It carried on from there." : undefined}><span className="step-count">{summary}</span>{note && <span className="step-note">{note}</span>}{!open && <span className="step-preview">{preview}</span>}<ChevronRight size={14} className={open ? "rotated" : ""} /></button>}{live && hidden > 0 && <button className="step-summary" onClick={() => setOpen(true)}><ChevronRight size={13} /><span>{hidden} earlier {hidden === 1 ? "step" : "steps"}</span></button>}{(live || open) && <ol className="step-lines">{visible.map((step) => <StepLine key={step.id} step={step} live={live} home={home} />)}</ol>}</div>;
 }
 
 function StepLine({ step, live, home }: { step: ChatMessage; live: boolean; home: string }) {
@@ -1489,7 +1543,7 @@ function StepLine({ step, live, home }: { step: ChatMessage; live: boolean; home
 const APPROVAL_LABELS: Record<string, string> = { allow_once: "Allow once", allow_always: "Always allow", reject_once: "Don't allow", reject_always: "Never allow" };
 
 function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; home: string; onAnswer: (optionId: string) => void }) {
-  return <section className="approval-card" aria-label="The first mate is asking for your OK"><span className="approval-mark"><ShieldQuestion size={17} /></span><div className="approval-copy"><strong>The first mate wants to:</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on with this.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
+  return <section className="approval-card" aria-label="The first mate is asking for your OK"><div className="approval-copy"><strong>The first mate wants to run</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : option.kind.startsWith("reject") ? "reject" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
 }
 
 function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
@@ -1524,7 +1578,7 @@ function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, r
     const element = scroller.current;
     if (element) following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
   };
-  return <div className="chat-view">{banners}<div className="chat-status"><span className="avatar">FM</span><div><strong>First Mate</strong><span><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /> {hostLabel}</span></div><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={16} /></button></div><div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
+  return <div className="chat-view">{banners}<div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
     ? <div key={item.id} className={`day-label ${index > 0 ? "later" : ""}`}>{item.text}</div>
     : item.type === "artifact"
       ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
@@ -1532,7 +1586,7 @@ function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, r
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
         ? <div key={item.message.id} className="chat-notice" role="status">{item.message.text}</div>
-        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}<div className="composer"><textarea ref={composer} value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><button className="icon-button" title="Attach a file"><FileText size={17} /></button><button className="send-button" onClick={onSend} disabled={!draft.trim() || !sendReady} title={sendReady ? "Send message" : "Start the first mate to send messages"}><Send size={16} /></button></div></div></div>;
+        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer"><textarea ref={composer} value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} />{hostLabel}</span><span className="composer-hint">⏎ to send · ⇧⏎ for a new line</span><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" title="Attach a file">Attach</button><button className="send-button" onClick={onSend} disabled={!draft.trim() || !sendReady} title={sendReady ? "Send message" : "Start the first mate to send messages"}>Send</button></div></div></div>;
 }
 
 /**
@@ -1772,9 +1826,17 @@ function openComments(artifact: Artifact, review?: ReviewSummary[string]) {
   return { waiting, answered };
 }
 
-function ArtifactRow({ artifact, detail, review, landed, onOpen }: { artifact: Artifact; detail: string; review?: ReviewSummary[string]; landed?: boolean; onOpen: () => void }) {
+function ArtifactRow({ artifact, detail, review, landed, stake, card, onOpen }: { artifact: Artifact; detail: string; review?: ReviewSummary[string]; landed?: boolean; stake?: { label: string; tone: string }; card?: boolean; onOpen: () => void }) {
   const note = layoutNote(artifact.latest);
   const chip = reviewChip(review, artifact, landed);
+  if (card) return <button className="artifact-row card" onClick={onOpen}>
+    <span className="artifact-thumb" aria-hidden="true" />
+    <span className="artifact-copy">
+      <strong>{artifact.title}</strong>
+      <small>{detail}</small>
+      <span className="artifact-chips">{stake && <span className={`artifact-stake tone-${stake.tone}`}>{stake.label}</span>}{chip && <span className={`review-chip ${chip.tone}`}>{chip.label}</span>}{note && <span className="artifact-flag" title={note.issues.map((issue) => issue.detail).join("\n")}>{note.label}</span>}</span>
+    </span>
+  </button>;
   return <button className="artifact-row" onClick={onOpen}><span className="artifact-icon"><PanelsTopLeft size={16} /></span><span className="artifact-copy"><strong>{artifact.title}</strong><small>{detail}</small></span><span className="artifact-chips">{chip && <span className={`review-chip ${chip.tone}`}>{chip.label}</span>}{note && <span className="artifact-flag" title={note.issues.map((issue) => issue.detail).join("\n")}>{note.label}</span>}</span><ChevronRight size={17} /></button>;
 }
 
@@ -1818,7 +1880,7 @@ export function artifactStanding(artifact: Artifact, review: ReviewSummary[strin
 }
 
 const STANDINGS: { id: ArtifactStanding; title: string; blank: string }[] = [
-  { id: "needs-you", title: "Needs you", blank: "Nothing needs you right now." },
+  { id: "needs-you", title: "Open for review", blank: "Nothing is open for your review right now." },
   { id: "discussion", title: "In discussion", blank: "" },
   { id: "settled", title: "Settled", blank: "" },
 ];
@@ -1831,12 +1893,21 @@ function ArtifactsView({ artifacts, tasks, reviews, backlog, calls, onOpen }: { 
     return out;
   }, [artifacts, reviews, backlog, calls]);
 
-  const row = (artifact: Artifact, landed: boolean) => <ArtifactRow
+  /** What rides on a page still in play: a call it argues, or the kind of work that wrote it. */
+  const stakeOf = (artifact: Artifact) => {
+    if (callsArguedBy(calls, artifact).some(isOpen)) return { label: "A decision rides on this", tone: "coral" };
+    const task = artifact.scope === "task" ? tasks.find((candidate) => candidate.id === artifact.task) : undefined;
+    if (task?.kind === "scout") return { label: "Scout report", tone: "muted" };
+    return undefined;
+  };
+  const row = (artifact: Artifact, standing: ArtifactStanding) => <ArtifactRow
     key={`${artifact.scope}/${artifact.task}/${artifact.name}`}
     artifact={artifact}
     detail={`${artifactOwner(artifact, tasks)} · ${revisionLine(artifact)}`}
     review={reviews[artifactKey(artifact)]}
-    landed={landed}
+    landed={standing === "settled"}
+    card={standing !== "settled"}
+    stake={standing !== "settled" ? stakeOf(artifact) : undefined}
     onOpen={() => onOpen(artifact)}
   />;
 
@@ -1851,10 +1922,10 @@ function ArtifactsView({ artifacts, tasks, reviews, backlog, calls, onOpen }: { 
         return <section key={standing.id} className="artifact-group" data-standing={standing.id}>
           {standing.id === "settled"
             ? <button className="artifact-group-heading" aria-expanded={openSettled} onClick={() => setOpenSettled((open) => !open)}>
-                <h2>{standing.title}</h2><span className="section-count">{pages.length}</span>{openSettled ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                <h2>{standing.title}</h2><span className="section-count">{pages.length}</span>{openSettled ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </button>
             : <div className="artifact-group-heading static"><h2>{standing.title}</h2><span className="section-count">{pages.length}</span></div>}
-          {!folded && <div className="task-list artifact-list">{pages.map((artifact) => row(artifact, standing.id === "settled"))}</div>}
+          {!folded && <div className={`artifact-list ${standing.id === "settled" ? "rows" : "cards"}`}>{pages.map((artifact) => row(artifact, standing.id))}</div>}
         </section>;
       })}
   </div>;
@@ -1862,7 +1933,7 @@ function ArtifactsView({ artifacts, tasks, reviews, backlog, calls, onOpen }: { 
 
 function ArtifactChatCard({ artifact, revision, tasks, onOpen }: { artifact: Artifact; revision: ArtifactRevision; tasks: FleetTask[]; onOpen: () => void }) {
   const from = revision.presented_by.role === "firstmate" ? "The first mate shared a page" : `${artifactOwner(artifact, tasks)} ${revision.rev === 1 ? "shared a page" : `revised a page · Rev ${revision.rev}`}`;
-  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-icon"><PanelsTopLeft size={16} /></span><div><small>{from}</small><strong>{revision.title}</strong>{revision.note && <p>{revision.note}</p>}<time>{formatWhen(revision.presented_at)}</time></div><button onClick={onOpen}>Open</button></article>;
+  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-thumb" aria-hidden="true" /><div><strong>{revision.title}</strong><small>{from} · <time>{formatWhen(revision.presented_at)}</time></small>{revision.note && <p>{revision.note}</p>}</div><button onClick={onOpen}>Open review</button></article>;
 }
 
 /**
@@ -2131,6 +2202,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
         <iframe ref={frame} title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => { setLoaded(true); setMissing([]); }} />
       </div>
       <aside className="review-rail" aria-label="Your review">
+        <header className="review-head"><strong>Your review</strong><small>{calls.some(isOpen) ? `Answering here also closes the captain's call on ${calls.filter(isOpen).length === 1 ? "this decision" : "these decisions"}.` : "Write on a part of the page, then send it all at once."}</small></header>
         {pending && <section className="comment-composer">
           <blockquote>{pending.quote.length > 160 ? `${pending.quote.slice(0, 160)}…` : pending.quote}</blockquote>
           <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setDraft(""); } }} />
@@ -2140,16 +2212,17 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
           {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} onAnswer={(option, label) => onAnswer(call, option, label)} />)}
         </div>}
         <div className="review-threads">
-          {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment to write on a part of the page, then send it all at once.</p>}
+          {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment, then pick the words or the part of the page you mean.</p>}
           {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
           {settled.length > 0 && <button className="settled-toggle" aria-expanded={showSettled} onClick={() => setShowSettled((current) => !current)}><ChevronRight size={13} className={showSettled ? "rotated" : ""} /> {settled.length} settled</button>}
           {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
         </div>
         <div className="review-send">
+          {calls.some(isOpen) && <span className="review-send-label">Answer the decision</span>}
           {problem && <p className="review-problem" role="alert">{problem}</p>}
           {lastSent && draftCount === 0 && <p className="review-last">Sent {formatWhen(new Date(lastSent.at).toISOString())} · {VERDICTS.find((item) => item.id === lastSent.verdict)?.label ?? lastSent.verdict}</p>}
           <label className="verdict-picker"><span className="sr-only">Verdict</span><select value={verdict} onChange={(event) => { setVerdictChosen(true); setVerdict(event.target.value as ReviewVerdict); }}>{VERDICTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown size={14} /></label>
-          <button className="send-review" disabled={!sendReady || sending} title={sendHint} onClick={() => void send()}><Send size={15} /> {sending ? "Sending…" : draftCount > 0 ? `Send review · ${draftCount}` : "Send review"}</button>
+          <button className="send-review" disabled={!sendReady || sending} title={sendHint} onClick={() => void send()}>{sending ? "Sending…" : draftCount > 0 ? `Send review · ${draftCount}` : "Send review"}</button>
           <small>{sendHint}</small>
         </div>
       </aside>
