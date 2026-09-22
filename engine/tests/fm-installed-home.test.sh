@@ -110,8 +110,12 @@ test_session_start_hook_runs_from_the_home() {
   # lock's pid, and says so in its own words when it cannot, so a failure here
   # carries what it said rather than only the missing file.
   left=$( (cd "$HOME_DIR/state" 2>/dev/null && shopt -s nullglob dotglob && printf '%s ' *) )
+  # The reason lives in the digest's LOCK section, near the top, while the tail
+  # below carries the closing state. Print both: a completion that never
+  # happened is only ever explained by why the lock was refused, and leaving
+  # that out of the failure turns one CI round into several.
   [ -f "$HOME_DIR/state/.session-start-complete" ] || fail \
-    "session start did not complete in the home's state"$'\n'"state: $left"$'\n'"$(printf '%s\n' "$out" | tail -25)"
+    "session start did not complete in the home's state"$'\n'"state: $left"$'\n'"--- lock ---"$'\n'"$(printf '%s\n' "$out" | sed -n '/^LOCK$/,/^$/p;1,40p' | head -45)"$'\n'"--- tail ---"$'\n'"$(printf '%s\n' "$out" | tail -25)"
   # A copy outside git has no branch to read; the first mate must not be shown git errors.
   assert_not_contains "$out" "fatal:" "the digest shows no git errors"
   pass "the exact session-start hook command runs the full digest from the home"
