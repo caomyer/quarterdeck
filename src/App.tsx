@@ -1277,7 +1277,7 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
     return [...calls, ...history.calls.filter((call) => !known.has(call.id))];
   }, [calls, history.calls]);
   const entries = useMemo(() => logEntries(history.project === project.name ? history.records : [], recent, allCalls, project.name), [history.project, history.records, recent, allCalls, project.name]);
-  const landed = landedWithin(entries, 30, now, Boolean(history.next));
+  const landed = landedWithin(entries, 30, now, history.project !== project.name || history.status !== "ready" ? "any" : history.next ? "older" : "none");
   return <div className="content-scroll project-page" data-testid="project-page">
     <section className="project-summary">
       <span className="project-sigil huge">{project.name.slice(0, 2).toUpperCase()}</span>

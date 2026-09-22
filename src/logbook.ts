@@ -171,14 +171,15 @@ export function callProject(call: Call, records: Map<string, BacklogRecord>) {
 
 /**
  * How much work the project delivered in the last `days` days: shipped work and reports, not calls or rows that
- * closed without a delivery. `more` says older rows are still unread; while the oldest row read so far is inside the
- * window, the count is a floor and `floor` says so.
+ * closed without a delivery. `unread` says what is still unread: `"none"`, `"older"` rows than the oldest read, or
+ * `"any"` row while the project's history has not been read. The count is a floor, and `floor` says so, whenever an
+ * unread row could fall inside the window.
  */
-export function landedWithin(entries: LogEntry[], days: number, now: number, more: boolean) {
+export function landedWithin(entries: LogEntry[], days: number, now: number, unread: "none" | "older" | "any") {
   const today = new Date(now);
   const from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1)).getTime();
   const inside = (entry: LogEntry) => entry.date !== null && localDate(entry.date).getTime() >= from;
   const count = entries.filter((entry) => (entry.kind === "shipped" || entry.kind === "report") && inside(entry)).length;
   const oldest = entries.at(-1);
-  return { count, floor: more && (!oldest || oldest.date === null || inside(oldest)) };
+  return { count, floor: unread === "any" || (unread === "older" && (!oldest || oldest.date === null || inside(oldest))) };
 }

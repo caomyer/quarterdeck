@@ -136,12 +136,16 @@ test("what landed in a window counts delivered work, and says when it is a floor
     row("dropped", { completion: { verb: "done", date: "2026-09-12" } }),
     row("too-old", { completion: { verb: "merged", date: "2026-08-01" } }),
   ], [], [], "resonance");
-  assert.deepEqual(landedWithin(entries, 30, NOW, false), { count: 2, floor: false });
+  assert.deepEqual(landedWithin(entries, 30, NOW, "none"), { count: 2, floor: false });
   // Older rows unread, but the oldest read is already outside the window: nothing unread can count.
-  assert.deepEqual(landedWithin(entries, 30, NOW, true), { count: 2, floor: false });
+  assert.deepEqual(landedWithin(entries, 30, NOW, "older"), { count: 2, floor: false });
   // The oldest read is inside the window, so older unread rows might count too.
-  assert.deepEqual(landedWithin(entries.slice(0, 4), 30, NOW, true), { count: 2, floor: true });
+  assert.deepEqual(landedWithin(entries.slice(0, 4), 30, NOW, "older"), { count: 2, floor: true });
+  // History not read yet, or it could not be: only the snapshot's recent rows counted, so any unread row might count.
+  const snapshotOnly = logEntries([], [row("recent-shipped"), row("recent-old", { completion: { verb: "merged", date: "2026-08-01" } })], [], "resonance");
+  assert.deepEqual(landedWithin(snapshotOnly, 30, NOW, "any"), { count: 1, floor: true });
+  assert.deepEqual(landedWithin([], 30, NOW, "any"), { count: 0, floor: true });
   // The window's first day counts whole: 30 days back from Sep 18 starts on Aug 20.
   const edge = logEntries([row("edge", { completion: { verb: "merged", date: "2026-08-20" } }), row("outside", { completion: { verb: "merged", date: "2026-08-19" } })], [], [], "resonance");
-  assert.equal(landedWithin(edge, 30, NOW, false).count, 1);
+  assert.equal(landedWithin(edge, 30, NOW, "none").count, 1);
 });
