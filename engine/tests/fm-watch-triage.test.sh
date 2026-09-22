@@ -174,7 +174,45 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# reap <pid>: stop a watcher this file started and collect it.
+#
+# Bounded, and loud when the bound is hit. This is instrumentation, not a fix:
+# in CI run 35570906682 one case here took 1001s instead of about 3.5s, which
+# matches that case's FM_STALE_ESCALATE_SECS=999. That suggests the watcher did
+# not end on SIGTERM and lived until its own stale escalation fired, but why it
+# did not is NOT known, and it never reproduced locally. An unbounded `wait`
+# turned that into a silent 30-minute shard timeout. This turns it into a
+# failure that names the watcher and shows what it and its children were doing.
+# A watcher started with `&` here shares this test's process group, so the
+# capture is the watcher's own process tree rather than its group.
+reap() {  # <pid>
+  local pid=$1 i=0 stat tree
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt 100 ]; do
+    # An exited child stays a zombie until it is waited for, and a zombie still
+    # answers kill -0, so read its state rather than probing it.
+    stat=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$stat" in ''|Z*) break ;; esac
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ "$i" -ge 100 ]; then
+    tree=$(ps -axo pid=,ppid=,pgid=,stat=,etime=,command= 2>/dev/null | awk -v root="$pid" '
+      { line[$1] = $0; parent[$1] = $2 }
+      END {
+        keep[root] = 1
+        do {
+          grew = 0
+          for (p in parent) if (!(p in keep) && (parent[p] in keep)) { keep[p] = 1; grew = 1 }
+        } while (grew)
+        for (p in keep) if (p in line) print line[p]
+      }')
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "watcher $pid did not exit within 10s of SIGTERM; its process tree was:"$'\n'"$tree"
+  fi
+  wait "$pid" 2>/dev/null || true
+}
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -3889,7 +3927,7 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
   printf '%s' "$pane_hash" > "$state/.stale-$key"
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "matching stale suppressor with missing timer did not initialize stale-since"; }
@@ -3904,7 +3942,7 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
   printf 'corrupt\n' > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "matching stale suppressor with corrupt timer did not repair stale-since"; }
