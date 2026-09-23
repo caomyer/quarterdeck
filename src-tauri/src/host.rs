@@ -1816,13 +1816,13 @@ impl Host {
             "agent_message_chunk" => {
                 let text = update.pointer("/content/text").and_then(Value::as_str).unwrap_or("");
                 let mut started = None;
-                if let Some(compaction) = self.compaction.as_mut().filter(|c| self.in_flight.front() == Some(&c.id)) {
-                    if !compaction.running && text.contains("Compacting...") {
+                if let Some(compaction) = self.compaction.as_mut() {
+                    if !compaction.running && text == "Compacting..." {
                         compaction.running = true;
                         started = Some(compaction.id.clone());
                     }
-                    if let Some(at) = text.find("Compacting failed") {
-                        compaction.failure = Some(text[at..].trim().to_string());
+                    if text.trim_start().starts_with("Compacting failed") {
+                        compaction.failure = Some(text.trim().to_string());
                     }
                 }
                 if let Some(id) = started {
@@ -2947,6 +2947,7 @@ while True:
         assert_eq!(after["usage"]["context"]["compacted"]["from"], 800, "a window that opens later reads it too: {after}");
         let refusal = refusal.expect("the refused compaction ended");
         assert_eq!((&refusal["state"], &refusal["error"]), (&json!("failed"), &json!("Compacting failed: Not enough messages to compact.")), "{refusal}");
+        assert_eq!(told(&refused), ["sent", "running", "failed"], "{events:?}");
         let error = error.expect("the broken compaction ended");
         assert_eq!((&error["state"], &error["error"]), (&json!("failed"), &json!("boom")), "{error}");
         assert!(!events.iter().any(|(e, b)| e == "compact" && b["id"] == plain.as_str()), "an ordinary message is not a compaction");
