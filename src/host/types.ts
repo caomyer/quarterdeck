@@ -261,12 +261,73 @@ export type HostEvent =
   | { type: "tool_update"; payload: ToolStep }
   | { type: "outbox"; payload: { id: string; status: OutboxStatus; resent_after_restart?: boolean; /** Set on `failed`. */ error?: string; /** Set on `queued` and `requeued` from the durable outbox, which is the only copy of the words after a relaunch. */ text?: string } }
   | { type: "prompt_result"; payload: { id: string; stop_reason?: string; error?: string | null; usage?: Record<string, number> } }
-  | { type: "usage"; payload: Record<string, number> }
+  | { type: "usage"; payload: UsageEvent }
+  | { type: "compact"; payload: CompactEvent }
   | { type: "permission"; payload: Record<string, unknown> }
   | { type: "permission_request"; payload: PermissionRequest }
   | { type: "permission_resolved"; payload: { id: string; option_id: string } }
   | { type: "host_health"; payload: { warning?: string; rewake_storm?: boolean; [key: string]: unknown } }
   | { type: "snapshot"; payload: SnapshotEvent };
+
+/** The first mate's context window, as the host reads the adapter's usage updates. `null`s until the first reading. */
+export type ContextReading = {
+  used: number | null;
+  size: number | null;
+  at_ms: number | null;
+  /** The session was resumed, so its readings already carry the earlier conversation. */
+  resumed: boolean;
+  /** The last compaction: the size it compacted from, what it left, and when. */
+  compacted: { from: number; to: number; at_ms: number } | null;
+};
+
+/** The adapter's `_claude/rateLimit`: the Claude plan limit the first mate runs under, as its session last reported it. */
+export type RateLimit = {
+  status?: "allowed" | "allowed_warning" | "rejected" | string;
+  rateLimitType?: string;
+  /** Seconds since the epoch. */
+  resetsAt?: number;
+  /** When the host received it, in milliseconds. */
+  at_ms?: number;
+};
+
+/** A usage update: the adapter's own, with the host's reading of it. Recordings made before the host read it carry `update` alone. */
+export type UsageEvent = {
+  at_ms?: number;
+  update: { used?: number; size?: number; cost?: { amount: number; currency: string }; _meta?: Record<string, unknown> };
+  context?: ContextReading;
+  rate_limit?: RateLimit | null;
+};
+
+/** How a `/compact` the captain sent is going: handed to the first mate, running once any turn before it ended, then done or failed. */
+export type CompactEvent = { id: string; state: "sent" | "running" | "done" | "failed"; error?: string; context?: ContextReading };
+
+/** One of a provider's limit windows, as quota-axi reports it. */
+export type QuotaWindow = { id: string | null; label: string | null; kind: string | null; used: number | null; resets_at: string | null };
+
+/** One provider's plan limits, in quota-axi's own terms. */
+export type QuotaProvider = {
+  id: string | null;
+  label: string | null;
+  plan: string | null;
+  /** `fresh`, `stale`, `auth_required`, `unavailable`, `rate_limited` or `error`. */
+  status: string;
+  stale: boolean;
+  refreshed_at: string | null;
+  /** quota-axi's words for what is wrong, when something is. */
+  error: string | null;
+  reason: string | null;
+  /** The command quota-axi says fixes it. */
+  remedy: string | null;
+  /** How sure quota-axi is of the account's reading: `established`, `early` or `unknown`. */
+  confidence: string | null;
+  windows: QuotaWindow[];
+};
+
+/**
+ * A read of every provider's plan limits. After a failed read, `providers` are the last good read's, from `read_at_ms`,
+ * and `error` says why this one failed. `missing` when quota-axi is not installed.
+ */
+export type QuotaRead = { providers: QuotaProvider[] | null; read_at_ms: number | null; error: string | null; missing: boolean };
 
 export type SnapshotError = { source: string; error: string };
 
@@ -294,6 +355,8 @@ export type HostStateSnapshot = {
   permissionRequests?: PermissionRequest[];
   /** While a first mate runs: its session's conversation so far, for a window that opened after the start sent its history. */
   conversation?: { sessionId: string; items: HistoryItem[] } | null;
+  /** The context window and the Claude plan limit as last reported, for a window that opened after them. */
+  usage?: { context: ContextReading | null; rateLimit: RateLimit | null };
 };
 
 /** The captain's firstmate home: `home` once chosen and still valid, `problem` when a choice doesn't check out. */
@@ -388,6 +451,10 @@ export interface HostAdapter {
   /** Stores the optional typed dispatch key in the home. Write-only: the reply says only that a key is set. */
   routingSetKey(key: string): Promise<Routing>;
   routingClearKey(): Promise<Routing>;
+  /** Every provider's plan limits, from quota-axi. Reads only. */
+  readQuota(): Promise<QuotaRead>;
+  /** Reads plan limits once with quota-axi allowed to ask macOS for Claude's Keychain item. Only when the captain asks. */
+  allowQuotaKeychain(): Promise<QuotaRead>;
   refreshSnapshot(): Promise<void>;
   /** The last finished snapshot, for a window that subscribed after it was emitted. Waits for a read in progress. */
   latestSnapshot(): Promise<SnapshotEvent | null>;

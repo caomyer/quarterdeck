@@ -89,6 +89,7 @@ jobs:
           FIRSTMATE_URL=http://127.0.0.1:4191 pnpm tones || failed="$failed tones"
           FIRSTMATE_URL=http://127.0.0.1:4191 pnpm onboarding || failed="$failed onboarding"
           FIRSTMATE_URL=http://127.0.0.1:4191 pnpm attach || failed="$failed attach"
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm usage || failed="$failed usage"
           [ -z "$failed" ] || {
             echo "::error::page checks failed:$failed"
             exit 1

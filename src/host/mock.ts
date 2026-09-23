@@ -4,6 +4,7 @@ import type { CopyResult, PickResult } from "../attachments";
 import recordedStream from "./mock-event-stream.json";
 // The example firstmate ships, read from the engine itself, so turning routing on here starts from the same rules.
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
+import { mockUsage } from "./mock-usage";
 import { artifactPath } from "./types";
 import type {
   Artifact,
@@ -11,6 +12,7 @@ import type {
   BacklogRecord,
   Call,
   CallAnswerRequest,
+  ContextReading,
   IntakeOutcome,
   ArtifactRevision,
   BearingsSnapshot,
@@ -27,6 +29,7 @@ import type {
   OutboxStatus,
   PaneCapture,
   ProjectHistory,
+  QuotaRead,
   ReasonKind,
   ReviewAnchor,
   ReviewSummary,
@@ -484,6 +487,13 @@ export class MockHostAdapter implements HostAdapter {
     }
   }
 
+  /** `?usage=<state>`: the usage panel's states, from src/host/mock-usage.ts. */
+  private readonly usage = mockUsage(reviewValue("usage"));
+  /** The context reading the host has reported, which it does only after a turn. */
+  private context: ContextReading | null = null;
+  private keychainAllowed = false;
+  private readonly openedAt = Date.now();
+
   private static fixtureSnapshot() {
     const bearings = bearingsFixture as unknown as BearingsSnapshot;
     const fleet = fleetFixture as unknown as FleetSnapshot;
@@ -724,6 +734,7 @@ export class MockHostAdapter implements HostAdapter {
     if (!this.startupPlayed && !reviewFlag("not-started") && !reviewFlag("relaunch") && !reviewFlag("reloaded") && !this.problem()) {
       this.startupPlayed = true;
       this.play(recordedStream.startup as RecordedEvent[]);
+      this.later(600, () => this.reportUsage());
       // `?markdown`: one reply in the shapes a first mate writes, for judging chat formatting by eye.
       if (reviewFlag("markdown")) this.later(900, () => this.emit({ type: "history", payload: { items: [...MARKDOWN_SAMPLE] } }));
       const health = reviewValue("health");
@@ -786,6 +797,59 @@ export class MockHostAdapter implements HostAdapter {
       return;
     }
     this.emit({ type: "state", payload: { state: "idle" } });
+    this.later(300, () => this.reportUsage());
+  }
+
+  /** What the host reports after a turn: the context reading and the session's Claude limit. `?usage=start` has had no turn yet. */
+  private reportUsage() {
+    if (!this.usage.context) return;
+    this.context = this.usage.context;
+    this.emit({ type: "usage", payload: { at_ms: Date.now(), update: { used: this.context.used ?? undefined, size: this.context.size ?? undefined }, context: this.context, rate_limit: this.usage.rateLimit } });
+  }
+
+  async readQuota(): Promise<QuotaRead> {
+    // Nothing is read before the scenario's first read lands, however many times the window asks.
+    await new Promise((resolve) => window.setTimeout(resolve, Math.max(300, this.openedAt + this.usage.quotaDelay - Date.now())));
+    return this.keychainAllowed ? this.usage.allowed(Date.now()) : this.usage.quota(Date.now());
+  }
+
+  /** Stands in for macOS asking the captain, who allows it. */
+  async allowQuotaKeychain(): Promise<QuotaRead> {
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    this.keychainAllowed = true;
+    return this.usage.allowed(Date.now());
+  }
+
+  /**
+   * `/compact`, as the real host and adapter run it: after the turn that is running, Claude Code's own words,
+   * then the reading it leaves. `?usage=compact-fails`: Claude Code says it could not compact.
+   */
+  private compact(id: string) {
+    const busy = this.state === "prompt_turn" || this.state === "agent_turn";
+    this.later(busy ? 2500 : 300, () => {
+      this.emit({ type: "outbox", payload: { id, status: "sent" } });
+      this.emit({ type: "compact", payload: { id, state: "sent" } });
+      this.emit({ type: "state", payload: { state: "prompt_turn" } });
+      this.emit({ type: "text", payload: { chunk: "Compacting...", origin: "prompt" } });
+      this.emit({ type: "compact", payload: { id, state: "running" } });
+      this.later(1800, () => {
+        const failure = this.usage.compactFailure;
+        if (failure) {
+          this.emit({ type: "text", payload: { chunk: `\n\n${failure}`, origin: "prompt" } });
+          this.emit({ type: "compact", payload: { id, state: "failed", error: failure } });
+        } else {
+          const from = this.context?.used ?? 0;
+          const at = Date.now();
+          this.context = { used: 61_200, size: this.context?.size ?? 1_000_000, at_ms: at, resumed: this.context?.resumed ?? false, compacted: { from, to: 61_200, at_ms: at } };
+          this.emit({ type: "usage", payload: { at_ms: at, update: { used: 61_200, size: this.context.size ?? undefined }, context: this.context, rate_limit: this.usage.rateLimit } });
+          this.emit({ type: "text", payload: { chunk: "\n\nCompacting completed.", origin: "prompt" } });
+          this.emit({ type: "compact", payload: { id, state: "done", context: this.context } });
+        }
+        this.outstanding.delete(id);
+        this.emit({ type: "outbox", payload: { id, status: "picked_up" } });
+        this.emit({ type: "state", payload: { state: "idle" } });
+      });
+    });
   }
 
   async hostStop() {
@@ -811,6 +875,11 @@ export class MockHostAdapter implements HostAdapter {
     const id = `mock-${++this.sequence}`;
     this.outstanding.add(id);
     this.emit({ type: "outbox", payload: { id, status: "queued" } });
+    if (/^\/compact(\s|$)/.test(text.trim())) {
+      this.transcript.push({ who: "captain", text });
+      this.compact(id);
+      return id;
+    }
     const run = () => this.deliver(id, text);
     if (this.state === "starting") this.deferred.push(run);
     else run();
@@ -902,6 +971,8 @@ export class MockHostAdapter implements HostAdapter {
       home: reviewFlag("not-started") || problem || (reviewFlag("relaunch") && this.state === "stopped") ? null : this.snapshot.fleet.fm_home,
       // `?reloaded`: the running host still has the conversation the window missed.
       conversation: reviewFlag("reloaded") ? { sessionId: "79f27945-68cf-4639-899d-49576d4668e4", items: [...EARLIER_CONVERSATION] } : null,
+      // `?reloaded`: the host already had a reading when the window opened.
+      usage: { context: reviewFlag("reloaded") ? this.usage.context : this.context, rateLimit: this.usage.rateLimit },
     };
   }
 
@@ -1071,7 +1142,7 @@ export class MockHostAdapter implements HostAdapter {
       if (item.type === "tool_call" || (item.type === "update" && raw.kind === "tool_call_update")) {
         const update = (raw.update ?? {}) as Record<string, unknown>;
         this.emit({ type: item.type === "tool_call" ? "tool_call" : "tool_update", payload: { id: String(update.toolCallId), title: (update.title ?? raw.title) as string | undefined, kind: update.kind as string | undefined, status: update.status as string | undefined } });
-      } else if (["session", "history", "state", "text", "outbox", "prompt_result", "host_health", "permission_request", "permission_resolved"].includes(item.type)) {
+      } else if (["session", "history", "state", "text", "outbox", "prompt_result", "usage", "compact", "host_health", "permission_request", "permission_resolved"].includes(item.type)) {
         this.emit(this.normalize(item.type as HostEvent["type"], raw));
       }
     }

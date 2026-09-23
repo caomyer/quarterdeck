@@ -169,6 +169,31 @@ for (const [name, query, replay] of [
   await page.close();
 }
 
+// The usage strip: quiet ink until a number matters, amber near a limit, coral at one, in both themes.
+for (const [state, token, row] of [["warn", "--amber", ".usage-strip-row.warn"], ["over", "--coral", ".usage-strip-row.over"]]) {
+  const page = await open(`?usage=${state}`);
+  await page.locator(row).first().waitFor();
+  await inBothThemes(page, async (theme) => {
+    const tone = await tokenColour(page, token);
+    const strip = page.locator(row).last();
+    check(await colourOf(strip.locator(".usage-value")) === tone, `${theme}: a plan window ${state === "warn" ? "near its limit" : "at its limit"} reads ${token} in the strip`);
+    check(await colourOf(strip.locator(".usage-meter b"), "backgroundColor") === tone, `${theme}: and its meter is filled ${token}`);
+    await page.locator(".usage-strip").click();
+    check(await colourOf(page.locator(".usage-provider").first().locator(".usage-when")) === tone, `${theme}: the provider's reset reads ${token} in the popover`);
+    await page.keyboard.press("Escape");
+  });
+  await page.close();
+}
+{
+  const page = await open("");
+  await page.waitForFunction(() => /Context\s+\d+%/.test(document.querySelector(".usage-strip")?.innerText ?? ""));
+  await inBothThemes(page, async (theme) => {
+    const quiet = await colourOf(page.locator(".usage-strip-row").first().locator(".usage-value"));
+    check(![await tokenColour(page, "--amber"), await tokenColour(page, "--coral")].includes(quiet), `${theme}: a context with room left is not coloured`);
+  });
+  await page.close();
+}
+
 await browser.close();
 if (failures.length) {
   console.log(`\n${failures.length} failed:\n- ${failures.join("\n- ")}`);

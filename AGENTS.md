@@ -106,6 +106,11 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
 - Crew routing, in Settings, reads and writes only through `engine/bin/fm-crew-dispatch.sh` (`src-tauri/src/routing.rs`): the app never writes `config/crew-dispatch.json` or the `.env` key line itself, and the key goes to the script on stdin and never comes back to the window.
   Its rule form offers only the harnesses and efforts `fm-crew-dispatch.sh harnesses` lists, so the app keeps no copy of either; `src/rules.ts` edits one field at a time and keeps every key it does not show.
   Check it, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm routing`.
+- The usage strip above the First Mate footer (`src/UsagePanel.tsx`, read by `src/usage.ts`) shows two readings it never mixes: the first mate's context window, only from the host's reading of the adapter's usage updates, and plan limits, only from `quota-axi` through `src-tauri/src/quota.rs`.
+  Compact now sends Claude Code's own `/compact` through the ordinary message path, after the captain confirms, and nothing else ever compacts from the app.
+  Check every state, including needs-authorization, stale and empty, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm usage`.
+  `cd src-tauri && cargo test quota_live_reads_this_mac -- --ignored --nocapture` reads this Mac's quota-axi through the app's path, spending nothing.
+  Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test compact_e2e_live_scratch_home -- --ignored --nocapture` compacts a real first mate while it is idle and while a turn runs.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.

@@ -40,11 +40,15 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
-// A banner between two recorded events can be on screen for tens of milliseconds, too short to poll for.
+// A banner between two recorded events can be on screen for tens of milliseconds, too short to poll for,
+// and so can the usage strip's reading while the first mate is up between the recording's restarts.
 await page.addInitScript((recording) => {
   window.__FM_REPLAY__ = recording;
   window.__BANNERS__ = [];
+  window.__STRIPS__ = [];
   new MutationObserver(() => {
+    const strip = document.querySelector(".usage-strip")?.textContent;
+    if (strip && window.__STRIPS__.at(-1) !== strip) window.__STRIPS__.push(strip);
     document.querySelectorAll(".problem-banner, .health-banner, .offline-banner").forEach((banner) => {
       const seen = `${banner.className}|${banner.getAttribute("data-reason-kind") ?? banner.getAttribute("data-health-kind") ?? ""}|${banner.querySelector("strong")?.textContent ?? ""}|${[...banner.querySelectorAll("button")].map((button) => button.textContent).join("/")}`;
       if (window.__BANNERS__.at(-1) !== seen) window.__BANNERS__.push(seen);
@@ -83,6 +87,13 @@ await page.getByText(/Re-sent after a restart.*Read by/).waitFor({ timeout: 30_0
 const captains = await page.locator(".captain-message p").allInnerTexts();
 const expected = history.filter((item) => item.who === "captain").map((item) => item.text);
 check(captains.join("\n") === expected.join("\n"), `each captain message shows once, in order (${captains.length} of ${expected.length})`);
+// The context window as the recorded session reported it, read from its usage updates whatever shape they were recorded in.
+const reading = [...events].reverse().find((item) => item.type === "usage" && typeof item.payload.update?.used === "number");
+if (reading) {
+  const strips = await page.evaluate(() => window.__STRIPS__);
+  const shown = strips.find((strip) => /Context\d+% · \d+(\.\d)?[kM]? of \d+(\.\d)?[kM]/.test(strip));
+  check(Boolean(shown), `the strip showed the recorded session's context (${JSON.stringify(shown ?? strips.at(-1))})`);
+}
 for (const item of restored) {
   check(captains.includes(item.text), `a message the host held in its outbox shows its words (${item.state})`);
 }

@@ -24,8 +24,14 @@
 //! Commands: `host_start`, `host_stop`, `host_restart`, `send`, `get_state`,
 //! `answer_permission`, and `cancel_turn`, which answers "not supported yet".
 //! Events: `session`, `state`, `text`, `tool_call`, `update`, `outbox`,
-//! `prompt_result`, `usage`, `permission`, `permission_request`,
+//! `prompt_result`, `usage`, `compact`, `permission`, `permission_request`,
 //! `permission_resolved`, `host_health`.
+//!
+//! `usage` carries the adapter's update as it came, with the host's reading of
+//! the context window and the latest Claude plan limit, which `get_state` also
+//! returns for a window that opens later. `compact` follows a `/compact` the
+//! captain sent, from handing it over to how it ended, since the adapter says
+//! that only in the words it streams.
 
 use crate::envpath;
 use serde_json::{json, Value};
@@ -1114,7 +1120,82 @@ struct Host {
     agent_turn_starts: VecDeque<Instant>,
     /// The turn count last reported as a rewake storm, while one lasts.
     storm_reported: Option<usize>,
+    /// This session's context window as the adapter last reported it.
+    context: Context,
+    /// The adapter's latest `_claude/rateLimit`: the Claude plan limit the first mate runs under.
+    rate_limit: Option<Value>,
+    /// A `/compact` handed to the first mate and not finished yet.
+    compaction: Option<Compaction>,
     groups: Groups,
+}
+
+/// Claude Code's own command for compacting a conversation, which the adapter
+/// runs when it arrives as a prompt: from the app's Compact now, or typed.
+fn is_compact_command(text: &str) -> bool {
+    let text = text.trim();
+    text == "/compact" || text.starts_with("/compact ")
+}
+
+/// A compaction the captain asked for. The adapter reports its outcome only in
+/// the words it streams, so the host watches those and the prompt's result.
+struct Compaction {
+    id: String,
+    /// The largest reading while it waited and ran: the size it compacted from.
+    from: Option<u64>,
+    /// The adapter said it started compacting, so any turn it waited behind is over.
+    running: bool,
+    /// What the adapter said when compacting failed.
+    failure: Option<String>,
+}
+
+/// The first mate's context window, from the adapter's `usage_update`s. A reading
+/// only grows within a session, so one that falls well below the last is a
+/// compaction, whoever started it.
+#[derive(Default)]
+struct Context {
+    used: Option<u64>,
+    size: Option<u64>,
+    at_ms: u64,
+    /// The session was resumed, so its first reading already carries the earlier conversation.
+    resumed: bool,
+    /// The last compaction: the reading before it, the first reading after it, and when.
+    compacted: Option<(u64, u64, u64)>,
+}
+
+/// A reading below this share of the last one is a compaction.
+const COMPACTED_BELOW: f64 = 0.7;
+
+impl Context {
+    fn fresh(resumed: bool) -> Self {
+        Context { resumed, ..Context::default() }
+    }
+
+    fn note(&mut self, used: u64, size: Option<u64>, at_ms: u64) {
+        match (self.used, &mut self.compacted) {
+            (Some(before), _) if before > 0 && (used as f64) < before as f64 * COMPACTED_BELOW => {
+                self.compacted = Some((before, used, at_ms));
+            }
+            // After compacting, the adapter falls back to 0 when it cannot measure what
+            // was kept; the next real reading is what the compaction left.
+            (Some(0), Some((_, to, _))) if *to == 0 => *to = used,
+            _ => {}
+        }
+        self.used = Some(used);
+        if size.is_some() {
+            self.size = size;
+        }
+        self.at_ms = at_ms;
+    }
+
+    fn view(&self) -> Value {
+        json!({
+            "used": self.used,
+            "size": self.size,
+            "at_ms": (self.at_ms > 0).then_some(self.at_ms),
+            "resumed": self.resumed,
+            "compacted": self.compacted.map(|(from, to, at_ms)| json!({"from": from, "to": to, "at_ms": at_ms})),
+        })
+    }
 }
 
 impl Host {
@@ -1143,6 +1224,9 @@ impl Host {
             agent_turns: 0,
             agent_turn_starts: VecDeque::new(),
             storm_reported: None,
+            context: Context::default(),
+            rate_limit: None,
+            compaction: None,
         }
     }
 
@@ -1322,6 +1406,7 @@ impl Host {
                         "session_id": adapter.session_id,
                         "items": history_items(&self.conversation),
                     })),
+                    "usage": {"context": self.context.view(), "rate_limit": self.rate_limit},
                     "permission_requests": self
                         .asked
                         .iter()
@@ -1493,6 +1578,8 @@ impl Host {
             self.emit("history", json!({"items": history_items(&history)}));
         }
         self.conversation = history.iter().filter_map(conversation_update).collect();
+        self.context = Context::fresh(mode == "loaded");
+        self.compaction = None;
         self.adapter = Some(adapter);
         self.in_flight.clear();
         self.started_hint = None;
@@ -1728,19 +1815,50 @@ impl Host {
         match kind.as_str() {
             "agent_message_chunk" => {
                 let text = update.pointer("/content/text").and_then(Value::as_str).unwrap_or("");
+                let mut started = None;
+                if let Some(compaction) = self.compaction.as_mut() {
+                    if !compaction.running && text.contains("Compacting...") {
+                        compaction.running = true;
+                        started = Some(compaction.id.clone());
+                    }
+                    if let Some(at) = text.find("Compacting failed") {
+                        compaction.failure = Some(text[at..].trim().to_string());
+                    }
+                }
+                if let Some(id) = started {
+                    self.emit("compact", json!({"id": id, "state": "running"}));
+                }
                 self.emit("text", json!({"origin": origin, "text": text}));
             }
             "tool_call" => {
                 let title = update.get("title").and_then(Value::as_str).unwrap_or("");
                 self.emit("tool_call", json!({"origin": origin, "title": title, "update": update}));
             }
-            "usage_update" => self.emit("usage", json!({"update": update})),
+            "usage_update" => {
+                self.note_usage(&update);
+                self.emit("usage", json!({"update": update, "context": self.context.view(), "rate_limit": self.rate_limit}));
+            }
             other => self.emit("update", json!({"origin": origin, "kind": other, "update": update})),
         }
         // The model's own cycle ended: its result is the authoritative end of the agent turn.
         if result_origin.as_deref().is_some_and(|origin| AUTONOMOUS_ORIGINS.contains(&origin)) {
             self.last_turn_end = Some(Instant::now());
             self.end_agent_turn(json!({"derived": "agent turn result", "result_origin": result_origin}));
+        }
+    }
+
+    /// Keeps what a usage update says about the context window and the plan's limit.
+    fn note_usage(&mut self, update: &Value) {
+        if let Some(used) = update.get("used").and_then(Value::as_u64) {
+            if let Some(compaction) = self.compaction.as_mut() {
+                compaction.from = compaction.from.max(Some(used));
+            }
+            self.context.note(used, update.get("size").and_then(Value::as_u64), now_ms());
+        }
+        if let Some(limit) = update.pointer("/_meta/_claude~1rateLimit").filter(|limit| limit.is_object()) {
+            let mut limit = limit.clone();
+            limit["at_ms"] = json!(now_ms());
+            self.rate_limit = Some(limit);
         }
     }
 
@@ -1846,6 +1964,10 @@ impl Host {
                 }
             }
         }
+        if self.compaction.as_ref().is_some_and(|compaction| compaction.id == outbox_id) {
+            let compaction = self.compaction.take().expect("checked above");
+            self.end_compaction(compaction, error.as_deref());
+        }
         self.emit(
             "prompt_result",
             json!({"id": outbox_id, "stop_reason": stop, "usage": usage, "error": error}),
@@ -1858,6 +1980,27 @@ impl Host {
             }
             if next != self.state {
                 self.set_state(next, json!({}));
+            }
+        }
+    }
+
+    /// Says how a compaction the captain asked for ended. It worked when the prompt
+    /// ended without an error and the adapter did not say it failed.
+    fn end_compaction(&mut self, compaction: Compaction, error: Option<&str>) {
+        let failure = match error {
+            // Cut off by the adapter exiting: it is sent again after the next start.
+            Some(error) if cut_off_by_exit(error) => return,
+            Some(error) => Some(prompt_error_text(error)),
+            None => compaction.failure,
+        };
+        match failure {
+            Some(failure) => self.emit("compact", json!({"id": compaction.id, "state": "failed", "error": failure})),
+            None => {
+                let to = self.context.used;
+                if let (Some(from), Some(to)) = (compaction.from, to) {
+                    self.context.compacted = Some((from, to, now_ms()));
+                }
+                self.emit("compact", json!({"id": compaction.id, "state": "done", "context": self.context.view()}));
             }
         }
     }
@@ -1898,6 +2041,10 @@ impl Host {
             self.record(&pending.id, None, "sent", json!({}));
             self.emit("outbox", json!({"id": pending.id, "state": "sent", "while": self.state.name()}));
             self.in_flight.push_back(pending.id.clone());
+            if is_compact_command(&pending.text) {
+                self.compaction = Some(Compaction { id: pending.id.clone(), from: self.context.used, running: false, failure: None });
+                self.emit("compact", json!({"id": pending.id, "state": "sent"}));
+            }
             // The adapter does not echo a prompt back, so the conversation records it here.
             self.conversation.push(json!({
                 "sessionUpdate": "user_message_chunk",
@@ -1922,6 +2069,15 @@ impl Host {
             });
         }
     }
+}
+
+/// A prompt error in the adapter's own words: its JSON-RPC message, or the text as it came.
+fn prompt_error_text(error: &str) -> String {
+    serde_json::from_str::<Value>(error)
+        .ok()
+        .and_then(|error| error.get("message").and_then(Value::as_str).map(str::to_string))
+        .map(|message| message.trim_start_matches("Internal error: ").to_string())
+        .unwrap_or_else(|| error.to_string())
 }
 
 /// The user-facing text of a prompt error that means the Claude account hit its
@@ -2059,6 +2215,42 @@ fn write_session_id(host_dir: &Path, session_id: &str, home: &Path) {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_context_reading_grows_with_the_conversation() {
+        let mut context = Context::fresh(false);
+        assert_eq!(context.view()["used"], Value::Null, "nothing is known before the first reading");
+        context.note(42_966, Some(1_000_000), 10);
+        context.note(70_979, None, 20);
+        let view = context.view();
+        assert_eq!((view["used"].as_u64(), view["size"].as_u64(), view["at_ms"].as_u64()), (Some(70_979), Some(1_000_000), Some(20)));
+        assert_eq!(view["compacted"], Value::Null);
+        assert_eq!(view["resumed"], false);
+    }
+
+    #[test]
+    fn a_reading_that_falls_well_below_the_last_is_a_compaction() {
+        let mut context = Context::fresh(true);
+        context.note(812_400, Some(1_000_000), 10);
+        context.note(800_000, None, 15);
+        assert_eq!(context.view()["compacted"], Value::Null, "a small dip is not a compaction");
+        context.note(61_200, None, 20);
+        assert_eq!(context.view()["compacted"], json!({"from": 800_000, "to": 61_200, "at_ms": 20}));
+        context.note(64_000, None, 30);
+        assert_eq!(context.view()["compacted"]["to"], 61_200, "later turns do not move what the compaction left");
+        assert_eq!(context.view()["resumed"], true);
+    }
+
+    #[test]
+    fn a_compaction_the_adapter_could_not_measure_takes_the_next_reading() {
+        let mut context = Context::fresh(false);
+        context.note(500_000, Some(1_000_000), 10);
+        // The adapter reports 0 when it cannot ask what compaction kept.
+        context.note(0, None, 20);
+        context.note(58_000, None, 25);
+        assert_eq!(context.view()["compacted"], json!({"from": 500_000, "to": 58_000, "at_ms": 20}));
+        assert_eq!(context.view()["used"], 58_000);
+    }
 
     /// A throwaway home whose `bin/fm-lock.sh` is the given shell body.
     fn home_with_lock_script(name: &str, body: Option<&str>) -> PathBuf {
@@ -2357,9 +2549,9 @@ def send(message):
         sys.stdout.flush()
 def update(u):
     send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": u}})
-def answer(id, origin="human"):
+def answer(id, origin="human", used=1):
     # As the real adapter does: the result's usage names whose turn it was, then the response.
-    update({"sessionUpdate": "usage_update", "used": 1, "size": 100, "_meta": {"_claude/origin": {"kind": origin}}})
+    update({"sessionUpdate": "usage_update", "used": used, "size": 100 if used == 1 else 1000, "_meta": {"_claude/origin": {"kind": origin}}})
     send({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn"}})
 # A Stop-hook rewake: the model's own cycle, with a step that reports nothing for a while.
 # A prompt that arrives during it is folded into the cycle, as the CLI does, and never answered.
@@ -2418,6 +2610,21 @@ while True:
         if "plain" in text:
             update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "answered " + text}})
             answer(m["id"])
+            continue
+        if text == "grow":
+            update({"sessionUpdate": "usage_update", "used": 800, "size": 1000, "_meta": {"_claude/rateLimit": {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1790071200}}})
+            answer(m["id"], used=800)
+            continue
+        if text.startswith("/compact"):
+            # As the adapter streams Claude Code's own command: its words, then the reading it leaves.
+            update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Compacting..."}})
+            if "please-fail" in text:
+                update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "\n\nCompacting failed: Not enough messages to compact."}})
+                answer(m["id"], used=800)
+            else:
+                update({"sessionUpdate": "usage_update", "used": 120, "size": 1000})
+                update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "\n\nCompacting completed."}})
+                answer(m["id"], used=120)
             continue
         prompt = m["id"]
         send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {"sessionId": "s1", "toolCall": {"title": "Delete the build folder"}, "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]}})
@@ -2684,6 +2891,52 @@ while True:
         assert!(text.contains("answered plain during") && !text.contains("folded"), "{text:?}");
         // The five silent seconds of the rewake's step did not end its turn early.
         assert!(!events.iter().any(|(e, b)| e == "state" && b["derived"].as_str().is_some_and(|d| d.contains("quiet"))), "{events:?}");
+    }
+
+    /// Compact now sends `/compact`, which the adapter runs as Claude Code's own command
+    /// and reports only in the words it streams: the host says how each one ended.
+    #[tokio::test]
+    async fn a_compaction_the_captain_asked_for_says_how_it_ended() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("compact");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        let send = |text: &str| {
+            let text = text.to_string();
+            host.call(|reply| Cmd::Send { text, reply })
+        };
+        let grow = send("grow").await.unwrap().expect("send");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == grow.as_str() && b["state"] == "picked_up").await.expect("read");
+        let grown = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+
+        let compact = send("/compact").await.unwrap().expect("send");
+        let done = wait_for(&log, Duration::from_secs(10), |e, b| e == "compact" && b["id"] == compact.as_str() && matches!(b["state"].as_str(), Some("done" | "failed"))).await;
+        let after = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let refused = send("/compact please-fail").await.unwrap().expect("send");
+        let refusal = wait_for(&log, Duration::from_secs(10), |e, b| e == "compact" && b["id"] == refused.as_str() && matches!(b["state"].as_str(), Some("done" | "failed"))).await;
+        let broken = send("/compact fail-me").await.unwrap().expect("send");
+        let error = wait_for(&log, Duration::from_secs(10), |e, b| e == "compact" && b["id"] == broken.as_str() && matches!(b["state"].as_str(), Some("done" | "failed"))).await;
+        let plain = send("plain after").await.unwrap().expect("send");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == plain.as_str() && b["state"] == "picked_up").await.expect("read");
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(grown["usage"]["context"]["used"], 800, "{grown}");
+        assert_eq!(grown["usage"]["context"]["size"], 1000, "{grown}");
+        assert_eq!(grown["usage"]["rate_limit"]["rateLimitType"], "five_hour", "{grown}");
+        let told = |id: &str| events.iter().filter(|(e, b)| e == "compact" && b["id"] == id).map(|(_, b)| b["state"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert_eq!(told(&compact), ["sent", "running", "done"], "{events:?}");
+        let done = done.expect("the compaction ended");
+        assert_eq!(done["state"], "done", "{done}");
+        assert_eq!((&done["context"]["compacted"]["from"], &done["context"]["compacted"]["to"]), (&json!(800), &json!(120)), "{done}");
+        assert_eq!(after["usage"]["context"]["compacted"]["from"], 800, "a window that opens later reads it too: {after}");
+        let refusal = refusal.expect("the refused compaction ended");
+        assert_eq!((&refusal["state"], &refusal["error"]), (&json!("failed"), &json!("Compacting failed: Not enough messages to compact.")), "{refusal}");
+        let error = error.expect("the broken compaction ended");
+        assert_eq!((&error["state"], &error["error"]), (&json!("failed"), &json!("boom")), "{error}");
+        assert!(!events.iter().any(|(e, b)| e == "compact" && b["id"] == plain.as_str()), "an ordinary message is not a compaction");
     }
 
     /// A window that opens while the first mate runs, such as one reloaded, missed the
