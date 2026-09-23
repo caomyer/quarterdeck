@@ -225,11 +225,20 @@ for (const [state, words] of [["compacted", "Compacted 12m ago: 812k down to 61k
 }
 {
   // Mid-turn: it waits for the turn, and says so, rather than cutting in.
-  const page = await open("");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  page.on("pageerror", (error) => failures.push(`mid-turn: ${error.message}`));
+  // The mock's turn is over in a moment, so its clock is held while the turn runs, however slow the machine.
+  await page.clock.install();
+  await page.goto(`${baseUrl}/`);
   await page.waitForFunction(() => document.querySelector(".usage-strip")?.textContent?.includes("71k"), null, { timeout: 8000 });
+  // Let the plan read land first: it waits on the same clock.
+  await openPopover(page);
+  await page.keyboard.press("Escape");
   await page.locator(".primary-nav .nav-item", { hasText: "Chat" }).click();
   await page.locator(".composer textarea").fill("Check the fleet.");
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   await page.locator(".send-button").click();
+  await page.clock.runFor(50);
   await page.waitForFunction(() => document.querySelector(".chat-status")?.textContent?.includes("Working"), null, { timeout: 8000 });
   await openPopover(page);
   await page.getByRole("button", { name: "Compact now…" }).click();
@@ -237,6 +246,7 @@ for (const [state, words] of [["compacted", "Compacted 12m ago: 812k down to 61k
   await page.locator(".usage-confirm").getByRole("button", { name: "Compact" }).click();
   await page.locator(".usage-working").waitFor();
   check((await page.locator(".usage-working").innerText()).includes("Waiting for the current turn to end"), "and while it waits, it says so");
+  await page.clock.resume();
   await page.waitForFunction(() => document.querySelector(".usage-popover")?.textContent?.includes("Compacted just now"), null, { timeout: 12000 });
   check(true, "then it compacts");
   await page.close();
