@@ -1816,6 +1816,8 @@ impl Host {
             "agent_message_chunk" => {
                 let text = update.pointer("/content/text").and_then(Value::as_str).unwrap_or("");
                 let mut started = None;
+                // The adapter sends its compaction markers as chunks of their own, so only
+                // those exact shapes count: a reply that quotes them mid-chunk is not one.
                 if let Some(compaction) = self.compaction.as_mut() {
                     if !compaction.running && text == "Compacting..." {
                         compaction.running = true;
