@@ -42,7 +42,10 @@ fn home_for(app: &AppHandle) -> Result<PathBuf, String> {
 /// its own words without the script's name in front.
 async fn run(home: &Path, args: &[&str], input: Option<&[u8]>) -> Result<String, String> {
     let script = home.join(SCRIPT);
-    let mut child = envpath::command(&script)
+    let mut command = envpath::command(&script);
+    #[cfg(test)]
+    command.env_remove("TYPESAFE_API_KEY");
+    let mut child = command
         .args(args)
         .env("FM_HOME", home)
         .current_dir(home)

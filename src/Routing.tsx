@@ -127,7 +127,7 @@ export function RoutingSettings({ host }: { host: HostAdapter }) {
     </div>
 
     {loadProblem && <div className="routing-alert" role="alert"><CircleAlert size={16} /><span>Routing could not be read: {loadProblem}</span></div>}
-    {routing && !routing.available && <div className="routing-alert" role="alert"><CircleAlert size={16} /><span>{routing.problem}</span></div>}
+    {routing?.problem && <div className="routing-alert" role="alert"><CircleAlert size={16} /><span>{routing.problem}</span></div>}
 
     {routing?.available && !on && !choosing && <p className="routing-state">Off. The first mate chooses who does each piece of work itself.</p>}
 

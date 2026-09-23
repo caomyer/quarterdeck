@@ -315,7 +315,7 @@ export type Needed = {
  * `bin/fm-crew-dispatch.sh` reports it. Off means there is no rules file and the first mate chooses for itself.
  */
 export type Routing = {
-  /** False when this home's firstmate cannot set routing up; `problem` says why. */
+  /** False when this home's firstmate cannot set routing up; `problem` says why, and also why the rules could not be read while routing is on. */
   available: boolean;
   problem: string | null;
   on: boolean;
