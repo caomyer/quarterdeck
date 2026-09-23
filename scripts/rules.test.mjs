@@ -107,6 +107,19 @@ test("choosing a different harness clears its model and an effort it does not ta
   assert.deepEqual(doc.default, { harness: "codex" }, "the harness default is no effort key at all");
 });
 
+test("choosing a different harness clears the provider and floor that named the old one, and keeps the rule's own", () => {
+  let doc = setProfileField(parseRules(RICH), { rule: 0 }, 0, "harness", "codex", HARNESSES);
+  assert.deepEqual(profilesOf(rulesOf(doc)[0].use)[0], { harness: "codex" }, "pi's model and codex provider are gone");
+  doc = setProfileField(doc, { rule: 0 }, 1, "harness", "claude", HARNESSES);
+  assert.deepEqual(profilesOf(rulesOf(doc)[0].use)[1], { harness: "claude" }, "codex's model and floor are gone");
+  const rule = rulesOf(doc)[0];
+  assert.deepEqual(rule.floor, { scope: "all_models", min_percent: 20, provider: "codex" });
+  assert.equal(rule.approval, "captain");
+  assert.equal(rule.select, "quota-balanced");
+  const same = setProfileField(parseRules(RICH), { rule: 0 }, 0, "harness", "pi", HARNESSES);
+  assert.deepEqual(profilesOf(rulesOf(same)[0].use)[0], { harness: "pi", model: "openai-codex/gpt-5.6-sol", provider: "codex" }, "choosing the same harness clears nothing");
+});
+
 test("an effort bound to a model is offered only with that model", () => {
   const codex = HARNESSES[1];
   assert.equal(effortAllowed(codex, "gpt-5.5", "max"), false);

@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, CircleAlert, Plus, X } from "lucide-react";
 import type { HarnessChoice } from "./host";
 import { addProfile, addRule, effortChoices, extraKeys, modelSuggestions, moveProfile, moveRule, parseRules, type Profile, removeProfile, removeRule, rulesOf, type RulesDoc, serialize, setProfileField, setRuleText, type Target, targetProfiles } from "./rules";
@@ -12,6 +12,15 @@ type Props = {
   template: string | null;
   disabled: boolean;
 };
+
+/** What a harness switch cleared, said on the row it was made on until the next edit or save. */
+type Switched = { text: string; row: string; message: string };
+type Change = (next: RulesDoc, switched?: { row: string; message: string }) => void;
+
+/** Words for a list of keys, joined as a sentence says them. */
+function spoken(keys: string[]) {
+  return keys.length < 2 ? keys.join("") : `${keys.slice(0, -1).join(", ")} and ${keys[keys.length - 1]}`;
+}
 
 /** Words for a list of keys the form keeps but has no control for. */
 function listed(keys: string[]) {
@@ -33,7 +42,16 @@ export function RulesEditor({ text, onChange, harnesses, template, disabled }: P
       return null;
     }
   }, [template]);
-  const change = (next: RulesDoc) => onChange(serialize(next));
+  const [switched, setSwitched] = useState<Switched | null>(null);
+  useEffect(() => {
+    if (disabled) setSwitched(null);
+  }, [disabled]);
+  const change: Change = (next, made) => {
+    const saved = serialize(next);
+    setSwitched(made ? { ...made, text: saved } : null);
+    onChange(saved);
+  };
+  const noticeFor = (row: string) => (switched && switched.text === text && switched.row === row ? switched.message : null);
   const rules = rulesOf(doc);
   const defaults = targetProfiles(doc, "default");
   const extra = extraKeys(doc, "doc");
@@ -56,7 +74,7 @@ export function RulesEditor({ text, onChange, harnesses, template, disabled }: P
           <span>When the work is</span>
           <textarea rows={2} value={typeof rule.when === "string" ? rule.when : ""} placeholder="A kind of work, in plain words: a rote rename, a big feature, anything about current events…" disabled={disabled} onChange={(event) => change(setRuleText(doc, index, "when", event.target.value))} />
         </label>
-        <Choices doc={doc} target={{ rule: index }} harnesses={harnesses} example={example} disabled={disabled} onChange={change} label={`rule ${index + 1}`} />
+        <Choices doc={doc} target={{ rule: index }} harnesses={harnesses} example={example} disabled={disabled} onChange={change} noticeFor={noticeFor} label={`rule ${index + 1}`} />
         <label className="rule-field">
           <span>Why <em>optional</em></span>
           <input type="text" value={typeof rule.why === "string" ? rule.why : ""} placeholder="What helps the first mate tell this rule from the others" disabled={disabled} onChange={(event) => change(setRuleText(doc, index, "why", event.target.value))} />
@@ -70,7 +88,7 @@ export function RulesEditor({ text, onChange, harnesses, template, disabled }: P
       <header><span>Otherwise</span></header>
       <p className="rule-note">For work no rule fits.</p>
       {defaults.length > 0
-        ? <Choices doc={doc} target="default" harnesses={harnesses} example={example} disabled={disabled} onChange={change} label="the default" removable />
+        ? <Choices doc={doc} target="default" harnesses={harnesses} example={example} disabled={disabled} onChange={change} noticeFor={noticeFor} label="the default" removable />
         : <>
           <p className="rule-note">No default: the first mate picks its usual harness.</p>
           <button type="button" className="rules-add" disabled={disabled} onClick={() => change(addProfile(doc, "default", harnesses))}><Plus size={14} /> Add a default</button>
@@ -80,7 +98,7 @@ export function RulesEditor({ text, onChange, harnesses, template, disabled }: P
 }
 
 /** The harnesses one rule, or the default, tries, in the order it tries them. */
-function Choices({ doc, target, harnesses, example, disabled, onChange, label, removable = false }: { doc: RulesDoc; target: Target; harnesses: HarnessChoice[]; example: RulesDoc | null; disabled: boolean; onChange: (next: RulesDoc) => void; label: string; removable?: boolean }) {
+function Choices({ doc, target, harnesses, example, disabled, onChange, noticeFor, label, removable = false }: { doc: RulesDoc; target: Target; harnesses: HarnessChoice[]; example: RulesDoc | null; disabled: boolean; onChange: Change; noticeFor: (row: string) => string | null; label: string; removable?: boolean }) {
   const profiles = targetProfiles(doc, target);
   return <div className="rule-choices">
     <div className="rule-choices-label">
@@ -100,6 +118,7 @@ function Choices({ doc, target, harnesses, example, disabled, onChange, label, r
         disabled={disabled}
         onChange={onChange}
         label={`${label}, choice ${index + 1}`}
+        notice={noticeFor(`${label}, choice ${index + 1}`)}
         removable={removable || profiles.length > 1}
       />)}
     </ol>
@@ -107,7 +126,7 @@ function Choices({ doc, target, harnesses, example, disabled, onChange, label, r
   </div>;
 }
 
-function ChoiceRow({ doc, profile, index, count, target, harnesses, example, disabled, onChange, label, removable }: { doc: RulesDoc; profile: Profile; index: number; count: number; target: Target; harnesses: HarnessChoice[]; example: RulesDoc | null; disabled: boolean; onChange: (next: RulesDoc) => void; label: string; removable: boolean }) {
+function ChoiceRow({ doc, profile, index, count, target, harnesses, example, disabled, onChange, label, notice, removable }: { doc: RulesDoc; profile: Profile; index: number; count: number; target: Target; harnesses: HarnessChoice[]; example: RulesDoc | null; disabled: boolean; onChange: Change; label: string; notice: string | null; removable: boolean }) {
   const listId = useId();
   const harness = typeof profile.harness === "string" ? profile.harness : "";
   const model = typeof profile.model === "string" ? profile.model : "";
@@ -117,7 +136,12 @@ function ChoiceRow({ doc, profile, index, count, target, harnesses, example, dis
   const effortKnown = effort === "" || efforts.some((choice) => choice.effort === effort && choice.allowed) || (!chosen && harness !== "");
   const suggestions = modelSuggestions(harness, doc, example);
   const extra = extraKeys(profile, "profile");
-  const set = (field: "harness" | "model" | "effort", value: string) => onChange(setProfileField(doc, target, index, field, value, harnesses));
+  const set = (field: "harness" | "model" | "effort", value: string) => {
+    const next = setProfileField(doc, target, index, field, value, harnesses);
+    const after = targetProfiles(next, target)[index];
+    const cleared = field === "harness" ? Object.keys(profile).filter((key) => !(key in after)) : [];
+    onChange(next, cleared.length > 0 ? { row: label, message: `Switching to ${value} cleared its ${spoken(cleared)}, which ${cleared.length > 1 ? "were" : "was"} set for ${harness || "the harness before"}.` } : undefined);
+  };
 
   return <li className="choice-row" data-testid="choice-row">
     <span className="choice-order" aria-hidden="true">{index + 1}</span>
@@ -137,6 +161,7 @@ function ChoiceRow({ doc, profile, index, count, target, harnesses, example, dis
       <button type="button" className="icon-button small" title="Try this one later" disabled={disabled || index === count - 1} onClick={() => onChange(moveProfile(doc, target, index, 1))}><ArrowDown size={14} /></button>
       <button type="button" className="icon-button small" title="Remove this choice" disabled={disabled || !removable} onClick={() => onChange(removeProfile(doc, target, index))}><X size={14} /></button>
     </div>
+    {notice && <p className="rule-extra" role="status" data-testid="choice-switched">{notice}</p>}
     {chosen && !chosen.installed && <p className="choice-note"><CircleAlert size={13} /> {chosen.name} is not installed on this Mac, so the first mate cannot start it until it is.</p>}
     {!chosen && harness !== "" && <p className="choice-note"><CircleAlert size={13} /> Firstmate doesn't know a harness called {harness}; choose one it does.</p>}
     {!effortKnown && <p className="choice-note"><CircleAlert size={13} /> {harness} does not take the effort {effort}{model ? ` with ${model}` : ""}; choose another.</p>}

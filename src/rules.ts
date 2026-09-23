@@ -22,6 +22,8 @@ export type Target = { rule: number } | "default";
 const PROFILE_FIELDS = ["harness", "model", "effort"];
 const RULE_FIELDS = ["when", "use", "why"];
 const DOC_FIELDS = ["rules", "default"];
+/** A profile's fields that name its harness, so choosing another harness clears them. */
+const HARNESS_BOUND = ["model", "provider", "floor"];
 
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -147,8 +149,9 @@ export function effortAllowed(harness: HarnessChoice | undefined, model: string,
 }
 
 /**
- * Changes one field of one profile. Choosing a different harness clears the model, which names a model of the old
- * harness, and an effort the new one does not take, so the form never holds a combination firstmate would refuse.
+ * Changes one field of one profile. Choosing a different harness clears what named the old harness (its model, the
+ * provider whose quota it was judged by, and its own floor) and an effort the new one does not take, so the form
+ * never holds a combination firstmate would refuse or route by the wrong harness's quota.
  */
 export function setProfileField(doc: RulesDoc, target: Target, index: number, field: "harness" | "model" | "effort", value: string, harnesses: HarnessChoice[]): RulesDoc {
   return edited(doc, (copy) => {
@@ -156,7 +159,7 @@ export function setProfileField(doc: RulesDoc, target: Target, index: number, fi
     const profile = profiles[index];
     const before = typeof profile.harness === "string" ? profile.harness : "";
     assign(profile, field, value);
-    if (field === "harness" && value !== before) delete profile.model;
+    if (field === "harness" && value !== before) for (const key of HARNESS_BOUND) delete profile[key];
     if ((field === "harness" || field === "model") && typeof profile.effort === "string") {
       const chosen = harnesses.find((harness) => harness.name === profile.harness);
       if (chosen && !effortAllowed(chosen, typeof profile.model === "string" ? profile.model : "", profile.effort)) delete profile.effort;

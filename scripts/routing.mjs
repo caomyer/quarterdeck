@@ -1,6 +1,7 @@
 // Checks crew routing in the settings: off until the captain turns it on, the
 // example rules as a starting point, rules the first mate cannot use refused in
-// its own words and shown when a file already holds them, turning it off
+// its own words and shown when a file already holds them, a harness switch
+// saying what it cleared, turning it off
 // setting the rules aside and turning it on bringing them back, and the
 // optional typed dispatch key, which is never shown once saved.
 //
@@ -206,6 +207,21 @@ const kept = JSON.parse(await routing.locator(".routing-rules").inputValue());
 check(kept.rules[0].approval === "captain" && kept.rules[0].floor.min_percent === 20 && kept.rules[0].use[0].provider === "codex" && kept.rules[0].use[1].floor.min_percent === 50 && kept.notes === "Kept by hand.", "an edit in the form keeps every field it does not show");
 check(Object.keys(kept.rules[0]).join(",") === "when,approval,floor,use", "in the order the file had them");
 await shot("rich");
+
+// Switching a choice to another harness clears what named the old one, and says so on that row until the next edit.
+await tab("Form").click();
+const piChoice = rich.locator("[data-testid='choice-row']").nth(0);
+await piChoice.locator("select[aria-label^='Harness']").selectOption("codex");
+const switched = piChoice.locator("[data-testid='choice-switched']");
+check(await switched.count() === 1 && (await switched.innerText()) === "Switching to codex cleared its model and provider, which were set for pi.", "a harness switch says what it cleared, on the row it was made on");
+check(await rich.locator("[data-testid='choice-switched']").count() === 1, "and on no other row");
+check(!(await piChoice.innerText()).includes('Also sets "provider"'), "the old provider is no longer kept");
+await shot("switched");
+await piChoice.locator("input[aria-label^='Model']").fill("gpt-5.5");
+check(await switched.count() === 0, "the notice clears on the next edit");
+await tab("JSON").click();
+const switchedRules = JSON.parse(await routing.locator(".routing-rules").inputValue());
+check(JSON.stringify(switchedRules.rules[0].use[0]) === '{"harness":"codex","model":"gpt-5.5"}' && switchedRules.rules[0].floor.min_percent === 20 && switchedRules.rules[0].approval === "captain", "the switched choice holds only the new harness's fields, and the rule keeps its own");
 
 // Rules the form cannot show open as JSON, saying why, rather than being reshaped.
 await openSettings("routing=unshowable");
