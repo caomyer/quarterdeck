@@ -1816,7 +1816,7 @@ impl Host {
             "agent_message_chunk" => {
                 let text = update.pointer("/content/text").and_then(Value::as_str).unwrap_or("");
                 let mut started = None;
-                if let Some(compaction) = self.compaction.as_mut() {
+                if let Some(compaction) = self.compaction.as_mut().filter(|c| self.in_flight.front() == Some(&c.id)) {
                     if !compaction.running && text.contains("Compacting...") {
                         compaction.running = true;
                         started = Some(compaction.id.clone());
@@ -2566,6 +2566,13 @@ def rewake():
     update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "handled the wake"}})
     cycle.clear()
     update({"sessionUpdate": "usage_update", "used": 1, "size": 100, "_meta": {"_claude/origin": {"kind": "task-notification"}}})
+# The CLI runs one prompt at a time: one sent while another runs waits for it.
+turn = threading.Lock()
+def quote(id):
+    time.sleep(0.5)
+    update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "The last run said: Compacting failed: Not enough messages to compact."}})
+    answer(id, used=800)
+    turn.release()
 prompt = None
 while True:
     line = sys.stdin.readline()
@@ -2615,7 +2622,13 @@ while True:
             update({"sessionUpdate": "usage_update", "used": 800, "size": 1000, "_meta": {"_claude/rateLimit": {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1790071200}}})
             answer(m["id"], used=800)
             continue
+        if text == "quote-failure":
+            turn.acquire()
+            threading.Thread(target=quote, args=(m["id"],)).start()
+            continue
         if text.startswith("/compact"):
+            with turn:
+                pass
             # As the adapter streams Claude Code's own command: its words, then the reading it leaves.
             update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Compacting..."}})
             if "please-fail" in text:
@@ -2937,6 +2950,37 @@ while True:
         let error = error.expect("the broken compaction ended");
         assert_eq!((&error["state"], &error["error"]), (&json!("failed"), &json!("boom")), "{error}");
         assert!(!events.iter().any(|(e, b)| e == "compact" && b["id"] == plain.as_str()), "an ordinary message is not a compaction");
+    }
+
+    /// A compaction sent while another prompt runs waits behind it, and the words that
+    /// prompt streams are its own, even when they quote a compaction failing.
+    #[tokio::test]
+    async fn a_compaction_waiting_behind_a_turn_is_not_judged_by_that_turn() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("compact-behind");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        let send = |text: &str| {
+            let text = text.to_string();
+            host.call(|reply| Cmd::Send { text, reply })
+        };
+        let running = send("quote-failure").await.unwrap().expect("send");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == running.as_str() && b["state"] == "sent").await.expect("sent");
+        let compact = send("/compact").await.unwrap().expect("send");
+        let ended = wait_for(&log, Duration::from_secs(10), |e, b| e == "compact" && b["id"] == compact.as_str() && matches!(b["state"].as_str(), Some("done" | "failed"))).await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&home);
+
+        let position = |pred: &dyn Fn(&str, &Value) -> bool| events.iter().position(|(e, b)| pred(e, b));
+        let quoted = position(&|e, b| e == "text" && b["text"].as_str().is_some_and(|t| t.contains("Compacting failed"))).expect("the running turn quoted a failure");
+        let sent = position(&|e, b| e == "compact" && b["id"] == compact.as_str() && b["state"] == "sent").expect("the compaction was sent");
+        assert!(sent < quoted, "the compaction was not waiting while the turn quoted: {events:?}");
+        let told = events.iter().filter(|(e, b)| e == "compact" && b["id"] == compact.as_str()).map(|(_, b)| b["state"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert_eq!(told, ["sent", "running", "done"], "{events:?}");
+        let ended = ended.expect("the compaction ended");
+        assert_eq!(ended["state"], "done", "{ended}");
     }
 
     /// A window that opens while the first mate runs, such as one reloaded, missed the
