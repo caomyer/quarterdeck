@@ -143,9 +143,7 @@ a { color: var(--sea); }
 /* The shell. */
 .app-shell { display: grid; grid-template-columns: 268px minmax(0, 1fr); width: 100%; height: 100%; background: var(--bg); }
 .sidebar { z-index: 20; display: flex; min-height: 0; flex-direction: column; overflow-y: auto; color: var(--sidebar-ink); background: var(--sidebar); }
-.window-drag { display: flex; flex: none; gap: 8px; padding: 16px 20px 0; }
-.window-drag span { width: 11px; height: 11px; border-radius: 50%; background: rgb(255 255 255 / 14%); }
-.brand-row { display: flex; flex: none; align-items: center; gap: 12px; padding: 22px 20px 26px; }
+.brand-row { display: flex; flex: none; align-items: center; gap: 12px; padding: 26px 20px; }
 .brand-mark { display: grid; flex: none; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--brand-ink-mark); background: var(--brand); font-family: var(--mono); font-size: 15px; font-weight: 500; }
 .brand-row > div:nth-child(2) { display: flex; flex: 1; flex-direction: column; gap: 2px; }
 .brand-row strong { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
