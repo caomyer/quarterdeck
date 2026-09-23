@@ -24,6 +24,7 @@ import {
   Monitor,
   Moon,
   PanelsTopLeft,
+  Paperclip,
   Radio,
   RefreshCw,
   Search,
@@ -42,6 +43,7 @@ import remarkGfm from "remark-gfm";
 
 import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
+import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
@@ -124,6 +126,16 @@ export function App() {
   const [ahoyVisible, setAhoyVisible] = useState(true);
   const [callMessageIds, setCallMessageIds] = useState<Record<string, string>>({});
   const [chatDraft, setChatDraft] = useState("");
+  /** Files picked for the message being written, copied into the home only as it is sent, and what could not be attached, in the host's words. */
+  const [chatFiles, setChatFiles] = useState<PickedFile[]>([]);
+  const [attachProblems, setAttachProblems] = useState<string[]>([]);
+  const [attaching, setAttaching] = useState(false);
+  const [copying, setCopying] = useState(false);
+  // Files picked while one home was chosen are not carried into another.
+  useEffect(() => {
+    setChatFiles([]);
+    setAttachProblems([]);
+  }, [bridge.home]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openArtifact, setOpenArtifact] = useState<OpenArtifact | null>(null);
   const [artifactReturn, setArtifactReturn] = useState<View>("artifacts");
@@ -333,11 +345,43 @@ export function App() {
   }
 
   async function sendChat() {
-    const message = chatDraft.trim();
     // Keep the draft: it can go once the first mate has started in this folder.
-    if (!message || !bridge.sendReady) return;
+    if ((!chatDraft.trim() && chatFiles.length === 0) || !bridge.sendReady || copying) return;
+    let attached: Attachment[] = [];
+    if (chatFiles.length > 0) {
+      setCopying(true);
+      try {
+        const result = await host.copyFiles(chatFiles.map((file) => file.source));
+        // A file that cannot go holds the whole message back, words and files kept, so nothing goes without it.
+        if (result.refused.length > 0) return setAttachProblems(result.refused.map((item) => item.problem));
+        attached = result.attached;
+      } catch (error) {
+        return setAttachProblems([`The files could not be attached: ${String(error)}`]);
+      } finally {
+        setCopying(false);
+      }
+    }
+    const message = withAttachments(chatDraft, attached);
     setChatDraft("");
+    setChatFiles([]);
+    setAttachProblems([]);
     await bridge.send(message);
+  }
+
+  /** Asks for files to go with the message. Cancelling the picker changes nothing. */
+  async function attachToChat() {
+    setAttaching(true);
+    try {
+      const result = await host.pickFiles();
+      if (!result) return;
+      // Picking a file again replaces it, so it goes once.
+      setChatFiles((current) => [...current.filter((kept) => !result.picked.some((file) => file.source === kept.source)), ...result.picked]);
+      setAttachProblems(result.refused.map((item) => item.problem));
+    } catch (error) {
+      setAttachProblems([`The files could not be attached: ${String(error)}`]);
+    } finally {
+      setAttaching(false);
+    }
   }
 
   function runAhoy() {
@@ -535,7 +579,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -1546,7 +1590,7 @@ function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; ho
   return <section className="approval-card" aria-label="The first mate is asking for your OK"><div className="approval-copy"><strong>The first mate wants to run</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : option.kind.startsWith("reject") ? "reject" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
 }
 
-function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
+function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
@@ -1586,7 +1630,7 @@ function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, r
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
         ? <div key={item.message.id} className="chat-notice" role="status">{item.message.text}</div>
-        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer"><textarea ref={composer} value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} />{hostLabel}</span><span className="composer-hint">⏎ to send · ⇧⏎ for a new line</span><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" title="Attach a file">Attach</button><button className="send-button" onClick={onSend} disabled={!draft.trim() || !sendReady} title={sendReady ? "Send message" : "Start the first mate to send messages"}>Send</button></div></div></div>;
+        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer">{files.length > 0 && <ul className="file-chips composer-files" aria-label="Attached files">{files.map((file) => <li key={file.source} className="file-chip" title={`${file.source}\nCopied into the home when the message is sent`}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => onRemoveFile(file.source)} disabled={copying} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}{attachProblems.length > 0 && <ul className="attach-problems" role="alert">{attachProblems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={onDismissProblems} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}<textarea ref={composer} value={draft} readOnly={copying} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} />{hostLabel}</span><span className="composer-hint">⏎ to send · ⇧⏎ for a new line</span><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" onClick={onAttach} disabled={attaching || copying} title="Attach files for the first mate to read">{attaching ? "Attaching…" : "Attach"}</button><button className="send-button" onClick={onSend} disabled={(!draft.trim() && files.length === 0) || !sendReady || copying} title={sendReady ? "Send message" : "Start the first mate to send messages"}>{copying ? "Sending…" : "Send"}</button></div></div></div>;
 }
 
 /**
@@ -1639,7 +1683,9 @@ function ChatMessageView({ message, outbox, running, onResend }: { message: Chat
   const footer = status
     ? <><div className={`message-state ${outbox?.error ? "message-error" : ""}`} title={tooltip}><time>{status}</time>{resendAction}</div>{outbox?.error && <small className="message-reason">{outbox.error}</small>}</>
     : !message.past && <time>{formatTime(message.createdAt)}</time>;
-  return <article className={`${message.who === "mate" ? "mate-message" : "captain-message"} ${message.past ? "past" : ""}`}>{message.who === "mate" && <span className="avatar small">FM</span>}<div><strong>{message.who === "mate" ? "First Mate" : "You"}</strong>{message.who === "mate" ? <MateText text={message.text} /> : <p>{message.text}</p>}{footer}</div></article>;
+  // A captain's message names its attached files in its words; they show as files, the same live and in history.
+  const said = message.who === "mate" ? null : splitAttachments(message.text);
+  return <article className={`${message.who === "mate" ? "mate-message" : "captain-message"} ${message.past ? "past" : ""}`}>{message.who === "mate" && <span className="avatar small">FM</span>}<div><strong>{message.who === "mate" ? "First Mate" : "You"}</strong>{!said ? <MateText text={message.text} /> : <>{said.text && <p>{said.text}</p>}{said.files.length > 0 && <ul className="file-chips message-files" aria-label="Attached files">{said.files.map((file) => <li key={file.path} className="file-chip" title={file.path}><Paperclip size={13} /><span>{file.name}</span>{file.size && <small>{file.size}</small>}</li>)}</ul>}</>}{footer}</div></article>;
 }
 
 function OfflineBanner({ onStart }: { onStart: () => void }) {

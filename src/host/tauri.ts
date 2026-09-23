@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
 import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, SnapshotEvent } from "./types";
 
@@ -105,6 +106,14 @@ export class TauriHostAdapter implements HostAdapter {
 
   send(text: string) {
     return invoke<string>("send", { text });
+  }
+
+  pickFiles() {
+    return invoke<PickResult | null>("attach_pick");
+  }
+
+  copyFiles(sources: string[]) {
+    return invoke<CopyResult>("attach_copy", { sources });
   }
 
   cancelTurn() {
