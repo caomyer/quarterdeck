@@ -444,7 +444,6 @@ export function App() {
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`}>
-        <div className="window-drag" aria-hidden="true"><span /><span /><span /></div>
         <div className="brand-row">
           <div className="brand-mark">Q</div>
           <div><strong>Quarterdeck</strong><span>firstmate · desktop</span></div>
