@@ -103,6 +103,8 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
 - Files the captain attaches travel as words: picking one only checks it, and the host copies each into the home's `data/.attachments/` when the message is sent (`src-tauri/src/attach.rs`), and `src/attachments.ts` alone writes and reads the block naming those copies in the message, so the outbox, re-sends and history stay text.
   Check the composer, the sent message and the refusals, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm attach`.
   Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test attach_e2e_live_scratch_home -- --ignored --nocapture` has a real first mate read an attached file, and read it again after a restart mid-turn.
+- Crew routing, in Settings, reads and writes only through `engine/bin/fm-crew-dispatch.sh` (`src-tauri/src/routing.rs`): the app never writes `config/crew-dispatch.json` or the `.env` key line itself, and the key goes to the script on stdin and never comes back to the window.
+  Check it, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm routing`.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.

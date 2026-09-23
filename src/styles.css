@@ -128,10 +128,10 @@ a { color: var(--sea); }
 .app-loading { display: grid; width: 100%; height: 100%; place-items: center; color: var(--muted); background: var(--bg); font-size: 13px; }
 
 /* Buttons share three weights: the heavy dark one, the outlined one, and the quiet one. */
-.btn-base, .ahoy-button, .search-button, .ahoy-actions button, .decision-actions button, .report-actions button, .suggestion-chips button, .decided-actions button, .landed-link, .call-state button, .offline-banner button, .storm-banner button, .approval-actions button, .home-choose, .home-revert, .comment-toggle, .scene-open, .layout-flag, .newer-revision, .send-button, .attach-button, .send-review, .comment-composer button, .scene-editor footer button, .artifact-card > button, .logbook-filters button, .show-everything, .runtime-button {
+.btn-base, .ahoy-button, .search-button, .ahoy-actions button, .decision-actions button, .report-actions button, .suggestion-chips button, .decided-actions button, .landed-link, .call-state button, .offline-banner button, .storm-banner button, .approval-actions button, .home-choose, .home-revert, .routing-primary, .routing-quiet, .comment-toggle, .scene-open, .layout-flag, .newer-revision, .send-button, .attach-button, .send-review, .comment-composer button, .scene-editor footer button, .artifact-card > button, .logbook-filters button, .show-everything, .runtime-button {
   display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 7px; height: 36px; padding: 0 14px; border: 1px solid var(--control); border-radius: 9px; color: var(--ink); background: var(--surface); font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; transition: background-color .12s ease, border-color .12s ease, color .12s ease;
 }
-.ahoy-actions button:hover:not(:disabled), .decision-actions button:hover:not(:disabled), .report-actions button:hover:not(:disabled), .suggestion-chips button:hover:not(:disabled), .decided-actions button:hover:not(:disabled), .landed-link:hover, .call-state button:hover:not(:disabled), .offline-banner button:hover:not(:disabled), .storm-banner button:hover:not(:disabled), .approval-actions button:hover:not(:disabled), .home-revert:hover:not(:disabled), .comment-toggle:hover:not(:disabled), .scene-open:hover:not(:disabled), .attach-button:hover:not(:disabled), .comment-composer button:hover:not(:disabled), .scene-editor footer button:hover:not(:disabled), .logbook-filters button:hover:not(:disabled), .show-everything:hover, .search-button:hover { border-color: var(--control-hover); }
+.ahoy-actions button:hover:not(:disabled), .decision-actions button:hover:not(:disabled), .report-actions button:hover:not(:disabled), .suggestion-chips button:hover:not(:disabled), .decided-actions button:hover:not(:disabled), .landed-link:hover, .call-state button:hover:not(:disabled), .offline-banner button:hover:not(:disabled), .storm-banner button:hover:not(:disabled), .approval-actions button:hover:not(:disabled), .home-revert:hover:not(:disabled), .routing-quiet:hover:not(:disabled), .comment-toggle:hover:not(:disabled), .scene-open:hover:not(:disabled), .attach-button:hover:not(:disabled), .comment-composer button:hover:not(:disabled), .scene-editor footer button:hover:not(:disabled), .logbook-filters button:hover:not(:disabled), .show-everything:hover, .search-button:hover { border-color: var(--control-hover); }
 .icon-button { display: grid; flex: none; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 9px; color: var(--muted); background: transparent; }
 .icon-button:hover:not(:disabled) { color: var(--ink); background: var(--surface-3); }
 .link-button { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; color: var(--sea); background: transparent; font: inherit; font-weight: 500; text-decoration: none; cursor: pointer; }
@@ -622,20 +622,68 @@ a { color: var(--sea); }
 .home-setup p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
 .home-setup code, .settings-path { padding: 1px 5px; border-radius: 5px; color: var(--ink); background: var(--surface-3); font: 12.5px var(--mono); }
 .home-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
-.home-choose { height: 38px; padding: 0 16px; border: 0; color: var(--on-primary); background: var(--primary); font-weight: 600; }
-.home-choose:hover:not(:disabled) { color: var(--on-accent); background: var(--sea); }
+.home-choose, .routing-primary { height: 38px; padding: 0 16px; border: 0; color: var(--on-primary); background: var(--primary); font-weight: 600; }
+.home-choose:hover:not(:disabled), .routing-primary:hover:not(:disabled) { color: var(--on-accent); background: var(--sea); }
 .settings-body .home-choose { margin-top: 8px; }
 /* The way back to the app's own first mate: available, never the loud choice. */
-.home-revert { height: 38px; color: var(--muted); background: transparent; }
-.home-revert:hover:not(:disabled) { color: var(--ink); }
+.home-revert, .routing-quiet { height: 38px; color: var(--muted); background: transparent; }
+.home-revert:hover:not(:disabled), .routing-quiet:hover:not(:disabled) { color: var(--ink); }
 .settings-body .home-revert { margin-top: 0; }
 .home-problem { display: grid; grid-template-columns: 16px 1fr; gap: 9px; width: 100%; margin-top: 4px; padding: 11px 13px; border: 1px solid var(--coral-edge); border-radius: 10px; color: var(--coral); background: var(--coral-wash); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .home-problem span { color: var(--ink); }
-.settings-dialog { position: absolute; top: 50%; left: 50%; display: flex; width: min(500px, calc(100vw - 32px)); flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
-.settings-body { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 0 22px 24px; }
+.settings-dialog { position: absolute; top: 50%; left: 50%; display: flex; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
+.settings-body { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 0 22px 24px; overflow-y: auto; }
+/* The body scrolls when it outgrows the window; nothing in it is squeezed to fit. */
+.settings-body > * { flex: none; }
+.settings-body h3 { margin: 0; color: var(--ink); font-size: 14.5px; font-weight: 600; letter-spacing: -.01em; }
 .settings-body p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
 .settings-body .settings-path { display: block; width: 100%; padding: 10px 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-body small { color: var(--muted); font-size: 12.5px; }
+
+/* Crew routing, the second part of the settings. */
+.routing { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 12px; padding-top: 18px; border-top: 1px solid var(--rule); }
+.routing-head { display: flex; width: 100%; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.routing-head > div { display: flex; flex-direction: column; gap: 6px; }
+.routing-switch { position: relative; flex: none; width: 38px; height: 22px; margin-top: 1px; padding: 0; border: 1px solid var(--control); border-radius: 999px; background: var(--surface-3); transition: background-color .15s ease, border-color .15s ease; }
+.routing-switch span { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: var(--lift); transition: transform .15s ease; }
+.routing-switch[aria-checked="true"] { border-color: var(--sea); background: var(--sea); }
+.routing-switch[aria-checked="true"] span { transform: translateX(16px); }
+.routing-switch:hover:not(:disabled) { border-color: var(--control-hover); }
+.routing-switch[aria-checked="true"]:hover:not(:disabled) { border-color: var(--sea-strong); }
+.routing-switch:disabled { opacity: .5; }
+.routing-state { display: inline-flex; align-items: center; gap: 6px; }
+.settings-body .routing-state.on { color: var(--green); }
+.routing-alert { display: grid; grid-template-columns: 16px 1fr; gap: 9px; width: 100%; padding: 11px 13px; border: 1px solid var(--coral-edge); border-radius: 10px; color: var(--coral); background: var(--coral-wash); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.routing-alert span { color: var(--ink); }
+.settings-body .routing-notice { color: var(--ink-3); }
+.routing-start { display: flex; width: 100%; flex-direction: column; gap: 8px; margin: 0; padding: 0; border: 0; }
+.routing-start legend { margin-bottom: 8px; padding: 0; color: var(--faint); font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.routing-start label { display: grid; grid-template-columns: 16px 1fr; gap: 10px; padding: 11px 13px; border: 1px solid var(--control); border-radius: 10px; background: var(--surface); cursor: pointer; }
+.routing-start label:hover { border-color: var(--control-hover); }
+.routing-start label.chosen { border-color: var(--sea); }
+.routing-start input { margin: 2px 0 0; accent-color: var(--sea); }
+.routing-start label > span { display: flex; flex-direction: column; gap: 3px; }
+.routing-start strong { color: var(--ink); font-size: 13.5px; font-weight: 600; }
+.settings-body .routing-start small { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.routing-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.routing-rules-label { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--ink-2); font-size: 13px; font-weight: 600; }
+.routing-rules-label code, .routing-key code { padding: 1px 5px; border-radius: 5px; color: var(--ink-3); background: var(--surface-3); font: 11.5px var(--mono); font-weight: 400; }
+.routing-rules { display: block; width: 100%; min-height: 220px; max-height: 42vh; resize: vertical; padding: 11px 13px; border: 1px solid var(--control); border-radius: 10px; outline: 0; color: var(--ink); background: var(--surface); font: 12px/1.55 var(--mono); tab-size: 2; white-space: pre; overflow: auto; }
+.routing-rules:focus { border-color: var(--sea); }
+.routing-rules:disabled { color: var(--muted); }
+.routing-key { width: 100%; margin-top: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.routing-key summary { display: flex; align-items: center; gap: 7px; color: var(--ink-2); font-size: 13px; font-weight: 600; cursor: pointer; list-style: none; }
+.routing-key summary::-webkit-details-marker { display: none; }
+.routing-key summary::after { content: ""; width: 6px; height: 6px; margin-left: 2px; border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint); transform: rotate(-45deg); transition: transform .12s ease; }
+.routing-key[open] summary::after { transform: rotate(45deg); }
+.routing-key summary em { color: var(--faint); font-size: 12px; font-style: normal; font-weight: 400; }
+.routing-key-body { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; }
+.routing-key p { font-size: 13px; }
+.settings-body .routing-key-state { color: var(--ink-2); }
+.routing-key form { display: flex; width: 100%; gap: 8px; }
+.routing-key input { flex: 1; height: 36px; padding: 0 12px; border: 1px solid var(--control); border-radius: 9px; outline: 0; color: var(--ink); background: var(--surface); font-size: 13px; }
+.routing-key input::placeholder { color: var(--fainter); }
+.routing-key input:focus { border-color: var(--sea); }
 
 /* The live region is always in the page so a reader is told when it fills: one
    that appears already full has no change inside it to announce. Empty, it is

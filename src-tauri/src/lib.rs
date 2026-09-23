@@ -7,6 +7,7 @@ mod host;
 #[cfg(test)]
 mod host_e2e;
 mod review;
+mod routing;
 mod settings;
 mod snapshot;
 
@@ -55,6 +56,12 @@ pub fn run() {
       settings::home_choose,
       settings::home_use_app,
       settings::tools_missing,
+      routing::routing_get,
+      routing::routing_enable,
+      routing::routing_save,
+      routing::routing_disable,
+      routing::routing_key_set,
+      routing::routing_key_clear,
       snapshot::snapshot_refresh,
       snapshot::snapshot_latest,
       snapshot::pane_capture,

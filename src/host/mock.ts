@@ -2,6 +2,8 @@ import bearingsFixture from "../fixtures/bearings-snapshot.json";
 import fleetFixture from "../fixtures/fleet-snapshot.json";
 import type { CopyResult, PickResult } from "../attachments";
 import recordedStream from "./mock-event-stream.json";
+// The example firstmate ships, read from the engine itself, so turning routing on here starts from the same rules.
+import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
 import { artifactPath } from "./types";
 import type {
   Artifact,
@@ -31,6 +33,8 @@ import type {
   ReviewThread,
   ReviewVerdict,
   ReviewView,
+  Routing,
+  RoutingStart,
   SnapshotEvent,
 } from "./types";
 
@@ -45,6 +49,9 @@ declare global {
 
 /** `?slow` replays at recorded speed, so a turn stays on screen long enough to review. */
 const TIMING_SCALE = reviewFlag("slow") ? 1 : recordedStream.source.timing_scale;
+
+/** The harnesses firstmate's writer accepts without a typed dispatch key, for the mock's one refusal. */
+const MOCK_HARNESSES = ["claude", "codex", "opencode", "pi", "pi-signed", "grok", "kimi", "cursor", "agy", "muse", "rovo", "omp"];
 
 function reviewFlag(name: string) {
   return new URLSearchParams(window.location.search).has(name);
@@ -414,6 +421,25 @@ export class MockHostAdapter implements HostAdapter {
       : [];
   private streaming = false;
   private readonly snapshot = MockHostAdapter.fixtureSnapshot();
+  private routing = MockHostAdapter.initialRouting();
+  private routingRevision = 1;
+
+  /**
+   * `?routing=on` starts with the example rules, `?routing=invalid` with rules the first mate cannot use,
+   * `?routing=aside` off with rules set aside, `?routing=key` off with a key set, and `?routing=unavailable` in a
+   * home whose firstmate cannot set routing up. Otherwise routing is off, as in a new home.
+   */
+  private static initialRouting(): Routing {
+    const off: Routing = { available: true, problem: null, on: false, rules: null, sha256: null, invalid: null, key: { set: false, source: null }, setAside: null };
+    switch (reviewValue("routing")) {
+      case "on": return { ...off, on: true, rules: crewDispatchExample, sha256: "mock-1" };
+      case "invalid": return { ...off, on: true, rules: '{\n  "rules": [\n    { "when": "Anything at all.", "use": { "harness": "spaceship" } }\n  ]\n}\n', sha256: "mock-1", invalid: "unverified harness: spaceship" };
+      case "aside": return { ...off, setAside: "crew-dispatch.json.off-20260921T101500Z" };
+      case "key": return { ...off, key: { set: true, source: ".env" } };
+      case "unavailable": return { ...off, available: false, problem: "this home's firstmate has no bin/fm-crew-dispatch.sh, so routing can't be set up from here" };
+      default: return off;
+    }
+  }
 
   private static fixtureSnapshot() {
     const bearings = bearingsFixture as unknown as BearingsSnapshot;
@@ -886,6 +912,55 @@ export class MockHostAdapter implements HostAdapter {
       ],
       problem: null,
     };
+  }
+
+  async routingGet(): Promise<Routing> {
+    return structuredClone(this.routing);
+  }
+
+  async routingEnable(from: RoutingStart): Promise<Routing> {
+    if (this.routing.on) throw new Error("routing is already on; config/crew-dispatch.json exists");
+    if (from === "restore" && !this.routing.setAside) throw new Error("there is no set-aside rules file to restore");
+    const rules = from === "template" ? crewDispatchExample : from === "restore" ? '{\n  "rules": [],\n  "default": { "harness": "claude" }\n}\n' : '{\n  "rules": []\n}\n';
+    this.routing = { ...this.routing, on: true, rules, sha256: `mock-${++this.routingRevision}`, invalid: null, setAside: from === "restore" ? null : this.routing.setAside };
+    return this.routingGet();
+  }
+
+  /** Refuses the way firstmate's writer does for the two cases a review exercises; the real check is firstmate's. */
+  async routingSave(rules: string, sha256: string | null): Promise<Routing> {
+    if (!this.routing.on) throw new Error("routing is off; turn it on before editing its rules");
+    if (sha256 !== null && sha256 !== this.routing.sha256) throw new Error("not saved: config/crew-dispatch.json changed since it was read");
+    let parsed: { rules?: { use?: unknown }[]; default?: unknown };
+    try {
+      parsed = JSON.parse(rules);
+    } catch {
+      throw new Error("not saved: malformed JSON");
+    }
+    const profiles = [...(parsed.rules ?? []).map((rule) => rule.use), parsed.default].flat().filter(Boolean) as { harness?: string }[];
+    const unknown = profiles.map((profile) => profile.harness ?? "").filter((harness) => !MOCK_HARNESSES.includes(harness));
+    if (unknown.length) throw new Error(`not saved: unverified harness: ${[...new Set(unknown)].join(", ")}`);
+    this.routing = { ...this.routing, rules, sha256: `mock-${++this.routingRevision}`, invalid: null };
+    return this.routingGet();
+  }
+
+  async routingDisable(): Promise<Routing> {
+    if (!this.routing.on) return this.routingGet();
+    this.routing = { ...this.routing, on: false, rules: null, sha256: null, invalid: null, setAside: `crew-dispatch.json.off-${new Date().toISOString().replace(/[-:]|\.\d+/g, "")}` };
+    return this.routingGet();
+  }
+
+  /** Keeps only whether a key is set, which is all the real host ever tells the window. */
+  async routingSetKey(key: string): Promise<Routing> {
+    const line = key.trim();
+    if (!line) throw new Error("paste a key first");
+    if (line.length > 512 || /[^A-Za-z0-9._~+/=:-]/.test(line)) throw new Error("the key holds a character a key does not; not saved");
+    this.routing = { ...this.routing, key: { set: true, source: ".env" } };
+    return this.routingGet();
+  }
+
+  async routingClearKey(): Promise<Routing> {
+    this.routing = { ...this.routing, key: { set: false, source: null } };
+    return this.routingGet();
   }
 
   async answerPermission(id: string, optionId: string) {
