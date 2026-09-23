@@ -14,7 +14,9 @@ import {
   Clock3,
   ExternalLink,
   FileText,
+  FolderGit2,
   FolderOpen,
+  Gauge,
   GitBranch,
   GitMerge,
   ListPlus,
@@ -451,10 +453,10 @@ export function App() {
           <button className="icon-button mobile-close" onClick={() => setMobileNavOpen(false)} title="Close navigation"><X size={18} /></button>
         </div>
         <nav className="primary-nav" aria-label="Main navigation">
-          <NavButton active={view === "bearings"} letter="B" label="Bearings" count={openCallCount || undefined} onClick={() => navigate("bearings")} />
-          <NavButton active={view === "chat"} letter="C" label="Chat" count={approvalCount || undefined} countTitle={approvalCount ? `The first mate is waiting for your OK on ${approvalCount === 1 ? "one thing" : `${approvalCount} things`}` : undefined} status={approvalCount ? undefined : <i className={`nav-status state-${runtime.state} ${degraded ? "degraded" : ""}`} title={`First Mate: ${hostLabel}`} />} onClick={() => navigate("chat")} />
-          <NavButton active={view === "projects" || view === "project"} letter="P" label="Projects" count={projects.length} quietCount onClick={() => navigate("projects")} />
-          <NavButton active={view === "artifacts" || view === "artifact"} letter="A" label="Artifacts" onClick={() => navigate("artifacts")} />
+          <NavButton active={view === "bearings"} icon={<Gauge size={17} />} label="Bearings" count={openCallCount || undefined} onClick={() => navigate("bearings")} />
+          <NavButton active={view === "chat"} icon={<MessageSquareText size={17} />} label="Chat" detail="First Mate" count={approvalCount || undefined} countTitle={approvalCount ? `The first mate is waiting for your OK on ${approvalCount === 1 ? "one thing" : `${approvalCount} things`}` : undefined} status={approvalCount ? undefined : <i className={`nav-status state-${runtime.state} ${degraded ? "degraded" : ""}`} title={`First Mate: ${hostLabel}`} />} onClick={() => navigate("chat")} />
+          <NavButton active={view === "projects" || view === "project"} icon={<FolderGit2 size={17} />} label="Projects" count={projects.length} quietCount onClick={() => navigate("projects")} />
+          <NavButton active={view === "artifacts" || view === "artifact"} icon={<PanelsTopLeft size={17} />} label="Artifacts" onClick={() => navigate("artifacts")} />
         </nav>
         {projects.length > 0 && <div className="sidebar-label">Projects</div>}
         <div className="project-shortcuts">
@@ -634,9 +636,9 @@ export function App() {
   );
 }
 
-/** A main view in the sidebar. A count that waits on the captain is a gold badge; a plain tally stays quiet. */
-function NavButton({ active, letter, label, count, countTitle, quietCount, status, onClick }: { active: boolean; letter: string; label: string; count?: number; countTitle?: string; quietCount?: boolean; status?: React.ReactNode; onClick: () => void }) {
-  return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}><span className="nav-letter" aria-hidden="true">{letter}</span><strong>{label}</strong>{count !== undefined ? <em className={quietCount ? "quiet" : ""} title={countTitle}>{count}</em> : status}</button>;
+/** A main view in the sidebar, drawn with a fixed icon; projects, which the captain names, keep their initials. A count that waits on the captain is a gold badge; a plain tally stays quiet. */
+function NavButton({ active, icon, label, detail, count, countTitle, quietCount, status, onClick }: { active: boolean; icon: React.ReactNode; label: string; detail?: string; count?: number; countTitle?: string; quietCount?: boolean; status?: React.ReactNode; onClick: () => void }) {
+  return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}><span className="nav-icon" aria-hidden="true">{icon}</span><span className="nav-label"><strong>{label}</strong>{detail && <small>{detail}</small>}</span>{count !== undefined ? <em className={quietCount ? "quiet" : ""} title={countTitle}>{count}</em> : status}</button>;
 }
 
 function HomeSetup({ problem, choosing, onChoose, onUseApp }: { problem: string | null; choosing: boolean; onChoose: () => void; onUseApp: () => void }) {
