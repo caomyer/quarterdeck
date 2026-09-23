@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, SnapshotEvent } from "./types";
+import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, Routing, RoutingStart, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -169,6 +169,30 @@ export class TauriHostAdapter implements HostAdapter {
 
   toolsMissing() {
     return invoke<{ missing: Needed[]; problem: string | null }>("tools_missing");
+  }
+
+  routingGet() {
+    return invoke<Routing>("routing_get");
+  }
+
+  routingEnable(from: RoutingStart) {
+    return invoke<Routing>("routing_enable", { from });
+  }
+
+  routingSave(rules: string, sha256: string | null) {
+    return invoke<Routing>("routing_save", { rules, sha256 });
+  }
+
+  routingDisable() {
+    return invoke<Routing>("routing_disable");
+  }
+
+  routingSetKey(key: string) {
+    return invoke<Routing>("routing_key_set", { key });
+  }
+
+  routingClearKey() {
+    return invoke<Routing>("routing_key_clear");
   }
 
   refreshSnapshot() {

@@ -310,6 +310,42 @@ export type Needed = {
   says: string;
 };
 
+/**
+ * Crew routing in the home: rules for which tool and model does which kind of work, as firstmate's own
+ * `bin/fm-crew-dispatch.sh` reports it. Off means there is no rules file and the first mate chooses for itself.
+ */
+export type Routing = {
+  /** False when this home's firstmate cannot set routing up; `problem` says why, and also why the rules could not be read while routing is on. */
+  available: boolean;
+  problem: string | null;
+  on: boolean;
+  /** The rules file as it is on disk; `null` while routing is off. */
+  rules: string | null;
+  /** The digest of `rules`, handed back with a save so a file someone else changed meanwhile is not overwritten. */
+  sha256: string | null;
+  /** Why the first mate cannot use the rules, in the words its own startup check reports; `null` when it can. */
+  invalid: string | null;
+  /** Whether a typed dispatch key is set, and where from. The key itself never comes back. */
+  key: { set: boolean; source: "environment" | ".env" | null };
+  /** The rules turning routing off last set aside, which turning it on can bring back. */
+  setAside: string | null;
+  /** The harnesses a rule may name, as firstmate lists them; empty from a firstmate that cannot list them. */
+  harnesses: HarnessChoice[];
+  /** The example rules firstmate ships, for turning routing on and for model suggestions. */
+  template: string | null;
+};
+
+/** A harness a rule may name: whether this Mac has it, and the efforts it takes. */
+export type HarnessChoice = {
+  name: string;
+  installed: boolean;
+  /** `needs` is the model an effort is bound to: exact, or a prefix ending in `*` with something after it. */
+  efforts: { effort: string; needs: string | null }[];
+};
+
+/** Where a newly turned-on routing's rules come from: the shipped example, none yet, or the rules set aside when it was turned off. */
+export type RoutingStart = "template" | "empty" | "restore";
+
 export type PaneCapture = { text: string; observed_at?: string };
 export type HostEventListener = (event: HostEvent) => void;
 
@@ -341,6 +377,17 @@ export interface HostAdapter {
   useAppHome(): Promise<HomeStatus>;
   /** What the first mate says this machine still needs. Reads only; changes nothing. */
   toolsMissing(): Promise<{ missing: Needed[]; problem: string | null }>;
+  /** Where crew routing stands in the chosen home. */
+  routingGet(): Promise<Routing>;
+  /** Turns routing on. Refused, with why, when it already is. */
+  routingEnable(from: RoutingStart): Promise<Routing>;
+  /** Replaces the rules. Refused, with firstmate's reason, when they are not valid or the file changed since `sha256`. */
+  routingSave(rules: string, sha256: string | null): Promise<Routing>;
+  /** Turns routing off by setting the rules aside; nothing is deleted. */
+  routingDisable(): Promise<Routing>;
+  /** Stores the optional typed dispatch key in the home. Write-only: the reply says only that a key is set. */
+  routingSetKey(key: string): Promise<Routing>;
+  routingClearKey(): Promise<Routing>;
   refreshSnapshot(): Promise<void>;
   /** The last finished snapshot, for a window that subscribed after it was emitted. Waits for a read in progress. */
   latestSnapshot(): Promise<SnapshotEvent | null>;
