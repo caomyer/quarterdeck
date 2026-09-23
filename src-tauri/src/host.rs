@@ -1140,7 +1140,7 @@ fn is_compact_command(text: &str) -> bool {
 /// the words it streams, so the host watches those and the prompt's result.
 struct Compaction {
     id: String,
-    /// The largest reading while it waited and ran: the size it compacted from.
+    /// The largest reading until it started running: the size it compacted from.
     from: Option<u64>,
     /// The adapter said it started compacting, so any turn it waited behind is over.
     running: bool,
@@ -1850,7 +1850,8 @@ impl Host {
     /// Keeps what a usage update says about the context window and the plan's limit.
     fn note_usage(&mut self, update: &Value) {
         if let Some(used) = update.get("used").and_then(Value::as_u64) {
-            if let Some(compaction) = self.compaction.as_mut() {
+            // Once it runs, readings are what it left, not what it compacted from.
+            if let Some(compaction) = self.compaction.as_mut().filter(|compaction| !compaction.running) {
                 compaction.from = compaction.from.max(Some(used));
             }
             self.context.note(used, update.get("size").and_then(Value::as_u64), now_ms());
@@ -2618,6 +2619,10 @@ while True:
             update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "answered " + text}})
             answer(m["id"])
             continue
+        if text == "grow-live":
+            update({"sessionUpdate": "usage_update", "used": 37259, "size": 1000})
+            answer(m["id"], used=37259)
+            continue
         if text == "grow":
             update({"sessionUpdate": "usage_update", "used": 800, "size": 1000, "_meta": {"_claude/rateLimit": {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1790071200}}})
             answer(m["id"], used=800)
@@ -2631,7 +2636,12 @@ while True:
                 pass
             # As the adapter streams Claude Code's own command: its words, then the reading it leaves.
             update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Compacting..."}})
-            if "please-fail" in text:
+            if "no-shrink" in text:
+                # As seen live: a small context whose summary is as large as what it replaced.
+                update({"sessionUpdate": "usage_update", "used": 38167, "size": 1000})
+                update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "\n\nCompacting completed."}})
+                answer(m["id"], used=38167)
+            elif "please-fail" in text:
                 update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "\n\nCompacting failed: Not enough messages to compact."}})
                 answer(m["id"], used=800)
             else:
@@ -2951,6 +2961,31 @@ while True:
         let error = error.expect("the broken compaction ended");
         assert_eq!((&error["state"], &error["error"]), (&json!("failed"), &json!("boom")), "{error}");
         assert!(!events.iter().any(|(e, b)| e == "compact" && b["id"] == plain.as_str()), "an ordinary message is not a compaction");
+    }
+
+    /// A compaction that leaves the context about as large as it found it reports the
+    /// reading before it started as `from`, never a reading taken after, as a live run did.
+    #[tokio::test]
+    async fn a_compaction_that_does_not_shrink_reports_the_reading_before_it() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("compact-no-shrink");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        let send = |text: &str| {
+            let text = text.to_string();
+            host.call(|reply| Cmd::Send { text, reply })
+        };
+        let grow = send("grow-live").await.unwrap().expect("send");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == grow.as_str() && b["state"] == "picked_up").await.expect("read");
+        let compact = send("/compact no-shrink").await.unwrap().expect("send");
+        let ended = wait_for(&log, Duration::from_secs(10), |e, b| e == "compact" && b["id"] == compact.as_str() && matches!(b["state"].as_str(), Some("done" | "failed"))).await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let _ = std::fs::remove_dir_all(&home);
+
+        let ended = ended.expect("the compaction ended");
+        assert_eq!(ended["state"], "done", "{ended}");
+        assert_eq!((&ended["context"]["compacted"]["from"], &ended["context"]["compacted"]["to"]), (&json!(37_259), &json!(38_167)), "{ended}");
     }
 
     /// A compaction sent while another prompt runs waits behind it, and the words that
