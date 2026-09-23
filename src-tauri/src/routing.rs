@@ -97,7 +97,34 @@ pub fn parse_status(stdout: &str) -> Value {
         "invalid": field("invalid"),
         "key": {"set": key_set, "source": if key_set { field("key-source") } else { None }},
         "setAside": field("set-aside"),
+        "harnesses": [],
+        "template": null,
     })
+}
+
+/// `harnesses`' tab-separated lines: each harness a profile may name, whether
+/// this machine has it, and the efforts it takes. An effort bound to a model
+/// (`max@gpt-5.6-luna`, `ultra@codex-native/*`) carries what it needs.
+pub fn parse_harnesses(stdout: &str) -> Value {
+    let harnesses: Vec<Value> = stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next().filter(|name| !name.is_empty())?;
+            let installed = fields.next() == Some("installed");
+            let efforts: Vec<Value> = fields
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(|entry| match entry.split_once('@') {
+                    Some((effort, needs)) => json!({"effort": effort, "needs": needs}),
+                    None => json!({"effort": entry, "needs": null}),
+                })
+                .collect();
+            Some(json!({"name": name, "installed": installed, "efforts": efforts}))
+        })
+        .collect();
+    json!(harnesses)
 }
 
 fn unavailable(problem: String) -> Value {
@@ -110,6 +137,8 @@ fn unavailable(problem: String) -> Value {
         "invalid": null,
         "key": {"set": false, "source": null},
         "setAside": null,
+        "harnesses": [],
+        "template": null,
     })
 }
 
@@ -127,6 +156,14 @@ pub async fn read(home: &Path) -> Value {
             Ok(rules) => status["rules"] = json!(rules),
             Err(problem) => status["problem"] = json!(problem),
         }
+    }
+    // What the rule editor offers comes from the engine, never a list kept here.
+    // A firstmate that cannot list them leaves the editor to the rules as JSON.
+    if let Ok(listed) = run(home, &["harnesses"], None).await {
+        status["harnesses"] = parse_harnesses(&listed);
+    }
+    if let Ok(template) = run(home, &["template"], None).await {
+        status["template"] = json!(template);
     }
     status
 }
@@ -243,6 +280,17 @@ mod tests {
     }
 
     #[test]
+    fn harness_lines_become_choices() {
+        let listed = parse_harnesses("claude\tinstalled\tlow medium high xhigh max\ncodex\tmissing\tlow max@gpt-5.6-luna\ncursor\tmissing\t\n");
+        assert_eq!(listed[0], json!({"name": "claude", "installed": true, "efforts": [
+            {"effort": "low", "needs": null}, {"effort": "medium", "needs": null}, {"effort": "high", "needs": null},
+            {"effort": "xhigh", "needs": null}, {"effort": "max", "needs": null}]}));
+        assert_eq!(listed[1]["efforts"][1], json!({"effort": "max", "needs": "gpt-5.6-luna"}));
+        assert_eq!(listed[1]["installed"], json!(false));
+        assert_eq!(listed[2], json!({"name": "cursor", "installed": false, "efforts": []}));
+    }
+
+    #[test]
     fn a_refusal_reads_in_the_scripts_words() {
         assert_eq!(reason("fm-crew-dispatch: not saved: unverified harness: nope\n", "exit status: 1"), "not saved: unverified harness: nope");
         assert_eq!(reason("", "exit status: 1"), "bin/fm-crew-dispatch.sh stopped (exit status: 1)");
@@ -264,6 +312,9 @@ mod tests {
         let off = read(&home).await;
         assert_eq!(off["available"], json!(true));
         assert_eq!(off["on"], json!(false));
+        let names: Vec<&str> = off["harnesses"].as_array().unwrap().iter().filter_map(|harness| harness["name"].as_str()).collect();
+        assert!(names.contains(&"claude") && names.contains(&"codex"), "the engine's harnesses: {names:?}");
+        assert_eq!(off["template"], json!(std::fs::read_to_string(home.join("docs/examples/crew-dispatch.json")).unwrap()));
         assert!(!home.join("config/crew-dispatch.json").exists(), "off is no file at all");
 
         let on = enable(&home, "template").await.unwrap();

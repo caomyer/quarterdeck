@@ -47,6 +47,7 @@ async function openSettings(query) {
 }
 
 const routing = page.locator("[data-testid='routing']");
+const tab = (name) => routing.locator(".routing-view [role='tab']", { hasText: name });
 const toggle = routing.locator("[role='switch']");
 
 // Off by default: nothing is set up until the captain asks for it.
@@ -67,21 +68,76 @@ await routing.locator(".routing-start button", { hasText: "Cancel" }).click();
 check(await toggle.getAttribute("aria-checked") === "false", "cancelling leaves routing off");
 await toggle.click();
 await routing.locator(".routing-primary", { hasText: "Turn on" }).click();
-await routing.locator("textarea").waitFor();
+await routing.locator("[data-testid='rules-form']").waitFor();
 check(await toggle.getAttribute("aria-checked") === "true", "routing is on");
-check(await routing.locator("textarea").inputValue() === example, "the rules start as the example firstmate ships");
 check((await routing.innerText()).includes("The first mate follows these rules"), "and says the first mate follows them");
 check(await routing.locator(".routing-primary", { hasText: "Save rules" }).isDisabled(), "there is nothing to save until the rules change");
+check(await tab("Form").getAttribute("aria-selected") === "true", "the rules open as a form");
 await shot("on");
 
-// A rule the first mate cannot use is refused in its words, and the edit is kept to fix.
+// The form: a card per rule and the default, each harness chosen from firstmate's own list.
+const cards = routing.locator("[data-testid='rule-card']");
+check(await cards.count() === 3, `the example's three rules are each a card (${await cards.count()})`);
+check(await routing.locator("[data-testid='rule-default'] [data-testid='choice-row']").count() === 2, "and the default tries two harnesses");
+const harnessNames = await cards.nth(0).locator("select[aria-label^='Harness']").locator("option").allInnerTexts();
+check(harnessNames.includes("claude") && harnessNames.includes("codex") && harnessNames.includes("pi"), `installed harnesses are offered plainly (${harnessNames.join(", ")})`);
+check(harnessNames.includes("grok (not installed)") && harnessNames.includes("cursor (not installed)"), "a harness this Mac lacks is offered, marked as not installed");
+check(harnessNames.length === 12 && !harnessNames.some((name) => name.includes("firstmate doesn't know")), "and nothing firstmate does not list");
+check((await cards.nth(0).innerText()).includes("grok is not installed on this Mac"), "a rule on a missing harness says so");
+check(await tab("JSON").click().then(() => routing.locator(".routing-rules").inputValue()) === example, "the untouched example reads back exactly as firstmate ships it");
+await tab("Form").click();
+
+// Effort is a list too, and an effort bound to a model waits for that model.
+const big = cards.nth(2);
+const codexEffort = big.locator("select[aria-label='Effort for rule 3, choice 2']");
+const maxOption = codexEffort.locator("option[value='max']");
+check(await maxOption.isDisabled() && (await maxOption.innerText()) === "max (needs gpt-5.6-luna)", "codex's max is offered only with the model that takes it");
+await big.locator("input[aria-label='Model for rule 3, choice 2']").fill("gpt-5.6-luna");
+check(!(await maxOption.isDisabled()), "and becomes a choice once that model is named");
+await codexEffort.selectOption("max");
+const claudeModels = await cards.nth(1).locator("datalist option").evaluateAll((nodes) => nodes.map((node) => node.value));
+check(claudeModels.includes("haiku") && claudeModels.includes("claude-sonnet-5"), `a model is suggested from the rules already written (${claudeModels.join(", ")})`);
+
+// Choosing another harness clears what belonged to the old one.
+const trivial = cards.nth(1);
+await trivial.locator("select[aria-label^='Harness']").selectOption("grok");
+check(await trivial.locator("input[aria-label^='Model']").inputValue() === "", "choosing another harness clears the old harness's model");
+check(await trivial.locator("select[aria-label^='Effort']").inputValue() === "low", "and keeps an effort the new harness takes");
+await trivial.locator("select[aria-label^='Harness']").selectOption("cursor");
+check(await trivial.locator("select[aria-label^='Effort']").inputValue() === "", "an effort the new harness does not take is dropped");
+check(await trivial.locator("select[aria-label^='Effort']").isDisabled(), "and a harness with no effort setting offers none");
+await trivial.locator("select[aria-label^='Harness']").selectOption("claude");
+
+// Fallbacks: added, reordered, and tried in the order shown.
+const news = cards.nth(0);
+await news.locator("button", { hasText: "Add a fallback" }).click();
+check(await news.locator("[data-testid='choice-row']").count() === 2, "a fallback adds a second harness to try");
+check((await news.innerText()).includes("the first with quota left takes the work"), "and the rule says they are tried in order");
+await news.locator("button[title='Try this one earlier']").nth(1).click();
+const order = await news.locator("select[aria-label^='Harness']").evaluateAll((nodes) => nodes.map((node) => node.value));
+check(order.join(",") === "claude,grok", `moving it up changes the order it is tried in (${order.join(", ")})`);
+await shot("form-edited");
+
+await routing.locator(".routing-primary", { hasText: "Save rules" }).click();
+await routing.locator(".routing-notice").waitFor();
+check((await routing.locator(".routing-notice").innerText()).startsWith("Saved."), "the form's rules are saved through firstmate");
+await tab("JSON").click();
+const saved = JSON.parse(await routing.locator(".routing-rules").inputValue());
+check(JSON.stringify(saved.rules[0].use) === '[{"harness":"claude"},{"harness":"grok"}]', `the fallback is saved as an ordered list (${JSON.stringify(saved.rules[0].use)})`);
+check(JSON.stringify(saved.rules[2].use[1]) === '{"harness":"codex","model":"gpt-5.6-luna","effort":"max"}', "the model and effort are saved together");
+check(saved.rules[1].why === JSON.parse(example).rules[1].why && JSON.stringify(saved.default) === JSON.stringify(JSON.parse(example).default), "everything not edited is saved as it was");
+
+// Written as JSON, a rule the first mate cannot use is refused in its words, and the edit is kept to fix.
 const broken = '{ "rules": [ { "when": "Everything.", "use": { "harness": "spaceship" } } ] }';
-await routing.locator("textarea").fill(broken);
+await routing.locator(".routing-rules").fill(broken);
 await routing.locator(".routing-primary", { hasText: "Save rules" }).click();
 await routing.locator(".routing-alert").waitFor();
 check((await routing.locator(".routing-alert").innerText()).includes("unverified harness: spaceship"), "rules the first mate cannot use are refused with its reason");
-check(await routing.locator("textarea").inputValue() === broken, "a refused edit stays on screen to fix");
+check(await routing.locator(".routing-rules").inputValue() === broken, "a refused edit stays on screen to fix");
 await shot("refused");
+await tab("Form").click();
+check((await routing.locator("[data-testid='rule-card']").innerText()).includes("Firstmate doesn't know a harness called spaceship"), "the form shows a harness firstmate does not know, and says so");
+await tab("JSON").click();
 
 // Turning off with an edit unsaved would lose it, so it asks for a save or an undo first.
 await toggle.click();
@@ -89,7 +145,7 @@ check(await toggle.getAttribute("aria-checked") === "true", "routing stays on wh
 check((await routing.locator(".routing-alert").innerText()).includes("Save or undo"), "and says what to do first");
 
 const fixed = '{\n  "rules": [],\n  "default": [\n    { "harness": "codex", "model": "gpt-5.5" },\n    { "harness": "claude" }\n  ]\n}\n';
-await routing.locator("textarea").fill(fixed);
+await routing.locator(".routing-rules").fill(fixed);
 await routing.locator(".routing-primary", { hasText: "Save rules" }).click();
 await routing.locator(".routing-notice").waitFor();
 check((await routing.locator(".routing-notice").innerText()).startsWith("Saved."), "valid rules are saved");
@@ -104,7 +160,7 @@ await toggle.click();
 check(await routing.locator(".routing-start input[value='restore']").isChecked(), "turning on again suggests the rules set aside");
 await shot("restore");
 await routing.locator(".routing-primary", { hasText: "Turn on" }).click();
-await routing.locator("textarea").waitFor();
+await routing.locator(".routing-rules-head").waitFor();
 check(await toggle.getAttribute("aria-checked") === "true", "and brings routing back on");
 
 // The key: optional, write-only, and never shown again.
@@ -135,6 +191,26 @@ check(true, "a key can be removed");
 await openSettings("routing=invalid");
 check((await routing.locator(".routing-alert").innerText()).includes("The first mate can't use these rules: unverified harness: spaceship"), "rules already on disk that cannot be used say why");
 await shot("invalid");
+
+// Fields the form has no control for are named on the rule they belong to, and kept through an edit.
+await openSettings("routing=rich");
+const rich = routing.locator("[data-testid='rule-card']");
+check((await rich.innerText()).includes('This rule also sets "approval", "floor"'), "a rule's fields the form cannot edit are named");
+check((await rich.innerText()).includes('Also sets "provider"') && (await rich.innerText()).includes('Also sets "floor"'), "and so are a choice's");
+check((await routing.locator("[data-testid='rules-form']").innerText()).includes('This file also sets "notes"'), "and the file's own");
+await rich.locator("input[aria-label='Model for rule 1, choice 2']").fill("gpt-5.5");
+await routing.locator(".routing-primary", { hasText: "Save rules" }).click();
+await routing.locator(".routing-notice").waitFor();
+await tab("JSON").click();
+const kept = JSON.parse(await routing.locator(".routing-rules").inputValue());
+check(kept.rules[0].approval === "captain" && kept.rules[0].floor.min_percent === 20 && kept.rules[0].use[0].provider === "codex" && kept.rules[0].use[1].floor.min_percent === 50 && kept.notes === "Kept by hand.", "an edit in the form keeps every field it does not show");
+check(Object.keys(kept.rules[0]).join(",") === "when,approval,floor,use", "in the order the file had them");
+await shot("rich");
+
+// Rules the form cannot show open as JSON, saying why, rather than being reshaped.
+await openSettings("routing=unshowable");
+check(await tab("Form").isDisabled() && await tab("JSON").getAttribute("aria-selected") === "true", "rules the form cannot show open as JSON");
+check((await routing.locator(".routing-form-blocked").innerText()).includes("its rules are not a list"), "and say why");
 
 // A key set outside the app is reported, and left to where it was set.
 await openSettings("routing=key");

@@ -1544,6 +1544,12 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
       ;;
+    bin/fm-harness-bin-lib.sh)
+      # Executable resolution, shared by spawning and fm-crew-dispatch.sh.
+      printf '%s\n' backend-dispatch
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' "__script__:fm-crew-dispatch.test.sh"
+      ;;
     bin/fm-task-inbox-lib.sh)
       # The steering-inbox record/doorbell/ladder owner: fm-send's data plane
       # (backend-dispatch), the watcher's re-ring check (watcher-wake-lock),

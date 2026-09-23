@@ -243,6 +243,57 @@ test_bootstrap_uses_same_validator() {
   pass "bootstrap reports the same reason status does"
 }
 
+test_harnesses_lists_the_validators_choices() {
+  local home bin line
+  home=$(new_home harnesses)
+  bin="$TMP_ROOT/harness-bin"
+  mkdir -p "$bin"
+  for tool in bash cat jq sed awk grep dirname basename mktemp rm; do
+    ln -s "$(command -v "$tool")" "$bin/$tool"
+  done
+  printf '#!/bin/sh\nexit 0\n' > "$bin/codex"
+  chmod +x "$bin/codex"
+  RC=0
+  OUT=$(env -u TYPESAFE_API_KEY HOME="$TMP_ROOT/no-home" PATH="$bin" FM_HOME="$home" "$TOOL" harnesses) || RC=$?
+  expect_code 0 "$RC" "harnesses"
+  assert_equals "claude codex opencode pi pi-signed grok kimi cursor agy muse rovo omp" "$(cut -f1 <<< "$OUT" | tr '\n' ' ' | sed 's/ $//')" \
+    "harnesses lists every harness the validator accepts, in its order"
+  line=$(grep "^codex	" <<< "$OUT")
+  assert_equals $'codex\tinstalled\tlow medium high xhigh max@gpt-5.6-luna' "$line" "an installed harness says so, with its efforts"
+  assert_equals $'claude\tmissing\tlow medium high xhigh max' "$(grep "^claude	" <<< "$OUT")" "a harness with no executable reads as missing"
+  assert_equals $'cursor\tmissing\t' "$(grep "^cursor	" <<< "$OUT")" "a harness that takes no effort lists none"
+  assert_contains "$(grep "^pi	" <<< "$OUT")" "ultra@codex-native/*" "a model-bound effort names what it needs"
+
+  printf 'TYPESAFE_API_KEY=typed-on\n' > "$home/.env"
+  run "$home" harnesses
+  assert_contains "$OUT" $'gemini\t' "typed dispatch resolution also offers gemini"
+  pass "harnesses lists the validator's harnesses, whether each is installed, and its efforts"
+}
+
+test_efforts_follow_the_table() {
+  local home body verdict
+  home=$(new_home efforts)
+  run "$home" enable
+  while IFS='|' read -r body verdict; do
+    run_in "$home" "$(input "$body")" write
+    if [ "$verdict" = ok ]; then
+      expect_code 0 "$RC" "accepted: $body ($ERR)"
+    else
+      assert_equals "fm-crew-dispatch: not saved: $verdict" "$ERR" "refused: $body"
+    fi
+  done <<'ROWS'
+{"default":{"harness":"codex","model":"gpt-5.6-luna","effort":"max"}}|ok
+{"default":{"harness":"codex","model":"gpt-5.5","effort":"max"}}|invalid effort: codex:max
+{"default":{"harness":"pi","model":"codex-native/gpt-6","effort":"ultra"}}|ok
+{"default":{"harness":"pi","model":"codex-native/","effort":"ultra"}}|invalid effort: pi:ultra
+{"default":{"harness":"claude","effort":"ultra"}}|invalid effort: claude:ultra
+{"default":{"harness":"grok","effort":"xhigh"}}|invalid effort: grok:xhigh
+{"default":{"harness":"cursor","effort":"low"}}|invalid effort: cursor:low
+{"default":{"harness":"rovo","effort":"max"}}|ok
+ROWS
+  pass "a profile's effort is accepted exactly when the efforts table allows it"
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 test_off_by_default
 test_enable_empty_and_template
@@ -252,3 +303,5 @@ test_disable_sets_aside_and_restore
 test_set_key_never_leaks
 test_environment_key_and_symlinks
 test_bootstrap_uses_same_validator
+test_harnesses_lists_the_validators_choices
+test_efforts_follow_the_table

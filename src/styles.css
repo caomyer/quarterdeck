@@ -631,7 +631,7 @@ a { color: var(--sea); }
 .settings-body .home-revert { margin-top: 0; }
 .home-problem { display: grid; grid-template-columns: 16px 1fr; gap: 9px; width: 100%; margin-top: 4px; padding: 11px 13px; border: 1px solid var(--coral-edge); border-radius: 10px; color: var(--coral); background: var(--coral-wash); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .home-problem span { color: var(--ink); }
-.settings-dialog { position: absolute; top: 50%; left: 50%; display: flex; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
+.settings-dialog { position: absolute; top: 50%; left: 50%; display: flex; width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 32px); flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
 .settings-body { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 0 22px 24px; overflow-y: auto; }
 /* The body scrolls when it outgrows the window; nothing in it is squeezed to fit. */
 .settings-body > * { flex: none; }
@@ -666,7 +666,56 @@ a { color: var(--sea); }
 .routing-start strong { color: var(--ink); font-size: 13.5px; font-weight: 600; }
 .settings-body .routing-start small { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .routing-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.routing-rules-label { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--ink-2); font-size: 13px; font-weight: 600; }
+.routing-rules-head { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; margin-top: 4px; }
+.routing-rules-label { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; font-weight: 600; }
+.routing-view { display: inline-flex; padding: 2px; border: 1px solid var(--control); border-radius: 8px; background: var(--surface-3); }
+.routing-view button { height: 26px; padding: 0 12px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font-size: 12.5px; font-weight: 500; }
+.routing-view button:hover:not(:disabled) { color: var(--ink); }
+.routing-view button[aria-selected="true"] { color: var(--ink); background: var(--surface); box-shadow: var(--lift); }
+.settings-body .routing-form-blocked { color: var(--ink-3); font-size: 12.5px; }
+
+/* The rules as a form: a card per rule, a row per harness it tries. */
+.rules-form { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 10px; }
+.rule-card { display: flex; width: 100%; flex-direction: column; gap: 10px; padding: 12px 14px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.rule-card > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
+.rule-card > header > span { color: var(--faint); font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.rule-default { background: var(--surface-2); }
+.rule-tools { display: flex; flex: none; align-items: center; gap: 2px; }
+.icon-button.small { width: 26px; height: 26px; border-radius: 7px; }
+.icon-button.small:disabled { opacity: .35; }
+.rule-field { display: flex; flex-direction: column; gap: 5px; }
+.rule-field > span, .rule-choices-label > span { color: var(--ink-2); font-size: 12.5px; font-weight: 600; }
+.rule-field em { margin-left: 4px; color: var(--faint); font-size: 12px; font-style: normal; font-weight: 400; }
+.rule-field textarea, .rule-field input, .choice-row input, .choice-row select { width: 100%; padding: 7px 10px; border: 1px solid var(--control); border-radius: 8px; outline: 0; color: var(--ink); background: var(--bg); font-size: 13px; line-height: 1.45; }
+.rule-field textarea { resize: vertical; min-height: 52px; max-height: 160px; field-sizing: content; }
+.rule-field textarea:focus, .rule-field input:focus, .choice-row input:focus, .choice-row select:focus { border-color: var(--sea); }
+.rule-field textarea::placeholder, .rule-field input::placeholder, .choice-row input::placeholder { color: var(--fainter); }
+.choice-row select, .choice-row input { height: 32px; padding: 0 9px; }
+.choice-row input { font: 12.5px var(--mono); }
+.choice-row input::placeholder { font-family: "Instrument Sans Variable", "Instrument Sans", system-ui, sans-serif; }
+.choice-row select.missing { color: var(--amber); }
+.rule-choices { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.rule-choices-label { display: flex; align-items: baseline; gap: 8px; }
+.rule-choices-label small { color: var(--muted); font-size: 12px; }
+.rule-choices ol { display: flex; width: 100%; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.choice-row { display: grid; grid-template-columns: 16px minmax(160px, 1.1fr) minmax(150px, 1.6fr) minmax(118px, .9fr) auto; grid-template-areas: "order harness model effort tools"; align-items: center; gap: 6px; }
+.choice-order { grid-area: order; }
+.choice-harness { grid-area: harness; }
+.choice-model { grid-area: model; }
+.choice-effort { grid-area: effort; }
+.choice-row > .rule-tools { grid-area: tools; }
+.choice-order { color: var(--faint); font: 12px var(--mono); text-align: center; }
+.choice-note, .choice-row > .rule-extra { grid-column: 2 / -1; }
+.settings-body .choice-note { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--amber); font-size: 12px; line-height: 1.4; }
+.settings-body .rule-extra, .settings-body .rule-note, .settings-body .rules-empty { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.rules-add { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; border: 1px dashed var(--control); border-radius: 8px; color: var(--ink-3); background: transparent; font-size: 12.5px; font-weight: 500; }
+.rules-add:hover:not(:disabled) { border-color: var(--control-hover); color: var(--ink); }
+.rules-add.small { height: 26px; padding: 0 8px; font-size: 12px; }
+@media (max-width: 640px) {
+  .choice-row { grid-template-columns: 16px 1fr 1fr; grid-template-areas: "order harness effort" ". model model" ". tools tools"; }
+  .choice-row > .rule-tools { justify-content: flex-end; }
+}
+.routing-rules-label code { white-space: nowrap; }
 .routing-rules-label code, .routing-key code { padding: 1px 5px; border-radius: 5px; color: var(--ink-3); background: var(--surface-3); font: 11.5px var(--mono); font-weight: 400; }
 .routing-rules { display: block; width: 100%; min-height: 220px; max-height: 42vh; resize: vertical; padding: 11px 13px; border: 1px solid var(--control); border-radius: 10px; outline: 0; color: var(--ink); background: var(--surface); font: 12px/1.55 var(--mono); tab-size: 2; white-space: pre; overflow: auto; }
 .routing-rules:focus { border-color: var(--sea); }

@@ -329,6 +329,18 @@ export type Routing = {
   key: { set: boolean; source: "environment" | ".env" | null };
   /** The rules turning routing off last set aside, which turning it on can bring back. */
   setAside: string | null;
+  /** The harnesses a rule may name, as firstmate lists them; empty from a firstmate that cannot list them. */
+  harnesses: HarnessChoice[];
+  /** The example rules firstmate ships, for turning routing on and for model suggestions. */
+  template: string | null;
+};
+
+/** A harness a rule may name: whether this Mac has it, and the efforts it takes. */
+export type HarnessChoice = {
+  name: string;
+  installed: boolean;
+  /** `needs` is the model an effort is bound to: exact, or a prefix ending in `*` with something after it. */
+  efforts: { effort: string; needs: string | null }[];
 };
 
 /** Where a newly turned-on routing's rules come from: the shipped example, none yet, or the rules set aside when it was turned off. */

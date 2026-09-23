@@ -7,7 +7,7 @@ Not verified, and not naturally verifiable, as a secondmate or primary: rovo has
 
 | Fact | Value |
 |---|---|
-| Binary | `resolve_rovo_binary` in `../../../bin/fm-spawn.sh` resolves `PATH`, then falls back to `$HOME/.local/bin/rovo`; spawning refuses if neither is executable. |
+| Binary | `resolve_rovo_binary` in `../../../bin/fm-harness-bin-lib.sh` resolves `PATH`, then falls back to `$HOME/.local/bin/rovo`; spawning refuses if neither is executable. |
 | Launch | Bare `rovo run --yolo` (no positional brief), the kimi launch-then-send shape: a readiness gate on the `Welcome to Rovo!` banner, then a typed absolute brief pointer, then a delivery-confirmation gate. A positional brief is dead-on-arrival (see "Launch and readiness" below). |
 | Models | `--model <model>`, discovered from the in-session `/models` command or ACP `session/new`; the observed live list (GPT-5.6 Terra/Sol/Luna, GPT-5.5, GPT-5.4, several Claude Sonnet/Opus/Haiku ids, Gemini 3 ids) is per-account and must never be hardcoded. |
 | Busy state | Rendered-tail fallback, isolated to rovo like Grok's - the animated `Rovo is thinking...` line, matched by `fm_busy_rovo_tail_busy` in `../../../bin/fm-busy-lib.sh` - because rovo's `eventHooks` fire at tool granularity only (`on_tool_start`/`on_tool_end`), never at turn-end, so no semantic writer exists to arm. |

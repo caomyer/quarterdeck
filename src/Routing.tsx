@@ -1,6 +1,8 @@
 import { useEffect, useId, useState } from "react";
 import { Check, CircleAlert, KeyRound } from "lucide-react";
 import type { HostAdapter, Routing, RoutingStart } from "./host";
+import { RulesEditor } from "./RulesEditor";
+import { formProblem } from "./rules";
 
 /** firstmate's refusal as a sentence, its reason kept in its own words. */
 function errorText(error: unknown) {
@@ -33,6 +35,7 @@ export function RoutingSettings({ host }: { host: HostAdapter }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [key, setKey] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
+  const [view, setView] = useState<"form" | "json">("form");
   const ids = useId();
 
   useEffect(() => {
@@ -107,6 +110,11 @@ export function RoutingSettings({ host }: { host: HostAdapter }) {
   };
 
   const on = routing?.on === true;
+  // The form is the way in whenever it can show the rules; JSON is there for what it cannot, and always on request.
+  const noHarnesses = routing !== null && routing.harnesses.length === 0 ? "this firstmate does not list its harnesses" : null;
+  const formBlocked = on ? noHarnesses ?? formProblem(draft) : null;
+  const formReady = formBlocked === null;
+  const showForm = view === "form" && formReady;
   const starts = STARTS.filter((option) => option.from !== "restore" || routing?.setAside);
 
   return <section className="routing" aria-labelledby={`${ids}-title`} data-testid="routing">
@@ -147,17 +155,26 @@ export function RoutingSettings({ host }: { host: HostAdapter }) {
       {routing.invalid
         ? <div className="routing-alert" role="alert"><CircleAlert size={16} /><span>The first mate can't use these rules: {routing.invalid}</span></div>
         : <p className="routing-state on"><Check size={15} /> On. The first mate follows these rules when it hands out work.</p>}
-      <label className="routing-rules-label" htmlFor={`${ids}-rules`}>Rules <code>config/crew-dispatch.json</code></label>
-      <textarea
-        id={`${ids}-rules`}
-        className="routing-rules"
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        value={draft}
-        disabled={busy}
-        onChange={(event) => setDraft(event.target.value)}
-      />
+      <div className="routing-rules-head">
+        <span className="routing-rules-label" id={`${ids}-rules-label`}>Rules <code>config/crew-dispatch.json</code></span>
+        <div className="routing-view" role="tablist" aria-label="Edit the rules as">
+          <button type="button" role="tab" aria-selected={showForm} disabled={!formReady} title={formBlocked ?? undefined} onClick={() => setView("form")}>Form</button>
+          <button type="button" role="tab" aria-selected={!showForm} onClick={() => setView("json")}>JSON</button>
+        </div>
+      </div>
+      {formBlocked && <p className="routing-form-blocked" role="note">The form can't show these rules: {formBlocked}. Edit them as JSON.</p>}
+      {showForm
+        ? <RulesEditor text={draft} onChange={setDraft} harnesses={routing.harnesses} template={routing.template} disabled={busy} />
+        : <textarea
+          aria-labelledby={`${ids}-rules-label`}
+          className="routing-rules"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          value={draft}
+          disabled={busy}
+          onChange={(event) => setDraft(event.target.value)}
+        />}
       <div className="routing-actions">
         <button type="button" className="routing-primary" disabled={!dirty || busy} onClick={() => void save()}>{busy && dirty ? "Saving…" : "Save rules"}</button>
         {dirty && <button type="button" className="routing-quiet" disabled={busy} onClick={() => { setDraft(routing.rules ?? ""); setError(null); }}>Undo changes</button>}

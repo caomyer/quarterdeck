@@ -4,6 +4,7 @@
 # Usage: fm-crew-dispatch.sh status
 #        fm-crew-dispatch.sh show
 #        fm-crew-dispatch.sh template
+#        fm-crew-dispatch.sh harnesses
 #        fm-crew-dispatch.sh enable [--template | --restore]
 #        fm-crew-dispatch.sh write [--if-unchanged <sha256>]   (rules JSON on stdin)
 #        fm-crew-dispatch.sh disable
@@ -31,6 +32,16 @@
 #             is missing.
 #   show      Print the rules file as it is on disk; nothing when routing is off.
 #   template  Print the shipped example, docs/examples/crew-dispatch.json.
+#   harnesses Print one tab-separated line per harness a profile may name, in
+#             the order the validator lists them:
+#               <harness>\t<installed|missing>\t<efforts>
+#             <efforts> is space-separated and may be empty, each entry
+#             "<effort>" or "<effort>@<model>" (accepted only with that model)
+#             or "<effort>@<prefix>*" (only with a model under that prefix).
+#             The list, the efforts, and whether a harness is installed come
+#             from the same owners the validator and spawning use, so a caller
+#             offering a choice keeps no copy of them. It follows the key: with
+#             typed dispatch resolution on, gemini is listed too.
 #   enable    Create the rules file: empty rules by default, the shipped example
 #             with --template, or the newest set-aside file with --restore.
 #             Refuses when routing is already on, and never overwrites a file.
@@ -75,6 +86,8 @@ KEY_LINE_RE='^[[:space:]]*(export[[:space:]]+)?TYPESAFE_API_KEY='
 . "$SCRIPT_DIR/fm-env-lib.sh"
 # shellcheck source=bin/fm-crew-dispatch-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-crew-dispatch-lib.sh"
+# shellcheck source=bin/fm-harness-bin-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-harness-bin-lib.sh"
 
 # The header above, up to `set -u`, is the help text.
 help_text() {
@@ -182,6 +195,17 @@ cmd_show() {
 
 cmd_template() {
   cat -- "$TEMPLATE" || refuse "the shipped example is missing: $TEMPLATE"
+}
+
+cmd_harnesses() {
+  local harness installed
+  command -v jq >/dev/null 2>&1 || refuse "cannot list harnesses without jq"
+  while IFS= read -r harness; do
+    [ -n "$harness" ] || continue
+    installed=missing
+    fm_harness_installed "$harness" && installed=installed
+    printf '%s\t%s\t%s\n' "$harness" "$installed" "$(fm_crew_dispatch_efforts "$harness")"
+  done < <(fm_crew_dispatch_harnesses "$(typed_active)")
 }
 
 cmd_enable() {
@@ -324,6 +348,7 @@ case "$verb" in
   status) [ "$#" -eq 0 ] || usage; cmd_status ;;
   show) [ "$#" -eq 0 ] || usage; cmd_show ;;
   template) [ "$#" -eq 0 ] || usage; cmd_template ;;
+  harnesses) [ "$#" -eq 0 ] || usage; cmd_harnesses ;;
   enable) cmd_enable "$@" ;;
   write) cmd_write "$@" ;;
   disable) [ "$#" -eq 0 ] || usage; cmd_disable ;;

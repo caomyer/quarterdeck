@@ -14,6 +14,49 @@ FM_CREW_DISPATCH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-quota-axi-lib.sh disable=SC1091
 . "$FM_CREW_DISPATCH_LIB_DIR/fm-quota-axi-lib.sh"
 
+# The efforts each harness accepts in a profile, as a JSON object keyed by
+# harness. An entry "<effort>@<model>" is accepted only with exactly that model,
+# and "<effort>@<prefix>*" only with a model that starts with <prefix> and names
+# something after it. A harness with an empty list takes no effort; a verified
+# harness absent from the table takes any effort but ultra.
+FM_CREW_DISPATCH_EFFORTS='{
+  "claude": ["low","medium","high","xhigh","max"],
+  "codex": ["low","medium","high","xhigh","max@gpt-5.6-luna"],
+  "grok": ["low","medium","high"],
+  "agy": ["low","medium","high"],
+  "pi": ["low","medium","high","xhigh","max","ultra@codex-native/*"],
+  "pi-signed": ["low","medium","high","xhigh","max","ultra@codex-native/*"],
+  "omp": ["low","medium","high","xhigh","max"],
+  "muse": ["low","medium","high","xhigh","max"],
+  "rovo": ["low","medium","high","max"],
+  "opencode": [],
+  "kimi": [],
+  "cursor": []
+}'
+
+# The effort vocabulary offered for a verified harness the table above leaves
+# open.
+FM_CREW_DISPATCH_OPEN_EFFORTS='["low","medium","high","xhigh","max"]'
+
+# fm_crew_dispatch_harnesses <typed:true|false>
+# Print the harnesses a profile may name, one per line. Typed dispatch
+# resolution additionally accepts gemini, from bin/fm-control-lib.sh's verified
+# list.
+fm_crew_dispatch_harnesses() {
+  if [ "$1" = true ]; then
+    fm_control_harnesses
+  else
+    printf '%s\n' claude codex opencode pi pi-signed grok kimi cursor agy muse rovo omp
+  fi
+}
+
+# fm_crew_dispatch_efforts <harness>
+# Print the efforts a profile on <harness> may name, space-separated, in the
+# "<effort>[@<model>]" form of FM_CREW_DISPATCH_EFFORTS.
+fm_crew_dispatch_efforts() {
+  jq -r --arg h "$1" --argjson open "$FM_CREW_DISPATCH_OPEN_EFFORTS" '(.[$h] // $open) | join(" ")' <<< "$FM_CREW_DISPATCH_EFFORTS"
+}
+
 # fm_crew_dispatch_invalid_reason <file> <typed:true|false>
 # Print why <file> is not a valid dispatch profile file, or nothing when it is.
 # <typed> is true while typed dispatch resolution is active (a TYPESAFE_API_KEY
@@ -25,28 +68,27 @@ fm_crew_dispatch_invalid_reason() {
     echo "malformed JSON"
     return 0
   fi
-  if [ "$typed_active" = true ]; then
-    verified_harnesses=$(fm_control_harnesses | jq -Rsc 'split("\n") | map(select(length > 0))')
-  else
-    typed_active=false
-    verified_harnesses='["claude","codex","opencode","pi","pi-signed","grok","kimi","cursor","agy","muse","rovo","omp"]'
-  fi
-  jq -r --argjson typed "$typed_active" --argjson verified_harnesses "$verified_harnesses" --arg provider_re "$FM_QUOTA_PROVIDER_ID_RE" '
+  [ "$typed_active" = true ] || typed_active=false
+  verified_harnesses=$(fm_crew_dispatch_harnesses "$typed_active" | jq -Rsc 'split("\n") | map(select(length > 0))')
+  jq -r --argjson typed "$typed_active" --argjson verified_harnesses "$verified_harnesses" --argjson efforts "$FM_CREW_DISPATCH_EFFORTS" --arg provider_re "$FM_QUOTA_PROVIDER_ID_RE" '
     def verified($h): $verified_harnesses | index($h);
     def provider_id($p): ($p | type) == "string" and ($p | test($provider_re));
+    # One entry of the efforts table, against a profile model: "<effort>" alone,
+    # "<effort>@<model>" exactly, or "<effort>@<prefix>*" with more after it.
+    def model_fits($m; $want):
+      if ($want | endswith("*")) then
+        ($want | rtrimstr("*")) as $prefix
+        | ($m | type) == "string" and ($m | startswith($prefix)) and ($m | length) > ($prefix | length)
+      else $m == $want
+      end;
+    def entry_ok($entry; $m; $e):
+      ($entry | split("@")) as $parts
+      | $parts[0] == $e and (($parts | length) == 1 or model_fits($m; $parts[1:] | join("@")));
     def effort_ok($h; $m; $e):
       if $e == null then true
       elif ($e | type) != "string" then false
-      elif $e == "ultra" then (($h == "pi" or $h == "pi-signed") and (($m | type) == "string") and ($m | startswith("codex-native/")) and ($m | length) > 13)
-      elif $h == "claude" then (["low","medium","high","xhigh","max"] | index($e))
-      elif $h == "codex" then ((["low","medium","high","xhigh"] | index($e)) != null or ($e == "max" and $m == "gpt-5.6-luna"))
-      elif $h == "grok" then (["low","medium","high"] | index($e))
-      elif $h == "agy" then (["low","medium","high"] | index($e))
-      elif $h == "pi" or $h == "pi-signed" or $h == "omp" then (["low","medium","high","xhigh","max"] | index($e))
-      elif $h == "muse" then (["low","medium","high","xhigh","max"] | index($e))
-      elif $h == "rovo" then (["low","medium","high","max"] | index($e))
-      elif $h == "opencode" or $h == "kimi" or $h == "cursor" then false
-      else true
+      elif ($efforts | has($h)) then any($efforts[$h][]; entry_ok(.; $m; $e))
+      else $e != "ultra"
       end;
     def profiles($value):
       if ($value | type) == "array" then $value

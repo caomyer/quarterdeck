@@ -16,7 +16,7 @@
     "onboarding": "node scripts/onboarding.mjs",
     "attach": "node scripts/attach.mjs",
     "routing": "node scripts/routing.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
