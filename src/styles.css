@@ -747,6 +747,34 @@ a { color: var(--sea); }
 .task-body p, .task-body li { overflow-wrap: anywhere; }
 .task-body .body-label { color: var(--ink); font-weight: 600; letter-spacing: .02em; }
 .task-body code { padding: 0 4px; border-radius: 4px; color: var(--ink); background: var(--surface-3); font: 12px var(--mono); }
+/* The files a task carries: a picture as a thumbnail that opens whole, anything else by name, each with the path a worker is handed. */
+.task-files { display: grid; gap: 8px; }
+.task-file { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.task-file-thumb { display: grid; width: 88px; height: 72px; place-items: center; overflow: hidden; padding: 0; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); background: var(--surface-3); cursor: zoom-in; }
+.task-file-thumb.icon { cursor: default; }
+.task-file-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+.task-file-copy { display: flex; flex-direction: column; gap: 2px; }
+.task-file-copy strong { overflow: hidden; color: var(--ink); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.task-file-copy small { color: var(--muted); font-size: 12px; }
+.task-file-copy code { margin-top: 2px; color: var(--faint); font: 11px var(--mono); overflow-wrap: anywhere; }
+.picture-view { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 32px; background: color-mix(in srgb, var(--sidebar) 78%, transparent); cursor: zoom-out; }
+.picture-view img { max-width: 100%; max-height: 100%; border-radius: 10px; box-shadow: var(--shadow); }
+/* A task's notes: a record for whoever works it, not a conversation. */
+.task-notes { display: grid; gap: 10px; margin-bottom: 12px; }
+.task-note { display: grid; gap: 8px; }
+.task-note header { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.task-note header strong { color: var(--ink); font-weight: 600; }
+.task-note header time { margin-left: auto; color: var(--faint); font: 11.5px var(--mono); }
+.task-note .brief-block { padding: 10px 12px; border-radius: 10px; }
+.task-note.scope .brief-block { border-color: var(--brand-edge); background: var(--brand-wash); }
+.scope-tag { padding: 0 6px; border: 1px solid var(--brand-edge); border-radius: 5px; color: var(--brand-ink); background: var(--brand-wash); font: 10.5px var(--mono); }
+.note-composer { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--control); border-radius: 12px; background: var(--surface); }
+.note-composer:focus-within { border-color: var(--sea); }
+.note-composer textarea { display: block; width: 100%; height: 44px; resize: vertical; padding: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font: inherit; font-size: 13.5px; line-height: 1.5; }
+.note-composer textarea::placeholder { color: var(--fainter); }
+.note-composer > div { display: flex; align-items: center; gap: 8px; }
+.note-hint { flex: 1; color: var(--faint); font-size: 12px; line-height: 1.4; }
+.notes-error { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
 .brief-block dd { margin: 0; color: var(--ink-3); }
 .timeline { position: relative; }
 .timeline::before { position: absolute; top: 18px; bottom: 18px; left: 14px; width: 1px; background: var(--rule); content: ""; }

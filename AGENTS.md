@@ -93,7 +93,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Run it after changing how artifacts are listed, opened or framed.
 - Check a project's page, in both themes: start Vite on your own port, then
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm projects`.
-  It checks what waits on the captain in the project, what is underway and up next, a queued task's details, and the logbook: its filters, search, the rows closed without a delivery, a closed task's details, paging, and a firstmate that cannot list its history or fails to.
+  It checks what waits on the captain in the project, what is underway and up next, a queued task's details with the files and notes it carries, and the logbook: its filters, search, the rows closed without a delivery, a closed task's details, paging, and a firstmate that cannot list its history or fails to.
   Run it after changing the project page or the mock's history.
 - Check what the app tells a captain their Mac still needs, in both themes: start Vite on your own port, then
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm onboarding`.
@@ -103,6 +103,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
 - Files the captain attaches travel as words: picking one only checks it, and the host copies each into the home's `data/.attachments/` when the message is sent (`src-tauri/src/attach.rs`), and `src/attachments.ts` alone writes and reads the block naming those copies in the message, so the outbox, re-sends and history stay text.
   Check the composer, the sent message and the refusals, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm attach`.
   Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test attach_e2e_live_scratch_home -- --ignored --nocapture` has a real first mate read an attached file, and read it again after a restart mid-turn.
+- The files and notes a task carries beside its row are read and written only through `engine/bin/fm-task-note.sh` (`src-tauri/src/notes.rs`), which owns `data/<id>/notes/` and `data/<id>/files/` and appends them to each worker's launch brief; the app never writes either folder, and shows a task's pictures read-only through the `artifact` scheme.
 - Crew routing, in Settings, reads and writes only through `engine/bin/fm-crew-dispatch.sh` (`src-tauri/src/routing.rs`): the app never writes `config/crew-dispatch.json` or the `.env` key line itself, and the key goes to the script on stdin and never comes back to the window.
   Its rule form offers only the harnesses and efforts `fm-crew-dispatch.sh harnesses` lists, so the app keeps no copy of either; `src/rules.ts` edits one field at a time and keeps every key it does not show.
   Check it, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm routing`.

@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent } from "./types";
+import type { AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, TaskFile, TaskNotes } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -151,6 +151,19 @@ export class TauriHostAdapter implements HostAdapter {
       text: capture.text,
       observed_at: capture.captured_at_ms ? new Date(capture.captured_at_ms).toISOString() : undefined,
     }));
+  }
+
+  taskNotes(taskId: string) {
+    return invoke<TaskNotes | null>("task_notes", { taskId });
+  }
+
+  taskNoteAdd(taskId: string, body: string, sources: string[]) {
+    return invoke<TaskNotes>("task_note_add", { taskId, body, sources });
+  }
+
+  taskFileUrl(taskId: string, file: TaskFile) {
+    const base = navigator.userAgent.includes("Windows") ? "http://artifact.localhost" : "artifact://localhost";
+    return `${base}/files/${encodeURIComponent(taskId)}/${encodeURIComponent(file.name)}`;
   }
 
   projectHistory(repo: string, options: { after?: string | null; limit?: number } = {}) {

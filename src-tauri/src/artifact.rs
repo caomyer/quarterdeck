@@ -13,13 +13,19 @@
 //!   artifact://localhost/task/<task-id>/<name>/review-files/<file>
 //!   artifact://localhost/chat/<name>/review-files/<file>
 //!
-//! and the one library the review script loads, from the app itself:
+//! the one library the review script loads, from the app itself:
 //!
 //!   artifact://localhost/_qd/snapdom.js
 //!
-//! which map to `data/<task-id>/artifacts/<name>/rev-<n>/files/<file path>`
-//! and `data/.artifacts/<name>/rev-<n>/files/<file path>`. firstmate's script
-//! owns that layout. Only a complete revision (one with `revision.json`) is
+//! and the pictures a task carries (`notes.rs`):
+//!
+//!   artifact://localhost/files/<task-id>/<file>
+//!
+//! which map to `data/<task-id>/artifacts/<name>/rev-<n>/files/<file path>`,
+//! `data/.artifacts/<name>/rev-<n>/files/<file path>` and
+//! `data/<task-id>/files/<file>`. firstmate's scripts own that layout. A task's
+//! file is served only when it is a picture, since a thumbnail is all the app
+//! shows of one. Only a complete revision (one with `revision.json`) is
 //! served, never a dotfile or anything that resolves outside its `files`
 //! folder, and every refusal is a plain 404 that names nothing on disk. The
 //! review screen loads these pages in a sandboxed frame without same-origin
@@ -125,6 +131,9 @@ pub fn resolve(data: &Path, request_path: &str) -> Result<PathBuf, Refusal> {
         }
         segments.push(segment);
     }
+    if segments.first().map(String::as_str) == Some("files") {
+        return task_file(data, &segments[1..]);
+    }
     let (artifact_dir, rest) = match segments.first().map(String::as_str) {
         Some("task") if segments.len() >= 5 && valid_task_id(&segments[1]) && valid_name(&segments[2]) => {
             (data.join(&segments[1]).join("artifacts").join(&segments[2]), &segments[3..])
@@ -163,6 +172,20 @@ pub fn resolve(data: &Path, request_path: &str) -> Result<PathBuf, Refusal> {
     }
     let found = std::fs::canonicalize(files.join(wanted)).map_err(|_| Refusal::Missing)?;
     if !found.starts_with(&files) || !found.is_file() {
+        return Err(Refusal::Missing);
+    }
+    Ok(found)
+}
+
+/// A picture a task carries: one file directly inside `data/<task-id>/files/`.
+fn task_file(data: &Path, segments: &[String]) -> Result<PathBuf, Refusal> {
+    let [task, file] = segments else { return Err(Refusal::Malformed) };
+    if !valid_task_id(task) {
+        return Err(Refusal::Malformed);
+    }
+    let folder = std::fs::canonicalize(data.join(task).join("files")).map_err(|_| Refusal::Missing)?;
+    let found = std::fs::canonicalize(folder.join(file)).map_err(|_| Refusal::Missing)?;
+    if !found.starts_with(&folder) || !found.is_file() || !content_type(&found).starts_with("image/") {
         return Err(Refusal::Missing);
     }
     Ok(found)
@@ -367,6 +390,25 @@ mod tests {
         assert_eq!(response.headers()[header::CONTENT_TYPE], "text/javascript; charset=utf-8");
         assert!(response.body().starts_with(b"/*\n* SnapDOM\n* v3.1.0"), "the vendored library, unchanged");
         assert_eq!(serve(None, "/_qd/other.js").status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_task_serves_only_its_own_pictures() {
+        let data = store("task-files");
+        let files = data.join("t1/files");
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(files.join("shot.png"), "png").unwrap();
+        std::fs::write(files.join("log.txt"), "log").unwrap();
+        std::fs::write(files.join("page.html"), "<script>").unwrap();
+        assert_eq!(resolve(&data, "/files/t1/shot.png"), Ok(files.join("shot.png")));
+        assert_eq!(serve(Some(data.clone()), "/files/t1/shot.png").body(), b"png");
+        assert_eq!(resolve(&data, "/files/t1/log.txt"), Err(Refusal::Missing), "only a picture is shown");
+        assert_eq!(resolve(&data, "/files/t1/page.html"), Err(Refusal::Missing), "a page is never served from a task's files");
+        assert_eq!(resolve(&data, "/files/t1/../report.md"), Err(Refusal::Malformed));
+        assert_eq!(resolve(&data, "/files/t1/sub/shot.png"), Err(Refusal::Malformed), "only files directly in the folder");
+        assert_eq!(resolve(&data, "/files/..t1/shot.png"), Err(Refusal::Malformed));
+        assert_eq!(resolve(&data, "/files/t2/shot.png"), Err(Refusal::Missing));
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]
