@@ -38,6 +38,7 @@ pub fn run() {
       app.manage(review::Writes::default());
       app.manage(quota::Quota::default());
       app.manage(update::Updates::default());
+      update::settle_note(app.handle());
       update::spawn(app.handle().clone());
       settings::load_saved_home(app.handle().clone());
       // macOS ignores the config's `maximized` when it creates the window, which

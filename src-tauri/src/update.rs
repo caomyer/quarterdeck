@@ -16,8 +16,9 @@
 //! password prompt is needed: the exit handler cannot show one.
 //!
 //! What was installed is noted in the settings folder before the relaunch, so
-//! the new version can say once what changed. A note naming a version other
-//! than the one running is a swap that did not take, and is dropped.
+//! the new version can say once what changed. Reading it never removes it: a
+//! note naming a version other than the one running is a swap that did not
+//! take, and is dropped once, at launch, before this process can write another.
 //!
 //! Only a release build looks for updates, and `QUARTERDECK_UPDATES=off` stops
 //! even that, for a build an agent launches to test.
@@ -182,7 +183,7 @@ async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 fn status<R: Runtime>(app: &AppHandle<R>) -> Value {
     let current = app.package_info().version.to_string();
     let mut view = app.state::<Updates>().inner().lock().view();
-    view["installed"] = settle_note(app, &current);
+    view["installed"] = crate::settings::settings_dir(app).map(|dir| read_note_in(&dir, &current)).unwrap_or(Value::Null);
     view["current"] = Value::String(current);
     view
 }
@@ -341,23 +342,33 @@ fn write_note_in(dir: &Path, note: &Value) -> Result<(), String> {
     std::fs::rename(&partial, dir.join(NOTE_FILE)).map_err(|e| format!("could not save {}: {e}", dir.join(NOTE_FILE).display()))
 }
 
-fn settle_note<R: Runtime>(app: &AppHandle<R>, current: &str) -> Value {
-    crate::settings::settings_dir(app).map(|dir| read_note_in(&dir, current)).unwrap_or(Value::Null)
+/// For the app's setup, before anything can install: drops a note left by a
+/// swap that did not take.
+pub fn settle_note<R: Runtime>(app: &AppHandle<R>) {
+    let current = app.package_info().version.to_string();
+    if let Ok(dir) = crate::settings::settings_dir(app) {
+        settle_note_in(&dir, &current);
+    }
 }
 
-/// What the last update installed, while it is the version running. A note for
-/// any other version is a swap that did not take, and is dropped.
-fn read_note_in(dir: &Path, current: &str) -> Value {
-    let path = dir.join(NOTE_FILE);
-    let Some(note) = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) else {
-        return Value::Null;
-    };
-    if note["to"].as_str() == Some(current) {
-        return json!({"version": note["to"], "from": note["from"], "notes": note["notes"]});
+fn settle_note_in(dir: &Path, current: &str) {
+    let Some(note) = load_note(dir) else { return };
+    if note["to"].as_str() != Some(current) {
+        log::warn!("dropping the note for version {}, which is not the version running ({current})", note["to"]);
+        let _ = std::fs::remove_file(dir.join(NOTE_FILE));
     }
-    log::warn!("dropping the note for version {}, which is not the version running ({current})", note["to"]);
-    let _ = std::fs::remove_file(path);
-    Value::Null
+}
+
+/// What the last update installed, while it is the version running.
+fn read_note_in(dir: &Path, current: &str) -> Value {
+    match load_note(dir) {
+        Some(note) if note["to"].as_str() == Some(current) => json!({"version": note["to"], "from": note["from"], "notes": note["notes"]}),
+        _ => Value::Null,
+    }
+}
+
+fn load_note(dir: &Path) -> Option<Value> {
+    std::fs::read_to_string(dir.join(NOTE_FILE)).ok().and_then(|text| serde_json::from_str(&text).ok())
 }
 
 fn now_ms() -> u64 {
@@ -403,10 +414,22 @@ mod tests {
     fn a_note_is_read_only_while_its_version_runs() {
         let dir = scratch("note");
         write_note_in(&dir, &json!({"from": "0.1.4", "to": "0.1.5", "notes": "Faster start"})).unwrap();
+        assert_eq!(read_note_in(&dir, "0.1.4"), Value::Null, "the old version is still running");
+        assert!(dir.join(NOTE_FILE).is_file(), "reading before the relaunch keeps it");
         assert_eq!(read_note_in(&dir, "0.1.5"), json!({"version": "0.1.5", "from": "0.1.4", "notes": "Faster start"}));
         assert!(dir.join(NOTE_FILE).is_file(), "reading does not dismiss it");
-        assert_eq!(read_note_in(&dir, "0.1.4"), Value::Null, "the swap did not take");
-        assert!(!dir.join(NOTE_FILE).exists(), "a note for another version is dropped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn launch_drops_only_a_note_for_another_version() {
+        let dir = scratch("settle");
+        write_note_in(&dir, &json!({"from": "0.1.4", "to": "0.1.5", "notes": "Faster start"})).unwrap();
+        settle_note_in(&dir, "0.1.5");
+        assert!(dir.join(NOTE_FILE).is_file(), "the swap took");
+        assert_eq!(read_note_in(&dir, "0.1.5"), json!({"version": "0.1.5", "from": "0.1.4", "notes": "Faster start"}));
+        settle_note_in(&dir, "0.1.4");
+        assert!(!dir.join(NOTE_FILE).exists(), "the swap did not take");
         assert_eq!(read_note_in(&dir, "0.1.5"), Value::Null);
         let _ = std::fs::remove_dir_all(&dir);
     }
