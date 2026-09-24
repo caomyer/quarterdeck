@@ -112,6 +112,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   `cd src-tauri && cargo test quota_live_reads_this_mac -- --ignored --nocapture` reads this Mac's quota-axi through the app's path, spending nothing.
   Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test compact_e2e_live_scratch_home -- --ignored --nocapture` compacts a real first mate while it is idle and while a turn runs.
 - Every push to `main` publishes a release that running apps install (`.github/workflows/release.yml`, `src-tauri/src/update.rs`); `docs/releasing.md` says how, and what only James can do.
+  Without the signing certificate the Release job fails and publishes nothing, on purpose: an unsigned release would reset the app's macOS permissions.
   `app.yml`'s Bundle job dry-runs that build on every branch, publishing nothing.
   Never publish a release to try something.
   A release build you launch must run with `QUARTERDECK_UPDATES=off`, or quitting it installs the latest release over it.

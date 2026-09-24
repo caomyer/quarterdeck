@@ -25,13 +25,14 @@ Crewmates running in tmux keep running through the restart; the relaunched first
 macOS remembers a permission (Screen Recording, Accessibility, Documents and so on) against the app's *designated requirement*, which `codesign -d -r- <app>` prints.
 A build nobody signed has a requirement naming that one build's hash, so every new build is a stranger and every permission is asked for again.
 A build signed with a certificate has a requirement naming the app's identifier and that certificate, the same for every build signed with it, so a permission granted once survives every update.
-A release signed without the certificate says so in its notes, and `release.yml` warns.
+So `release.yml` never publishes a release without the certificate.
 
 ## What only the captain can do
 
 ### 1. Create the signing certificate (once, about five minutes)
 
-Until this is done, releases still ship, but each one resets the permissions macOS granted.
+Until this is done, a merge to `main` produces a failed Release job and no release, deliberately.
+A release without the certificate would reset every permission macOS granted the app when it installed.
 
 1. Open Keychain Access, then choose Keychain Access > Certificate Assistant > Create a Certificate.
 2. Name it `Quarterdeck Self-Signed`.

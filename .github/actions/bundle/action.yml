@@ -1,7 +1,7 @@
 name: Bundle the app
 description: >-
   Builds the macOS app as a release ships it: signed with a code-signing
-  identity when one is given, with the updater's archive and its signature,
+  identity, with the updater's archive and its signature,
   and checks both before anything is done with them. Shared by the release
   (release.yml) and by its dry run on every branch (app.yml), so the path a
   release takes is exercised long before a release takes it.
@@ -12,9 +12,8 @@ inputs:
     required: true
   signing:
     description: >-
-      import (the identity in p12), throwaway (a self-signed one made for a
-      dry run), or none (the build is left as the linker signed it, and every
-      update to it resets the permissions macOS granted).
+      import (the identity in p12) or throwaway (a self-signed one made for a
+      dry run).
     required: true
   p12:
     description: Base64 of the .p12 holding the code-signing identity, for signing import.
@@ -38,9 +37,6 @@ outputs:
   tarball:
     description: The updater's archive, renamed for upload; its signature is beside it as .sig.
     value: ${{ steps.collect.outputs.tarball }}
-  identity:
-    description: The code-signing identity the app was signed with, or empty.
-    value: ${{ steps.identity.outputs.name }}
 
 runs:
   using: composite
@@ -56,8 +52,7 @@ runs:
         set -euo pipefail
         case "$SIGNING" in
           import|throwaway) name=$(scripts/release-signing.sh "$SIGNING") ;;
-          none) name= ;;
-          *) echo "::error::signing must be import, throwaway or none, not $SIGNING"; exit 1 ;;
+          *) echo "::error::signing must be import or throwaway, not $SIGNING"; exit 1 ;;
         esac
         echo "name=$name" >>"$GITHUB_OUTPUT"
 
@@ -80,21 +75,14 @@ runs:
           if (pubkey) config.plugins = { updater: { pubkey } };
           console.log(JSON.stringify(config));
         ' "$VERSION" "$PUBKEY")
-        if [ -n "$IDENTITY" ]; then export APPLE_SIGNING_IDENTITY="$IDENTITY"; fi
-        pnpm tauri build --bundles app --config "$config"
+        APPLE_SIGNING_IDENTITY="$IDENTITY" pnpm tauri build --bundles app --config "$config"
 
     - name: Check the signature is the stable identity
       shell: bash
-      env:
-        IDENTITY: ${{ steps.identity.outputs.name }}
       run: |
         set -euo pipefail
         app="src-tauri/target/release/bundle/macos/firstmate desktop.app"
         plutil -extract NSDocumentsFolderUsageDescription raw "$app/Contents/Info.plist" >/dev/null
-        if [ -z "$IDENTITY" ]; then
-          echo "::warning::This build has no stable code-signing identity, so macOS forgets every permission it was granted when an update installs it. Set QUARTERDECK_SIGNING_P12 (docs/releasing.md)."
-          exit 0
-        fi
         codesign --verify --deep --strict "$app"
         requirement=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
         echo "designated requirement: $requirement"

@@ -28,7 +28,7 @@
 use crate::host::{Cmd, HostHandle};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State as TauriState};
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -51,6 +51,21 @@ struct Ready {
     bytes: Vec<u8>,
 }
 
+/// What the status names of the update held.
+trait Held {
+    fn version(&self) -> &str;
+    fn notes(&self) -> Option<&str>;
+}
+
+impl Held for Ready {
+    fn version(&self) -> &str {
+        &self.update.version
+    }
+    fn notes(&self) -> Option<&str> {
+        self.update.body.as_deref()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Phase {
     /// Nothing asked of it: an update, if one is ready, waits for the captain.
@@ -66,9 +81,39 @@ pub struct Updates {
     inner: Mutex<Inner>,
 }
 
-struct Inner {
-    ready: Option<Ready>,
+/// The update held stays here while it installs, so the status names it
+/// throughout and a failed install can be asked for again.
+struct Inner<T = Ready> {
+    ready: Option<Arc<T>>,
     phase: Phase,
+}
+
+impl<T: Held> Inner<T> {
+    /// Moves a waiting restart to installing, handing over what to install.
+    fn start_install(&mut self) -> Option<Arc<T>> {
+        if self.phase != Phase::Waiting {
+            return None;
+        }
+        let ready = self.ready.clone()?;
+        self.phase = Phase::Installing;
+        Some(ready)
+    }
+
+    fn view(&self) -> Value {
+        let state = match (&self.phase, &self.ready) {
+            (Phase::Waiting, _) => "waiting",
+            (Phase::Installing, _) => "installing",
+            (Phase::Failed(_), _) => "failed",
+            (Phase::Idle, Some(_)) => "ready",
+            (Phase::Idle, None) => "none",
+        };
+        json!({
+            "state": state,
+            "version": self.ready.as_ref().map(|ready| ready.version()),
+            "notes": self.ready.as_ref().and_then(|ready| ready.notes()),
+            "error": match &self.phase { Phase::Failed(error) => Some(error.as_str()), _ => None },
+        })
+    }
 }
 
 impl Default for Updates {
@@ -127,7 +172,7 @@ async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         if matches!(inner.phase, Phase::Waiting | Phase::Installing) {
             return Ok(());
         }
-        inner.ready = Some(Ready { update, bytes });
+        inner.ready = Some(Arc::new(Ready { update, bytes }));
         inner.phase = Phase::Idle;
     }
     emit(app);
@@ -136,23 +181,10 @@ async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 fn status<R: Runtime>(app: &AppHandle<R>) -> Value {
     let current = app.package_info().version.to_string();
-    let inner = app.state::<Updates>().inner().lock();
-    let ready = inner.ready.as_ref().map(|ready| &ready.update);
-    let state = match (&inner.phase, ready) {
-        (Phase::Waiting, _) => "waiting",
-        (Phase::Installing, _) => "installing",
-        (Phase::Failed(_), _) => "failed",
-        (Phase::Idle, Some(_)) => "ready",
-        (Phase::Idle, None) => "none",
-    };
-    json!({
-        "state": state,
-        "current": current,
-        "version": ready.map(|update| update.version.clone()),
-        "notes": ready.and_then(|update| update.body.clone()),
-        "error": match &inner.phase { Phase::Failed(error) => Some(error.clone()), _ => None },
-        "installed": settle_note(app, &current),
-    })
+    let mut view = app.state::<Updates>().inner().lock().view();
+    view["installed"] = settle_note(app, &current);
+    view["current"] = Value::String(current);
+    view
 }
 
 fn emit<R: Runtime>(app: &AppHandle<R>) {
@@ -228,36 +260,26 @@ async fn restart_when_idle(app: AppHandle) {
         }
         tokio::time::sleep(TURN_POLL).await;
     }
-    let ready = {
-        let mut inner = app.state::<Updates>().inner().lock();
-        if inner.phase != Phase::Waiting {
-            return;
-        }
-        inner.phase = Phase::Installing;
-        inner.ready.take()
-    };
+    let Some(ready) = app.state::<Updates>().inner().lock().start_install() else { return };
     emit(&app);
-    let Some(ready) = ready else { return };
     // Off the async runtime: extracting the bundle is blocking work, and a
     // bundle the captain cannot write asks macOS for a password on the main thread.
-    let installed = tauri::async_runtime::spawn_blocking(move || {
-        let result = ready.update.install(&ready.bytes);
-        (ready, result)
-    })
-    .await;
+    let installing = ready.clone();
+    let installed = tauri::async_runtime::spawn_blocking(move || installing.update.install(&installing.bytes).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|result| result);
     match installed {
-        Ok((ready, Ok(()))) => {
+        Ok(()) => {
             write_note(&app, &ready.update);
             log::info!("installed version {}; restarting into it", ready.update.version);
             // The exit handler stops the first mate, as on any quit; the relaunch starts it again.
             app.request_restart();
         }
-        Ok((ready, Err(error))) => {
+        Err(error) => {
             log::warn!("could not install version {}: {error}", ready.update.version);
-            app.state::<Updates>().inner().lock().ready = Some(ready);
-            set_phase(&app, Phase::Failed(error.to_string()));
+            set_phase(&app, Phase::Failed(error));
         }
-        Err(error) => set_phase(&app, Phase::Failed(error.to_string())),
     }
 }
 
@@ -351,6 +373,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    struct Fake;
+
+    impl Held for Fake {
+        fn version(&self) -> &str {
+            "0.1.5"
+        }
+        fn notes(&self) -> Option<&str> {
+            Some("Faster start")
+        }
+    }
+
+    #[test]
+    fn the_update_is_named_while_it_installs_and_after_it_fails() {
+        let mut inner = Inner { ready: Some(Arc::new(Fake)), phase: Phase::Idle };
+        assert!(inner.start_install().is_none(), "only a restart that is waiting installs");
+        inner.phase = Phase::Waiting;
+        assert!(inner.start_install().is_some());
+        assert_eq!(inner.view(), json!({"state": "installing", "version": "0.1.5", "notes": "Faster start", "error": null}));
+        inner.phase = Phase::Failed("disk full".to_string());
+        assert_eq!(inner.view(), json!({"state": "failed", "version": "0.1.5", "notes": "Faster start", "error": "disk full"}));
+        inner.phase = Phase::Waiting;
+        assert!(inner.start_install().is_some(), "asking again retries the update held");
     }
 
     #[test]
