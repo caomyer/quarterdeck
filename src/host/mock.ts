@@ -235,9 +235,23 @@ function mockArtifacts(home: string): MockHome {
   const planTask = mockTask(home, ARTIFACT_TASK, "scout", "working", 95, { detail: "harness busy (claude-hook)", note: "Revising the titles plan.", report: false, observedAt: at(2) });
   const reportTask = mockTask(home, REPORT_TASK, "scout", "done", 27 * 60, { detail: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", note: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", report: true, observedAt: at(2) });
   const records: BacklogRecord[] = [
-    backlogRow(ARTIFACT_TASK, "Resonance: AI titles for snips", { kind: "scout", since: day(0) }),
+    backlogRow(ARTIFACT_TASK, "Resonance: AI titles for snips", {
+      kind: "scout", since: day(0),
+      body_lines: ["Plan how a snip gets a title it earns, on the phone, before any model ships.", "- Compare an on-device model with the server one.", "- Say what a wrong title costs the captain."],
+    }),
     backlogRow(REPORT_TASK, "Resonance: which episodes already carry a transcript?", { kind: "scout", since: day(1) }),
-    backlogRow("res-lockscreen", "Resonance: snip from the Lock Screen and AirPods", { state: "queued", current_role: "queued", since: day(2), hold_reason: "Waits on the snip lifecycle work landing" }),
+    backlogRow("res-lockscreen", "Resonance: snip from the Lock Screen and AirPods", {
+      state: "queued", current_role: "queued", since: day(2), hold_reason: "Waits on the snip lifecycle work landing",
+      // A body written the way firstmate files one: a paragraph per line, a list, labels, and code.
+      body_lines: [
+        "SYMPTOM, reported by the captain: a snip needs the phone unlocked and the app open.",
+        "WHAT TO BUILD:",
+        "- A Lock Screen widget that snips the last 30 seconds.",
+        "- The AirPods stem press does the same, through `MPRemoteCommandCenter`.",
+        "App-side only. Verify on a locked phone, not the simulator.",
+      ],
+      body_excerpt: "SYMPTOM, reported by the captain: a snip needs the phone unlocked and the app open.",
+    }),
     backlogRow(REPORTED_TASK, "Resonance: how often do feeds change their artwork?", {
       kind: "scout", state: "done", current_role: "done", since: day(3), completion: { verb: "reported", date: day(1) }, report_path: `${home}/data/${REPORTED_TASK}/report.md`,
     }),

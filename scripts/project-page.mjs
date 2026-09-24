@@ -59,6 +59,21 @@ check(/\bwaiting\b/i.test(await queue.nth(1).locator(".task-chip").innerText()),
 check(!(await page.locator("[data-testid='project-page']").innerText()).includes("Resonance:"), "titles drop the project name the page already says");
 await shot(page, "project");
 
+// A queued task opens, and reads the way its filer wrote it.
+await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+const queued = page.locator("[data-testid='queued-drawer']");
+await queued.waitFor();
+check((await queued.locator("[data-testid='drawer-title']").innerText()) === "Snip from the Lock Screen and AirPods", "a queued task opens, titled within its project");
+check((await queued.locator(".drawer-status").innerText()).includes("Waits on the snip lifecycle work landing"), "and says what it waits on");
+const body = queued.locator("[data-testid='task-body']");
+check(await body.locator("p").count() === 3, "each line the filer wrote stays its own paragraph");
+check(await body.locator("li").count() === 2, "the filer's list stays a list");
+check(JSON.stringify(await body.locator(".body-label").allInnerTexts()) === JSON.stringify(["SYMPTOM", "WHAT TO BUILD"]), "labels in capitals lead their paragraphs");
+check((await body.locator("code").innerText()) === "MPRemoteCommandCenter", "backticks read as code");
+await shot(page, "project-queued");
+await page.keyboard.press("Escape");
+check(await queued.count() === 0, "Escape closes a queued task");
+
 // The logbook: every closed row once, newest first, with the rows that delivered nothing hidden until asked for.
 const ids = await logIds(page);
 check(new Set(ids).size === ids.length, "each closed task appears once, though the snapshot and the history both list recent ones");

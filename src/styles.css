@@ -417,8 +417,6 @@ a { color: var(--sea); }
 .task-chip { justify-self: end; max-width: 220px; overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 /* A row whose words are the point: the title takes the width, the chip only what it needs. */
 .task-row.wide { grid-template-columns: 18px minmax(0, 1fr) auto 12px; }
-.task-row.static { grid-template-columns: 18px minmax(0, 1fr) auto; cursor: default; }
-.task-row.static:hover { background: transparent; }
 .task-list + .task-list { margin-top: 0; }
 
 /* Captain's call: one card per call, its footer the place to answer. */
@@ -742,6 +740,13 @@ a { color: var(--sea); }
 .brief-block p { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; }
 .brief-block dl { display: grid; grid-template-columns: 76px 1fr; gap: 6px 10px; margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 12.5px; line-height: 1.5; }
 .brief-block dt { color: var(--faint); }
+/* A backlog body as its filer wrote it: a paragraph per line, their lists, and the labels leading them. */
+.brief-block.task-body > * + * { margin-top: 8px; }
+.task-body ul { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.55; }
+.task-body li + li { margin-top: 3px; }
+.task-body p, .task-body li { overflow-wrap: anywhere; }
+.task-body .body-label { color: var(--ink); font-weight: 600; letter-spacing: .02em; }
+.task-body code { padding: 0 4px; border-radius: 4px; color: var(--ink); background: var(--surface-3); font: 12px var(--mono); }
 .brief-block dd { margin: 0; color: var(--ink-3); }
 .timeline { position: relative; }
 .timeline::before { position: absolute; top: 18px; bottom: 18px; left: 14px; width: 1px; background: var(--rule); content: ""; }
@@ -1124,7 +1129,6 @@ a { color: var(--sea); }
   .task-row, .task-row.wide { grid-template-columns: 18px minmax(0, 1fr) 12px; row-gap: 6px; }
   .task-chip { grid-column: 2; grid-row: 2; justify-self: start; }
   .task-row > svg { grid-column: 3; grid-row: 1; }
-  .task-row.static { grid-template-columns: 18px minmax(0, 1fr); }
   .needs-list .task-row { grid-template-columns: 18px minmax(0, 1fr); }
   .chat-messages { padding: 20px 14px; }
   .composer { margin: 0 14px 14px; }
