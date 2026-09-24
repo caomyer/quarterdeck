@@ -729,6 +729,18 @@ export class MockHostAdapter implements HostAdapter {
         open_count: review.open_count,
         answered: review.answers.filter(locked).map((answer) => answer.decision),
         open_threads: review.threads.filter((thread) => thread.state === "open").map((thread) => ({ id: thread.id, rev: thread.rev })),
+        // As the app sends it: each review with the answers it carried, and every comment that went.
+        sent: review.sent.map((item) => ({
+          ...item,
+          answers: (item.answers ?? []).flatMap((decision) => {
+            const answer = review.answers.find((candidate) => candidate.decision === (typeof decision === "string" ? decision : decision.decision));
+            return answer ? [{ decision: answer.decision, option: answer.option, label: answer.label }] : [];
+          }),
+        })),
+        threads: review.threads.filter((thread) => thread.sent_at !== null).map((thread) => ({
+          id: thread.id, rev: thread.rev, state: thread.state,
+          quote: thread.anchor?.quote ?? "", said: thread.comments.map((comment) => comment.body).join(" "), picture: Boolean(thread.picture),
+        })),
       };
     }
     return pages;
@@ -766,7 +778,7 @@ export class MockHostAdapter implements HostAdapter {
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
-      [...current.sent, { at, verdict, rev, message, threads: draft.map((thread) => thread.id) }],
+      [...current.sent, { at, verdict, rev, message, header: text.split("\n")[0], threads: draft.map((thread) => thread.id), answers: told.map((answer) => answer.decision) }],
     );
     return { message, text, review, outcomes };
   }

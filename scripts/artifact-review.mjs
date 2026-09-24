@@ -34,6 +34,12 @@ async function shot(page, name) {
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
 }
 
+/** The text a sent review's card says the first mate was sent. */
+async function sentText(card) {
+  await card.waitFor();
+  return (await card.locator(".review-card-text pre").textContent()) ?? "";
+}
+
 async function noSidewaysScroll(page, where) {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check(overflow <= 0, `${where}: the window does not scroll sideways (${overflow}px)`);
@@ -333,13 +339,23 @@ check((await page.locator(".send-review").innerText()) === "Send review", "the d
 check(await threads.first().locator("button[title='Take this comment back']").count() === 0, "a sent comment cannot be taken back");
 await shot(page, "09-sent");
 await page.locator(".nav-item", { hasText: "Chat" }).click();
-const lastMessage = page.locator(".captain-message").last();
-await lastMessage.waitFor();
-const sentText = await lastMessage.innerText();
-check(sentText.includes("Requests changes."), "the first mate is told the verdict");
-check(sentText.includes("Say what happens on an older phone."), "the review's comments reach the first mate");
-check(!sentText.includes("Add the on-device title"), "a comment taken back is never sent");
-await shot(page, "10-sent-message");
+const reviewCard = page.locator("[data-testid='review-card']").last();
+const firstReview = await sentText(reviewCard);
+check(firstReview.includes("Requests changes."), "the first mate is told the verdict");
+check(firstReview.includes("Say what happens on an older phone."), "the review's comments reach the first mate");
+check(!firstReview.includes("Add the on-device title"), "a comment taken back is never sent");
+// In chat the review is a card, not the text written for the first mate.
+check(await page.locator(".captain-message", { hasText: "Captain's review of" }).count() === 0, "a sent review is not shown as a bubble of its own text");
+const cardText = (await reviewCard.locator("header").textContent()) ?? "";
+check(cardText.includes("Your review") && cardText.includes("AI titles for snips") && cardText.includes("Requests changes"), "the card names the page and the verdict");
+check((await reviewCard.locator("[data-thread='t1']").innerText()).includes("Say what happens on an older phone."), "the card shows each comment in the captain's words");
+// Rev 3 already answers t1, so the card says so and offers the next move.
+check(await reviewCard.getAttribute("data-state") === "answered", "a review a later revision answered reads as answered");
+check((await reviewCard.locator("[data-thread='t1']").innerText()).includes("Changed in rev 3"), "the card says which revision answered each comment");
+check(await reviewCard.locator("button", { hasText: "Open rev 3" }).count() === 1, "the card opens the revision that answered it");
+check((await page.locator("[data-testid='answers-review']").innerText()).includes("t1"), "the revision's own card says which comments it answers");
+await noSidewaysScroll(page, "chat with a review card");
+await shot(page, "10-review-card");
 
 // What the author says about a comment, and settling it.
 await page.locator(".nav-item", { hasText: "Artifacts" }).click();
@@ -362,6 +378,17 @@ await threads.first().locator("button[title='Open this again']").click();
 check((await threads.first().innerText()).includes("Sent"), "settling can be undone");
 await threads.first().locator("button[title='Settle this']").click();
 await page.locator(".settled-toggle").waitFor();
+
+// Settled in the review, the card in chat shrinks to one line.
+await page.locator(".nav-item", { hasText: "Chat" }).click();
+const settledCard = page.locator("[data-testid='review-card']").first();
+await settledCard.waitFor();
+check(await settledCard.getAttribute("data-state") === "settled", "a review whose comments are all settled shrinks to one line");
+check((await settledCard.innerText()).includes("Review of AI titles for snips settled · 1 comment · rev 2 → rev 3"), `the line says what was settled and across which revisions (${await settledCard.innerText()})`);
+await shot(page, "10b-review-settled");
+await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+await plan.click();
+await frame.locator("h1").waitFor();
 
 // What the list says once the newest revision has been looked at.
 await page.locator(".back-button").click();
@@ -416,9 +443,8 @@ await page.locator(".send-review").click();
 await page.locator(".review-last").waitFor();
 check((await answer.innerText()).includes("Recorded"), "the answer says firstmate recorded it");
 await page.locator(".nav-item", { hasText: "Chat" }).click();
-const review = page.locator(".captain-message").last();
-await review.waitFor();
-const reviewText = await review.innerText();
+const reviewText = await sentText(page.locator("[data-testid='review-card']").last());
+check((await page.locator("[data-testid='review-card']").last().innerText()).includes("Wi-Fi only"), "the card shows the answer recorded with the review");
 check(reviewText.includes("do not record them again"), "the first mate is told the answer is already recorded");
 check(reviewText.includes("Recorded: res-model-download = wifi-only"), "the answer names the call and the option key, as recorded");
 check(!reviewText.includes("to record with"), "the first mate is never asked to do the recording");
@@ -507,7 +533,7 @@ await page.locator(".verdict-picker select").selectOption("changes");
 await page.locator(".send-review").click();
 await page.locator(".review-last").waitFor();
 await page.locator(".nav-item", { hasText: "Chat" }).click();
-const proposalMessage = await page.locator(".captain-message").last().innerText();
+const proposalMessage = await sentText(page.locator("[data-testid='review-card']").last());
 check(proposalMessage.includes("on the diagram \"Snip pipeline\""), "the message names the diagram");
 check(proposalMessage.includes("proposed scene:"), "the message points at the scene the author can take up");
 
@@ -603,7 +629,7 @@ await resumed.close();
   check((await refused.innerText()).includes("the hold changed"), "with the intake's reason");
   await shot(skipping, "20-not-recorded");
   await skipping.locator(".nav-item", { hasText: "Chat" }).click();
-  check(await skipping.locator(".captain-message", { hasText: "foreman-auto-merge" }).count() === 0, "nothing about a skipped answer reaches the first mate");
+  check(await skipping.locator(".captain-message, .review-card-text pre", { hasText: "foreman-auto-merge" }).count() === 0, "nothing about a skipped answer reaches the first mate");
 
   await skipping.locator(".nav-item", { hasText: "Artifacts" }).click();
   await skipping.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
@@ -616,7 +642,7 @@ await resumed.close();
   check(await railCellular.locator(".decision-choices button:not(:disabled)").count() === 2, "a skipped answer can be chosen again");
   await shot(skipping, "20b-rail-not-recorded");
   await skipping.locator(".nav-item", { hasText: "Chat" }).click();
-  const skippedReview = await skipping.locator(".captain-message").last().innerText();
+  const skippedReview = await sentText(skipping.locator("[data-testid='review-card']").last());
   check(skippedReview.includes("Captain's review of") && !skippedReview.includes("res-model-cellular"), "the review never claims a skipped answer");
 
   // Answered in chat: the rail says so instead of offering buttons.
@@ -680,6 +706,37 @@ check((await plain.locator(".verdict-picker select").inputValue()) === "comment"
 check((await plain.locator(".review-send small").innerText()) === "Thoughts only. Its task has finished, so nothing waits on this page.", "the hint says why nothing waits on it");
 await plain.close();
 
+// Settling from the card in chat: a fresh home, one comment on rev 2, which rev 3 answers.
+{
+  const fromChat = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  fromChat.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await fromChat.goto(`${baseUrl}/?artifacts`);
+  await fromChat.waitForFunction(() => !document.querySelector(".app-loading"));
+  await fromChat.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await fromChat.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" }).click();
+  const planFrame = fromChat.frameLocator(".artifact-stage iframe");
+  await planFrame.locator("h1").waitFor();
+  await fromChat.locator(".revision-picker select").selectOption("2");
+  await planFrame.locator(".eyebrow", { hasText: "revised" }).waitFor();
+  await fromChat.locator(".comment-toggle").click();
+  await planFrame.locator(".card.rec p").click();
+  await fromChat.locator(".comment-composer textarea").fill("Say what happens on an older phone.");
+  await fromChat.locator(".comment-composer button", { hasText: "Comment" }).click();
+  await fromChat.locator(".send-review").click();
+  await fromChat.locator(".review-last").waitFor();
+  await fromChat.locator(".nav-item", { hasText: "Chat" }).click();
+  const card = fromChat.locator("[data-testid='review-card']").last();
+  await card.waitFor();
+  await card.locator("button", { hasText: "Settle it" }).click();
+  await fromChat.waitForFunction(() => [...document.querySelectorAll("[data-testid='review-card']")].at(-1)?.getAttribute("data-state") === "settled", null, { timeout: 5000 }).catch(() => {});
+  check(await card.getAttribute("data-state") === "settled", "a comment settled from its card in chat is settled");
+  for (const theme of ["dark", "light"]) {
+    await fromChat.evaluate((dark) => document.documentElement.classList.toggle("dark", dark), theme === "dark");
+    await noSidewaysScroll(fromChat, `a settled review card, ${theme}`);
+  }
+  await fromChat.close();
+}
+
 // `?usage-t2`: the captain's own t2, on the usage-panel mock its scout presented. The words "under pace: lasts past
 // the reset" sit twice in the Claude row, which is shut when the page opens, so the author has to be told which row,
 // what to open to see it, and be shown it.
@@ -713,7 +770,13 @@ await plain.close();
   await t2.locator(".send-review").click();
   await t2.locator(".review-last").waitFor();
   await t2.locator(".nav-item", { hasText: "Chat" }).click();
-  const sent = await t2.locator(".captain-message").last().innerText();
+  const t2Card = t2.locator("[data-testid='review-card']").last();
+  const sent = await sentText(t2Card);
+  check(await t2Card.locator("[data-thread='t1'] .review-card-picture").count() === 1, "t2: the card marks the comment that went with a picture");
+  check((await t2Card.innerText()).includes("qd-usage-design-1 · working"), "t2: the card says the author is at work on it");
+  await t2Card.locator(".review-card-text summary").click();
+  await t2Card.scrollIntoViewIfNeeded();
+  await shot(t2, "24-t2-card");
   for (const line of [
     "t1 on \"under pace: lasts past the reset\": what does underpace mean?",
     "of them on screen",

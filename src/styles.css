@@ -619,6 +619,48 @@ a { color: var(--sea); }
 .artifact-card > button { position: static; height: auto; padding: 0; border: 0; color: var(--sea); background: transparent; font-size: 12.5px; }
 .artifact-card > button::after { position: absolute; inset: 0; border-radius: 12px; content: ""; }
 .artifact-card > button:hover { color: var(--sea-strong); }
+.artifact-card .artifact-card-answers { color: var(--green); font-weight: 500; }
+/* A review the captain sent, on the captain's side of the chat, from sent to settled. */
+.review-card { width: min(100%, 560px); margin: 0 0 26px auto; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--sea) 35%, var(--border)); border-radius: 12px; border-top-right-radius: 4px; background: var(--surface); }
+.review-card > header { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.review-card-kicker { color: var(--sea); font: 500 11px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+.review-card > header strong { color: var(--ink); font-size: 13.5px; font-weight: 600; line-height: 1.4; }
+.review-card > header small { color: var(--faint); font-size: 12px; }
+.review-verdict { font-style: normal; font-weight: 600; }
+.review-verdict.changes { color: var(--amber); }
+.review-verdict.approve { color: var(--green); }
+.review-verdict.comment { color: var(--muted); }
+.review-card-empty { margin: 0; color: var(--muted); font-size: 13px; }
+.review-card-threads { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.review-card-threads > li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+.review-card-threads .thread-id { padding-top: 2px; }
+.review-card-threads blockquote { margin: 0 0 4px; padding-left: 9px; border-left: 2px solid color-mix(in srgb, var(--sea) 45%, var(--border)); color: var(--muted); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.review-card-threads p { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.review-card-threads .thread-answer { margin-top: 8px; }
+.review-card-marks { display: flex; align-items: center; gap: 4px; color: var(--sea); }
+.review-card-marks .icon-button { width: 28px; height: 28px; border: 1px solid var(--control); border-radius: 7px; }
+.review-card-marks .icon-button:hover:not(:disabled) { border-color: var(--control-hover); color: var(--ink); }
+.review-card-marks .thread-state { flex: none; }
+.review-card-answers { margin-top: 12px; }
+.review-card-answers .file-chip { max-width: 100%; }
+.review-card-answers .file-chip svg { color: var(--green); }
+.review-card-trail { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.review-card-live, .review-card-answered { font-family: var(--mono); font-size: 11.5px; }
+.review-card-live { color: var(--sea); }
+.review-card-live::before { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--sea); content: ""; }
+.review-card-answered { color: var(--green); }
+.review-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.review-card-actions button { height: 32px; padding: 0 12px; border: 1px solid var(--control); border-radius: 8px; color: var(--ink-2); background: var(--surface); font-size: 12.5px; }
+.review-card-actions button:hover:not(:disabled) { border-color: var(--control-hover); }
+.review-card-actions button.primary { border-color: var(--primary); color: var(--on-primary); background: var(--primary); }
+.review-card-text { margin-top: 10px; }
+.review-card-text summary { color: var(--faint); font-size: 12px; cursor: pointer; }
+.review-card-text pre { max-height: 280px; margin: 8px 0 0; overflow: auto; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 8px; color: var(--ink-3); background: var(--surface-2); font: 11.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-card.settled { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-color: var(--border); color: var(--ink-3); font-size: 12.5px; }
+.review-card.settled > svg { flex: none; color: var(--green); }
+.review-card.settled strong { color: var(--ink-2); font-weight: 600; }
+.review-card.settled button { margin-left: auto; padding: 0; border: 0; color: var(--sea); background: transparent; font-size: 12.5px; }
+.review-card.settled button:hover { color: var(--sea-strong); }
 .artifact-thumb { flex: none; width: 42px; height: 54px; border: 1px solid var(--control); border-radius: 5px; background: repeating-linear-gradient(135deg, var(--surface-3) 0 6px, color-mix(in srgb, var(--surface-3) 70%, var(--control)) 6px 12px); }
 
 /* The first mate asking for an OK, pinned above the composer until it is answered. */

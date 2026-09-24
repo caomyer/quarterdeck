@@ -1098,7 +1098,7 @@ async fn review_e2e_live_decision() {
         let message = id.clone().unwrap_or_default();
         let picked = events.find(from, REPLY_WAIT, outbox(&message, "picked_up")).await;
         if picked.is_some() {
-            review::record_sent(&log, "approve", rev, &threads, &answers, &message).expect("record that it went");
+            review::record_sent(&log, "approve", rev, &threads, &answers, &message, &text).expect("record that it went");
         }
         record(
             &mut steps,

@@ -204,7 +204,11 @@ export type ReviewComment = { body: string; at: number };
 export type ReviewThreadState = "draft" | "open" | "resolved";
 export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | SceneAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[]; picture?: ThreadPicture | null; picture_skipped?: string | null; /** Only the browser mock, which has no home to serve the picture from. */ picture_preview?: string };
 export type ReviewVerdict = "approve" | "changes" | "comment";
-export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[] };
+export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[]; /** The message's first line; absent in reviews sent before it was kept. */ header?: string | null; answers?: string[] | { decision: string; option: string; label: string }[] };
+/** A sent comment as the chat shows it. */
+export type SentThread = { id: string; rev: number; state: ReviewThreadState; quote: string; said: string; picture: boolean };
+/** A review as the chat shows it: what went, and the answers recorded with it. */
+export type SentReview = { at: number; verdict: ReviewVerdict; rev: number; message: string; header?: string | null; threads: string[]; answers: { decision: string; option: string; label: string }[] };
 /** What firstmate's intake did with an answer: `closed` is recorded; anything else is not. */
 export type IntakeResult = "closed" | "skipped" | "not_recorded";
 export type IntakeOutcome = { call: string; result: IntakeResult; detail: string };
@@ -225,6 +229,9 @@ export type ReviewSummary = Record<string, {
   answered: string[];
   /** Each sent comment the captain has not settled, with the revision it was written on, so a later revision can answer it. */
   open_threads?: { id: string; rev: number }[];
+  /** Each review sent, and every comment sent, so the chat can draw a review as a card rather than its text. */
+  sent?: SentReview[];
+  threads?: SentThread[];
 }>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */

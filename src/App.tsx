@@ -43,7 +43,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
@@ -294,6 +294,12 @@ export function App() {
   function navigate(next: View) {
     setView(next);
     setMobileNavOpen(false);
+  }
+
+  /** Settles comments from their review's card in chat, then reads the summary again so the card follows. */
+  async function settleFromChat(ref: ArtifactRef, threads: string[]) {
+    for (const thread of threads) await host.reviewSettle(ref, thread, true);
+    setReviews(await host.reviewSummary());
   }
 
   function showArtifact(artifact: Artifact, rev?: number) {
@@ -589,7 +595,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -1495,7 +1501,35 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpen
   </aside></div>;
 }
 
-type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision };
+type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision } | { type: "review"; message: ChatMessage; sent: SentPage };
+
+/** A review the captain sent, with the page it is about, as the chat draws it. */
+type SentPage = { key: string; ref: ArtifactRef; artifact?: Artifact; review: SentReview; threads: SentThread[] };
+
+/** The key the review summary files a page under. */
+function reviewKey(artifact: { scope: string; task: string | null; name: string }) {
+  return artifact.scope === "task" ? `task/${artifact.task}/${artifact.name}` : `chat/${artifact.name}`;
+}
+
+/**
+ * Every review sent, found by the chat message it became and by that message's first line, since a resumed
+ * conversation's history comes back without message ids.
+ */
+function sentReviews(reviews: ReviewSummary, artifacts: Artifact[]) {
+  const byMessage = new Map<string, SentPage>();
+  const byHeader = new Map<string, SentPage>();
+  for (const [key, page] of Object.entries(reviews)) {
+    const [scope, ...rest] = key.split("/");
+    const ref: ArtifactRef = scope === "task" ? { scope: "task", task: rest[0], name: rest[1] } : { scope: "chat", task: null, name: rest[0] };
+    const artifact = artifacts.find((candidate) => reviewKey(candidate) === key);
+    for (const review of page.sent ?? []) {
+      const sent: SentPage = { key, ref, artifact, review, threads: page.threads ?? [] };
+      if (review.message) byMessage.set(review.message, sent);
+      if (review.header) byHeader.set(review.header, sent);
+    }
+  }
+  return { byMessage, byHeader };
+}
 
 /**
  * Consecutive steps read as one group between the first mate's messages.
@@ -1510,7 +1544,8 @@ const CHAT_PAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** When this window opened: a page shared before it belongs with the resumed conversation, not with today's. */
 const WINDOW_OPENED = new Date().toISOString();
 
-function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
+function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary = {}) {
+  const sent = sentReviews(reviews, artifacts);
   const lastPast = messages.reduce((found, message, index) => message.past ? index : found, -1);
   // A resumed conversation comes back without times, so its pages cannot be placed
   // between its messages. They go after it, still under "Earlier", and "Today" keeps
@@ -1536,7 +1571,10 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
     if (!message.past) pushPages(message.createdAt);
     const past = message.past === true;
     const last = items.at(-1);
-    if (message.who !== "step") items.push({ type: "message", message });
+    // A review the captain sent is a card, not the text written for the first mate.
+    const review = message.who === "captain" ? sent.byMessage.get(message.id) ?? sent.byHeader.get(message.text.split("\n")[0]) : undefined;
+    if (review) items.push({ type: "review", message, sent: review });
+    else if (message.who !== "step") items.push({ type: "message", message });
     else if (last?.type === "steps" && last.past === past) last.steps.push(message);
     else items.push({ type: "steps", id: `steps-${message.id}`, steps: [message], past });
   });
@@ -1600,11 +1638,11 @@ function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; ho
   return <section className="approval-card" aria-label="The first mate is asking for your OK"><div className="approval-copy"><strong>The first mate wants to run</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : option.kind.startsWith("reject") ? "reject" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
 }
 
-function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
+function ChatView({ messages, artifacts, reviews, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
-  const items = chatItems(messages, artifacts);
+  const items = chatItems(messages, artifacts, reviews);
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   // Arriving with words already written (Push back, asking for a report) puts the caret after them, ready to go on.
@@ -1635,7 +1673,9 @@ function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, f
   return <div className="chat-view">{banners}<div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
     ? <div key={item.id} className={`day-label ${index > 0 ? "later" : ""}`}>{item.text}</div>
     : item.type === "artifact"
-      ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
+      ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} reviews={reviews} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
+    : item.type === "review"
+      ? <ReviewChatCard key={item.message.id} message={item.message} sent={item.sent} outbox={outbox[item.message.id]} running={running} tasks={tasks} onOpen={(rev) => item.sent.artifact && onOpenArtifact(item.sent.artifact, rev)} onSettle={(threads) => onSettle(item.sent.ref, threads)} />
     : item.type === "steps"
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
@@ -1666,7 +1706,8 @@ function MateText({ text }: { text: string }) {
   >{text}</ReactMarkdown></div>;
 }
 
-function ChatMessageView({ message, outbox, running, onResend }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void }) {
+/** How far a captain's message has got with the first mate, and what that means, for its footer. */
+function delivery(message: ChatMessage, outbox: OutboxView | undefined, running: boolean) {
   const status = !outbox ? null : outbox.errorKind === "not_sent"
     ? "Not sent"
     : outbox.errorKind === "failed"
@@ -1686,6 +1727,11 @@ function ChatMessageView({ message, outbox, running, onResend }: { message: Chat
       : outbox.status === "sent" || outbox.status === "likely_started"
         ? "The first mate has this and is working on it."
         : running ? "The first mate will read this when it finishes what it's doing." : "The first mate will read this when it starts.";
+  return { status, tooltip };
+}
+
+function ChatMessageView({ message, outbox, running, onResend }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void }) {
+  const { status, tooltip } = delivery(message, outbox, running);
   const resendAction = !outbox?.error ? null : outbox.resent
     ? <span className="resent-note">Sent again</span>
     : <button onClick={onResend}>{outbox.errorKind === "not_sent" ? "Retry" : "Send again"}</button>;
@@ -1987,9 +2033,94 @@ function ArtifactsView({ artifacts, tasks, reviews, backlog, calls, onOpen }: { 
   </div>;
 }
 
-function ArtifactChatCard({ artifact, revision, tasks, onOpen }: { artifact: Artifact; revision: ArtifactRevision; tasks: FleetTask[]; onOpen: () => void }) {
+function ArtifactChatCard({ artifact, revision, tasks, reviews, onOpen }: { artifact: Artifact; revision: ArtifactRevision; tasks: FleetTask[]; reviews?: ReviewSummary; onOpen: () => void }) {
   const from = revision.presented_by.role === "firstmate" ? "The first mate shared a page" : `${artifactOwner(artifact, tasks)} ${revision.rev === 1 ? "shared a page" : `revised a page · Rev ${revision.rev}`}`;
-  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-thumb" aria-hidden="true" /><div><strong>{revision.title}</strong><small>{from} · <time>{formatWhen(revision.presented_at)}</time></small>{revision.note && <p>{revision.note}</p>}</div><button onClick={onOpen}>Open review</button></article>;
+  // A revision that answers the captain's comments says so, since the review card above is where they are settled.
+  const sentIds = new Set((reviews?.[reviewKey(artifact)]?.threads ?? []).map((thread) => thread.id));
+  const answering = [...(revision.answers?.addressed ?? []), ...(revision.answers?.replies ?? []).map((reply) => reply.thread)].filter((id, index, all) => sentIds.has(id) && all.indexOf(id) === index);
+  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-thumb" aria-hidden="true" /><div><strong>{revision.title}</strong><small>{from} · <time>{formatWhen(revision.presented_at)}</time></small>{revision.note && <p>{revision.note}</p>}{answering.length > 0 && <p className="artifact-card-answers" data-testid="answers-review">Answers {answering.length === 1 ? "your comment" : `${answering.length} of your comments`}: {answering.join(", ")}</p>}</div><button onClick={onOpen}>Open review</button></article>;
+}
+
+const VERDICT_WORDS: Record<ReviewVerdict, string> = { changes: "Requests changes", approve: "Approved", comment: "Comments only" };
+
+/**
+ * A review the captain sent, drawn as what it is rather than the text written for the first mate: the page, the
+ * verdict, each comment with its words, what the author's later revisions say about each, and what is settled. It
+ * follows the review from sent to settled, then shrinks to one line, the way an answered call does. The text the
+ * first mate got stays one click away.
+ */
+function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettle }: { message: ChatMessage; sent: SentPage; outbox?: OutboxView; running: boolean; tasks: FleetTask[]; onOpen: (rev?: number) => void; onSettle: (threads: string[]) => Promise<unknown> }) {
+  const { artifact, review } = sent;
+  const [settling, setSettling] = useState(false);
+  const title = artifact?.title ?? sent.ref.name;
+  const threads = review.threads.map((id) => sent.threads.find((thread) => thread.id === id)).filter((thread): thread is SentThread => Boolean(thread));
+  const answers = artifact ? authorAnswers(artifact) : {};
+  const answerOf = (thread: SentThread) => {
+    const answer = answers[thread.id];
+    return answer && answer.rev > thread.rev ? answer : undefined;
+  };
+  const answeredIn = Math.max(0, ...threads.map((thread) => answerOf(thread)?.rev ?? 0));
+  // The revision the comments were written on, which is where a review's story starts.
+  const writtenOn = Math.min(review.rev, ...threads.map((thread) => thread.rev));
+  const settleable = threads.filter((thread) => thread.state === "open" && answerOf(thread)).map((thread) => thread.id);
+  const settle = async (ids: string[]) => {
+    setSettling(true);
+    try {
+      await onSettle(ids);
+    } finally {
+      setSettling(false);
+    }
+  };
+  if (threads.length > 0 && threads.every((thread) => thread.state === "resolved")) {
+    return <article className="review-card settled" data-testid="review-card" data-state="settled">
+      <CheckCheck size={15} />
+      <span><strong>Review of {title} settled</strong> · {threads.length === 1 ? "1 comment" : `${threads.length} comments`} · rev {writtenOn}{answeredIn > writtenOn ? ` → rev ${answeredIn}` : ""}</span>
+      {artifact && <button onClick={() => onOpen(answeredIn || review.rev)}>Open</button>}
+    </article>;
+  }
+  const { status, tooltip } = delivery(message, outbox, running);
+  const task = artifact?.scope === "task" ? tasks.find((candidate) => candidate.id === artifact.task) : undefined;
+  const working = task && LIVE_STATES.has(task.current_state.state) && !answeredIn ? `${task.id} · ${stateLabel(task.current_state.state)}` : null;
+  const where = artifact?.scope === "task" ? artifact.task : "Shared in chat";
+  return <article className="review-card" data-testid="review-card" data-state={answeredIn ? "answered" : "sent"}>
+    <header>
+      <span className="review-card-kicker">Your review</span>
+      <strong>{title}</strong>
+      <small>{where} · Rev {review.rev} · <em className={`review-verdict ${review.verdict}`}>{VERDICT_WORDS[review.verdict] ?? review.verdict}</em></small>
+    </header>
+    {threads.length === 0 && <p className="review-card-empty">No comments on the page itself.</p>}
+    {threads.length > 0 && <ul className="review-card-threads">
+      {threads.map((thread) => {
+        const answer = answerOf(thread);
+        return <li key={thread.id} data-thread={thread.id}>
+          <span className="thread-id">{thread.id}</span>
+          <div>
+            {thread.quote && <blockquote>{thread.quote}</blockquote>}
+            <p>{thread.said}</p>
+            {answer && <div className="thread-answer"><strong>{answer.reply ? `Answered in rev ${answer.rev}` : `Changed in rev ${answer.rev}`}</strong>{answer.reply && <p>{answer.reply}</p>}</div>}
+          </div>
+          <span className="review-card-marks">
+            {thread.picture && <span className="review-card-picture" title="Sent with a picture of this place"><Camera size={13} /></span>}
+            {thread.state === "resolved"
+              ? <em className="thread-state settled">Settled</em>
+              : answer && <button className="icon-button" title="Settle this" disabled={settling} onClick={() => void settle([thread.id])}><CheckCheck size={14} /></button>}
+          </span>
+        </li>;
+      })}
+    </ul>}
+    {review.answers.length > 0 && <ul className="file-chips review-card-answers">{review.answers.map((answer) => <li key={answer.decision} className="file-chip" title={answer.label}><Check size={13} /><span>{answer.label || answer.option}</span><small>recorded</small></li>)}</ul>}
+    <footer className="message-state review-card-trail">
+      {status && <time title={tooltip}>{status === "Reading" ? "With the first mate" : status.startsWith("Read by") ? `Read by the first mate ${status.slice("Read by ".length)}` : status}</time>}
+      {!status && !message.past && <time>{formatTime(message.createdAt)}</time>}
+      {working && <span className="review-card-live">{working}</span>}
+      {answeredIn > 0 && <span className="review-card-answered">Answered in rev {answeredIn}</span>}
+    </footer>
+    {(answeredIn > 0 || settleable.length > 0) && <div className="review-card-actions">
+      {artifact && answeredIn > 0 && <button className="primary" onClick={() => onOpen(answeredIn)}>Open rev {answeredIn}</button>}
+      {settleable.length > 0 && <button onClick={() => void settle(settleable)} disabled={settling}>{settleable.length === 1 ? "Settle it" : `Settle all ${settleable.length}`}</button>}
+    </div>}
+    <details className="review-card-text"><summary>What the first mate was sent</summary><pre>{message.text}</pre></details>
+  </article>;
 }
 
 /**

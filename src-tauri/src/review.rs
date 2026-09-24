@@ -13,7 +13,10 @@
 //!                                                 picture of its place kept in review-files/
 //!   {at, kind: "comment", id, body}               another comment on a thread
 //!   {at, kind: "discarded", id}                   an unsent thread taken back
-//!   {at, kind: "sent", verdict, rev, threads[], message}  one review, sent
+//!   {at, kind: "sent", verdict, rev, threads[], answers[], message, header}
+//!                                                 one review, sent: the chat message it became
+//!                                                 and that message's first line, which is how
+//!                                                 the chat finds it again in a resumed conversation
 //!   {at, kind: "answer", decision, option, label, on_answer}  a choice on a call the page argues
 //!   {at, kind: "recorded", decision, result, detail}  what firstmate's intake did with it
 //!   {at, kind: "told", answers[], message}        recorded answers told to the first mate outside a review
@@ -246,7 +249,9 @@ pub fn view(path: &Path) -> Value {
                     "verdict": event.get("verdict").cloned().unwrap_or(Value::Null),
                     "rev": event.get("rev").cloned().unwrap_or(Value::Null),
                     "message": event.get("message").cloned().unwrap_or(Value::Null),
+                    "header": event.get("header").cloned().unwrap_or(Value::Null),
                     "threads": event.get("threads").cloned().unwrap_or(Value::Null),
+                    "answers": event.get("answers").cloned().unwrap_or(json!([])),
                 }));
             }
             _ => {}
@@ -812,12 +817,15 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
     Ok((text, threads, answers))
 }
 
-/// Records that the draft went, under the id the host gave the message.
-pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answers: &[Value], message: &str) -> Result<Value, String> {
+/// Records that the draft went, under the id the host gave the message, with the
+/// message's first line so the chat can find it again in a resumed conversation.
+#[allow(clippy::too_many_arguments)]
+pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answers: &[Value], message: &str, text: &str) -> Result<Value, String> {
     append(
         log,
         &json!({
             "at": now_ms(), "kind": "sent", "verdict": verdict, "rev": rev, "message": message,
+            "header": text.lines().next().unwrap_or_default(),
             "threads": threads.iter().filter_map(|thread| thread["id"].as_str()).collect::<Vec<_>>(),
             "answers": answers.iter().filter_map(|answer| answer["decision"].as_str()).collect::<Vec<_>>(),
         }),
@@ -888,7 +896,8 @@ pub async fn review_submit(
     };
     let recorded = {
         let (log, message) = (log.clone(), message.clone());
-        blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, &message)).await
+        let text = text.clone();
+        blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, &message, &text)).await
     };
     match recorded {
         Ok(review) => Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes})),
@@ -991,8 +1000,9 @@ pub async fn call_answer(
 
 /// Every page's review at a glance, keyed `task/<id>/<name>` or `chat/<name>`:
 /// the newest revision looked at, how many comments are waiting or unsent, which
-/// comments are open and on which revision, and which held tasks it has answered. Only what the list and the calls need, so
-/// it stays one cheap read per page.
+/// comments are open and on which revision, which held tasks it has answered,
+/// and each review sent with the comments it carried, for the chat. Only what
+/// the list, the calls and the chat need, so it stays one cheap read per page.
 pub fn summary(data: &Path) -> Value {
     let mut pages = serde_json::Map::new();
     let mut add = |key: String, log: PathBuf| {
@@ -1022,6 +1032,48 @@ pub fn summary(data: &Path) -> Value {
                     .collect()
             })
             .unwrap_or_default();
+        // Each review sent, and each comment it carried as the chat shows it, so the chat can draw a review as the
+        // thing it is: what was said where, whether a revision has answered it, and whether it is settled.
+        let threads: Vec<Value> = current["threads"]
+            .as_array()
+            .map(|threads| {
+                threads
+                    .iter()
+                    .filter(|thread| !thread["sent_at"].is_null())
+                    .map(|thread| {
+                        json!({
+                            "id": thread["id"], "rev": thread["rev"], "state": thread["state"],
+                            "quote": shorten(thread["anchor"]["quote"].as_str().unwrap_or_default(), 160),
+                            "said": shorten(&thread_words(thread), 400),
+                            "picture": !thread["picture"].is_null(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let labels: Vec<Value> = current["answers"].as_array().cloned().unwrap_or_default();
+        let sent: Vec<Value> = current["sent"]
+            .as_array()
+            .map(|sent| {
+                sent.iter()
+                    .map(|review| {
+                        let carried: Vec<Value> = review["answers"]
+                            .as_array()
+                            .map(|decisions| {
+                                decisions
+                                    .iter()
+                                    .filter_map(|decision| labels.iter().find(|answer| answer["decision"] == *decision))
+                                    .map(|answer| json!({"decision": answer["decision"], "option": answer["option"], "label": answer["label"]}))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let mut review = review.clone();
+                        review["answers"] = json!(carried);
+                        review
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         pages.insert(
             key,
             json!({
@@ -1030,6 +1082,8 @@ pub fn summary(data: &Path) -> Value {
                 "open_count": current["open_count"],
                 "answered": answered,
                 "open_threads": open_threads,
+                "sent": sent,
+                "threads": threads,
             }),
         );
     };
@@ -1504,7 +1558,7 @@ mod tests {
         let (text, threads, told) = draft(&dir, 1, "comment").unwrap();
         assert!(text.contains("Recorded: res-model-download = wifi-only"), "{text}");
         assert!(!text.contains("res-model-cellular"), "a skipped answer is never claimed: {text}");
-        record_sent(&log, "comment", 1, &threads, &told, "out-1").unwrap();
+        record_sent(&log, "comment", 1, &threads, &told, "out-1", "A review").unwrap();
         let current = view(&log);
         assert_eq!(current["staged_answers"], 0);
         assert_eq!(summary(&home.join("data"))["chat/board"]["answered"], json!(["res-model-download"]));
@@ -1781,5 +1835,24 @@ mod tests {
         for absent in ["  match", "  element", "  near", "  box", "  picture"] {
             assert!(!text.contains(absent), "{absent} in {text}");
         }
+    }
+
+    #[test]
+    fn the_summary_gives_the_chat_each_review_as_it_went() {
+        let (dir, log) = crew_page("chat-card", "under pace: lasts past the reset");
+        add_comment(&log, 1, "what does underpace mean?", Some(t2_anchor()), None, picture(data_url("jpeg", &tiny_jpeg(20, 20)))).unwrap();
+        stage_answer(&log, "qd-usage-design-1", Some("strip"), Some("One quiet strip in the sidebar footer"), Some("release")).unwrap();
+        append(&log, &json!({"at": 2, "kind": "recorded", "decision": "qd-usage-design-1", "result": "closed", "detail": ""})).unwrap();
+        let (text, threads, told) = draft(&dir, 1, "changes").unwrap();
+        record_sent(&log, "changes", 1, &threads, &told, "m1790147648486-20", &text).unwrap();
+        let data = dir.parent().unwrap().parent().unwrap().parent().unwrap();
+        let page = &summary(data)["task/qd-usage-design-1/usage-panel"];
+        let sent = &page["sent"][0];
+        assert_eq!(sent["message"], "m1790147648486-20");
+        assert_eq!(sent["header"], "Captain's review of \"Usage panel: context and plan limits\" (task qd-usage-design-1, rev 1): Requests changes.");
+        assert_eq!(sent["threads"], json!(["t1"]));
+        assert_eq!(sent["answers"], json!([{"decision": "qd-usage-design-1", "option": "strip", "label": "One quiet strip in the sidebar footer"}]));
+        assert_eq!(page["threads"][0], json!({"id": "t1", "rev": 1, "state": "open", "quote": "under pace: lasts past the reset", "said": "what does underpace mean?", "picture": true}));
+        let _ = std::fs::remove_dir_all(data);
     }
 }
