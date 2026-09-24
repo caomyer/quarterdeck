@@ -69,8 +69,9 @@
 # `hold` writes it whenever it is given --question, --option, --recommend,
 # --on-answer, --evidence, --about, or --origin (given, or defaulted as below),
 # and a hold without any of them behaves exactly as it always did (an existing
-# record only has its raised_at moved to a new lifecycle's hold-set stamp). The record is written before the
-# hold is applied, so a newly held call is never visible without its content.
+# record only has its raised_at moved to a new lifecycle's hold-set stamp). The
+# record is written before the hold is applied, so a newly held call is never
+# visible without its content.
 # Options: 2 to 8, keys `[a-z0-9][a-z0-9-]{0,31}`, labels one line of at most
 # 200 characters, and --recommend must name one of them; the question is one
 # line of at most 400 characters. --on-answer declares how an answer closes the
