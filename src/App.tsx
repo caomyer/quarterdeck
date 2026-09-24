@@ -301,7 +301,7 @@ export function App() {
     try {
       for (const thread of threads) await host.reviewSettle(ref, thread, true);
     } finally {
-      setReviews(await host.reviewSummary());
+      await host.reviewSummary().then(setReviews, () => undefined);
     }
   }
 
