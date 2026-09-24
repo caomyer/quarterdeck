@@ -8,7 +8,9 @@
 //! and the first mate can read the whole review itself.
 //!
 //! Events, one JSON object per line:
-//!   {at, kind: "opened", id, rev, anchor, body}   a new thread and its comment
+//!   {at, kind: "opened", id, rev, anchor, body, picture?, picture_skipped?}
+//!                                                 a new thread and its comment, with the
+//!                                                 picture of its place kept in review-files/
 //!   {at, kind: "comment", id, body}               another comment on a thread
 //!   {at, kind: "discarded", id}                   an unsent thread taken back
 //!   {at, kind: "sent", verdict, rev, threads[], message}  one review, sent
@@ -32,6 +34,16 @@
 //! first mate which answers are already recorded, so it does the follow-up
 //! rather than the recording. The app never closes a call itself, and an
 //! answer the intake skipped is shown as not recorded, never as sent.
+//!
+//! Where a comment sits is the anchor `review-frame.js` describes: the words,
+//! which match of them it is, the element by what it is, the labels around it,
+//! and where it sat. When words alone may not say which place was meant, the
+//! page draws itself around the place and that JPEG is kept beside the review as
+//! `review-files/<thread>-r<rev>.jpg`; only its path ever reaches the first
+//! mate. It is let go when its draft is taken back, or when its thread is
+//! settled while its words are still on the page. A review of a crewmate's page
+//! is also written to `review-files/review-<n>.md`, the exact text the crewmate
+//! receives, and the first mate is told to pass that file on unchanged.
 //!
 //! A change the captain makes to a diagram the page owns is a thread like any
 //! other: its anchor names the scene instead of quoting words, its body says
@@ -145,6 +157,9 @@ pub fn view(path: &Path) -> Value {
                 "id": id,
                 "rev": event.get("rev").cloned().unwrap_or(Value::Null),
                 "anchor": event.get("anchor").cloned().unwrap_or(Value::Null),
+                // A picture let go once its thread was settled reads as none.
+                "picture": event.get("picture").filter(|picture| picture_file(path, picture).is_some_and(|file| file.is_file())).cloned().unwrap_or(Value::Null),
+                "picture_skipped": event.get("picture_skipped").cloned().unwrap_or(Value::Null),
                 "at": event.get("at").cloned().unwrap_or(Value::Null),
                 "sent_at": Value::Null,
                 "state": "draft",
@@ -291,20 +306,98 @@ fn shorten(text: &str, limit: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// Who a revision came from, in a sentence the first mate can act on.
-fn author_line(revision: &Value) -> String {
-    match revision.get("presented_by").and_then(|by| by.get("role")).and_then(Value::as_str) {
-        Some("crew") => {
-            let task = revision.get("presented_by").and_then(|by| by.get("task")).and_then(Value::as_str).unwrap_or("the worker");
-            format!("Written by {task}. Relay this review to it word for word.")
+/// The crewmate that presented a revision, when a crewmate did.
+fn crew_author(revision: &Value) -> Option<&str> {
+    let by = revision.get("presented_by")?;
+    (by.get("role").and_then(Value::as_str) == Some("crew")).then(|| by.get("task").and_then(Value::as_str).unwrap_or("the worker"))
+}
+
+/// Who a revision came from, in a sentence the first mate can act on: for a
+/// crewmate's page, how to pass the review on without rewording where each
+/// comment sits.
+fn author_line(revision: &Value, relay: Option<&Path>) -> String {
+    match (crew_author(revision), relay) {
+        (Some(task), Some(relay)) => {
+            let file = relay.to_string_lossy().replace('\'', "'\\''");
+            format!("Written by {task}. Relay this review to it unchanged, since its lines say where on the page each comment sits: bin/fm-send.sh {task} \"$(cat '{file}')\". Add any framing of your own in a separate message.")
         }
-        _ => "Written by you.".to_string(),
+        (Some(task), None) => format!("Written by {task}. Relay this review to it unchanged."),
+        (None, _) => "Written by you.".to_string(),
     }
 }
 
-/// The one message a sent review becomes. The log path is included so the
-/// author can read the whole review rather than only what fits here.
-pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Value], log: &Path) -> Result<String, String> {
+/// What a comment said, every reply included.
+fn thread_words(thread: &Value) -> String {
+    thread
+        .get("comments")
+        .and_then(Value::as_array)
+        .map(|comments| comments.iter().filter_map(|comment| comment.get("body").and_then(Value::as_str)).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
+}
+
+/// Why the author should look at a thread's picture before its words, in words.
+fn reason_words(reason: &str) -> Option<&'static str> {
+    match reason {
+        "repeated" => Some("the words appear in more than one place on screen"),
+        "opened" => Some("the place was inside something the captain had opened, so the page shows it only once that is opened again"),
+        "wordless" => Some("the captain pointed at a spot with no words of its own"),
+        _ => None,
+    }
+}
+
+/// Everything a thread's anchor says about where it sits, one labelled line
+/// each, for the author to find the place and see it. An anchor from before the
+/// page could describe itself has only its words, and says only that.
+fn where_lines(thread: &Value, dir: Option<&Path>) -> Vec<String> {
+    let anchor = &thread["anchor"];
+    let mut lines = Vec::new();
+    if let (Some(n), Some(of)) = (anchor["occurrence"]["n"].as_u64(), anchor["occurrence"]["of"].as_u64()) {
+        if of > 1 {
+            let shown = anchor["occurrence"]["shown"].as_u64().unwrap_or(of);
+            lines.push(format!("  match    {n} of the {of} places these words appear in the page's text, {shown} of them on screen"));
+        }
+    }
+    let prefix = anchor["prefix"].as_str().unwrap_or_default();
+    let suffix = anchor["suffix"].as_str().unwrap_or_default();
+    if !prefix.is_empty() || !suffix.is_empty() {
+        lines.push(format!("  around   \"…{}\" ▸here◂ \"{}…\"", prefix.trim_start(), suffix.trim_end()));
+    }
+    if let Some(element) = anchor["element"].as_str() {
+        lines.push(format!("  element  {element}"));
+    }
+    if let Some(near) = anchor["near"].as_str() {
+        lines.push(format!("  near     {near}"));
+    }
+    if let (Some(x), Some(y), Some(w), Some(h)) = (anchor["box"]["x"].as_i64(), anchor["box"]["y"].as_i64(), anchor["box"]["w"].as_i64(), anchor["box"]["h"].as_i64()) {
+        let seen = match (anchor["view"]["w"].as_i64(), anchor["view"]["h"].as_i64(), anchor["view"]["scroll_y"].as_i64(), anchor["view"]["scheme"].as_str()) {
+            (Some(vw), Some(vh), Some(scroll), Some(scheme)) => format!(", in a {vw} × {vh} window scrolled to {scroll}, on a {scheme} page"),
+            _ => String::new(),
+        };
+        lines.push(format!("  box      x {x}, y {y}, {w} × {h} CSS px{seen}"));
+    }
+    if let (Some(x), Some(y)) = (anchor["point"]["x"].as_i64(), anchor["point"]["y"].as_i64()) {
+        lines.push(format!("  clicked  x {x}, y {y}"));
+    }
+    let picture = dir.and_then(|dir| picture_file(&dir.join("review.jsonl"), &thread["picture"]));
+    match (picture, thread["picture_skipped"].as_str()) {
+        (Some(file), _) => {
+            lines.push(format!("  picture  {}", file.display()));
+            let reasons: Vec<&str> = anchor["reasons"].as_array().map(|reasons| reasons.iter().filter_map(Value::as_str).filter_map(reason_words).collect()).unwrap_or_default();
+            if !reasons.is_empty() {
+                lines.push(format!("           Look at it before acting: {}.", reasons.join("; ")));
+            }
+            lines.push("           It is a redraw the page made of itself when the captain picked the place, not a screenshot of the captain's screen. The place is outlined; layout and words are right, but colours, images from other sites and fine detail may differ from what the captain saw.".to_string());
+        }
+        (None, Some(reason)) => lines.push(format!("  picture  none ({reason})")),
+        (None, None) => {}
+    }
+    lines
+}
+
+/// The review as its author receives it: the verdict, the exact page and log,
+/// and every comment with where on the page it sits. Written to a file for a
+/// crewmate, so firstmate passes it on byte for byte.
+pub fn review_block(revision: &Value, verdict: &str, threads: &[Value], log: &Path) -> Result<String, String> {
     let sentence = verdict_sentence(verdict).ok_or_else(|| format!("'{verdict}' is not a verdict"))?;
     let title = revision.get("title").and_then(Value::as_str).unwrap_or("a page");
     let rev = revision.get("rev").and_then(Value::as_u64).unwrap_or(0);
@@ -312,52 +405,65 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Va
         Some("task") => format!("task {}", revision.get("task").and_then(Value::as_str).unwrap_or("unknown")),
         _ => "shared in chat".to_string(),
     };
-    let mut lines = vec![
-        format!("Captain's review of \"{title}\" ({where_it_lives}, rev {rev}): {sentence}"),
-        author_line(revision),
-        format!("The whole review, including anything cut short below: {}", log.display()),
-    ];
-    lines.extend(recorded_lines(answers));
+    let dir = log.parent();
+    let page_of = |rev: u64| -> Option<PathBuf> {
+        let dir = dir?;
+        let entry = if revision.get("rev").and_then(Value::as_u64) == Some(rev) {
+            revision.get("entry").and_then(Value::as_str).map(str::to_string)
+        } else {
+            revision_record(dir, rev).ok()?.get("entry").and_then(Value::as_str).map(str::to_string)
+        }?;
+        Some(dir.join(format!("rev-{rev}")).join("files").join(entry))
+    };
+    let mut lines = vec![format!("Captain's review of \"{title}\" ({where_it_lives}, rev {rev}): {sentence}")];
+    if let Some(page) = page_of(rev) {
+        lines.push(format!("The page: {}", page.display()));
+    }
+    lines.push(format!("The whole review, including anything cut short below: {}", log.display()));
     if threads.is_empty() {
         lines.push("No comments on the page itself.".to_string());
     }
     for thread in threads {
         let id = thread.get("id").and_then(Value::as_str).unwrap_or("?");
-        let quote = thread
-            .get("anchor")
-            .and_then(|anchor| anchor.get("quote"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let quote = thread["anchor"]["quote"].as_str().unwrap_or_default();
         let on_rev = thread.get("rev").and_then(Value::as_u64).unwrap_or(rev);
-        let said = thread
-            .get("comments")
-            .and_then(Value::as_array)
-            .map(|comments| {
-                comments
-                    .iter()
-                    .filter_map(|comment| comment.get("body").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_default();
-        let scene = thread.get("anchor").and_then(|anchor| anchor.get("scene")).and_then(Value::as_str);
+        let scene = thread["anchor"]["scene"].as_str();
         let place = match (scene, quote.is_empty()) {
             (Some(_), _) => format!(" on the diagram \"{}\"", shorten(quote, QUOTE_LIMIT)),
             (None, true) => String::new(),
             (None, false) => format!(" on \"{}\"", shorten(quote, QUOTE_LIMIT)),
         };
         let older = if on_rev == rev { String::new() } else { format!(" (rev {on_rev})") };
-        lines.push(format!("{id}{place}{older}: {}", shorten(&said, 600)));
+        lines.push(format!("{id}{place}{older}: {}", shorten(&thread_words(thread), 600)));
         if scene.is_some() {
-            let anchor = thread.get("anchor");
-            let file = anchor.and_then(|anchor| anchor.get("scene_file")).and_then(Value::as_str).unwrap_or("");
-            let picture = anchor.and_then(|anchor| anchor.get("picture")).and_then(Value::as_str).unwrap_or("");
+            let file = thread["anchor"]["scene_file"].as_str().unwrap_or("");
+            let picture = thread["anchor"]["picture"].as_str().unwrap_or("");
             lines.push(format!("  proposed scene: {file}"));
             if !picture.is_empty() {
                 lines.push(format!("  picture of it: {picture}"));
             }
+            continue;
         }
+        if on_rev != rev {
+            if let Some(page) = page_of(on_rev) {
+                lines.push(format!("  page     {}", page.display()));
+            }
+        }
+        lines.extend(where_lines(thread, dir));
     }
+    Ok(lines.join("\n"))
+}
+
+/// The one message a sent review becomes: the review as its author receives it,
+/// with how to pass it on and the answers already recorded added after its
+/// first line. The log path is included so the author can read the whole review
+/// rather than only what fits here.
+pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Value], log: &Path, relay: Option<&Path>) -> Result<String, String> {
+    let block = review_block(revision, verdict, threads, log)?;
+    let (header, rest) = block.split_once('\n').unwrap_or((block.as_str(), ""));
+    let mut lines = vec![header.to_string(), author_line(revision, relay)];
+    lines.extend(recorded_lines(answers));
+    lines.push(rest.to_string());
     Ok(lines.join("\n"))
 }
 
@@ -422,8 +528,10 @@ pub async fn review_get(app: AppHandle, page: Ref) -> Result<Value, String> {
 /// The only anchor a comment on the page may carry: words and where they sit.
 ///
 /// The anchor comes from a script running inside the page, and the page is not
-/// trusted, so everything else is dropped and every part is capped. A diagram
-/// anchor, which names files, is only ever written by `review_scene`.
+/// trusted, so everything else is dropped, every string is capped, and every
+/// number must be a finite number in range. A diagram anchor, which names
+/// files, is only ever written by `review_scene`. `review-frame.js` owns what
+/// each part means.
 fn text_anchor(anchor: Option<Value>) -> Value {
     let Some(anchor) = anchor else { return Value::Null };
     let part = |key: &str, limit: usize| {
@@ -434,32 +542,184 @@ fn text_anchor(anchor: Option<Value>) -> Value {
     if quote.as_str().is_some_and(str::is_empty) {
         return Value::Null;
     }
-    json!({"quote": quote, "prefix": part("prefix", 200), "suffix": part("suffix", 200), "path": part("path", 600)})
+    let mut kept = json!({"quote": quote, "prefix": part("prefix", 200), "suffix": part("suffix", 200), "path": part("path", 600)});
+    for (key, limit) in [("element", 600), ("near", 200)] {
+        if anchor.get(key).and_then(Value::as_str).is_some_and(|text| !text.is_empty()) {
+            kept[key] = part(key, limit);
+        }
+    }
+    let count = |value: Option<&Value>| value.and_then(Value::as_u64).filter(|n| *n <= 100_000);
+    if let Some(occurrence) = anchor.get("occurrence") {
+        if let (Some(n), Some(of)) = (count(occurrence.get("n")), count(occurrence.get("of"))) {
+            if n >= 1 && n <= of {
+                kept["occurrence"] = json!({"n": n, "of": of, "shown": count(occurrence.get("shown")).unwrap_or(of).min(of)});
+            }
+        }
+    }
+    if let Some(found) = page_box(anchor.get("box"), true) {
+        kept["box"] = found;
+    }
+    if let Some(point) = anchor.get("point") {
+        if let (Some(x), Some(y)) = (coordinate(point.get("x")), coordinate(point.get("y"))) {
+            kept["point"] = json!({"x": x, "y": y});
+        }
+    }
+    if let Some(view) = anchor.get("view") {
+        let scheme = view.get("scheme").and_then(Value::as_str).filter(|scheme| matches!(*scheme, "light" | "dark"));
+        if let (Some(w), Some(h), Some(scroll_y), Some(scheme)) = (coordinate(view.get("w")), coordinate(view.get("h")), coordinate(view.get("scroll_y")), scheme) {
+            kept["view"] = json!({"w": w, "h": h, "scroll_y": scroll_y, "scheme": scheme});
+        }
+    }
+    let reasons: Vec<&str> = anchor
+        .get("reasons")
+        .and_then(Value::as_array)
+        .map(|reasons| reasons.iter().filter_map(Value::as_str).filter(|reason| PICTURE_REASONS.contains(reason)).collect())
+        .unwrap_or_default();
+    if !reasons.is_empty() {
+        kept["reasons"] = json!(reasons);
+    }
+    kept
+}
+
+/// Why the words alone may not say which place the captain meant.
+const PICTURE_REASONS: [&str; 3] = ["repeated", "opened", "wordless"];
+
+/// A whole number of CSS pixels a page could plausibly measure.
+fn coordinate(value: Option<&Value>) -> Option<i64> {
+    let number = value?.as_f64()?;
+    (number.is_finite() && number.abs() <= 1_000_000.0).then(|| number.round() as i64)
+}
+
+/// A rectangle on the page, or nothing when any part of it is not a sensible number.
+fn page_box(value: Option<&Value>, allow_empty: bool) -> Option<Value> {
+    let value = value?;
+    let (x, y, w, h) = (coordinate(value.get("x"))?, coordinate(value.get("y"))?, coordinate(value.get("w"))?, coordinate(value.get("h"))?);
+    let sized = if allow_empty { w >= 0 && h >= 0 } else { w > 0 && h > 0 };
+    sized.then(|| json!({"x": x, "y": y, "w": w, "h": h}))
+}
+
+/// What the review screen hands over about a new comment's picture: the JPEG the
+/// page drew around the place, or why there is none although one was due.
+#[derive(Deserialize, Default)]
+pub struct CommentPicture {
+    jpeg: Option<String>,
+    crop: Option<Value>,
+    took_ms: Option<u64>,
+    skipped: Option<String>,
+}
+
+/// The biggest picture a comment may carry. A crop is at most 800 by 600 CSS
+/// pixels at quality 0.7, which comes to tens of kilobytes; anything near this is
+/// not what the page's script draws.
+const PICTURE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const PICTURE_MAX_SIDE: u32 = 4000;
+
+/// The width and height a JPEG says it has, from its first frame header, or
+/// nothing when the bytes are not a JPEG this reads cleanly.
+fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 4 || bytes[..3] != [0xFF, 0xD8, 0xFF] {
+        return None;
+    }
+    let mut at = 2;
+    while at + 4 <= bytes.len() {
+        if bytes[at] != 0xFF {
+            return None;
+        }
+        let marker = bytes[at + 1];
+        if marker == 0xFF {
+            at += 1;
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+        // Start of frame, in any of its codings (not DHT, JPG or DAC, which share the range).
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            let frame = bytes.get(at + 4..at + 9)?;
+            let height = u32::from(u16::from_be_bytes([frame[1], frame[2]]));
+            let width = u32::from(u16::from_be_bytes([frame[3], frame[4]]));
+            return (width > 0 && height > 0).then_some((width, height));
+        }
+        if length < 2 {
+            return None;
+        }
+        at += 2 + length;
+    }
+    None
+}
+
+/// Checks a picture the page drew and saves it beside the review as
+/// `review-files/<thread>-r<rev>.jpg`, the name chosen here and never by the
+/// page. Returns what the thread records about it, or why there is no picture.
+fn keep_picture(log: &Path, id: &str, rev: u64, picture: &CommentPicture) -> Result<Value, String> {
+    let jpeg = picture.jpeg.as_deref().ok_or("no picture came with it")?;
+    if !jpeg.starts_with("data:image/jpeg;base64,") {
+        return Err("the picture was not a JPEG".to_string());
+    }
+    let bytes = decode_base64(jpeg).ok_or("the picture could not be read")?;
+    if bytes.len() > PICTURE_MAX_BYTES {
+        return Err("the picture was too big to keep".to_string());
+    }
+    let (width, height) = jpeg_size(&bytes).ok_or("the picture was not a JPEG")?;
+    if width > PICTURE_MAX_SIDE || height > PICTURE_MAX_SIDE {
+        return Err("the picture was too big to keep".to_string());
+    }
+    let crop = page_box(picture.crop.as_ref(), false).ok_or("the picture did not say what it shows")?;
+    let folder = log.parent().ok_or("the review has nowhere to live")?.join("review-files");
+    std::fs::create_dir_all(&folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
+    let name = format!("{id}-r{rev}.jpg");
+    let file = folder.join(&name);
+    std::fs::write(&file, &bytes).map_err(|e| format!("could not write {}: {e}", file.display()))?;
+    Ok(json!({
+        "file": format!("review-files/{name}"),
+        "crop": crop,
+        "method": "redraw",
+        "took_ms": picture.took_ms.unwrap_or(0).min(600_000),
+        "bytes": bytes.len(),
+    }))
+}
+
+/// A picture a thread keeps, on disk: only a name under this review's own
+/// `review-files`, never a path the page could have chosen.
+fn picture_file(log: &Path, picture: &Value) -> Option<PathBuf> {
+    let name = picture.get("file")?.as_str()?.strip_prefix("review-files/")?;
+    let fine = !name.is_empty() && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    fine.then(|| log.parent().map(|dir| dir.join("review-files").join(name))).flatten()
 }
 
 /// Opens a thread on the page, or adds a comment to one, in the review at `log`.
 /// Local and reversible until the review is sent.
-pub fn add_comment(log: &Path, rev: u64, body: &str, anchor: Option<Value>, thread: Option<&str>) -> Result<Value, String> {
+///
+/// A new thread keeps the picture the page drew around its place when one came
+/// with it. A picture that cannot be kept never stops the comment: the thread
+/// records why there is none, and the message says so.
+pub fn add_comment(log: &Path, rev: u64, body: &str, anchor: Option<Value>, thread: Option<&str>, picture: Option<CommentPicture>) -> Result<Value, String> {
     let body = body.trim();
     if body.is_empty() {
         return Err("a comment needs something in it".to_string());
     }
     let event = match thread {
         Some(id) => json!({"at": now_ms(), "kind": "comment", "id": id, "body": body}),
-        None => json!({
-            "at": now_ms(),
-            "kind": "opened",
-            "id": next_thread_id(log),
-            "rev": rev,
-            "anchor": text_anchor(anchor),
-            "body": body,
-        }),
+        None => {
+            let id = next_thread_id(log);
+            let mut event = json!({"at": now_ms(), "kind": "opened", "id": id, "rev": rev, "anchor": text_anchor(anchor), "body": body});
+            if let Some(picture) = picture {
+                match (picture.jpeg.is_some(), picture.skipped.as_deref()) {
+                    (true, _) => match keep_picture(log, &id, rev, &picture) {
+                        Ok(kept) => event["picture"] = kept,
+                        Err(reason) => event["picture_skipped"] = json!(reason),
+                    },
+                    (false, Some(reason)) => event["picture_skipped"] = json!(reason.chars().take(200).collect::<String>()),
+                    (false, None) => {}
+                }
+            }
+            event
+        }
     };
     append(log, &event)?;
     Ok(view(log))
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn review_comment(
     app: AppHandle,
     writes: TauriState<'_, Writes>,
@@ -468,18 +728,21 @@ pub async fn review_comment(
     body: String,
     anchor: Option<Value>,
     thread: Option<String>,
+    picture: Option<CommentPicture>,
 ) -> Result<Value, String> {
     let _one_writer = writes.0.lock().await;
-    blocking(move || add_comment(&log_path(&app, &page)?, rev, &body, anchor, thread.as_deref())).await
+    blocking(move || add_comment(&log_path(&app, &page)?, rev, &body, anchor, thread.as_deref(), picture)).await
 }
 
 /// Takes back a comment that has not been sent. A sent one stays on the record.
+/// Its picture goes with it.
 pub fn discard(log: &Path, thread: &str) -> Result<Value, String> {
-    let is_draft = view(log)["threads"]
-        .as_array()
-        .is_some_and(|threads| threads.iter().any(|item| item["id"] == thread && item["sent_at"].is_null()));
-    if !is_draft {
+    let current = view(log);
+    let Some(draft) = current["threads"].as_array().and_then(|threads| threads.iter().find(|item| item["id"] == thread && item["sent_at"].is_null())) else {
         return Err("that comment has already been sent, so it stays on the record".to_string());
+    };
+    if let Some(file) = picture_file(log, &draft["picture"]) {
+        let _ = std::fs::remove_file(file);
     }
     append(log, &json!({"at": now_ms(), "kind": "discarded", "id": thread}))?;
     Ok(view(log))
@@ -532,7 +795,20 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
         .unwrap_or_default();
     let answers = answers_where(&log, is_untold);
     let revision = revision_record(dir, rev)?;
-    let text = compose(&revision, verdict, &threads, &answers, &log)?;
+    // A crewmate's page gets the review through firstmate, as a file, so nothing about where a comment sits is retold.
+    let relay = match crew_author(&revision) {
+        Some(_) => {
+            let folder = dir.join("review-files");
+            std::fs::create_dir_all(&folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
+            let count = current["sent"].as_array().map_or(0, Vec::len);
+            let file = folder.join(format!("review-{}.md", count + 1));
+            let block = review_block(&revision, verdict, &threads, &log)?;
+            std::fs::write(&file, format!("{block}\n")).map_err(|e| format!("could not write {}: {e}", file.display()))?;
+            Some(file)
+        }
+        None => None,
+    };
+    let text = compose(&revision, verdict, &threads, &answers, &log, relay.as_deref())?;
     Ok((text, threads, answers))
 }
 
@@ -884,16 +1160,66 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
 
 /// The captain settles a thread, or opens it again. Only a sent thread can be
 /// settled: a draft is still theirs to change.
+///
+/// Settling lets a thread's picture go, unless the words it was written on are
+/// no longer in the latest revision: then the picture is the only record of what
+/// the comment was about, and it stays.
 pub fn settle(log: &Path, thread: &str, resolved: bool) -> Result<Value, String> {
-    let sent = view(log)["threads"]
-        .as_array()
-        .is_some_and(|threads| threads.iter().any(|item| item["id"] == thread && !item["sent_at"].is_null()));
-    if !sent {
+    let current = view(log);
+    let Some(sent) = current["threads"].as_array().and_then(|threads| threads.iter().find(|item| item["id"] == thread && !item["sent_at"].is_null())) else {
         return Err("that comment has not been sent yet".to_string());
-    }
+    };
     let kind = if resolved { "resolved" } else { "reopened" };
     append(log, &json!({"at": now_ms(), "kind": kind, "id": thread}))?;
+    if resolved {
+        let quote = sent["anchor"]["quote"].as_str().unwrap_or_default();
+        if let Some(file) = picture_file(log, &sent["picture"]) {
+            if log.parent().is_some_and(|dir| words_in_latest(dir, quote)) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+    }
     Ok(view(log))
+}
+
+/// Whether the words a comment was written on are still in the newest complete
+/// revision's page, as text or in the script that writes it. Any doubt says
+/// they are gone, which keeps the picture.
+fn words_in_latest(dir: &Path, quote: &str) -> bool {
+    let words = shorten(quote, usize::MAX);
+    if words.is_empty() {
+        return false;
+    }
+    let newest = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.strip_prefix("rev-")?.parse::<u64>().ok())
+        .filter(|rev| dir.join(format!("rev-{rev}")).join("revision.json").is_file())
+        .max();
+    let Some(rev) = newest else { return false };
+    let Ok(revision) = revision_record(dir, rev) else { return false };
+    let Some(entry) = revision.get("entry").and_then(Value::as_str) else { return false };
+    let Ok(page) = std::fs::read_to_string(dir.join(format!("rev-{rev}")).join("files").join(entry)) else { return false };
+    shorten(&page, usize::MAX).contains(&words) || shorten(&strip_tags(&page), usize::MAX).contains(&words)
+}
+
+/// A page's text with its tags taken out, near enough to find a quote in.
+fn strip_tags(page: &str) -> String {
+    let mut out = String::with_capacity(page.len());
+    let mut inside = false;
+    for character in page.chars() {
+        match character {
+            '<' => inside = true,
+            '>' if inside => {
+                inside = false;
+                out.push(' ');
+            }
+            _ if !inside => out.push(character),
+            _ => {}
+        }
+    }
+    out
 }
 
 #[tauri::command]
@@ -1023,16 +1349,16 @@ mod tests {
         let dir = scratch("anchor");
         let path = dir.join("review.jsonl");
         let forged = json!({"quote": "Intro", "prefix": "", "suffix": "", "path": "h1", "scene": "x", "scene_file": "/Users/me/.ssh/id_rsa", "picture": "p", "preview": "https://example.invalid/beacon"});
-        let current = add_comment(&path, 1, "Say more.", Some(forged), None).unwrap();
+        let current = add_comment(&path, 1, "Say more.", Some(forged), None, None).unwrap();
         let anchor = &current["threads"][0]["anchor"];
         assert_eq!(anchor["quote"], "Intro");
         for key in ["scene", "scene_file", "picture", "preview"] {
             assert!(anchor.get(key).is_none(), "{key} survived: {anchor}");
         }
-        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &path).unwrap();
+        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &path, None).unwrap();
         assert!(!text.contains("id_rsa"), "{text}");
         // Nothing to quote is a comment on the page as a whole.
-        let current = add_comment(&path, 1, "Overall.", Some(json!({"quote": ""})), None).unwrap();
+        let current = add_comment(&path, 1, "Overall.", Some(json!({"quote": ""})), None, None).unwrap();
         assert_eq!(current["threads"][1]["anchor"], Value::Null);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1098,24 +1424,24 @@ mod tests {
             json!({"id": "t1", "rev": 2, "anchor": anchor("Runs after transcription, free, private."), "comments": [{"body": "Say what happens on an older phone."}, {"body": "And on a metered hotspot."}]}),
             json!({"id": "t2", "rev": 1, "anchor": anchor(&"a very long quote ".repeat(20)), "comments": [{"body": "Still open from the last round."}]}),
         ];
-        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl")).unwrap();
+        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), None).unwrap();
         assert!(text.starts_with("Captain's review of \"AI titles for snips\" (task res-titles-scout, rev 2): Requests changes.\n"), "{text}");
-        assert!(text.contains("Written by res-titles-scout. Relay this review to it word for word."), "{text}");
+        assert!(text.contains("Written by res-titles-scout. Relay this review to it unchanged."), "{text}");
         assert!(text.contains("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), "{text}");
         assert!(text.contains("t1 on \"Runs after transcription, free, private.\": Say what happens on an older phone. And on a metered hotspot."), "{text}");
         assert!(text.contains("t2 on \"a very long quote"), "{text}");
         assert!(text.contains("…\" (rev 1): Still open from the last round."), "{text}");
 
         let chat = json!({"scope": "chat", "task": null, "rev": 1, "title": "A decision", "presented_by": {"role": "firstmate"}});
-        let text = compose(&chat, "approve", &[], &[], Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
+        let text = compose(&chat, "approve", &[], &[], Path::new("/home/data/.artifacts/a/review.jsonl"), None).unwrap();
         assert!(text.contains("(shared in chat, rev 1): Approved."), "{text}");
         assert!(text.contains("Written by you."), "{text}");
         assert!(text.contains("No comments on the page itself."), "{text}");
-        assert!(compose(&chat, "merge", &[], &[], Path::new("/x")).is_err());
+        assert!(compose(&chat, "merge", &[], &[], Path::new("/x"), None).is_err());
 
         // An answer the intake recorded is stated as done, so the first mate follows up instead of recording it.
         let answers = vec![json!({"decision": "res-model-download", "option": "wifi-only", "label": "Wi-Fi only, with visible progress"})];
-        let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
+        let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl"), None).unwrap();
         assert!(text.contains("Answers already recorded with bin/fm-captain-hold.sh; do the follow-up"), "{text}");
         assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only, with visible progress\")"), "{text}");
         assert!(!text.contains("to record"), "{text}");
@@ -1267,7 +1593,7 @@ mod tests {
                        "picture": "/home/data/.artifacts/a/review-files/t1.png"},
             "comments": [{"body": "Moved \"Title the snip\" below \"Transcribe\"; added \"Retry\"."}],
         })];
-        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/.artifacts/a/review.jsonl")).unwrap();
+        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/.artifacts/a/review.jsonl"), None).unwrap();
         assert!(text.contains("t1 on the diagram \"Snip pipeline\": Moved"), "{text}");
         assert!(text.contains("  proposed scene: /home/data/.artifacts/a/review-files/t1.excalidraw"), "{text}");
         assert!(text.contains("  picture of it: /home/data/.artifacts/a/review-files/t1.png"), "{text}");
@@ -1294,6 +1620,166 @@ mod tests {
             ("chat", None, "Plan"),
         ] {
             assert!(artifact_dir(data, scope, task, name).is_err(), "{scope} {task:?} {name}");
+        }
+    }
+
+    /// A JPEG header this reads a size from: start of image, a frame of `width` by `height`, end of image.
+    fn tiny_jpeg(width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0];
+        bytes.extend([0xFF, 0xC0, 0x00, 0x11, 0x08]);
+        bytes.extend(height.to_be_bytes());
+        bytes.extend(width.to_be_bytes());
+        bytes.extend([0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        bytes.extend([0xFF, 0xD9]);
+        bytes
+    }
+
+    fn data_url(kind: &str, bytes: &[u8]) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+            for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+                out.push(if index <= chunk.len() { ALPHABET[((n >> shift) & 63) as usize] as char } else { '=' });
+            }
+        }
+        format!("data:image/{kind};base64,{out}")
+    }
+
+    fn picture(jpeg: String) -> Option<CommentPicture> {
+        Some(CommentPicture { jpeg: Some(jpeg), crop: Some(json!({"x": 350, "y": 515, "w": 337, "h": 255})), took_ms: Some(145), skipped: None })
+    }
+
+    /// The captain's t2 on the usage panel's first revision, exactly as the page now describes it: the words
+    /// appear twice on screen, and the place is inside the Claude row, which is shut when the page opens.
+    fn t2_anchor() -> Value {
+        json!({
+            "quote": "under pace: lasts past the reset",
+            "prefix": "esets in 1h 35m5h 20%wk 17%Fable wk 0%5h",
+            "suffix": "resets 1h 35mwkunder pace: lasts past th",
+            "path": "div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > dl:nth-of-type(1) > dd:nth-of-type(1)",
+            "occurrence": {"n": 1, "of": 4, "shown": 2},
+            "element": "div#pop.pop > div.pop-body > div.sect > div.prov.open[data-prov=claude] > div.detail > dl > dd",
+            "near": "Usage › Plan limits › Claude › 5h",
+            "box": {"x": 460, "y": 625, "w": 117, "h": 35},
+            "point": {"x": 518, "y": 642},
+            "view": {"w": 1280, "h": 900, "scroll_y": 0, "scheme": "light"},
+            "reasons": ["repeated", "opened"],
+        })
+    }
+
+    /// A crewmate's page with one revision, whose page holds the words given.
+    fn crew_page(name: &str, words: &str) -> (PathBuf, PathBuf) {
+        let dir = scratch(name).join("qd-usage-design-1/artifacts/usage-panel");
+        std::fs::create_dir_all(dir.join("rev-1/files")).unwrap();
+        std::fs::write(dir.join("rev-1/files/usage-panel.html"), format!("<dl><dt>5h</dt><dd>{words}</dd></dl>")).unwrap();
+        std::fs::write(
+            dir.join("rev-1/revision.json"),
+            json!({"scope": "task", "task": "qd-usage-design-1", "rev": 1, "title": "Usage panel: context and plan limits", "entry": "usage-panel.html", "presented_by": {"role": "crew", "task": "qd-usage-design-1"}}).to_string(),
+        )
+        .unwrap();
+        let log = dir.join("review.jsonl");
+        (dir, log)
+    }
+
+    #[test]
+    fn the_captains_t2_reaches_the_crewmate_saying_which_row_and_how_to_see_it() {
+        let (dir, log) = crew_page("t2", "under pace: lasts past the reset");
+        let current = add_comment(&log, 1, "what does underpace mean? is this really helpful? I think can remove this column for simplicity?", Some(t2_anchor()), None, picture(data_url("jpeg", &tiny_jpeg(337, 255)))).unwrap();
+        let thread = &current["threads"][0];
+        assert_eq!(thread["picture"]["file"], "review-files/t1-r1.jpg");
+        assert_eq!(thread["picture"]["method"], "redraw");
+        assert!(dir.join("review-files/t1-r1.jpg").is_file(), "the picture is kept beside the review");
+        assert_eq!(thread["anchor"]["occurrence"], json!({"n": 1, "of": 4, "shown": 2}));
+
+        let (text, _, _) = draft(&dir, 1, "changes").unwrap();
+        let relay = dir.join("review-files/review-1.md");
+        let block = std::fs::read_to_string(&relay).expect("the review the crewmate receives is a file");
+        // The first mate is told to pass the file on, not to retell it.
+        assert!(text.contains(&format!("bin/fm-send.sh qd-usage-design-1 \"$(cat '{}')\"", relay.display())), "{text}");
+        assert!(text.contains("Add any framing of your own in a separate message."), "{text}");
+        assert!(!block.contains("Relay this review"), "the crewmate's copy carries no instructions meant for the first mate: {block}");
+        for said in [&text, &block] {
+            // Which row: the second of two identical cells on screen is a different row.
+            assert!(said.contains("t1 on \"under pace: lasts past the reset\": what does underpace mean?"), "{said}");
+            assert!(said.contains("  match    1 of the 4 places these words appear in the page's text, 2 of them on screen"), "{said}");
+            assert!(said.contains("  near     Usage › Plan limits › Claude › 5h"), "{said}");
+            // How to see it: the Claude row has to be opened, and the picture shows it open.
+            assert!(said.contains("  element  div#pop.pop > div.pop-body > div.sect > div.prov.open[data-prov=claude] > div.detail > dl > dd"), "{said}");
+            assert!(said.contains(&format!("The page: {}", dir.join("rev-1/files/usage-panel.html").display())), "{said}");
+            assert!(said.contains(&format!("  picture  {}", dir.join("review-files/t1-r1.jpg").display())), "{said}");
+            assert!(said.contains("Look at it before acting: the words appear in more than one place on screen; the place was inside something the captain had opened"), "{said}");
+            // Honest about what the picture is.
+            assert!(said.contains("It is a redraw the page made of itself when the captain picked the place, not a screenshot of the captain's screen."), "{said}");
+            assert!(said.contains("  box      x 460, y 625, 117 × 35 CSS px, in a 1280 × 900 window scrolled to 0, on a light page"), "{said}");
+            assert!(!said.contains("nth-of-type"), "the positional path stays in the log: {said}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_page_cannot_put_anything_else_in_an_anchor() {
+        let kept = text_anchor(Some(json!({
+            "quote": "Intro", "prefix": "", "suffix": "", "path": "h1",
+            "occurrence": {"n": 5, "of": 2}, "box": {"x": "0", "y": 1, "w": 2, "h": 3},
+            "point": {"x": 1e30, "y": 2}, "view": {"w": 1, "h": 1, "scroll_y": 0, "scheme": "purple"},
+            "reasons": ["repeated", "rm -rf"], "element": "x".repeat(5000), "near": "",
+        })));
+        assert!(kept.get("occurrence").is_none(), "a match past the count is not a match: {kept}");
+        assert!(kept.get("box").is_none() && kept.get("point").is_none() && kept.get("view").is_none(), "{kept}");
+        assert_eq!(kept["reasons"], json!(["repeated"]));
+        assert_eq!(kept["element"].as_str().unwrap().len(), 600);
+        assert!(kept.get("near").is_none());
+    }
+
+    #[test]
+    fn only_a_jpeg_of_a_sensible_size_is_kept_and_the_comment_goes_either_way() {
+        let (dir, log) = crew_page("picture-refused", "Intro");
+        let refused = [
+            data_url("png", &tiny_jpeg(10, 10)),
+            data_url("jpeg", b"not a picture at all"),
+            data_url("jpeg", &tiny_jpeg(4001, 10)),
+        ];
+        for (index, jpeg) in refused.into_iter().enumerate() {
+            let current = add_comment(&log, 1, "Say more.", Some(json!({"quote": "Intro"})), None, picture(jpeg)).unwrap();
+            let thread = &current["threads"][index];
+            assert!(thread["picture"].is_null(), "{thread}");
+            assert!(thread["picture_skipped"].as_str().is_some_and(|reason| !reason.is_empty()), "{thread}");
+        }
+        assert!(!dir.join("review-files").exists() || std::fs::read_dir(dir.join("review-files")).unwrap().next().is_none(), "nothing refused is written");
+        let skipped = add_comment(&log, 1, "Again.", Some(json!({"quote": "Intro"})), None, Some(CommentPicture { skipped: Some("the page could not draw itself".into()), ..Default::default() })).unwrap();
+        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", &skipped["threads"].as_array().unwrap()[3..], &[], &log, None).unwrap();
+        assert!(text.contains("  picture  none (the page could not draw itself)"), "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_picture_goes_with_a_discarded_draft_and_with_a_settled_thread_whose_words_remain() {
+        let (dir, log) = crew_page("picture-life", "under pace: lasts past the reset");
+        let jpeg = || picture(data_url("jpeg", &tiny_jpeg(20, 20)));
+        add_comment(&log, 1, "Taken back.", Some(t2_anchor()), None, jpeg()).unwrap();
+        discard(&log, "t1").unwrap();
+        assert!(!dir.join("review-files/t1-r1.jpg").exists(), "a comment taken back takes its picture with it");
+
+        add_comment(&log, 1, "Still there.", Some(t2_anchor()), None, jpeg()).unwrap();
+        add_comment(&log, 1, "Gone later.", Some(json!({"quote": "a column that was cut"})), None, jpeg()).unwrap();
+        append(&log, &json!({"at": 5, "kind": "sent", "verdict": "changes", "rev": 1, "threads": ["t2", "t3"], "message": "m"})).unwrap();
+        let current = settle(&log, "t2", true).unwrap();
+        assert!(!dir.join("review-files/t2-r1.jpg").exists(), "the words are still on the page, so the picture has done its job");
+        assert!(current["threads"][0]["picture"].is_null(), "a picture let go reads as none");
+        settle(&log, "t3", true).unwrap();
+        assert!(dir.join("review-files/t3-r1.jpg").is_file(), "the words are gone, so the picture is the only record of what the comment was about");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_anchor_from_before_the_page_described_itself_says_only_its_words() {
+        let log = scratch("old-anchor").join("review.jsonl");
+        let current = add_comment(&log, 1, "Say more.", Some(anchor("Wi-Fi only")), None, None).unwrap();
+        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &log, None).unwrap();
+        assert!(text.contains("t1 on \"Wi-Fi only\": Say more."), "{text}");
+        for absent in ["  match", "  element", "  near", "  box", "  picture"] {
+            assert!(!text.contains(absent), "{absent} in {text}");
         }
     }
 }

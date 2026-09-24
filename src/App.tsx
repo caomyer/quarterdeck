@@ -43,8 +43,8 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
-import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
@@ -620,7 +620,7 @@ export function App() {
               sendReady={bridge.sendReady}
               runtime={runtime.state}
               onRevision={(rev) => showArtifact(shownArtifact, rev)}
-              onComment={(body, anchor, thread) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread).then(setReview)}
+              onComment={(body, anchor, thread, picture) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread, picture).then(setReview)}
               onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
               onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => {
                 if (sent.message) bridge.noteSent(sent.message, sent.text);
@@ -2004,12 +2004,59 @@ function text(value: unknown, limit: number) {
   return typeof value === "string" ? value.slice(0, limit) : "";
 }
 
+/** A whole number of CSS pixels a page could plausibly measure, or nothing. */
+function pageNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1_000_000 ? Math.round(value) : null;
+}
+
+function pageBoxOf(value: unknown): PageBox | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const box = value as Record<string, unknown>;
+  const [x, y, w, h] = [box.x, box.y, box.w, box.h].map(pageNumber);
+  return x === null || y === null || w === null || h === null || w < 0 || h < 0 ? undefined : { x, y, w, h };
+}
+
+const PICTURE_REASONS: PictureReason[] = ["repeated", "opened", "wordless"];
+
+/** Why a picture is on for a pick, in the captain's words. */
+const PICTURE_WHY: Record<PictureReason, string> = {
+  repeated: "These words are in more than one place",
+  opened: "It's inside something you opened",
+  wordless: "There are no words of its own here",
+};
+
 function pageAnchor(value: unknown): ReviewAnchor | null {
   if (!value || typeof value !== "object") return null;
   const anchor = value as Record<string, unknown>;
   const quote = text(anchor.quote, 400);
   if (!quote.trim()) return null;
-  return { quote, prefix: text(anchor.prefix, 200), suffix: text(anchor.suffix, 200), path: text(anchor.path, 600) };
+  const kept: ReviewAnchor = { quote, prefix: text(anchor.prefix, 200), suffix: text(anchor.suffix, 200), path: text(anchor.path, 600) };
+  const element = text(anchor.element, 600);
+  if (element) kept.element = element;
+  const near = text(anchor.near, 200);
+  if (near) kept.near = near;
+  const occurrence = anchor.occurrence as Record<string, unknown> | null | undefined;
+  const [n, of, shown] = [occurrence?.n, occurrence?.of, occurrence?.shown].map(pageNumber);
+  if (n !== null && of !== null && n >= 1 && n <= of) kept.occurrence = { n, of, shown: shown === null ? of : Math.min(shown, of) };
+  const box = pageBoxOf(anchor.box);
+  if (box) kept.box = box;
+  const point = anchor.point as Record<string, unknown> | undefined;
+  const [px, py] = [point?.x, point?.y].map(pageNumber);
+  if (px !== null && py !== null) kept.point = { x: px, y: py };
+  const view = anchor.view as Record<string, unknown> | undefined;
+  const [vw, vh, scrolled] = [view?.w, view?.h, view?.scroll_y].map(pageNumber);
+  if (vw !== null && vh !== null && scrolled !== null && (view?.scheme === "light" || view?.scheme === "dark")) kept.view = { w: vw, h: vh, scroll_y: scrolled, scheme: view.scheme };
+  const reasons = Array.isArray(anchor.reasons) ? PICTURE_REASONS.filter((reason) => (anchor.reasons as unknown[]).includes(reason)) : [];
+  if (reasons.length) kept.reasons = reasons;
+  return kept;
+}
+
+/** A picture the page drew around a pick: only a JPEG of a sane size, and what part of the page it shows. */
+function pagePicture(value: Record<string, unknown>): PagePicture | null {
+  const jpeg = typeof value.jpeg === "string" && value.jpeg.startsWith("data:image/jpeg;base64,") && value.jpeg.length <= 3_000_000 ? value.jpeg : null;
+  const crop = pageBoxOf(value.crop);
+  const took = pageNumber(value.took_ms);
+  return jpeg && crop && crop.w > 0 && crop.h > 0 ? { jpeg, crop, took_ms: took ?? 0 } : null;
 }
 
 function sceneFileOk(file: string) {
@@ -2080,6 +2127,15 @@ function proposalPicture(thread: ReviewThread, url: string) {
   return `${base}/review-files/${encodeURIComponent(anchor.picture.split("/").at(-1) ?? "")}`;
 }
 
+/** The picture the page drew around a thread's place, kept beside the review. */
+function placePicture(thread: ReviewThread, url: string) {
+  if (thread.picture_preview) return thread.picture_preview;
+  const file = thread.picture?.file;
+  if (!file?.startsWith("review-files/")) return undefined;
+  const base = url.slice(0, url.lastIndexOf("/rev-"));
+  return `${base}/review-files/${encodeURIComponent(file.slice("review-files/".length))}`;
+}
+
 /** The words a thread is pinned to, for the rail. */
 function threadQuote(thread: ReviewThread) {
   const quote = thread.anchor?.quote?.trim();
@@ -2100,7 +2156,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   sendReady: boolean;
   runtime: HostRuntimeState;
   onRevision: (rev: number) => void;
-  onComment: (body: string, anchor?: ReviewAnchor, thread?: string) => Promise<unknown>;
+  onComment: (body: string, anchor?: ReviewAnchor, thread?: string, picture?: CommentPicture) => Promise<unknown>;
   onDiscard: (thread: string) => Promise<unknown>;
   /** Resolves to a warning when the review went only partly: answers recorded, message not sent. */
   onSubmit: (verdict: ReviewVerdict) => Promise<string | undefined>;
@@ -2116,6 +2172,13 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   const [findingsOpen, setFindingsOpen] = useState(false);
   const [commenting, setCommenting] = useState(false);
   const [pending, setPending] = useState<ReviewAnchor | null>(null);
+  // The page draws every pick; the comment keeps the drawing only while Picture is on.
+  const [pick, setPick] = useState<number | null>(null);
+  const [withPicture, setWithPicture] = useState(false);
+  const [drawn, setDrawn] = useState<Record<number, PagePicture | { error: string }>>({});
+  const drawnNow = useRef(drawn);
+  drawnNow.current = drawn;
+  const waitingFor = useRef(new Map<number, (result: PagePicture | { error: string }) => void>());
   const [draft, setDraft] = useState("");
   const [missing, setMissing] = useState<string[]>([]);
   const [scenes, setScenes] = useState<ScenePlace[]>([]);
@@ -2128,6 +2191,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     if (!verdictChosen) setVerdict(stake.verdict);
   }, [stake.verdict, verdictChosen]);
   const [sending, setSending] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const note = layoutNote(revision);
@@ -2171,7 +2235,16 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
         const anchor = commentingNow.current ? pageAnchor(data.anchor) : null;
         if (!anchor) return;
         setPending(anchor);
+        setPick(typeof data.pick === "number" && Number.isSafeInteger(data.pick) ? data.pick : null);
+        setWithPicture((anchor.reasons?.length ?? 0) > 0);
         setCommenting(false);
+      } else if (data.type === "qd:pictured") {
+        if (typeof data.pick !== "number") return;
+        const pickId = data.pick;
+        const result = pagePicture(data) ?? { error: text(data.error, 200) || "the page could not draw itself" };
+        setDrawn((current) => ({ ...current, [pickId]: result }));
+        waitingFor.current.get(pickId)?.(result);
+        waitingFor.current.delete(pickId);
       } else if (data.type === "qd:located") {
         const found = Array.isArray(data.missing) ? data.missing.filter((id): id is string => typeof id === "string") : [];
         setMissing((current) => current.join("\n") === found.join("\n") ? current : found);
@@ -2205,16 +2278,31 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     }
   }
 
+  /** The picture a new comment goes with, waiting briefly for the page to finish drawing it. */
+  async function pictureFor(anchor: ReviewAnchor): Promise<CommentPicture | undefined> {
+    if (!withPicture || pick === null) return anchor.reasons?.length ? { skipped: "the captain left the picture out" } : undefined;
+    const current = pick;
+    const result = drawnNow.current[current] ?? await new Promise<PagePicture | { error: string }>((resolve) => {
+      waitingFor.current.set(current, resolve);
+      setTimeout(() => resolve({ error: "the page took too long to draw itself" }), 4000);
+    });
+    return "jpeg" in result ? result : { skipped: result.error };
+  }
+
   async function save() {
     const body = draft.trim();
     if (!body || !pending) return;
     setProblem(null);
+    setSaving(true);
     try {
-      await onComment(body, pending);
+      await onComment(body, pending, undefined, await pictureFor(pending));
       setDraft("");
       setPending(null);
+      setPick(null);
     } catch (error) {
       setProblem(String(error));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -2261,17 +2349,18 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
         <header className="review-head"><strong>Your review</strong><small>{calls.some(isOpen) ? `Answering here also closes the captain's call on ${calls.filter(isOpen).length === 1 ? "this decision" : "these decisions"}.` : "Write on a part of the page, then send it all at once."}</small></header>
         {pending && <section className="comment-composer">
           <blockquote>{pending.quote.length > 160 ? `${pending.quote.slice(0, 160)}…` : pending.quote}</blockquote>
-          <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setDraft(""); } }} />
-          <div><button className="ghost" onClick={() => { setPending(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim()} onClick={() => void save()}>Comment</button></div>
+          {pick !== null && <PictureChoice on={withPicture} reasons={pending.reasons ?? []} drawn={drawn[pick]} onToggle={() => setWithPicture((current) => !current)} />}
+          <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setPick(null); setDraft(""); } }} />
+          <div><button className="ghost" onClick={() => { setPending(null); setPick(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim() || saving} onClick={() => void save()}>{saving ? "Saving…" : "Comment"}</button></div>
         </section>}
         {calls.length > 0 && <div className="decision-answers">
           {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} onAnswer={(option, label) => onAnswer(call, option, label)} />)}
         </div>}
         <div className="review-threads">
           {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment, then pick the words or the part of the page you mean.</p>}
-          {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
+          {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url) ?? placePicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
           {settled.length > 0 && <button className="settled-toggle" aria-expanded={showSettled} onClick={() => setShowSettled((current) => !current)}><ChevronRight size={13} className={showSettled ? "rotated" : ""} /> {settled.length} settled</button>}
-          {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
+          {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url) ?? placePicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
         </div>
         <div className="review-send">
           {calls.some(isOpen) && <span className="review-send-label">Answer the decision</span>}
@@ -2286,6 +2375,30 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     {openScene && <Suspense fallback={<div className="scene-backdrop"><div className="scene-loading">Opening the diagram…</div></div>}>
       <SceneEditor place={openScene.place} scene={openScene.scene} onClose={() => setOpenScene(null)} onPropose={(proposal) => onScene(openScene.place, proposal)} />
     </Suspense>}
+  </div>;
+}
+
+/**
+ * Whether a new comment goes with a picture of its place. It starts on when the words alone may not say which place
+ * was meant, says why, and shows what the author would see. The picture is the page redrawing itself, not a
+ * screenshot, and the author is told so.
+ */
+function PictureChoice({ on, reasons, drawn, onToggle }: { on: boolean; reasons: PictureReason[]; drawn?: PagePicture | { error: string }; onToggle: () => void }) {
+  const why = reasons.map((reason) => PICTURE_WHY[reason]).join(" · ");
+  const reason = why ? `${why}. ` : "";
+  const status = !on
+    ? (why ? `Left out. ${why}.` : "The words say where this is.")
+    : !drawn
+      ? `${reason}Drawing the page…`
+      : "error" in drawn
+        ? `${reason}Couldn't draw the page: ${drawn.error}. The comment goes without it.`
+        : `${reason}The author gets this picture, a redraw of the page with the place outlined.`;
+  return <div className={`picture-choice ${on ? "on" : ""}`} data-testid="picture-choice">
+    <button type="button" className="picture-toggle" aria-pressed={on} onClick={onToggle} title={on ? "Send this comment without a picture" : "Send a picture of this place with the comment"}>{on ? <Camera size={14} /> : <CameraOff size={14} />} Picture</button>
+    <div>
+      {on && drawn && "jpeg" in drawn && <img src={drawn.jpeg} alt="The page redrawn around the place you picked, with it outlined" />}
+      <small>{status}</small>
+    </div>
   </div>;
 }
 
@@ -2347,7 +2460,7 @@ function ReviewThreadCard({ thread, answer, rev, missing, picture, onFocus, onDi
         : <button className="icon-button" title={thread.state === "resolved" ? "Open this again" : "Settle this"} onClick={(event) => { event.stopPropagation(); onSettle(thread.state !== "resolved"); }}>{thread.state === "resolved" ? <RotateCcw size={14} /> : <CheckCheck size={14} />}</button>}
     </header>
     <blockquote>{threadQuote(thread)}</blockquote>
-    {picture && <img className="thread-picture" src={picture} alt={`The diagram as you proposed it: ${threadQuote(thread)}`} />}
+    {picture && <img className="thread-picture" src={picture} alt={thread.anchor && "scene" in thread.anchor ? `The diagram as you proposed it: ${threadQuote(thread)}` : `The page redrawn around ${threadQuote(thread)}, with it outlined`} />}
     {thread.comments.map((comment, index) => <p key={index}>{comment.body}</p>)}
     {answered && <div className="thread-answer"><strong>{answer.reply ? `Answered in rev ${answer.rev}` : `Changed in rev ${answer.rev}`}</strong>{answer.reply && <p>{answer.reply}</p>}</div>}
     {missing && <small className="thread-missing">Not found in this revision.</small>}

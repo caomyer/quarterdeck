@@ -206,6 +206,7 @@ Bootstrap detects first, asks for consent, and installs only after the captain a
 Do not dispatch until the essential launch tools are present and GitHub authentication is good; presentation availability follows `bootstrap-diagnostics` and does not block nonvisual work.
 Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
 When `bin/fm-artifact.sh mode` prints `quarterdeck`, present visual decisions and reports with `bin/fm-artifact.sh present` instead of `lavish-axi`; it returns at once, and the captain reviews in the Quarterdeck app.
+A Quarterdeck review of a crewmate's page names a relay file: send that file to the crewmate unchanged with the `bin/fm-send.sh` line the review gives, because its lines say where on the page each comment sits, and put any framing of your own in a separate message.
 A page presented on the task a call names as its `--origin` already argues that call; attach anything else with `bin/fm-captain-hold.sh evidence`.
 A diagram the captain may want to change belongs in the page as an Excalidraw scene file plus a picture of it marked `data-quarterdeck-scene`; `bin/fm-artifact.sh`'s header owns the mechanics, and a captain's changes come back as a proposed scene to take up in the next revision.
 A silent bootstrap section needs no action; for any printed actionable diagnostic line, load `bootstrap-diagnostics` and follow its owner procedure.

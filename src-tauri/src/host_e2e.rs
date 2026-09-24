@@ -1085,7 +1085,7 @@ async fn review_e2e_live_decision() {
     let sent = if running {
         recorder.mark("3", "answer the call in the page, and send the review");
         review::stage_answer(&log, &call, Some(&key), Some(&label), Some(&on_answer)).expect("stage the answer");
-        review::add_comment(&log, rev, "Say in the page what this costs us if we change our minds later.", None, None)
+        review::add_comment(&log, rev, "Say in the page what this costs us if we change our minds later.", None, None, None)
             .expect("write the comment");
         // What sending does first: firstmate's own intake records the answer.
         let outcomes = review::record_staged(&home, &log, None).await.expect("run the intake");

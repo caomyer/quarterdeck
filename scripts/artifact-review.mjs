@@ -680,6 +680,53 @@ check((await plain.locator(".verdict-picker select").inputValue()) === "comment"
 check((await plain.locator(".review-send small").innerText()) === "Thoughts only. Its task has finished, so nothing waits on this page.", "the hint says why nothing waits on it");
 await plain.close();
 
+// `?usage-t2`: the captain's own t2, on the usage-panel mock its scout presented. The words "under pace: lasts past
+// the reset" sit twice in the Claude row, which is shut when the page opens, so the author has to be told which row,
+// what to open to see it, and be shown it.
+{
+  const t2 = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  t2.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await t2.goto(`${baseUrl}/?artifacts&usage-t2`);
+  await t2.waitForFunction(() => !document.querySelector(".app-loading"));
+  await t2.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await t2.locator(".artifact-list .artifact-row", { hasText: "Usage panel: context and plan limits" }).click();
+  const usageFrame = t2.frameLocator(".artifact-stage iframe");
+  await usageFrame.locator(".prov .prov-head").first().waitFor();
+  // Read mode: the captain opens the Claude row, as he did, then picks the 5h cell.
+  await usageFrame.locator(".prov .prov-head").first().click();
+  await t2.locator(".comment-toggle").click();
+  await usageFrame.locator(".prov.open .detail dd").first().click();
+  const composer = t2.locator(".comment-composer");
+  await composer.waitFor();
+  const choice = composer.locator("[data-testid='picture-choice']");
+  check(await choice.locator(".picture-toggle").getAttribute("aria-pressed") === "true", "t2: a place words cannot pin down starts with its picture on");
+  check((await choice.innerText()).includes("These words are in more than one place · It's inside something you opened"), `t2: the comment box says why (${await choice.innerText()})`);
+  await choice.locator("img").waitFor({ timeout: 8000 });
+  check(await choice.locator("img").evaluate((image) => image.naturalWidth > 100 && image.naturalHeight > 100), "t2: the page draws itself around the place from inside its sandbox");
+  await shot(t2, "23-t2-picture");
+  await composer.locator("textarea").fill("what does underpace mean? is this really helpful? I think can remove this column for simplicity?");
+  await composer.locator("button", { hasText: "Comment" }).click();
+  const t2Thread = t2.locator("[data-testid='review-thread']").first();
+  await t2Thread.waitFor();
+  check(await t2Thread.locator("img.thread-picture").count() === 1, "t2: the draft keeps its picture");
+  await t2.locator(".verdict-picker select").selectOption("changes");
+  await t2.locator(".send-review").click();
+  await t2.locator(".review-last").waitFor();
+  await t2.locator(".nav-item", { hasText: "Chat" }).click();
+  const sent = await t2.locator(".captain-message").last().innerText();
+  for (const line of [
+    "t1 on \"under pace: lasts past the reset\": what does underpace mean?",
+    "of them on screen",
+    "  near     Usage › Plan limits › Claude › 5h",
+    "  element  div#pop.pop > div.pop-body > div.sect > div.prov.open[data-prov=claude] > div.detail > dl > dd",
+    "/artifacts/usage-panel/review-files/t1-r1.jpg",
+    "not a screenshot of the captain's screen",
+  ]) check(sent.includes(line), `t2: the author is told ${JSON.stringify(line.trim())}`);
+  check(/  match    1 of the \d+ places these words appear in the page's text, 2 of them on screen/.test(sent), "t2: which of the two cells on screen");
+  check(!sent.includes("nth-of-type"), "t2: the positional path stays in the log");
+  await t2.close();
+}
+
 await browser.close();
 if (failures.length) {
   console.log(`\n${failures.length} failed:\n- ${failures.join("\n- ")}`);

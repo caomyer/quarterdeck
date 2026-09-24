@@ -987,6 +987,14 @@ a { color: var(--sea); }
 .comment-composer button { height: 34px; border: 0; border-radius: 8px; color: var(--on-accent); background: var(--sea); font-size: 12.5px; font-weight: 600; }
 .comment-composer button:hover:not(:disabled) { background: var(--sea-strong); }
 .comment-composer button.ghost { border: 1px solid var(--control); color: var(--ink); background: var(--surface); font-weight: 500; }
+/* Whether the comment goes with a picture of its place: the toggle, why it is on, and what the author would see. */
+.comment-composer > .picture-choice { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; justify-content: stretch; gap: 10px; margin: 0 0 10px; }
+.comment-composer .picture-toggle { display: inline-flex; height: 28px; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--control); border-radius: 8px; color: var(--muted); background: var(--surface); font-size: 12px; font-weight: 500; }
+.comment-composer .picture-toggle:hover:not(:disabled) { border-color: var(--control-hover); background: var(--surface); }
+.picture-choice.on .picture-toggle { border-color: color-mix(in srgb, var(--sea) 45%, var(--control)); color: var(--sea); }
+.picture-choice > div { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.picture-choice img { display: block; width: 100%; max-width: 260px; border: 1px solid var(--border); border-radius: 6px; }
+.picture-choice small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .comment-composer button.ghost:hover { background: var(--surface); }
 .review-send { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 10px; padding: 18px 22px; border-top: 1px solid var(--rule); }
 .review-send-label { width: 100%; color: var(--muted); font-size: 12.5px; }

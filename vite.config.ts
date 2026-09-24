@@ -18,6 +18,13 @@ function reviewPages(): Plugin {
     configureServer(server) {
       server.middlewares.use((request, response, next) => {
         const path = (request.url ?? "").split("?")[0];
+        // The library the review script loads when the captain picks a place, served as the app serves it.
+        if (path === "/_qd/snapdom.js") {
+          response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+          response.setHeader("Access-Control-Allow-Origin", "*");
+          response.end(readFileSync(new URL("./src-tauri/src/vendor/snapdom.js", import.meta.url)));
+          return;
+        }
         if (!path.startsWith("/artifacts/") || !path.endsWith(".html")) return next();
         let page: string;
         try {
