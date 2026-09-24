@@ -7,7 +7,7 @@
 #
 # Usage:
 #   fm-task-note.sh add <task-id> [--body <text> | --body-file <path>]
-#                   [--file <path>]... [--scope] [--by <who>] [--json]
+#                   [--file <path>]... [--scope] [--by <who>]
 #   fm-task-note.sh show <task-id> [--json]
 #   fm-task-note.sh brief <task-id>
 #
@@ -25,15 +25,13 @@
 #   . _ - becomes "-", runs of "-" fold into one, and a name already taken gains
 #   -2, -3, ... before its extension. So the path an agent receives is safe to
 #   type and to pass to a shell, whatever the original was called (a macOS
-#   screenshot's name carries a U+202F narrow no-break space). A file already
-#   copied into the home by Quarterdeck (data/.attachments/) is hard-linked
-#   instead, since those copies never change; anything else is copied, so the
-#   task keeps the file as it was when added. Each file is capped at
+#   screenshot's name carries a U+202F narrow no-break space). Every file is
+#   copied, so the task keeps the file as it was when added, independent of
+#   where it came from. Each file is capped at
 #   FM_TASK_NOTE_MAX_BYTES (default 104857600, 100 MiB).
 #   --scope marks a note that changes what the task must do.
 #   --by names who added it: "firstmate" (the default), "captain", or a task id.
-#   Prints "added: <note-id> on <task-id>" and one "file: <path>" line per file,
-#   or with --json the note object as `show --json` shapes it.
+#   Prints "added: <note-id> on <task-id>" and one "file: <path>" line per file.
 #
 # show
 #   Prints a task's notes, oldest first. A task with none prints nothing and
@@ -104,33 +102,24 @@ file_bytes() {  # <path>
   wc -c < "$1" | tr -d ' '
 }
 
-# Publishes <src> into <dir> under <name>, or the first free <stem>-N<ext>, and
-# prints the name it took. The claim is a hard link, which fails when the name
-# is taken, so two concurrent adds never share a name.
-claim_file() {  # <src> <dir> <name> <link-ok: 0|1>
-  local src=$1 dir=$2 name=$3 link_ok=$4 stem ext n=1 candidate tmp
+# Copies <src> into <dir> under <name>, or the first free <stem>-N<ext>, and
+# prints the name it took. The claim is a hard link of a private copy, which
+# fails when the name is taken, so two concurrent adds never share a name.
+claim_file() {  # <src> <dir> <name>
+  local src=$1 dir=$2 name=$3 stem ext n=1 candidate tmp
   case "$name" in
     ?*.*) stem=${name%.*}; ext=.${name##*.} ;;
     *) stem=$name; ext= ;;
   esac
-  if [ "$link_ok" = 1 ]; then
-    tmp=$src
-  else
-    tmp="$dir/.incoming.${BASHPID:-$$}"
-    cp -p "$src" "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
-  fi
+  tmp="$dir/.incoming.${BASHPID:-$$}"
+  cp -p "$src" "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
   candidate=$name
   while ! ln "$tmp" "$dir/$candidate" 2>/dev/null; do
-    if [ "$link_ok" = 1 ] && [ "$n" = 1 ] && [ ! -e "$dir/$candidate" ]; then
-      # The source cannot be linked from here (another filesystem): copy it instead.
-      claim_file "$src" "$dir" "$name" 0
-      return
-    fi
     n=$((n + 1))
-    [ "$n" -le 999 ] || { [ "$link_ok" = 1 ] || rm -f -- "$tmp"; return 1; }
+    [ "$n" -le 999 ] || { rm -f -- "$tmp"; return 1; }
     candidate="$stem-$n$ext"
   done
-  [ "$link_ok" = 1 ] || rm -f -- "$tmp"
+  rm -f -- "$tmp"
   printf '%s\n' "$candidate"
 }
 
@@ -155,7 +144,7 @@ notes_json() {  # <id>
 }
 
 cmd_add() {
-  local id=${1-} body='' body_file='' scope=false by=firstmate json=0 path name bytes n note tmp notes_dir files_dir link_ok taken
+  local id=${1-} body='' body_file='' scope=false by=firstmate path name bytes n note tmp notes_dir files_dir taken
   local -a sources=() entries=()
   [ -n "$id" ] || usage
   shift
@@ -166,7 +155,6 @@ cmd_add() {
       --file) [ "$#" -ge 2 ] || usage; sources+=("$2"); shift 2 ;;
       --scope) scope=true; shift ;;
       --by) [ "$#" -ge 2 ] || usage; by=$2; shift 2 ;;
-      --json) json=1; shift ;;
       *) usage ;;
     esac
   done
@@ -197,11 +185,7 @@ cmd_add() {
   for path in ${sources[@]+"${sources[@]}"}; do
     mkdir -p "$files_dir" || die "cannot create $files_dir"
     name=$(clean_name "$(basename "$path")")
-    case "$(cd "$(dirname "$path")" && pwd -P)/" in
-      "$(cd "$DATA" && pwd -P)/.attachments/"*) link_ok=1 ;;
-      *) link_ok=0 ;;
-    esac
-    taken=$(claim_file "$path" "$files_dir" "$name" "$link_ok") || die "could not add $path to $files_dir"
+    taken=$(claim_file "$path" "$files_dir" "$name") || die "could not add $path to $files_dir"
     entries+=("$(jq -cn --arg name "$taken" --arg original "$(basename "$path")" --argjson bytes "$(file_bytes "$files_dir/$taken")" \
       '{name:$name, path:("files/" + $name), bytes:$bytes, original:$original}')")
   done
@@ -224,16 +208,12 @@ cmd_add() {
   done
   rm -f -- "$tmp"
 
-  if [ "$json" = 1 ]; then
-    jq --arg base "$DATA/$id" '.files |= map(.path = ($base + "/" + .path))' "$notes_dir/n$n.json"
-    return
-  fi
   printf 'added: n%s on %s\n' "$n" "$id"
   jq -r --arg base "$DATA/$id" '.files[] | "file: " + $base + "/" + .path' "$notes_dir/n$n.json"
 }
 
 cmd_show() {
-  local id=${1-} json=0
+  local id=${1-} json=0 notes
   [ -n "$id" ] || usage
   shift
   while [ "$#" -gt 0 ]; do
@@ -243,11 +223,12 @@ cmd_show() {
     esac
   done
   fm_task_id_path_safe "$id" || die "invalid task id '$id'"
+  notes=$(notes_json "$id") || exit 1
   if [ "$json" = 1 ]; then
-    notes_json "$id"
+    printf '%s\n' "$notes"
     return
   fi
-  notes_json "$id" | jq -r '
+  printf '%s\n' "$notes" | jq -r '
     .notes[]
     | "\(.id) \(.at) by \(.by)\(if .scope then ", changes scope" else "" end)",
       (.body | select(. != "") | split("\n")[] | "  " + .),
@@ -255,10 +236,11 @@ cmd_show() {
 }
 
 cmd_brief() {
-  local id=${1-}
+  local id=${1-} notes
   [ -n "$id" ] && [ "$#" -eq 1 ] || usage
   fm_task_id_path_safe "$id" || die "invalid task id '$id'"
-  notes_json "$id" | jq -r --arg id "$id" '
+  notes=$(notes_json "$id") || exit 1
+  printf '%s\n' "$notes" | jq -r --arg id "$id" '
     select(.notes | length > 0)
     | "",
       "# Files and notes on this task",

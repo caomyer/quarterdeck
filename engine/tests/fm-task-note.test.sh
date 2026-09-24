@@ -2,11 +2,12 @@
 # Behavior tests for bin/fm-task-note.sh.
 # Covers adding a note with a body, files and a scope mark; a queued backlog row
 # taking notes before any worker exists; cleaning a file's
-# name into one safe to pass to a shell; a name already taken; hard-linking a
-# file Quarterdeck already copied into the home and copying anything else;
-# refusals (no content, unknown task, bad id, folders, symbolic links, the size
-# cap); concurrent adds claiming distinct note ids; show in text and JSON; the
-# brief section; and a spawn appending that section to the launch brief.
+# name into one safe to pass to a shell; a name already taken; copying every
+# file, a Quarterdeck attachment included; refusals (no content, unknown task,
+# bad id, folders, symbolic links, the size cap); concurrent adds claiming
+# distinct note ids; show in text and JSON; the brief section; show and brief
+# refusing an unreadable note; and a spawn appending that section to the
+# launch brief.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -64,20 +65,22 @@ test_a_queued_backlog_row_is_a_known_task() {
   pass "fm-task-note.sh: a queued backlog row takes notes before any worker exists"
 }
 
-test_attachments_are_linked_and_other_files_copied() {
+test_every_file_is_copied() {
   local home att outside
-  home=$(new_home link)
+  home=$(new_home copy)
   att="$home/data/.attachments/1790232718309-1/shot.png"
   mkdir -p "$(dirname "$att")"
   printf 'attached' > "$att"
-  outside="$TMP_ROOT/link/desk.png"
+  outside="$TMP_ROOT/copy/desk.png"
   printf 'desk' > "$outside"
   FM_HOME="$home" "$NOTE" add t1 --file "$att" --file "$outside" >/dev/null || fail "add failed"
-  [ "$att" -ef "$home/data/t1/files/shot.png" ] || fail "a copy Quarterdeck made is hard-linked, not duplicated"
+  [ ! "$att" -ef "$home/data/t1/files/shot.png" ] || fail "a Quarterdeck attachment is copied, not shared with the chat's copy"
   [ ! "$outside" -ef "$home/data/t1/files/desk.png" ] || fail "a file from outside the home is copied"
+  printf 'changed' > "$att"
   printf 'changed' > "$outside"
+  assert_equals "attached" "$(cat "$home/data/t1/files/shot.png")" "the task's file is independent of the attachment it came from"
   assert_equals "desk" "$(cat "$home/data/t1/files/desk.png")" "the task keeps the file as it was when added"
-  pass "fm-task-note.sh: Quarterdeck's attachment copies are linked, anything else is copied"
+  pass "fm-task-note.sh: every file is copied, a Quarterdeck attachment included"
 }
 
 test_refusals() {
@@ -148,6 +151,23 @@ test_show_and_brief() {
   pass "fm-task-note.sh: show and brief read notes in order, files as paths"
 }
 
+test_an_unreadable_note_is_refused() {
+  local home out rc
+  home=$(new_home unreadable)
+  FM_HOME="$home" "$NOTE" add t1 --body 'The captain saw this.' >/dev/null || fail "add failed"
+  printf '{not json' > "$home/data/t1/notes/n2.json"
+  out=$(FM_HOME="$home" "$NOTE" show t1 2>&1); rc=$?
+  expect_code 1 "$rc" "show of an unreadable note"
+  assert_contains "$out" "cannot be read" "show says the notes cannot be read"
+  out=$(FM_HOME="$home" "$NOTE" show t1 --json 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "show --json of an unreadable note"
+  assert_equals "" "$out" "show --json prints nothing it cannot stand behind"
+  out=$(FM_HOME="$home" "$NOTE" brief t1 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "brief of an unreadable note"
+  assert_equals "" "$out" "brief prints no partial section"
+  pass "fm-task-note.sh: show and brief refuse a note they cannot read"
+}
+
 test_spawn_appends_notes_to_the_launch_brief() {
   local home proj fakebin out id=t-spawn
   # A real spawn that renders the launch brief and then stops: the fake tmux refuses, so no window or
@@ -176,8 +196,9 @@ test_spawn_appends_notes_to_the_launch_brief() {
 
 test_add_records_a_note_with_clean_file_names
 test_a_queued_backlog_row_is_a_known_task
-test_attachments_are_linked_and_other_files_copied
+test_every_file_is_copied
 test_refusals
 test_concurrent_adds_claim_distinct_ids
 test_show_and_brief
+test_an_unreadable_note_is_refused
 test_spawn_appends_notes_to_the_launch_brief

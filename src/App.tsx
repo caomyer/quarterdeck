@@ -1474,21 +1474,25 @@ const CLOSED_AS: Record<LogEntry["kind"], (entry: LogEntry) => string> = {
 
 /**
  * A task waiting its turn, read from its backlog row: what it is waiting on, what was asked, and any page it
- * already carries. Nothing is running, so there is no worker to show.
+ * already carries. There is no worker to show; the row's state says whether one has picked it up since it opened.
  */
 function QueuedDrawer({ record, project, now, artifacts, reviews, source, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
   const body = bodyBlocks(record.body_lines, record.body_excerpt);
   const kind = KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task";
-  const tone = record.hold_reason ? "amber" : "muted";
+  const pickedUp = record.state === "in_flight";
+  const closed = record.state === "done";
+  const tone = !pickedUp && !closed && record.hold_reason ? "amber" : "muted";
+  const label = pickedUp ? "Underway" : closed ? "Closed" : record.hold_reason ? "Waiting" : "Queued";
+  const detail = pickedUp ? `${kind} · picked up by a worker` : closed ? `${kind} · closed` : record.hold_reason ?? `${kind} · waiting its turn`;
   const notes = useTaskNotes(record.id);
   const panel = useDrawerDismiss(onClose);
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="queued-drawer">
     <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(record.title, project)}</h2><small className="drawer-id">{record.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
-    <div className="drawer-status"><span className={`task-state tone-${tone}`}><Clock3 size={16} /></span><div><strong className={`tone-${tone}`}>{record.hold_reason ? "Waiting" : "Queued"}</strong><span>{record.hold_reason ?? `${kind} · waiting its turn`}</span></div></div>
+    <div className="drawer-status"><span className={`task-state tone-${tone}`}><Clock3 size={16} /></span><div><strong className={`tone-${tone}`}>{label}</strong><span>{detail}</span></div></div>
     <div className="drawer-scroll">
       <TaskFiles taskId={record.id} notes={notes.notes} />
       {body.length > 0 ? <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection> : <DrawerSection title="What was asked"><div className="brief-block"><p>The row says nothing more than its title.</p></div></DrawerSection>}
-      <TaskNotesThread read={notes} running={false} closed={false} />
+      <TaskNotesThread read={notes} running={pickedUp} closed={closed} />
       {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">
         <div><span className="timeline-icon"><GitBranch size={15} /></span><span><strong>Filed</strong><small>{kind}</small></span><time>{record.since ? shortDay(record.since, now) : "Undated"}</time></div>
@@ -1885,7 +1889,7 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
       <TaskFiles taskId={task.id} notes={notes.notes} />
       {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}
       <DrawerSection title="Latest from the worker"><div className="brief-block"><p>{lastEvent.note || "The worker hasn't written a note yet."}</p></div></DrawerSection>
-      <TaskNotesThread read={notes} running closed={false} />
+      <TaskNotesThread read={notes} running={LIVE_STATES.has(task.current_state.state)} closed={false} />
       {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed={record?.state === "done"} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
       {report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.key}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection>
