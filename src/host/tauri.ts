@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent } from "./types";
+import type { AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -207,6 +207,28 @@ export class TauriHostAdapter implements HostAdapter {
 
   refreshSnapshot() {
     return invoke<void>("snapshot_refresh");
+  }
+
+  updateStatus() {
+    return invoke<AppUpdate>("update_status");
+  }
+
+  updateRestart() {
+    return invoke<AppUpdate>("update_restart");
+  }
+
+  updateCancel() {
+    return invoke<AppUpdate>("update_cancel");
+  }
+
+  updateSeen() {
+    return invoke<AppUpdate>("update_seen");
+  }
+
+  /** Its own event, not one of the host's: `update` there is the adapter's ACP updates. */
+  onUpdate(listener: (update: AppUpdate) => void) {
+    const dispose = listen<AppUpdate>("app_update", ({ payload }) => listener(payload));
+    return () => void dispose.then((stop) => stop());
   }
 
   private ensureListening() {

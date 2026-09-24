@@ -90,6 +90,7 @@ jobs:
           FIRSTMATE_URL=http://127.0.0.1:4191 pnpm onboarding || failed="$failed onboarding"
           FIRSTMATE_URL=http://127.0.0.1:4191 pnpm attach || failed="$failed attach"
           FIRSTMATE_URL=http://127.0.0.1:4191 pnpm usage || failed="$failed usage"
+          FIRSTMATE_URL=http://127.0.0.1:4191 pnpm updates || failed="$failed updates"
           [ -z "$failed" ] || {
             echo "::error::page checks failed:$failed"
             exit 1
@@ -131,3 +132,47 @@ jobs:
       - name: Tests
         working-directory: src-tauri
         run: cargo test
+
+  bundle:
+    name: Bundle
+    # A dry run of what release.yml does on main, on every branch: the release
+    # build, signed with a self-signed identity made for the run and an updater
+    # key made for the run, then checked the way a release is. Nothing is
+    # published and no secret is read, so a fork's branch runs it the same.
+    runs-on: macos-latest
+    # Hang tripwire: a cold release build measures around fifteen minutes.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: bundle
+          cache-on-failure: true
+      - name: A throwaway updater key
+        id: key
+        run: |
+          set -euo pipefail
+          pnpm tauri signer generate --ci -w "$RUNNER_TEMP/dry-run.key" >/dev/null
+          echo "pubkey=$(cat "$RUNNER_TEMP/dry-run.key.pub")" >>"$GITHUB_OUTPUT"
+      - name: Bundle
+        id: bundle
+        uses: ./.github/actions/bundle
+        with:
+          version: 0.1.${{ github.run_number }}
+          signing: throwaway
+          updater-key: ${{ runner.temp }}/dry-run.key
+          updater-pubkey: ${{ steps.key.outputs.pubkey }}
+      - name: The manifest a release would publish
+        env:
+          TARBALL: ${{ steps.bundle.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          node scripts/release.mjs notes | head -n 5 >"$RUNNER_TEMP/notes.md"
+          node scripts/release.mjs manifest --version "0.1.${{ github.run_number }}" --tarball "$TARBALL" --url "https://example.invalid/$(basename "$TARBALL")" --notes-file "$RUNNER_TEMP/notes.md"

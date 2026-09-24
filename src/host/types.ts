@@ -329,6 +329,21 @@ export type QuotaProvider = {
  */
 export type QuotaRead = { providers: QuotaProvider[] | null; read_at_ms: number | null; error: string | null; missing: boolean };
 
+/**
+ * The app's own update, from the backend's `update_*` commands and `app_update` event. `ready`: downloaded, verified
+ * and waiting for the captain; `waiting`: the restart they asked for waits for the first mate's turn to end;
+ * `failed`: installing failed and the update is still held, so asking again retries. `installed` is what the last
+ * update brought, while its version is the one running, until the captain has read it.
+ */
+export type AppUpdate = {
+  state: "none" | "ready" | "waiting" | "installing" | "failed";
+  current: string;
+  version: string | null;
+  notes: string | null;
+  error: string | null;
+  installed: { version: string; from: string | null; notes: string | null } | null;
+};
+
 export type SnapshotError = { source: string; error: string };
 
 export type SnapshotEvent = {
@@ -455,6 +470,16 @@ export interface HostAdapter {
   readQuota(): Promise<QuotaRead>;
   /** Reads plan limits once with quota-axi allowed to ask macOS for Claude's Keychain item. Only when the captain asks. */
   allowQuotaKeychain(): Promise<QuotaRead>;
+  /** Where the app's own update stands. Reads only. */
+  updateStatus(): Promise<AppUpdate>;
+  /** Restarts into the waiting update once the first mate is not in a turn. Answers at once; `onUpdate` says how it goes. */
+  updateRestart(): Promise<AppUpdate>;
+  /** Takes back a restart still waiting for a turn to end. */
+  updateCancel(): Promise<AppUpdate>;
+  /** The captain has read what the last update changed. */
+  updateSeen(): Promise<AppUpdate>;
+  /** Every change to the update's status. Returns what stops listening. */
+  onUpdate(listener: (update: AppUpdate) => void): () => void;
   refreshSnapshot(): Promise<void>;
   /** The last finished snapshot, for a window that subscribed after it was emitted. Waits for a read in progress. */
   latestSnapshot(): Promise<SnapshotEvent | null>;

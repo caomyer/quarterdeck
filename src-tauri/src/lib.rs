@@ -11,6 +11,7 @@ mod review;
 mod routing;
 mod settings;
 mod snapshot;
+mod update;
 
 use tauri::Manager;
 
@@ -18,6 +19,7 @@ use tauri::Manager;
 pub fn run() {
     let app = tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_updater::Builder::new().build())
     .register_asynchronous_uri_scheme_protocol(artifact::SCHEME, artifact::handle)
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -35,6 +37,8 @@ pub fn run() {
       app.manage(host::HostHandle::spawn(app.handle().clone()));
       app.manage(review::Writes::default());
       app.manage(quota::Quota::default());
+      app.manage(update::Updates::default());
+      update::spawn(app.handle().clone());
       settings::load_saved_home(app.handle().clone());
       // macOS ignores the config's `maximized` when it creates the window, which
       // leaves a fixed 1440x900 window taller than a smaller screen, with the
@@ -80,17 +84,24 @@ pub fn run() {
       review::review_answer,
       review::review_scene,
       review::call_answer,
+      update::update_status,
+      update::update_restart,
+      update::update_cancel,
+      update::update_seen,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application");
   exit_on_termination_signals(app.handle().clone());
   app.run(|app, event| {
     // Closing the last window or quitting ends here: stop the first mate's
-    // whole process group so nothing it started outlives the app.
+    // whole process group so nothing it started outlives the app. An update
+    // that is waiting goes in only after that, so no first mate runs on the
+    // engine it replaces.
     if let tauri::RunEvent::Exit = event {
       if let Some(host) = app.try_state::<host::HostHandle>() {
         host.kill_on_exit();
       }
+      update::install_on_exit(app);
     }
   });
 }
