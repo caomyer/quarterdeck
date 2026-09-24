@@ -25,7 +25,10 @@ function reviewPages(): Plugin {
           response.end(readFileSync(new URL("./src-tauri/src/vendor/snapdom.js", import.meta.url)));
           return;
         }
-        if (!path.startsWith("/artifacts/") || !path.endsWith(".html")) return next();
+        if (!path.startsWith("/artifacts/")) return next();
+        // The page runs in an opaque origin, so its own fonts and module scripts are cross-origin requests, as in the app.
+        response.setHeader("Access-Control-Allow-Origin", "*");
+        if (!path.endsWith(".html")) return next();
         let page: string;
         try {
           // Only the fixtures: an encoded ".." must not walk out to any other page on disk.
