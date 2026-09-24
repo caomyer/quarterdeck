@@ -18,7 +18,7 @@ The agent performs the semantic inventory because scripts must not infer captain
 
 Every unresolved question that belongs to the captain and is discovered while producing, reading, presenting, or ending an investigation or visual review must be carried by a captain-held task in the authoritative backlog of the home that owns the originating work before that work or review may be treated as complete.
 Prefer holding the work item the question gates over minting a new row; create a new task only when no work item exists to hold.
-Raise the call with its content: `hold` takes the question (`--question`), 2 to 8 keyed options (`--option <key>=<label>`), the recommendation (`--recommend`), and, when the call came out of a task's work, `--origin <task>`, which makes that task's report and every page it presented argue the call with nothing more to attach.
+Raise the call with its content: `hold` takes the question (`--question`), 2 to 8 keyed options (`--option <key>=<label>`), the recommendation (`--recommend`), and, when the call came out of another task's work, `--origin <task>`, which makes that task's report and every page it presented argue the call with nothing more to attach; holding the task whose work raised it needs no flag, because `hold` makes a held task that already has a report or a presented page its own origin.
 Keep the hold reason a short summary, and keep one held task per genuine gate: a multi-question review is one held task pointing at its report, not a row per question. Represent that task with exactly one board card that consolidates its questions and options; never fan one task id into duplicate same-key cards.
 Register or re-hold through `bin/fm-captain-hold.sh hold`, which is idempotent per task id; change an open call's content with `offer` and attach anything else that argues it with `evidence <task> add <ref>`.
 Every call has one owner: the first mate or a scout raises calls through `hold`, never any other way, and `bin/fm-captain-hold.sh` is the only writer of anything about a call.
@@ -63,7 +63,7 @@ The absence of a routed work item is not a divergence and the guard never requir
 
 1. Read the complete investigation result and complete the visual review before declaring either complete.
 2. Inventory only genuine unresolved choices that require the captain, and find the task each one gates.
-3. Hold that task - or create one captain-held task for the review's open questions - with a concise reason, the question, the options, the recommendation, and `--origin` when the call came out of a task's work.
+3. Hold that task - or create one captain-held task for the review's open questions - with a concise reason, the question, the options, the recommendation, and `--origin` when the call came out of another task's work.
 4. Run `complete` with the full captain-held inventory for that review pass.
 5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
 6. Close each call only through `answer` (or a channel that feeds `answers`), close a board-requested moot call through evidence-backed `reconcile close`, record a still-active reconciliation through `reconcile note`, use `--until` when the captain defers it, or confirm a channel already closed it.

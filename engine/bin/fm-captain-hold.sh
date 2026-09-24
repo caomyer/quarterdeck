@@ -67,9 +67,9 @@
 #    on_answer ("done"|"release"|null), origin, about, evidence:[<ref>],
 #    raised_by, raised_at, updated_at, decided (null or {what,why,kind,link})}
 # `hold` writes it whenever it is given --question, --option, --recommend,
-# --on-answer, --evidence, --about, or --origin, and a hold without any of them
-# behaves exactly as it always did (an existing record only has its raised_at
-# moved to a new lifecycle's hold-set stamp). The record is written before the
+# --on-answer, --evidence, --about, or --origin (given, or defaulted as below),
+# and a hold without any of them behaves exactly as it always did (an existing
+# record only has its raised_at moved to a new lifecycle's hold-set stamp). The record is written before the
 # hold is applied, so a newly held call is never visible without its content.
 # Options: 2 to 8, keys `[a-z0-9][a-z0-9-]{0,31}`, labels one line of at most
 # 200 characters, and --recommend must name one of them; the question is one
@@ -79,7 +79,12 @@
 # resumes; the default for any other existing task). A record that declares
 # nothing (null) is one written by `evidence` or `migrate` for an older call.
 # `--origin` names the task whose work raised the call; that task's report and
-# every page it presented argue the call automatically (see `list`).
+# every page it presented argue the call automatically (see `list`). Holding an
+# existing task that has already written its report or presented a page makes
+# that task the origin when neither --origin nor the call's record names one,
+# so a scout's own call needs no flag; a task this hold creates, work that has
+# produced nothing yet, and a call whose record already names an origin are
+# left as they are, and an explicit --origin always wins.
 # `offer` replaces the content of an open call and records `updated_at`, which
 # moves only when the offered content (question, options, recommendation, or
 # on_answer) is written by `hold` or `offer`, so a surface can tell a page
@@ -1050,6 +1055,17 @@ page_dir_presented() {  # <artifact-dir>
   return 1
 }
 
+# Has the task produced a report or presented a page (what an origin derives)?
+task_produced_work() {  # <task-id>
+  local dir
+  task_id_path_safe "$1" || return 1
+  [ ! -f "$DATA/$1/report.md" ] || return 0
+  for dir in "$DATA/$1/artifacts"/*; do
+    [ -d "$dir" ] && page_name_valid "${dir##*/}" && page_dir_presented "$dir" && return 0
+  done
+  return 1
+}
+
 # Validate one evidence ref; with <must-exist> = 1 it must also name something
 # that exists now (attaching), while detaching accepts any well-formed ref.
 evidence_ref_validate() {  # <ref> <must-exist-0-or-1>
@@ -1387,6 +1403,14 @@ command_hold() {
     default_on_answer="done"
   else
     default_on_answer=release
+  fi
+  # Holding work that has already produced something makes that work the
+  # call's origin unless the call names one, so the caller never has to
+  # repeat the held id for its report and pages to argue the call.
+  if [ -z "$origin" ] && [ "$created" = 0 ] && task_produced_work "$id" \
+    && command -v jq >/dev/null 2>&1 && call_record_try_load "$id" \
+    && [ -z "$(printf '%s' "${CALL_RECORD:-null}" | jq -r '.origin // empty')" ]; then
+    origin=$id
   fi
   if [ "$CALL_CONTENT_GIVEN" = 1 ] || [ -n "$origin" ]; then
     call_record_load "$id"
