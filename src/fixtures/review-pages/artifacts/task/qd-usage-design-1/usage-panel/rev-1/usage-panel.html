@@ -571,7 +571,7 @@ function stripRows(s) {
     const w = tightest(p);
     const cls = p.state === "stale" ? "" : level(w.used);
     let v;
-    if (w.used === null) v = `${p.status ? "under limit" : "—"} <i>${p.resets}</i>`;
+    if (w.used === null) v = `${p.status ? "under limit" : "-"} <i>${p.resets}</i>`;
     else if (w.used >= 100) v = `limit <i>· back in ${w.resets}</i>`;
     else v = `${pct(w.used)} ${w.label} <i>· ${w.resets}${p.state === "stale" ? " · 42m old" : ""}</i>`;
     rows.push(`<div class="strip-row ${cls}"><span>${p.name}</span>${meter(w.used, p.state === "stale" ? "stale" : "")}<span class="v">${v}</span></div>`);
@@ -581,7 +581,7 @@ function stripRows(s) {
 
 function contextSection(c) {
   if (c.state === "none") return `<div class="sect"><div class="sect-head"><span>This conversation</span><small>first mate</small></div>
-    <div class="ctx-line"><strong>—</strong><span>of the context window</span></div>${meter(null, "ctx-meter", true)}
+    <div class="ctx-line"><strong>-</strong><span>of the context window</span></div>${meter(null, "ctx-meter", true)}
     <p class="ctx-note">Known after the first mate's first reply. The session reports it after every turn.</p></div>`;
   const p = ctxPct(c);
   const note = p >= 75 ? "Near the limit the first mate compacts on its own: older turns are summarised to make room. Nothing in the backlog or the fleet is lost." : `${k(c.size - c.used)} tokens of room left. It grows with every turn and drops when the first mate compacts.`;
@@ -594,7 +594,7 @@ function providerRow(p, open) {
   const w0 = tightest(p);
   const whenCls = p.state === "stale" ? "" : level(w0.used);
   const when = w0.used !== null && w0.used >= 100 ? `Back in ${p.resets}` : p.state === "stale" ? `Resets in ${p.resets}` : `Resets in ${p.resets}`;
-  const wins = p.windows.map((w) => `<span class="win ${p.state === "stale" ? "stale" : level(w.used)} ${w.early ? "early" : ""}" ${w.early ? 'title="Early reading: quota-axi has little history for this window yet"' : ""}>${w.label} ${meter(w.used, p.state === "stale" ? "stale" : w.early ? "early" : "", true)}<span class="n">${w.used === null ? "—" : `${w.early ? "~" : ""}${pct(w.used)}`}</span></span>`).join("");
+  const wins = p.windows.map((w) => `<span class="win ${p.state === "stale" ? "stale" : level(w.used)} ${w.early ? "early" : ""}" ${w.early ? 'title="Early reading: quota-axi has little history for this window yet"' : ""}>${w.label} ${meter(w.used, p.state === "stale" ? "stale" : w.early ? "early" : "", true)}<span class="n">${w.used === null ? "-" : `${w.early ? "~" : ""}${pct(w.used)}`}</span></span>`).join("");
   const rows = p.windows.map((w) => `<dt>${w.label}</dt><dd>${w.pace || "not reported"}</dd><dd class="num">${w.resets ? `resets ${w.resets}` : ""}</dd>`).join("");
   let extra = "";
   if (p.ask) extra = `<div class="ask-box"><p>${p.ask.text}</p><div class="words">quota-axi: <code>${p.ask.words}</code></div><button>${p.ask.action}</button></div>`;
