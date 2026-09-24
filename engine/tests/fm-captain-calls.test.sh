@@ -188,7 +188,17 @@ test_a_defaulted_origin_links_without_changing_the_close() {
     "$(printf '%s' "$call" | jq -r '[.origin, (.evidence|tojson)] | join("|")')" \
     "the report and page argue the call through the origin"
 
-  printf 'sample-bare\tlooks good\t\n' | run_captain "$home" answers --source "a chat relay" >/dev/null \
+  printf 'sample-bare\tkeep going\t\trelease\n' | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "release of the bare hold failed"
+  body=$(cd "$home" && tasks-axi show sample-bare --full)
+  assert_contains "$body" "held: no" "the released scout resumed"
+  CALL_NOW=2026-09-18T13:00:00Z run_captain "$home" hold sample-bare --reason 'bare scout call again' >/dev/null \
+    || fail "second bare hold failed"
+  assert_equals 'sample-bare|null' \
+    "$(jq -r '[.origin, (.on_answer|tostring)] | join("|")' "$home/state/calls/sample-bare.json")" \
+    "a re-hold of a self-origin call still declares no close mode"
+
+  printf 'sample-bare\tlooks good\t\n' | CALL_NOW=2026-09-18T13:00:00Z run_captain "$home" answers --source "a chat relay" >/dev/null \
     || fail "chat-shaped answer failed"
   body=$(cd "$home" && tasks-axi show sample-bare --full)
   assert_contains "$body" "state: done" "an empty mode still closes a bare hold as done"

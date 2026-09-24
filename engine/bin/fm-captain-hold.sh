@@ -1426,6 +1426,7 @@ command_hold() {
   elif [ "$preserve_hold_set" = 0 ] \
     && { [ -e "$(call_record_path "$id")" ] || [ -L "$(call_record_path "$id")" ]; }; then
     if call_record_try_load "$id" && [ -n "$CALL_RECORD" ]; then
+      [ "$(printf '%s' "$CALL_RECORD" | jq -r '.origin // empty')" != "$id" ] || default_on_answer=''
       record=$(call_record_compose "$id" "$hold_set" "$stamp" "$default_on_answer" '') || exit 1
       call_record_store "$id" "$record"
     else
