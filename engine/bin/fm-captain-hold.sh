@@ -84,7 +84,9 @@
 # that task the origin when neither --origin nor the call's record names one,
 # so a scout's own call needs no flag; a task this hold creates, work that has
 # produced nothing yet, and a call whose record already names an origin are
-# left as they are, and an explicit --origin always wins.
+# left as they are, and an explicit --origin always wins. A defaulted origin
+# only links: it declares no on_answer, so an answer closes the call exactly
+# as it would have without it.
 # `offer` replaces the content of an open call and records `updated_at`, which
 # moves only when the offered content (question, options, recommendation, or
 # on_answer) is written by `hold` or `offer`, so a surface can tell a page
@@ -1411,6 +1413,7 @@ command_hold() {
     && command -v jq >/dev/null 2>&1 && call_record_try_load "$id" \
     && [ -z "$(printf '%s' "${CALL_RECORD:-null}" | jq -r '.origin // empty')" ]; then
     origin=$id
+    [ "$CALL_CONTENT_GIVEN" = 1 ] || default_on_answer=''
   fi
   if [ "$CALL_CONTENT_GIVEN" = 1 ] || [ -n "$origin" ]; then
     call_record_load "$id"

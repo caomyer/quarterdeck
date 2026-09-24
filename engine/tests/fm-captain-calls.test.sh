@@ -170,6 +170,35 @@ test_held_work_that_produced_something_is_its_own_origin() {
   pass "holding work that already produced something makes it the call's origin"
 }
 
+test_a_defaulted_origin_links_without_changing_the_close() {
+  local home call body
+  home=$(make_home self-origin-close)
+  printf '%s\n' '## In flight' '' \
+    '- [ ] sample-bare - Scout with a report and a page (repo: sample) (kind: scout) (since 2026-09-01)' \
+    '' '## Queued' '' '## Done' > "$home/data/backlog.md"
+  scout_task "$home" sample-bare
+  present "$home" sample-bare sample-bare-page >/dev/null || fail "present on the scout failed"
+
+  run_captain "$home" hold sample-bare --reason 'bare scout call' >/dev/null || fail "bare hold failed"
+  assert_equals 'sample-bare|null' \
+    "$(jq -r '[.origin, (.on_answer|tostring)] | join("|")' "$home/state/calls/sample-bare.json")" \
+    "a defaulted origin is recorded without declaring a close mode"
+  call=$(call_json "$home" sample-bare)
+  assert_equals 'sample-bare|["report:sample-bare","page:task/sample-bare/sample-bare-page"]' \
+    "$(printf '%s' "$call" | jq -r '[.origin, (.evidence|tojson)] | join("|")')" \
+    "the report and page argue the call through the origin"
+
+  printf 'sample-bare\tlooks good\t\n' | run_captain "$home" answers --source "a chat relay" >/dev/null \
+    || fail "chat-shaped answer failed"
+  body=$(cd "$home" && tasks-axi show sample-bare --full)
+  assert_contains "$body" "state: done" "an empty mode still closes a bare hold as done"
+  call=$(call_json "$home" sample-bare)
+  assert_equals 'closed|sample-bare|["report:sample-bare","page:task/sample-bare/sample-bare-page"]' \
+    "$(printf '%s' "$call" | jq -r '[.state, .origin, (.evidence|tojson)] | join("|")')" \
+    "the answered call keeps its linked evidence"
+  pass "a defaulted origin links the held work without changing how the call closes"
+}
+
 test_a_held_task_is_not_its_own_origin_when_it_should_not_be() {
   local home call
   home=$(make_home no-self-origin)
@@ -593,6 +622,7 @@ test_hold_records_the_call_and_refuses_what_nobody_could_answer
 test_a_hold_without_content_is_still_a_call
 test_origin_evidence_is_derived_whatever_the_presentation_order
 test_held_work_that_produced_something_is_its_own_origin
+test_a_defaulted_origin_links_without_changing_the_close
 test_a_held_task_is_not_its_own_origin_when_it_should_not_be
 test_offer_and_evidence_change_a_call
 test_answers_write_machine_lines_and_honor_on_answer
