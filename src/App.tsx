@@ -2443,6 +2443,8 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     drawnNow.current = {};
     setDrawn({});
     setPick(null);
+    setPending(null);
+    setWithPicture(false);
   }
 
   /** The picture a new comment goes with, waiting briefly for the page to finish drawing it. */
