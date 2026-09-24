@@ -1310,3 +1310,158 @@ async fn attach_e2e_live_scratch_home() {
     let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
+
+fn used_tokens(event: &str, body: &Value) -> Option<u64> {
+    (event == "usage").then(|| body["update"]["used"].as_u64()).flatten()
+}
+
+/// The last context reading at or before `to`.
+fn last_used(events: &Events, to: usize) -> Option<u64> {
+    events.seen[..to.min(events.seen.len())].iter().rev().find_map(|(event, body)| used_tokens(event, body))
+}
+
+/// The smallest context reading between two points.
+fn least_used(events: &Events, from: usize, to: usize) -> Option<u64> {
+    events.seen[from..to.min(events.seen.len())].iter().filter_map(|(event, body)| used_tokens(event, body)).min()
+}
+
+/// Live test of Compact now: the app compacts the first mate's conversation by
+/// sending `/compact` through the ordinary message path, which the adapter runs
+/// as Claude Code's own command. Once while the first mate is idle, where the
+/// context reading must drop and the adapter must say it compacted; and once
+/// sent while a turn is still running, where it must wait for that turn and
+/// then compact, without cutting the turn short.
+#[tokio::test]
+#[ignore = "live: runs the real claude-agent-acp against a firstmate scratch home"]
+async fn compact_e2e_live_scratch_home() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+    let before = lock_status(&home);
+    assert!(
+        before == "lock: free" || before.starts_with("lock: stale"),
+        "the scratch home's lock is not free ({before}); another host may be using it"
+    );
+
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
+    let run = now_ms();
+    let data_dir = out.join(format!("appdata-compact-{run}"));
+    std::fs::create_dir_all(&data_dir).expect("create the app data folder");
+    let recording = out.join(format!("compact-{run}.jsonl"));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).expect("create the recording")),
+        data_dir,
+        tx,
+    });
+    println!("home: {}\nrecording: {}", home.display(), recording.display());
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
+    let mut events = Events { rx, seen: Vec::new() };
+    let mut steps = Vec::new();
+
+    recorder.mark("1", "host_start");
+    let from = events.now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
+    let ready = match session {
+        Some(i) => events.find(i, Duration::from_secs(30), host_state(&["idle", "agent_turn"])).await,
+        None => None,
+    };
+    let running = started.is_ok() && ready.is_some();
+    record(&mut steps, "start: the first mate is running", running, format!("start={started:?}; state={}", events.body(ready)["state"]));
+
+    // 2. Something in the conversation to compact, and a reading of its size.
+    let mut warmed = None;
+    if running {
+        recorder.mark("2", "a first exchange, so there is a conversation to compact");
+        let from = events.now();
+        let sent = send(&host, format!("{GUARD} Reply with only the word READY.")).await;
+        let id = sent.clone().unwrap_or_default();
+        let picked_up = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
+        warmed = picked_up;
+        record(&mut steps, "warm up: the first mate answers", warmed.is_some(), format!("sent={sent:?}; reading={:?}", picked_up.and_then(|p| last_used(&events, p))));
+    } else {
+        not_exercised(&mut steps, "warm up: the first mate answers", "the host did not start".into());
+    }
+
+    // 3. Compact now, while the first mate is idle.
+    if let Some(answered) = warmed {
+        recorder.mark("3", "send /compact while idle; the reading drops and the adapter says it compacted");
+        let _ = events.find(answered, Duration::from_secs(120), host_state(&["idle"])).await;
+        let from = events.now();
+        let size_before = last_used(&events, from);
+        let sent = send(&host, "/compact".to_string()).await;
+        let id = sent.clone().unwrap_or_default();
+        let done = events.find(from, REPLY_WAIT, |e, b| outbox(&id, "picked_up")(e, b) || outbox(&id, "failed")(e, b)).await;
+        // The reading that follows compaction can land just after the result.
+        let _ = events.find(done.unwrap_or(from) + 1, Duration::from_secs(10), |e, _| e == "usage").await;
+        let end = events.now();
+        let said = events.text_between(from, end);
+        let size_after = least_used(&events, from, end);
+        let picked = events.body(done)["state"] == "picked_up";
+        let ended = events.find(from, Duration::from_secs(5), |e, b| e == "compact" && b["id"] == id.as_str() && matches!(b["state"].as_str(), Some("done" | "failed"))).await;
+        let ended = events.body(ended);
+        record(
+            &mut steps,
+            "compact when idle: it compacts and the reading drops",
+            picked
+                && said.contains("Compacting completed")
+                && matches!((size_before, size_after), (Some(b), Some(a)) if a < b)
+                && ended["state"] == "done"
+                && ended["context"]["compacted"]["to"].as_u64() == size_after,
+            format!("sent={sent:?}; outcome={}; before={size_before:?}; after={size_after:?}; said={said:?}; host said={ended}", events.body(done)),
+        );
+    } else {
+        not_exercised(&mut steps, "compact when idle: it compacts and the reading drops", "there was no conversation to compact".into());
+    }
+
+    // 4. Compact now, sent while a turn is still running.
+    if warmed.is_some() {
+        recorder.mark("4", "send /compact while a turn runs; it waits for that turn, then compacts");
+        let from = events.now();
+        let long = send(&host, format!("{GUARD} Count from 1 to 60, one number per line, then say DONE.")).await;
+        let long_id = long.clone().unwrap_or_default();
+        let busy = events.find(from, Duration::from_secs(120), |e, _| e == "text").await;
+        let compact = send(&host, "/compact".to_string()).await;
+        let compact_id = compact.clone().unwrap_or_default();
+        let long_done = events.find(from, REPLY_WAIT, |e, b| outbox(&long_id, "picked_up")(e, b) || outbox(&long_id, "failed")(e, b)).await;
+        let compact_done = events.find(from, REPLY_WAIT, |e, b| outbox(&compact_id, "picked_up")(e, b) || outbox(&compact_id, "failed")(e, b)).await;
+        let end = events.now();
+        let said = events.text_between(from, end);
+        let in_order = matches!((long_done, compact_done), (Some(l), Some(c)) if l < c);
+        let ended = events.find(from, Duration::from_secs(5), |e, b| e == "compact" && b["id"] == compact_id.as_str() && matches!(b["state"].as_str(), Some("done" | "failed"))).await;
+        let ended = events.body(ended);
+        record(
+            &mut steps,
+            "compact mid-turn: the turn finishes first, then it compacts",
+            busy.is_some()
+                && events.body(long_done)["state"] == "picked_up"
+                && events.body(compact_done)["state"] == "picked_up"
+                && in_order
+                && said.contains("DONE")
+                && said.contains("Compacting completed")
+                && ended["state"] == "done",
+            format!(
+                "busy when sent={}; turn={}; compact={}; turn ended first={in_order}; host said={ended}; said ends={:?}",
+                busy.is_some(),
+                events.body(long_done),
+                events.body(compact_done),
+                said.chars().rev().take(160).collect::<String>().chars().rev().collect::<String>()
+            ),
+        );
+    } else {
+        not_exercised(&mut steps, "compact mid-turn: the turn finishes first, then it compacts", "there was no conversation to compact".into());
+    }
+
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    println!("\nrecording: {}", recording.display());
+    let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+    assert!(failed.is_empty(), "failed: {failed:?}");
+}

@@ -6,6 +6,7 @@ mod envpath;
 mod host;
 #[cfg(test)]
 mod host_e2e;
+mod quota;
 mod review;
 mod routing;
 mod settings;
@@ -33,6 +34,7 @@ pub fn run() {
       app.manage(snapshot::SnapshotHandle::spawn(app.handle().clone()));
       app.manage(host::HostHandle::spawn(app.handle().clone()));
       app.manage(review::Writes::default());
+      app.manage(quota::Quota::default());
       settings::load_saved_home(app.handle().clone());
       // macOS ignores the config's `maximized` when it creates the window, which
       // leaves a fixed 1440x900 window taller than a smaller screen, with the
@@ -62,6 +64,8 @@ pub fn run() {
       routing::routing_disable,
       routing::routing_key_set,
       routing::routing_key_clear,
+      quota::quota_read,
+      quota::quota_allow_keychain,
       snapshot::snapshot_refresh,
       snapshot::snapshot_latest,
       snapshot::pane_capture,

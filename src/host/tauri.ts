@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, HistoryItem, HomeStatus, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, ReasonKind, Routing, RoutingStart, SnapshotEvent } from "./types";
+import type { ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -16,6 +16,7 @@ const EVENT_NAMES = [
   "outbox",
   "prompt_result",
   "usage",
+  "compact",
   "permission",
   "permission_request",
   "permission_resolved",
@@ -121,7 +122,7 @@ export class TauriHostAdapter implements HostAdapter {
   }
 
   getState() {
-    return invoke<{ state: HostRuntimeState; home?: string | null; detail?: Record<string, unknown>; permission_requests?: unknown[]; conversation?: { session_id?: unknown; items?: unknown } | null }>("get_state").then((state): HostStateSnapshot => ({
+    return invoke<{ state: HostRuntimeState; home?: string | null; detail?: Record<string, unknown>; permission_requests?: unknown[]; conversation?: { session_id?: unknown; items?: unknown } | null; usage?: { context?: ContextReading | null; rate_limit?: RateLimit | null } }>("get_state").then((state): HostStateSnapshot => ({
       conversation: typeof state.conversation?.session_id === "string"
         ? { sessionId: state.conversation.session_id, items: historyItems(state.conversation.items) }
         : null,
@@ -133,6 +134,7 @@ export class TauriHostAdapter implements HostAdapter {
       },
       home: typeof state.home === "string" ? state.home : null,
       permissionRequests: (state.permission_requests ?? []).map(permissionRequest).filter((request): request is PermissionRequest => request !== null),
+      usage: { context: state.usage?.context ?? null, rateLimit: state.usage?.rate_limit ?? null },
     }));
   }
 
@@ -193,6 +195,14 @@ export class TauriHostAdapter implements HostAdapter {
 
   routingClearKey() {
     return invoke<Routing>("routing_key_clear");
+  }
+
+  readQuota() {
+    return invoke<QuotaRead>("quota_read");
+  }
+
+  allowQuotaKeychain() {
+    return invoke<QuotaRead>("quota_allow_keychain");
   }
 
   refreshSnapshot() {

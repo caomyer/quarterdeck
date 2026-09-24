@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   BearingsSnapshot,
+  ContextReading,
   FleetSnapshot,
   HistoryItem,
   HomeStatus,
@@ -11,6 +12,7 @@ import type {
   HostRuntimeState,
   OutboxStatus,
   PermissionRequest,
+  RateLimit,
   ReasonKind,
   SnapshotError,
   SnapshotEvent,
@@ -56,6 +58,15 @@ export type HealthWarning = { kind: "session_limit" | "kill_refused" | "other"; 
 
 /** An approval on screen: `answering` while the answer is on its way, `error` when it didn't go through. */
 export type PermissionView = PermissionRequest & { answering?: boolean; error?: string };
+
+/**
+ * A compaction the captain asked for: `waiting` from the moment it is sent until the first mate has compacted, which
+ * is after any turn already running; then `done`, or `failed` with why, in Claude Code's or the host's words.
+ */
+export type Compaction = { id: string; state: "waiting" | "running" | "done" | "failed"; error?: string };
+
+/** The command Compact now sends: Claude Code's own, which the first mate's session runs. */
+export const COMPACT_COMMAND = "/compact";
 
 /** Why the snapshot on screen may be stale: which scripts failed, and when each projection was last read. */
 export type SnapshotHealth = { errors: SnapshotError[]; bearingsAt: number | null; fleetAt: number | null };
@@ -153,6 +164,9 @@ export function useHost(adapter: HostAdapter) {
   const [rewakeStorm, setRewakeStorm] = useState<RewakeStorm | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [permissionRequests, setPermissionRequests] = useState<PermissionView[]>([]);
+  const [context, setContext] = useState<ContextReading | null>(null);
+  const [rateLimit, setRateLimit] = useState<RateLimit | null>(null);
+  const [compaction, setCompaction] = useState<Compaction | null>(null);
   const streamId = useRef<string | null>(null);
   const homeRef = useRef<string | null>(null);
   const hostHomeRef = useRef<string | null>(null);
@@ -238,6 +252,8 @@ export function useHost(adapter: HostAdapter) {
     if (event.type === "session") {
       const { session_id: id, mode, previous_session_lost: lost } = event.payload;
       session.current = id;
+      // A new session has its own context window, which reads nothing until its first turn.
+      setContext(null);
       streamId.current = null;
       setMessages((current) => {
         onScreenAtSession.current = new Set(current.map((message) => message.id));
@@ -263,6 +279,24 @@ export function useHost(adapter: HostAdapter) {
 
     if (event.type === "snapshot") {
       applySnapshot(event.payload);
+      return;
+    }
+
+    if (event.type === "usage") {
+      const { update, context: reading, rate_limit: limit } = event.payload;
+      // A recording made before the host read its updates carries the adapter's alone.
+      setContext((current) => reading ?? (typeof update.used === "number"
+        ? { used: update.used, size: update.size ?? current?.size ?? null, at_ms: event.payload.at_ms ?? Date.now(), resumed: current?.resumed ?? false, compacted: current?.compacted ?? null }
+        : current));
+      if (limit) setRateLimit(limit);
+      return;
+    }
+
+    if (event.type === "compact") {
+      const { id, state, error, context: reading } = event.payload;
+      if (reading) setContext(reading);
+      if (state === "sent") return;
+      setCompaction((current) => current?.id === id && current.state !== "done" && current.state !== "failed" ? { id, state, error } : current);
       return;
     }
 
@@ -315,6 +349,7 @@ export function useHost(adapter: HostAdapter) {
       }));
       // A reply came through, so the usage limit has reset.
       if (status === "picked_up") setHealthWarning((current) => current?.kind === "session_limit" ? null : current);
+      if (failed) setCompaction((current) => current?.id === id && (current.state === "waiting" || current.state === "running") ? { id, state: "failed", error: readableError(event.payload.error || "Its turn ended with an error.") } : current);
       return;
     }
 
@@ -392,6 +427,8 @@ export function useHost(adapter: HostAdapter) {
           return mergeHistory(ours, earlier.items, earlier.sessionId, onScreenAtSession.current, outboxStatuses.current);
         });
       }
+      if (initial.usage?.context) setContext((current) => current ?? initial.usage!.context);
+      if (initial.usage?.rateLimit) setRateLimit((current) => current ?? initial.usage!.rateLimit);
       const waiting = (initial.permissionRequests ?? []).filter((request) => !resolvedApprovals.current.has(request.id));
       if (waiting.length) {
         setPermissionRequests((current) => [...waiting.filter((request) => !current.some((shown) => shown.id === request.id)), ...current]);
@@ -449,6 +486,17 @@ export function useHost(adapter: HostAdapter) {
     return send(text);
   }, [send]);
 
+  /**
+   * Compacts the first mate's conversation, only ever because the captain confirmed it. It goes the way a message
+   * does, so it waits for a turn that is running, and it survives a restart the way a message does.
+   */
+  const compactNow = useCallback(async () => {
+    const id = await send(COMPACT_COMMAND);
+    const notSent = id.startsWith(NOT_SENT);
+    setCompaction({ id, state: notSent ? "failed" : "waiting", error: notSent ? NOT_STARTED_HERE : undefined });
+  }, [send]);
+  const dismissCompaction = useCallback(() => setCompaction((current) => current?.state === "waiting" || current?.state === "running" ? current : null), []);
+
   const start = useCallback(async () => {
     // The ref, not state: Start can follow a folder choice before a render.
     const target = homeRef.current;
@@ -500,6 +548,8 @@ export function useHost(adapter: HostAdapter) {
     // The conversation on screen was with the first mate of the old home.
     setMessages([]);
     setOutbox({});
+    setContext(null);
+    setCompaction(null);
     outboxStatuses.current.clear();
     streamId.current = null;
     return status.home;
@@ -598,6 +648,11 @@ export function useHost(adapter: HostAdapter) {
     startError,
     permissionRequests,
     answerPermission,
+    context,
+    rateLimit,
+    compaction,
+    compactNow,
+    dismissCompaction,
     send,
     noteSent,
     resend,

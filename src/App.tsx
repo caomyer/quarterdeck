@@ -54,6 +54,8 @@ import { RoutingSettings } from "./Routing";
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
 const SceneEditor = lazy(() => import("./SceneEditor").then((module) => ({ default: module.SceneEditor })));
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
+import { useQuota } from "./host/use-quota";
+import { Usage } from "./UsagePanel";
 
 type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
 /** Which page the review screen shows: the artifact, and the revision picked (the latest when none is). */
@@ -117,6 +119,7 @@ function stormQuestion(storm: RewakeStorm) {
 
 export function App() {
   const bridge = useHost(host);
+  const quota = useQuota(host);
   const { bearings, fleet, messages, outbox, runtime } = bridge;
   const [view, setView] = useState<View>("bearings");
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
@@ -469,6 +472,7 @@ export function App() {
             </button>;
           })}
         </div>
+        <Usage context={bridge.context} rateLimit={bridge.rateLimit} quota={quota} runtime={runtime.state} sendReady={bridge.sendReady} compaction={bridge.compaction} onCompact={() => void bridge.compactNow()} onDismissCompaction={bridge.dismissCompaction} />
         <div className="sidebar-footer">
           <div className="connection"><span className={`live-dot state-${runtime.state} ${degraded ? "degraded" : ""}`} /><span><strong>First Mate</strong><small>{hostLabel}</small></span></div>
           <button className="runtime-button" disabled={runtime.state === "restarting"} onClick={runningHere ? stopHost : () => void bridge.start()}>{runtime.state === "locked_by_other" ? "Check again" : runningHere ? "Stop" : "Start"}</button>
