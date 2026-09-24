@@ -34,7 +34,9 @@ So `release.yml` never publishes a release without the certificate.
 Until this is done, a merge to `main` produces a failed Release job and no release, deliberately.
 A release without the certificate would reset every permission macOS granted the app when it installed.
 
-1. Open Keychain Access, then choose Keychain Access > Certificate Assistant > Create a Certificate.
+1. Open Keychain Access from Spotlight (press Command-Space and type Keychain Access), or run `open "/System/Library/CoreServices/Applications/Keychain Access.app"`.
+   On macOS 26 it is no longer in the Utilities folder, and an old Dock or Launchpad alias to it opens as "damaged".
+   Then choose Keychain Access > Certificate Assistant > Create a Certificate.
 2. Name it `Quarterdeck Self-Signed`.
    Identity Type: Self-Signed Root.
    Certificate Type: Code Signing.
@@ -54,6 +56,41 @@ A release without the certificate would reset every permission macOS granted the
    gh secret set QUARTERDECK_SIGNING_P12_PASSWORD --repo caomyer/quarterdeck
    rm Quarterdeck.p12
    ```
+
+#### Or, from the command line
+
+The same identity, without Certificate Assistant, and without a way to skip the trust step.
+Run it in an empty folder, then continue at "Give it to CI" above with the `Quarterdeck.p12` it leaves.
+
+```sh
+cat > cert.cnf <<'CNF'
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = Quarterdeck Self-Signed
+[ext]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+CNF
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -config cert.cnf -keyout key.pem -out cert.pem
+/usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem -name "Quarterdeck Self-Signed" -out Quarterdeck.p12
+security import Quarterdeck.p12 -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain cert.pem
+security find-identity -v -p codesigning
+rm key.pem cert.cnf
+```
+
+- The first `openssl` line makes a code-signing certificate valid for 7300 days, and the second packs it with its key into `Quarterdeck.p12`, asking for the password to protect it.
+- `security import` puts the identity in your login keychain, asking for that password again.
+- `sudo security add-trusted-cert` trusts it for code signing, asking for your Mac password; it is the Always Trust step.
+- The last check must list `"Quarterdeck Self-Signed"` as a valid identity.
+- `/usr/bin/openssl` is macOS's own LibreSSL, named on purpose: a Homebrew OpenSSL 3 writes a `.p12` that macOS may refuse to import.
+
+How far this is verified: making the certificate, packing the `.p12` and importing it were run on macOS 26.5.1 into a throwaway keychain, never a login keychain, which then listed the identity as not yet trusted.
+The trust command and signing with the identity it trusts are the same commands `scripts/release-signing.sh` runs in CI, where a hosted Mac signed the app with them.
 
 The certificate stays in your login keychain.
 To sign a build you make yourself with the same identity, so its permissions also carry over: `APPLE_SIGNING_IDENTITY="Quarterdeck Self-Signed" pnpm tauri build`.
