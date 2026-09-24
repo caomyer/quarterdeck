@@ -298,8 +298,11 @@ export function App() {
 
   /** Settles comments from their review's card in chat, then reads the summary again so the card follows. */
   async function settleFromChat(ref: ArtifactRef, threads: string[]) {
-    for (const thread of threads) await host.reviewSettle(ref, thread, true);
-    setReviews(await host.reviewSummary());
+    try {
+      for (const thread of threads) await host.reviewSettle(ref, thread, true);
+    } finally {
+      setReviews(await host.reviewSummary());
+    }
   }
 
   function showArtifact(artifact: Artifact, rev?: number) {
@@ -1512,12 +1515,12 @@ function reviewKey(artifact: { scope: string; task: string | null; name: string 
 }
 
 /**
- * Every review sent, found by the chat message it became and by that message's first line, since a resumed
- * conversation's history comes back without message ids.
+ * Every review sent, found by the chat message it became and, oldest first, by that message's first line, since a
+ * resumed conversation's history comes back without message ids.
  */
 function sentReviews(reviews: ReviewSummary, artifacts: Artifact[]) {
   const byMessage = new Map<string, SentPage>();
-  const byHeader = new Map<string, SentPage>();
+  const byHeader = new Map<string, SentPage[]>();
   for (const [key, page] of Object.entries(reviews)) {
     const [scope, ...rest] = key.split("/");
     const ref: ArtifactRef = scope === "task" ? { scope: "task", task: rest[0], name: rest[1] } : { scope: "chat", task: null, name: rest[0] };
@@ -1525,10 +1528,29 @@ function sentReviews(reviews: ReviewSummary, artifacts: Artifact[]) {
     for (const review of page.sent ?? []) {
       const sent: SentPage = { key, ref, artifact, review, threads: page.threads ?? [] };
       if (review.message) byMessage.set(review.message, sent);
-      if (review.header) byHeader.set(review.header, sent);
+      if (review.header) byHeader.set(review.header, [...byHeader.get(review.header) ?? [], sent]);
     }
   }
+  for (const pages of byHeader.values()) pages.sort((a, b) => a.review.at - b.review.at);
   return { byMessage, byHeader };
+}
+
+/**
+ * Which review each captain message is: by its id, or else, for a resumed conversation's messages, by its first line,
+ * the latest such message taking the latest review with that line not already some message's own. One review is
+ * never two messages.
+ */
+function reviewsOf(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary) {
+  const { byMessage, byHeader } = sentReviews(reviews, artifacts);
+  const found = new Map<string, SentPage>();
+  const ids = new Set(messages.map((message) => message.id));
+  const unclaimed = new Map([...byHeader].map(([header, pages]) => [header, pages.filter((page) => !ids.has(page.review.message))]));
+  for (const message of [...messages].reverse()) {
+    if (message.who !== "captain") continue;
+    const own = byMessage.get(message.id) ?? unclaimed.get(message.text.split("\n")[0])?.pop();
+    if (own) found.set(message.id, own);
+  }
+  return found;
 }
 
 /**
@@ -1545,7 +1567,7 @@ const CHAT_PAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const WINDOW_OPENED = new Date().toISOString();
 
 function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary = {}) {
-  const sent = sentReviews(reviews, artifacts);
+  const sent = reviewsOf(messages, artifacts, reviews);
   const lastPast = messages.reduce((found, message, index) => message.past ? index : found, -1);
   // A resumed conversation comes back without times, so its pages cannot be placed
   // between its messages. They go after it, still under "Earlier", and "Today" keeps
@@ -1572,7 +1594,7 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
     const past = message.past === true;
     const last = items.at(-1);
     // A review the captain sent is a card, not the text written for the first mate.
-    const review = message.who === "captain" ? sent.byMessage.get(message.id) ?? sent.byHeader.get(message.text.split("\n")[0]) : undefined;
+    const review = sent.get(message.id);
     if (review) items.push({ type: "review", message, sent: review });
     else if (message.who !== "step") items.push({ type: "message", message });
     else if (last?.type === "steps" && last.past === past) last.steps.push(message);
@@ -2052,6 +2074,7 @@ const VERDICT_WORDS: Record<ReviewVerdict, string> = { changes: "Requests change
 function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettle }: { message: ChatMessage; sent: SentPage; outbox?: OutboxView; running: boolean; tasks: FleetTask[]; onOpen: (rev?: number) => void; onSettle: (threads: string[]) => Promise<unknown> }) {
   const { artifact, review } = sent;
   const [settling, setSettling] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const title = artifact?.title ?? sent.ref.name;
   const threads = review.threads.map((id) => sent.threads.find((thread) => thread.id === id)).filter((thread): thread is SentThread => Boolean(thread));
   const answers = artifact ? authorAnswers(artifact) : {};
@@ -2065,8 +2088,11 @@ function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettl
   const settleable = threads.filter((thread) => thread.state === "open" && answerOf(thread)).map((thread) => thread.id);
   const settle = async (ids: string[]) => {
     setSettling(true);
+    setProblem(null);
     try {
       await onSettle(ids);
+    } catch (error) {
+      setProblem(`That did not settle: ${String(error)}`);
     } finally {
       setSettling(false);
     }
@@ -2119,6 +2145,7 @@ function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettl
       {artifact && answeredIn > 0 && <button className="primary" onClick={() => onOpen(answeredIn)}>Open rev {answeredIn}</button>}
       {settleable.length > 0 && <button onClick={() => void settle(settleable)} disabled={settling}>{settleable.length === 1 ? "Settle it" : `Settle all ${settleable.length}`}</button>}
     </div>}
+    {problem && <p className="review-card-problem" role="alert">{problem}</p>}
     <details className="review-card-text"><summary>What the first mate was sent</summary><pre>{message.text}</pre></details>
   </article>;
 }
@@ -2409,6 +2436,15 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     }
   }
 
+  /** A page that loads again counts its picks from the start, so what it drew before names nothing in it now. */
+  function forgetPicks() {
+    for (const resolve of waitingFor.current.values()) resolve({ error: "the page reloaded before it finished drawing" });
+    waitingFor.current.clear();
+    drawnNow.current = {};
+    setDrawn({});
+    setPick(null);
+  }
+
   /** The picture a new comment goes with, waiting briefly for the page to finish drawing it. */
   async function pictureFor(anchor: ReviewAnchor): Promise<CommentPicture | undefined> {
     if (!withPicture || pick === null) return anchor.reasons?.length ? { skipped: "the captain left the picture out" } : undefined;
@@ -2474,7 +2510,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     <div className="artifact-body">
       <div className={`artifact-stage ${narrow ? "narrow" : ""}`}>
         {!loaded && <div className="artifact-loading">Opening the page…</div>}
-        <iframe ref={frame} title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => { setLoaded(true); setMissing([]); }} />
+        <iframe ref={frame} title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => { setLoaded(true); setMissing([]); forgetPicks(); }} />
       </div>
       <aside className="review-rail" aria-label="Your review">
         <header className="review-head"><strong>Your review</strong><small>{calls.some(isOpen) ? `Answering here also closes the captain's call on ${calls.filter(isOpen).length === 1 ? "this decision" : "these decisions"}.` : "Write on a part of the page, then send it all at once."}</small></header>

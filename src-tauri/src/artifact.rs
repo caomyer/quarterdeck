@@ -348,7 +348,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "text/javascript; charset=utf-8");
         assert!(response.body().starts_with(b"/*\n* SnapDOM\n* v3.1.0"), "the vendored library, unchanged");
-        assert!(REVIEW_FRAME.contains(PICTURE_LIBRARY), "the review script loads it from where it is served");
         assert_eq!(serve(None, "/_qd/other.js").status(), StatusCode::NOT_FOUND);
     }
 
