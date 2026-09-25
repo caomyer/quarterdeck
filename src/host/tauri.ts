@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent } from "./types";
+import type { AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -55,8 +55,8 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<ReviewView>("review_get", { page: ref });
   }
 
-  reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: unknown, thread?: string) {
-    return invoke<ReviewView>("review_comment", { page: ref, rev, body, anchor, thread });
+  reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: unknown, thread?: string, picture?: CommentPicture) {
+    return invoke<ReviewView>("review_comment", { page: ref, rev, body, anchor, thread, picture });
   }
 
   reviewDiscard(ref: ArtifactRef, thread: string) {

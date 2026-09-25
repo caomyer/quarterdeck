@@ -33,6 +33,7 @@ import type {
   ProjectHistory,
   QuotaRead,
   ReasonKind,
+  CommentPicture,
   ReviewAnchor,
   ReviewSummary,
   ReviewThread,
@@ -117,6 +118,8 @@ function reviewValue(name: string) {
  * the captain answered in chat, and the calls the first mate made for the captain.
  *
  * `?legacy` drops calls[], as a home whose firstmate predates it. `?skip=<call>[,<call>]` has the intake skip those calls.
+ * `?usage-t2` adds the captain's own usage-panel mock as its scout presented it, the page his t2 comment was written on:
+ * its "under pace" words sit twice in the Claude row, which is shut when the page opens.
  */
 /** A calendar day `days` ago where the app runs, as a bare YYYY-MM-DD date. */
 function localDate(days: number) {
@@ -133,6 +136,9 @@ const REPORT_TASK = "res-transcripts-scout";
 const REPORTED_TASK = "res-feed-scout";
 /** A call the captain answered, argued by a chat page, and closed by the first mate. */
 const ANSWERED_CALL = "res-upload-wifi";
+
+/** The scout whose usage-panel mock the captain's t2 comment was written on. */
+const USAGE_TASK = "qd-usage-design-1";
 
 /** A call nothing argues, so Bearings offers its options inline. */
 const UNARGUED_CALL = "foreman-auto-merge";
@@ -220,6 +226,12 @@ function mockArtifacts(home: string): MockHome {
     { scope: "task", task: LANDED_TASK, name: "rebase-plan", title: shipped.title, latest: shipped, revisions: [shipped] },
     { scope: "chat", task: null, name: "uploads-wifi", title: uploads.title, latest: uploads, revisions: [uploads] },
   ];
+  const usage: ArtifactRevision = {
+    scope: "task", task: USAGE_TASK, name: "usage-panel", rev: 1, title: "Usage panel: context and plan limits", note: null,
+    entry: "usage-panel.html", bytes: 107732, presented_at: at(5), presented_by: { role: "crew", task: USAGE_TASK }, layout: { status: "clean", issues: [] },
+  };
+  if (reviewFlag("usage-t2")) artifacts.push({ scope: "task", task: USAGE_TASK, name: "usage-panel", title: usage.title, latest: usage, revisions: [usage] });
+  const usageTask = mockTask(home, USAGE_TASK, "scout", "working", 30, { detail: "harness busy (claude-hook)", note: "Designing the usage panel.", report: false, observedAt: at(1) });
   const planTask = mockTask(home, ARTIFACT_TASK, "scout", "working", 95, { detail: "harness busy (claude-hook)", note: "Revising the titles plan.", report: false, observedAt: at(2) });
   const reportTask = mockTask(home, REPORT_TASK, "scout", "done", 27 * 60, { detail: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", note: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", report: true, observedAt: at(2) });
   const records: BacklogRecord[] = [
@@ -310,7 +322,7 @@ function mockArtifacts(home: string): MockHome {
   ];
   return {
     artifacts,
-    tasks: [planTask, reportTask],
+    tasks: reviewFlag("usage-t2") ? [planTask, reportTask, usageTask] : [planTask, reportTask],
     // `?plain-report`: the transcripts scout's report argues no call, so it is offered on its own card.
     calls: reviewFlag("plain-report") ? calls.filter((call) => call.origin !== REPORT_TASK) : calls,
     inFlight: [
@@ -375,6 +387,34 @@ function recordedLines(answers: { decision: string; option: string; label: strin
     "Answers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:",
     ...answers.map((answer) => `Recorded: ${answer.decision} = ${answer.option} ("${answer.label}")`),
   ];
+}
+
+/** Why the author should look at a picture first, in the words `src-tauri/src/review.rs` uses. */
+const REASON_WORDS: Record<string, string> = {
+  repeated: "the words appear in more than one place on screen",
+  opened: "the place was inside something the captain had opened, so the page shows it only once that is opened again",
+  wordless: "the captain pointed at a spot with no words of its own",
+};
+
+/** Where a thread sits, in the labelled lines `where_lines` in `src-tauri/src/review.rs` writes; that function owns the shape. */
+function whereLines(thread: ReviewThread, folder: string) {
+  const anchor = (thread.anchor ?? {}) as ReviewAnchor;
+  const lines: string[] = [];
+  if (anchor.occurrence && anchor.occurrence.of > 1) lines.push(`  match    ${anchor.occurrence.n} of the ${anchor.occurrence.of} places these words appear in the page's text, ${anchor.occurrence.shown} of them on screen`);
+  if (anchor.prefix || anchor.suffix) lines.push(`  around   "…${anchor.prefix.trimStart()}" ▸here◂ "${anchor.suffix.trimEnd()}…"`);
+  if (anchor.element) lines.push(`  element  ${anchor.element}`);
+  if (anchor.near) lines.push(`  near     ${anchor.near}`);
+  if (anchor.box) lines.push(`  box      x ${anchor.box.x}, y ${anchor.box.y}, ${anchor.box.w} × ${anchor.box.h} CSS px${anchor.view ? `, in a ${anchor.view.w} × ${anchor.view.h} window scrolled to ${anchor.view.scroll_y}, on a ${anchor.view.scheme} page` : ""}`);
+  if (anchor.point) lines.push(`  clicked  x ${anchor.point.x}, y ${anchor.point.y}`);
+  if (thread.picture) {
+    lines.push(`  picture  ${folder}/${thread.picture.file}`);
+    const reasons = (anchor.reasons ?? []).map((reason) => REASON_WORDS[reason]).filter(Boolean);
+    if (reasons.length) lines.push(`           Look at it before acting: ${reasons.join("; ")}.`);
+    lines.push("           It is a redraw the page made of itself when the captain picked the place, not a screenshot of the captain's screen. The place is outlined; layout and words are right, but colours, images from other sites and fine detail may differ from what the captain saw.");
+  } else if (thread.picture_skipped) {
+    lines.push(`  picture  none (${thread.picture_skipped})`);
+  }
+  return lines;
 }
 
 /** What the host says for each `reason_kind`, so the review shows the details a captain would see. */
@@ -589,14 +629,18 @@ export class MockHostAdapter implements HostAdapter {
     return this.review(ref);
   }
 
-  async reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: ReviewAnchor, thread?: string) {
+  async reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: ReviewAnchor, thread?: string, picture?: CommentPicture) {
     const current = this.review(ref);
     const at = Date.now();
     if (thread) {
       return this.settle(ref, current.threads.map((item) => item.id === thread ? { ...item, comments: [...item.comments, { body, at }] } : item));
     }
     const id = this.nextThreadId(ref);
-    return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, resolved_at: null, state: "draft", comments: [{ body, at }] }]);
+    // As in the app: a picture is kept beside the review under a name the app chooses; the mock keeps it inline to show.
+    const kept = picture && "jpeg" in picture
+      ? { picture: { file: `review-files/${id}-r${rev}.jpg`, crop: picture.crop, method: "redraw" as const, took_ms: picture.took_ms, bytes: Math.round((picture.jpeg.length - 23) * 3 / 4) }, picture_preview: picture.jpeg }
+      : picture && "skipped" in picture ? { picture_skipped: picture.skipped } : {};
+    return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, resolved_at: null, state: "draft", comments: [{ body, at }], ...kept }]);
   }
 
   async reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string) {
@@ -685,6 +729,18 @@ export class MockHostAdapter implements HostAdapter {
         open_count: review.open_count,
         answered: review.answers.filter(locked).map((answer) => answer.decision),
         open_threads: review.threads.filter((thread) => thread.state === "open").map((thread) => ({ id: thread.id, rev: thread.rev })),
+        // As the app sends it: each review with the answers it carried, and every comment that went.
+        sent: review.sent.map((item) => ({
+          ...item,
+          answers: (item.answers ?? []).flatMap((decision) => {
+            const answer = review.answers.find((candidate) => candidate.decision === (typeof decision === "string" ? decision : decision.decision));
+            return answer ? [{ decision: answer.decision, option: answer.option, label: answer.label }] : [];
+          }),
+        })),
+        threads: review.threads.filter((thread) => thread.sent_at !== null).map((thread) => ({
+          id: thread.id, rev: thread.rev, state: thread.state,
+          quote: thread.anchor?.quote ?? "", said: thread.comments.map((comment) => comment.body).join(" "), picture: Boolean(thread.picture),
+        })),
       };
     }
     return pages;
@@ -710,9 +766,10 @@ export class MockHostAdapter implements HostAdapter {
         const anchor = thread.anchor as { quote?: string; scene?: string; scene_file?: string; picture?: string | null } | null;
         const place = anchor?.scene ? `on the diagram "${anchor.quote ?? ""}"` : `on "${anchor?.quote ?? ""}"`;
         const said = thread.comments.map((comment) => comment.body).join(" ");
+        const folder = `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/artifacts/${ref.name}`;
         return anchor?.scene
           ? [`${thread.id} ${place}: ${said}`, `  proposed scene: ${anchor.scene_file ?? ""}`, ...(anchor.picture ? [`  picture of it: ${anchor.picture}`] : [])]
-          : [`${thread.id} ${place}: ${said}`];
+          : [`${thread.id} ${place}: ${said}`, ...whereLines(thread, folder)];
       }),
     ].join("\n");
     const message = await this.send(text);
@@ -721,7 +778,7 @@ export class MockHostAdapter implements HostAdapter {
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
-      [...current.sent, { at, verdict, rev, message, threads: draft.map((thread) => thread.id) }],
+      [...current.sent, { at, verdict, rev, message, header: text.split("\n")[0], threads: draft.map((thread) => thread.id), answers: told.map((answer) => answer.decision) }],
     );
     return { message, text, review, outcomes };
   }

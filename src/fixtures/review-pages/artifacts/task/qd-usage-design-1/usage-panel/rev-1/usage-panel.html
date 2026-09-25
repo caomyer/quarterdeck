@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage in Quarterdeck: context and plan limits</title>
+<style>
+@font-face { font-family: "Instrument Sans Variable"; font-style: normal; font-weight: 400 700; font-display: swap; src: url("instrument-sans-latin-wght-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("ibm-plex-mono-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("ibm-plex-mono-latin-500-normal.woff2") format("woff2"); }
+
+/* The app's own tokens, copied from src/styles.css at build time. */
+:root {
+  font-family: "Instrument Sans Variable", "Instrument Sans", system-ui, sans-serif;
+  font-size: 14px;
+  color: #15201e;
+  background: #e8ebe6;
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* Surfaces, from the page back to the cards on it. */
+  --bg: #f5f7f4;
+  --surface: #ffffff;
+  --surface-2: #f7f9f6;
+  --surface-3: #eef2ee;
+  --stage: #eef1ed;
+  --hover: #fafbf9;
+  /* Ink, from the headline down to a hint. */
+  --ink: #15201e;
+  --ink-2: #2b3734;
+  --ink-3: #45524f;
+  --muted: #6b7a76;
+  --faint: #8c9a96;
+  --fainter: #9aa6a2;
+  --ghost: #b6c0b9;
+  /* Lines: a card's edge, a row's rule, a control's edge, and a control under the pointer. */
+  --border: #e0e6e0;
+  --rule: #e4e9e4;
+  --control: #dce2dc;
+  --control-hover: #b9c4bb;
+  --sidebar: #101a18;
+  --sidebar-2: #1e2e2b;
+  --sidebar-ink: #edf2ef;
+  --sea: #1f7a6e;
+  --sea-strong: #17655a;
+  --blue: #34708f;
+  --green: #2f7a55;
+  --amber: #a8741a;
+  --coral: #b4524f;
+  /* The heavy button: dark ink on the light page, light ink on the dark one. */
+  --primary: #15201e;
+  --on-primary: #f5f7f4;
+  --shadow: 0 30px 80px rgb(16 26 24 / 22%);
+  --lift: 0 2px 10px rgb(21 32 30 / 4%);
+  /* Text sitting on an accent fill. White clears 4.5:1 on the light --sea. */
+  --on-accent: #ffffff;
+  /* Brand gold: the mark, the project sigils, and the Ahoy card's wash. */
+  --brand: #e7b85c;
+  --brand-ink: #8a6115;
+  --brand-wash: #fbf4e4;
+  --brand-edge: #eedcb4;
+  --brand-text: #6b6049;
+  /* Ink on the brand mark. */
+  --brand-ink-mark: #101a18;
+  /* A call waiting on the captain, washed rather than shouted. */
+  --coral-wash: #fcf6f5;
+  --coral-edge: #e8dada;
+
+  /* The first mate's own state dots, which read against the dark sidebar in both themes. */
+  --status-running: #62cb91;
+  --status-stopped: #899391;
+  --status-running-chat: #3fae74;
+
+  /* The first mate's avatar in chat. */
+  --avatar: #1f7a6e;
+
+  /* The worker's screen is a terminal and looks like one in both themes. */
+  --terminal-bg: #0f1716;
+  --terminal-edge: #36423f;
+  --terminal-ink: #aebbb8;
+  --terminal-ink-strong: #b9cfca;
+  --terminal-accent: #e2ba65;
+}
+:root.dark {
+  color: #e9efec;
+  background: #0b1110;
+  --bg: #121a19;
+  --surface: #182220;
+  --surface-2: #1c2725;
+  --surface-3: #202c2a;
+  --stage: #0e1514;
+  --hover: #1b2624;
+  --ink: #e9efec;
+  --ink-2: #d4ddda;
+  --ink-3: #b7c3bf;
+  --muted: #9aa9a5;
+  --faint: #83928e;
+  --fainter: #778682;
+  --ghost: #56635f;
+  --border: #2a3634;
+  --rule: #25302e;
+  --control: #34413e;
+  --control-hover: #4b5a56;
+  --sidebar: #0b1211;
+  --sidebar-2: #1a2826;
+  --sea: #5db5a7;
+  --sea-strong: #7cc8bb;
+  --blue: #74afd0;
+  --green: #77b58e;
+  --amber: #d9a755;
+  --coral: #da7b7e;
+  --primary: #e9efec;
+  --on-primary: #121a19;
+  --shadow: 0 30px 80px rgb(0 0 0 / 45%);
+  --lift: 0 2px 10px rgb(0 0 0 / 22%);
+  /* The dark accents are light swatches, so dark ink goes on them. */
+  --on-accent: #101716;
+  --brand-ink: #e7b85c;
+  --brand-wash: #262116;
+  --brand-edge: #4a3e22;
+  --brand-text: #cbbd9c;
+  --coral-wash: #271c1c;
+  --coral-edge: #4a3232;
+  --avatar: #2f8c7f;
+}
+
+/* Sidebar ink at the alphas the app's sidebar already uses, from its own token. */
+:root {
+  --sb-72: color-mix(in srgb, var(--sidebar-ink) 72%, transparent);
+  --sb-54: color-mix(in srgb, var(--sidebar-ink) 54%, transparent);
+  --sb-40: color-mix(in srgb, var(--sidebar-ink) 40%, transparent);
+  --sb-14: color-mix(in srgb, var(--sidebar-ink) 14%, transparent);
+  --sb-8: color-mix(in srgb, var(--sidebar-ink) 8%, transparent);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { min-height: 100vh; color: var(--ink); background: var(--bg); line-height: 1.45; }
+button { font: inherit; color: inherit; cursor: pointer; }
+svg.i { width: 1em; height: 1em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.mono { font-family: var(--mono); }
+
+/* The review page around the mock. */
+.page { max-width: 1240px; margin: 0 auto; padding: 32px 28px 64px; }
+.page > header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px 28px; margin-bottom: 20px; }
+.page > header div:first-child { max-width: 700px; }
+.eyebrow { color: var(--muted); font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; }
+h1 { margin: 6px 0 8px; font-size: 26px; font-weight: 600; letter-spacing: -.015em; }
+.lede { margin: 0; color: var(--ink-3); font-size: 14.5px; }
+.controls { display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+.control-row { display: flex; align-items: center; gap: 8px; }
+.control-row > span { color: var(--muted); font-size: 12px; }
+.seg { display: inline-flex; padding: 3px; border: 1px solid var(--control); border-radius: 9px; background: var(--surface); }
+.seg button { padding: 5px 10px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font-size: 12.5px; }
+.seg button[aria-pressed="true"] { color: var(--on-primary); background: var(--primary); }
+.scenarios { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.scenarios button { display: flex; flex-direction: column; gap: 1px; padding: 8px 12px; border: 1px solid var(--control); border-radius: 10px; background: var(--surface); text-align: left; }
+.scenarios button:hover { border-color: var(--control-hover); }
+.scenarios button[aria-pressed="true"] { border-color: var(--sea); box-shadow: inset 0 0 0 1px var(--sea); }
+.scenarios strong { font-size: 13px; font-weight: 600; }
+.scenarios small { color: var(--muted); font-size: 11.5px; }
+.scenario-note { margin: 0 0 14px; color: var(--ink-3); font-size: 13.5px; }
+.scenario-note b { color: var(--ink); font-weight: 600; }
+
+/* The app frame: a faithful slice of the current shell. */
+.frame { position: relative; display: grid; grid-template-columns: 268px minmax(0, 1fr); height: 660px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); box-shadow: var(--lift); }
+.sidebar { display: flex; min-height: 0; flex-direction: column; color: var(--sidebar-ink); background: var(--sidebar); }
+.brand-row { display: flex; align-items: center; gap: 12px; padding: 22px 20px; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--brand-ink-mark); background: var(--brand); font-family: var(--mono); font-size: 15px; font-weight: 500; }
+.brand-row div:last-child { display: flex; flex-direction: column; gap: 2px; }
+.brand-row strong { font-size: 15px; font-weight: 600; }
+.brand-row span { color: var(--sb-40); font-size: 11.5px; letter-spacing: .04em; }
+.nav { display: flex; flex-direction: column; gap: 2px; padding: 0 12px; }
+.nav div { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 9px; color: var(--sb-72); font-size: 14px; font-weight: 500; }
+.nav div svg { width: 26px; font-size: 17px; color: var(--sb-54); }
+.nav div.active { color: var(--sidebar-ink); background: var(--sidebar-2); }
+.nav div.active svg { color: var(--brand); }
+.nav small { color: var(--sb-40); font-size: 11.5px; font-weight: 400; }
+.nav .dot { width: 7px; height: 7px; margin-left: auto; margin-right: 4px; border-radius: 50%; background: var(--status-running); }
+.sb-label { margin: 22px 20px 10px; color: var(--sb-40); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.projects { display: flex; flex-direction: column; gap: 2px; padding: 0 12px; }
+.projects div { display: flex; align-items: center; gap: 11px; padding: 8px 10px; color: var(--sb-72); }
+.sigil { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--sb-14); border-radius: 7px; color: var(--brand); font-family: var(--mono); font-size: 10.5px; }
+.projects span:last-child { display: flex; flex-direction: column; }
+.projects strong { font-size: 13px; font-weight: 500; }
+.projects small { color: var(--sb-40); font-size: 11px; }
+.projects em { color: var(--brand); font-style: normal; }
+
+/* NEW: the usage strip, sitting on top of the existing First Mate footer. */
+.footer { margin-top: auto; border-top: 1px solid var(--sb-8); }
+.strip { display: flex; width: 100%; flex-direction: column; gap: 5px; padding: 11px 16px 10px; border: 0; background: transparent; text-align: left; }
+.strip:hover, .strip[aria-expanded="true"] { background: var(--sb-8); }
+.strip-row { display: grid; grid-template-columns: 58px 40px minmax(0, 1fr); align-items: center; gap: 8px; color: var(--sb-54); font-size: 11.5px; }
+.strip-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.strip-row .v { overflow: hidden; color: var(--sb-72); font-family: var(--mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.strip-row .v i { color: var(--sb-40); font-style: normal; }
+.strip-row.warn .v { color: var(--amber); }
+.strip-row.over .v { color: var(--coral); }
+.strip-row.ask .v { color: var(--sb-54); }
+.connection { display: flex; align-items: center; gap: 8px; padding: 12px 12px 16px 16px; border-top: 1px solid var(--sb-8); }
+.connection > div { display: flex; flex: 1; align-items: center; gap: 10px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-running); box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-running) 14%, transparent); }
+.live-dot.amber { background: var(--amber); box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 14%, transparent); }
+.connection > div > span:last-child { display: flex; flex-direction: column; gap: 1px; }
+.connection strong { font-size: 12.5px; font-weight: 600; }
+.connection small { color: var(--sb-40); font-size: 11px; }
+.sb-button { height: 30px; padding: 0 11px; border: 1px solid var(--sb-14); border-radius: 8px; color: var(--sb-72); background: transparent; font-size: 12px; }
+.sb-icon { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 8px; color: var(--sb-54); background: transparent; font-size: 17px; }
+
+/* Meters. One shape everywhere: a 3px track, filled by use, coloured only when it matters. */
+.meter { position: relative; height: 3px; overflow: hidden; border-radius: 2px; background: var(--sb-14); }
+.meter b { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--sb-54); }
+.meter.warn b { background: var(--amber); }
+.meter.over b { background: var(--coral); }
+.meter.unknown { background: repeating-linear-gradient(90deg, var(--sb-14) 0 3px, transparent 3px 6px); }
+.meter.stale b { opacity: .45; }
+.light-meter { background: var(--surface-3); }
+.light-meter b { background: var(--ink-3); }
+.light-meter.unknown { background: repeating-linear-gradient(90deg, var(--control) 0 3px, transparent 3px 6px); }
+
+/* The chat surface behind the popover, only enough to place it. */
+.main { position: relative; display: flex; min-width: 0; flex-direction: column; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 20px 28px 16px; border-bottom: 1px solid var(--rule); }
+.topbar h2 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -.01em; }
+.topbar p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.chat { flex: 1; overflow: hidden; padding: 22px 28px; }
+.msg { max-width: 560px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; color: var(--ink-2); background: var(--surface); font-size: 13.5px; }
+.msg.me { margin-left: auto; color: var(--ink); background: var(--surface-3); border-color: transparent; }
+.composer { margin: 0 28px 22px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--lift); }
+.composer p { margin: 0 0 16px; color: var(--faint); font-size: 14px; }
+.composer div { display: flex; align-items: center; gap: 8px; }
+.chat-status { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.chat-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--status-running-chat); }
+.chat-status i.amber { background: var(--amber); }
+.hint { flex: 1; color: var(--ghost); font-family: var(--mono); font-size: 11.5px; }
+.btn { height: 32px; padding: 0 13px; border: 1px solid var(--control); border-radius: 8px; color: var(--ink-2); background: var(--surface); font-size: 13px; }
+.btn.primary { border-color: transparent; color: var(--on-accent); background: var(--sea); opacity: .5; }
+
+/* NEW: the popover, opened from the strip, over the main surface. */
+.pop { position: absolute; z-index: 5; bottom: 12px; left: 280px; display: flex; width: 372px; max-height: calc(100% - 24px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: var(--shadow); }
+.pop[hidden] { display: none; }
+.pop-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid var(--rule); }
+.pop-head strong { flex: 1; font-size: 14.5px; font-weight: 600; }
+.pop-head small { color: var(--faint); font-size: 12px; }
+.icon-btn { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 15px; }
+.icon-btn:hover { color: var(--ink); background: var(--surface-3); }
+.icon-btn.spin svg { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pop-body { overflow-y: auto; }
+.sect { padding: 13px 16px 14px; border-bottom: 1px solid var(--rule); }
+.sect:last-child { border-bottom: 0; }
+.sect-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.sect-head span { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.sect-head small { color: var(--faint); font-size: 11.5px; text-align: right; }
+
+.ctx-line { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+.ctx-line strong { font-family: var(--mono); font-size: 13px; font-weight: 500; }
+.ctx-line span { color: var(--muted); font-family: var(--mono); font-size: 12px; font-weight: 400; }
+.ctx-line strong span { font-family: inherit; }
+.ctx-line.warn strong { color: var(--amber); }
+.ctx-meter { height: 5px; }
+.ctx-note { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+.ctx-event { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: var(--ink-3); font-size: 12.5px; }
+.ctx-event::before { width: 5px; height: 5px; border-radius: 50%; background: var(--sea); content: ""; }
+
+.prov { border-top: 1px solid var(--rule); }
+.prov:first-of-type { border-top: 0; }
+.prov-head { display: grid; grid-template-columns: 22px auto minmax(0, 1fr) 16px; align-items: center; gap: 9px; width: 100%; padding: 9px 0 6px; border: 0; background: transparent; text-align: left; }
+.glyph { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--control); border-radius: 6px; color: var(--ink-3); font-family: var(--mono); font-size: 10.5px; font-weight: 500; }
+.prov-head strong { font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+.prov-head strong small { margin-left: 6px; color: var(--faint); font-size: 12px; font-weight: 400; }
+.prov-head .when { overflow: hidden; color: var(--muted); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.prov-head .when.warn { color: var(--amber); }
+.prov-head .when.over { color: var(--coral); }
+.prov-head > svg { color: var(--faint); font-size: 14px; transition: transform .12s; }
+.prov.open .prov-head > svg { transform: rotate(90deg); }
+.wins { display: flex; flex-wrap: wrap; gap: 4px 13px; padding: 0 0 10px 31px; }
+.win { display: grid; grid-template-columns: auto 30px auto; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+.win .n { color: var(--ink-2); font-family: var(--mono); font-size: 11.5px; }
+.win.warn .n { color: var(--amber); }
+.win.over .n { color: var(--coral); }
+.win.stale .n { color: var(--faint); }
+.win.early .n { color: var(--muted); }
+.meter.early b { opacity: .5; }
+.tag { margin-left: 6px; padding: 1px 6px; border: 1px dashed var(--control-hover); border-radius: 5px; color: var(--muted); font-size: 10.5px; font-weight: 500; vertical-align: 1px; }
+.detail { display: none; margin: 0 0 12px 31px; padding: 9px 11px; border-radius: 9px; background: var(--surface-2); font-size: 12px; }
+.prov.open .detail { display: block; }
+.detail dl { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; gap: 4px 10px; margin: 0; }
+.detail dt { color: var(--muted); }
+.detail dd { margin: 0; color: var(--ink-3); }
+.detail dd.num { color: var(--muted); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.detail p { margin: 6px 0 0; color: var(--muted); }
+.ask-box { margin: 0 0 10px 31px; padding: 10px 11px; border: 1px solid var(--brand-edge); border-radius: 9px; background: var(--brand-wash); font-size: 12.5px; }
+.ask-box p { margin: 0; color: var(--brand-text); }
+.ask-box code, .words code { font-family: var(--mono); font-size: 11.5px; }
+.ask-box .words { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
+.ask-box button { margin-top: 8px; height: 28px; padding: 0 11px; border: 1px solid var(--brand-edge); border-radius: 7px; color: var(--ink); background: var(--surface); font-size: 12.5px; }
+.stale-box { margin: 0 0 10px 31px; color: var(--muted); font-size: 12px; }
+.stale-box b { color: var(--ink-3); font-weight: 500; }
+.others { width: 100%; padding: 0; border: 0; color: var(--muted); background: transparent; font-size: 12.5px; text-align: left; }
+.others:hover { color: var(--ink); }
+.others-list { margin: 8px 0 0; padding: 0; list-style: none; }
+.others-list li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; padding: 3px 0; font-size: 12px; }
+.others-list li span:first-child { color: var(--ink-3); }
+.others-list li span:last-child { overflow: hidden; color: var(--faint); font-family: var(--mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.empty { color: var(--ink-3); font-size: 12.5px; }
+.empty p { margin: 0 0 6px; }
+.empty code { font-family: var(--mono); font-size: 11.5px; }
+.pop-foot { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--rule); color: var(--faint); background: var(--surface-2); font-size: 11.5px; }
+
+/* The gallery of states below the frame. */
+h3 { margin: 40px 0 6px; font-size: 17px; font-weight: 600; }
+.sub { margin: 0 0 14px; color: var(--ink-3); font-size: 13.5px; }
+.gallery { display: grid; align-items: start; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+.card { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.card header { padding: 9px 13px; border-bottom: 1px solid var(--rule); color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.card .strip-demo { padding: 4px 0; background: var(--sidebar); }
+.card .strip-demo .strip { cursor: default; }
+.card .strip-demo .strip:hover { background: transparent; }
+.card .inner { padding: 4px 13px 2px; }
+.card footer { padding: 8px 13px 11px; color: var(--ink-3); font-size: 12.5px; }
+.notes { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+.note { padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.note strong { display: block; margin-bottom: 4px; font-size: 13.5px; font-weight: 600; }
+.note p { margin: 0; color: var(--ink-3); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div>
+      <div class="eyebrow">Design proposal · qd-usage-design-1</div>
+      <h1>Usage: this conversation's headroom, and the plan's limits</h1>
+      <p class="lede">One quiet strip on top of the First Mate footer, visible from every page. Click it for the detail. Context and plan limits share the surface but are two sections, because they move at different speeds and fail in different ways. Pick a situation below: the panel is built for the states this Mac is actually in, not only the full one.</p>
+    </div>
+    <div class="controls">
+      <div class="control-row"><span>Theme</span><div class="seg" id="theme"><button data-v="light">Light</button><button data-v="dark">Dark</button></div></div>
+      <div class="control-row"><span>Popover</span><div class="seg" id="open"><button data-v="1">Open</button><button data-v="0">Closed</button></div></div>
+    </div>
+  </header>
+
+  <div class="scenarios" id="scenarios"></div>
+  <p class="scenario-note" id="scenario-note"></p>
+
+  <div class="frame">
+    <aside class="sidebar">
+      <div class="brand-row"><div class="brand-mark">Q</div><div><strong>Quarterdeck</strong><span>firstmate · desktop</span></div></div>
+      <div class="nav">
+        <div><svg class="i" viewBox="0 0 24 24" data-icon="gauge"></svg>Bearings</div>
+        <div class="active"><svg class="i" viewBox="0 0 24 24" data-icon="message-square-text"></svg>Chat <small>First Mate</small><span class="dot"></span></div>
+        <div><svg class="i" viewBox="0 0 24 24" data-icon="folder-git-2"></svg>Projects</div>
+        <div><svg class="i" viewBox="0 0 24 24" data-icon="panels-top-left"></svg>Artifacts</div>
+      </div>
+      <div class="sb-label">Projects</div>
+      <div class="projects">
+        <div><span class="sigil">RE</span><span><strong>resonance</strong><small><em>1 waiting</em> · 0 underway</small></span></div>
+        <div><span class="sigil">FO</span><span><strong>foreman</strong><small>idle</small></span></div>
+      </div>
+      <div class="footer">
+        <div id="strip-slot"></div>
+        <div class="connection">
+          <div><span class="live-dot" id="live-dot"></span><span><strong>First Mate</strong><small id="host-label">Ready</small></span></div>
+          <button class="sb-button">Stop</button>
+          <button class="sb-icon" title="Settings"><svg class="i" viewBox="0 0 24 24" data-icon="settings"></svg></button>
+        </div>
+      </div>
+    </aside>
+    <section class="main">
+      <div class="topbar"><div><h2>Chat</h2><p>You and the first mate</p></div></div>
+      <div class="chat">
+        <div class="msg me">What's left on the resonance download question?</div>
+        <div class="msg">It's waiting on your word in Bearings: Wi-Fi only with visible progress is my recommendation. Nothing else is blocked on it.</div>
+      </div>
+      <div class="composer"><p>Message the first mate</p><div><span class="chat-status"><i id="chat-dot"></i><span id="chat-label">Ready</span></span><span class="hint">· ⏎ to send · ⇧⏎ for a new line</span><button class="btn">Attach</button><button class="btn primary">Send</button></div></div>
+    </section>
+    <div class="pop" id="pop" role="dialog" aria-label="Usage"></div>
+  </div>
+
+  <h3>Every state, side by side</h3>
+  <p class="sub">The same pieces the panel above is made of, one state each. The strip is shown on the sidebar it lives on; the rows as they sit in the popover.</p>
+  <div class="gallery" id="gallery"></div>
+
+  <h3>Why it looks like this</h3>
+  <div class="notes">
+    <div class="note"><strong>Two readings, one surface, two sections</strong><p>Context is this conversation's headroom, updated after every turn, and it only goes wrong by being unknown. Plan limits belong to the account, move over hours and days, and go wrong by being unreadable. They share one strip so there is one place to look, and never share a number.</p></div>
+    <div class="note"><strong>No "all agents" selector</strong><p>Plan limits are account-wide already: the crew, the first mate and anything else signed in draw on the same windows, so a per-agent split would be invented. Context is only knowable for the first mate, whose session the app hosts. A crewmate's own context would belong on its task, not here.</p></div>
+    <div class="note"><strong>Quiet until it matters</strong><p>Ink at sidebar alpha until a window passes 80% or a context passes 75%, then amber; coral only at a hard limit. The strip shows the first mate's own provider always, and any other provider only once it is warning.</p></div>
+    <div class="note"><strong>Missing numbers are not errors</strong><p>A provider that needs sign-in shows what it needs and the one action that fixes it, in quota-axi's own words beside ours. Providers the fleet never uses fold into one line, so thirteen unconfigured tools do not read as thirteen failures.</p></div>
+    <div class="note"><strong>Claude does not wait for the Keychain</strong><p>The first mate's own session already reports Claude's limit status and reset time on every rate-limit event. That fills the Claude row without any prompt; Keychain access only adds the percentages.</p></div>
+    <div class="note"><strong>No Detailed | Compact toggle</strong><p>Orca needs one because its bar is the compact view. Here the strip is compact and the popover is detailed, and a row's chevron opens the per-window pace for anyone who wants it.</p></div>
+  </div>
+</div>
+
+<script>
+const ICONS = {
+ "gauge": "<path d=\"m12 14 4-4\"/><path d=\"M3.34 19a10 10 0 1 1 17.32 0\"/>",
+ "message-square-text": "<path d=\"M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z\"/><path d=\"M7 11h10\"/><path d=\"M7 15h6\"/><path d=\"M7 7h8\"/>",
+ "folder-git-2": "<path d=\"M18 19a5 5 0 0 1-5-5v8\"/><path d=\"M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5\"/><circle cx=\"13\" cy=\"12\" r=\"2\"/><circle cx=\"20\" cy=\"19\" r=\"2\"/>",
+ "panels-top-left": "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\"/><path d=\"M3 9h18\"/><path d=\"M9 21V9\"/>",
+ "settings": "<path d=\"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>",
+ "refresh-cw": "<path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M8 16H3v5\"/>",
+ "chevron-right": "<path d=\"m9 18 6-6-6-6\"/>",
+ "key-round": "<path d=\"M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z\"/><circle cx=\"16.5\" cy=\"7.5\" r=\".5\" fill=\"currentColor\"/>",
+ "triangle-alert": "<path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/>",
+ "cloud-off": "<path d=\"M10.94 5.274A7 7 0 0 1 15.71 10h1.79a4.5 4.5 0 0 1 4.222 6.057\"/><path d=\"M18.796 18.81A4.5 4.5 0 0 1 17.5 19H9A7 7 0 0 1 5.79 5.78\"/><path d=\"m2 2 20 20\"/>",
+ "sun": "<circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2\"/><path d=\"M12 20v2\"/><path d=\"m4.93 4.93 1.41 1.41\"/><path d=\"m17.66 17.66 1.41 1.41\"/><path d=\"M2 12h2\"/><path d=\"M20 12h2\"/><path d=\"m6.34 17.66-1.41 1.41\"/><path d=\"m19.07 4.93-1.41 1.41\"/>",
+ "moon": "<path d=\"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401\"/>"
+};
+const icon = (name) => `<svg class="i" viewBox="0 0 24 24">${ICONS[name] || ""}</svg>`;
+document.querySelectorAll("svg[data-icon]").forEach((el) => { el.innerHTML = ICONS[el.dataset.icon] || ""; });
+
+/* Words quota-axi 0.1.49 printed on this Mac on 2026-09-23, verbatim. */
+const NOT_SET_UP = [
+  ["Copilot", "GitHub Copilot sign-in required"],
+  ["Grok", "Grok sign-in required (auth unusable)"],
+  ["Kimi", "kimi_credential_unavailable"],
+  ["Z.ai", "zai_credential_unavailable"],
+  ["Antigravity", "Antigravity/agy is not running"],
+  ["Alibaba", "bl_cli_unavailable"],
+  ["OpenCode Go", "opencode_go_credential_unavailable"],
+  ["Command Code", "commandcode_sign_in_required (auth unusable)"],
+  ["MiniMax", "minimax_credential_unavailable"],
+  ["MiMo", "mimo_credential_unavailable"],
+  ["DeepSeek", "deepseek_credential_unavailable"],
+  ["OpenRouter", "openrouter_credential_unavailable"],
+  ["ElevenLabs", "elevenlabs_credential_unavailable (auth unusable)"],
+];
+
+const codexLive = { id: "codex", glyph: "CX", name: "Codex", plan: "Plus", state: "live", source: "quota-axi", resets: "4h 59m", early: true,
+  windows: [{ label: "5h", used: 0, resets: "4h 59m", pace: "early reading: too little history to judge pace", early: true }, { label: "wk", used: 0, resets: "4d 12h", pace: "under pace", early: true }] };
+const cursorLive = { id: "cursor", glyph: "CU", name: "Cursor", plan: "Free", state: "live", source: "quota-axi", resets: "Sep 26",
+  windows: [{ label: "included", used: 0, resets: "Sep 26", pace: "under pace" }] };
+const claudeNow = { id: "claude", glyph: "CL", name: "Claude", plan: "", state: "live", source: "quota-axi, and the first mate's session", resets: "1h 35m",
+  windows: [{ label: "5h", used: 20, resets: "1h 35m", pace: "under pace: lasts past the reset" }, { label: "wk", used: 17, resets: "2d 23h", pace: "under pace: lasts past the reset" }, { label: "Fable wk", used: 0, resets: "2d 23h", pace: "untouched" }] };
+const claudeNoKeychain = { id: "claude", glyph: "CL", name: "Claude", plan: "", state: "partial", source: "the first mate's session", resets: "1h 35m", status: "Under limit",
+  windows: [{ label: "5h", used: null, resets: "1h 35m", pace: "under its limit; % needs Keychain" }, { label: "wk", used: null }],
+  ask: { text: "Percentages need Keychain access, approved once with Always Allow. Routing reads the same numbers.", words: "keychain_prompt_required · reason keychain_access_required", action: "Allow Keychain access…" } };
+
+/* Each situation the panel has to be honest in. `today` is what this Mac reports right now. */
+const SCENARIOS = {
+  today: {
+    title: "This Mac now", sub: "real quota-axi read",
+    note: "<b>What quota-axi 0.1.49 returned on this Mac at 07:05 UTC, after the Keychain was approved.</b> Claude's three windows are real: 20% of the rolling 5h, 17% of the week, nothing yet of Fable's week. Codex reads 0%, but quota-axi's confidence in it is only early, so its numbers are drawn softer and say so.",
+    host: "Ready",
+    context: { state: "live", used: 70979, size: 1000000, asOf: "3m ago" },
+    checked: "checked 1m ago",
+    providers: [claudeNow, codexLive, cursorLive],
+    others: NOT_SET_UP,
+  },
+  fresh: {
+    title: "A new Mac", sub: "before Keychain",
+    note: "<b>What a new captain meets first, and what this Mac showed an hour ago.</b> Claude's percentages need one Keychain approval, but its limit status and reset still come from the first mate's own session, so the row is useful before anyone clicks anything.",
+    host: "Ready",
+    context: { state: "live", used: 70979, size: 1000000, asOf: "3m ago" },
+    checked: "checked 1m ago",
+    providers: [claudeNoKeychain, codexLive, cursorLive],
+    others: NOT_SET_UP,
+  },
+  warn: {
+    title: "Getting close", sub: "Claude 5h at 86%",
+    note: "<b>The only time the strip takes colour.</b> Claude's rolling window is at 86% and burning faster than time, so it says when it runs out at this pace. Context is past 75%, so the first mate will compact soon, which the popover says in plain words.",
+    host: "Ready",
+    context: { state: "live", used: 812400, size: 1000000, asOf: "just now" },
+    checked: "checked just now",
+    providers: [
+      { id: "claude", glyph: "CL", name: "Claude", plan: "Max", state: "live", source: "quota-axi + session", resets: "38m",
+        windows: [{ label: "5h", used: 86, resets: "38m", pace: "ahead: out in about 25m at this pace" }, { label: "wk", used: 61, resets: "2d 4h", pace: "slightly ahead" }, { label: "Opus wk", used: 4, resets: "2d 4h", pace: "on pace" }] },
+      { ...codexLive, windows: [{ label: "5h", used: 22, resets: "3h 10m", pace: "on pace" }, { label: "wk", used: 9, resets: "4d 12h", pace: "behind: plenty left" }] },
+      cursorLive,
+    ],
+    others: NOT_SET_UP,
+  },
+  over: {
+    title: "At the limit", sub: "Claude refused",
+    note: "<b>Claude has refused the first mate.</b> The app already shows \"At its usage limit\" in the First Mate state; the strip now says when that ends, and the popover says what still has room. Nothing here reroutes anything: routing is Settings' business.",
+    host: "At its usage limit", degraded: true,
+    context: { state: "live", used: 402000, size: 1000000, asOf: "14m ago" },
+    checked: "checked just now",
+    providers: [
+      { id: "claude", glyph: "CL", name: "Claude", plan: "Max", state: "live", source: "session + quota-axi", resets: "52m", status: "Refused until it resets",
+        windows: [{ label: "5h", used: 100, resets: "52m", pace: "refused until reset" }, { label: "wk", used: 71, resets: "2d 4h", pace: "ahead" }] },
+      { ...codexLive, windows: [{ label: "5h", used: 12, resets: "3h 10m", pace: "on pace" }, { label: "wk", used: 9, resets: "4d 12h", pace: "behind: plenty left" }] },
+      cursorLive,
+    ],
+    others: NOT_SET_UP,
+  },
+  stale: {
+    title: "Can't refresh", sub: "last read 42m ago",
+    note: "<b>quota-axi stopped answering.</b> The last good numbers stay, faded, with their age, and the reason is in quota-axi's words. Context is unaffected: it comes from the session, not from quota-axi.",
+    host: "Ready",
+    context: { state: "live", used: 118250, size: 1000000, asOf: "6m ago" },
+    checked: "last read 42m ago", readError: "quota-axi did not answer in 20s",
+    providers: [
+      { id: "claude", glyph: "CL", name: "Claude", plan: "Max", state: "stale", source: "quota-axi", resets: "1h 04m", age: "42m ago",
+        windows: [{ label: "5h", used: 31, resets: "1h 04m", pace: "as of 42m ago" }, { label: "wk", used: 18, resets: "2d 22h", pace: "as of 42m ago" }] },
+      { ...codexLive, state: "stale", age: "42m ago" },
+      { ...cursorLive, state: "stale", age: "42m ago" },
+    ],
+    others: NOT_SET_UP,
+  },
+  start: {
+    title: "Just started", sub: "nothing read yet",
+    note: "<b>The first seconds after Start.</b> Context has no reading until the first mate's first reply, and says so instead of showing 0%. The first quota read is in flight.",
+    host: "Starting", degraded: true,
+    context: { state: "none" },
+    checked: "checking…", loading: true,
+    providers: [],
+    others: [],
+  },
+  compacted: {
+    title: "Just compacted", sub: "context dropped",
+    note: "<b>The first mate compacted its conversation.</b> The reading drops, and the popover keeps one line saying so, so a sudden 6% after a long day reads as expected rather than as a lost session.",
+    host: "Ready",
+    context: { state: "live", used: 61200, size: 1000000, asOf: "just now", event: "Compacted 12m ago: 812k down to 61k" },
+    checked: "checked 3m ago",
+    providers: [
+      { id: "claude", glyph: "CL", name: "Claude", plan: "Max", state: "live", source: "quota-axi + session", resets: "3h 02m",
+        windows: [{ label: "5h", used: 41, resets: "3h 02m", pace: "on pace" }, { label: "wk", used: 33, resets: "2d 1h", pace: "on pace" }] },
+      codexLive, cursorLive,
+    ],
+    others: NOT_SET_UP,
+  },
+  relaunch: {
+    title: "After a relaunch", sub: "resumed session",
+    note: "<b>The app relaunched and the session resumed.</b> The reading comes back with the conversation it loaded, and the popover says it is a resumed session, because a long-lived first mate carries its history in.",
+    host: "Ready",
+    context: { state: "live", used: 69163, size: 1000000, asOf: "just now", event: "Resumed 2m ago with 69k already in context" },
+    checked: "checked just now",
+    providers: [
+      claudeNoKeychain,
+      codexLive, cursorLive,
+    ],
+    others: NOT_SET_UP,
+  },
+  none: {
+    title: "No quota-axi", sub: "tool missing",
+    note: "<b>quota-axi isn't installed.</b> An honest empty state: plan limits can't be read, the fix is named, and Claude still shows what the first mate's session reports. The strip keeps its shape rather than vanishing.",
+    host: "Ready",
+    context: { state: "live", used: 70979, size: 1000000, asOf: "3m ago" },
+    checked: "not available", missingTool: true,
+    providers: [
+      { id: "claude", glyph: "CL", name: "Claude", plan: "", state: "partial", source: "first mate's session", resets: "1h 46m", status: "Under limit",
+        windows: [{ label: "5h", used: null, resets: "1h 46m", pace: "under its limit" }, { label: "wk", used: null }] },
+    ],
+    others: [],
+  },
+};
+
+const level = (used, warnAt = 80) => used === null || used === undefined ? "" : used >= 100 ? "over" : used >= warnAt ? "warn" : "";
+const pct = (n) => `${Math.round(n)}%`;
+const k = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : `${Math.round(n / 1000)}k`;
+const ctxPct = (c) => c.used / c.size * 100;
+const meter = (used, cls = "", light = false) => {
+  const base = light ? "meter light-meter" : "meter";
+  if (used === null || used === undefined) return `<span class="${base} unknown ${cls}"></span>`;
+  return `<span class="${base} ${level(used)} ${cls}"><b style="width:${Math.max(used, used > 0 ? 3 : 0)}%"></b></span>`;
+};
+/* A provider's tightest window: the one the strip shows. */
+const tightest = (p) => [...p.windows].sort((a, b) => (b.used ?? -1) - (a.used ?? -1))[0];
+
+function stripRows(s) {
+  const rows = [];
+  const c = s.context;
+  if (c.state === "none") rows.push(`<div class="strip-row">${"<span>Context</span>"}${meter(null)}<span class="v"><i>after first reply</i></span></div>`);
+  else { const p = ctxPct(c); rows.push(`<div class="strip-row ${level(p, 75)}"><span>Context</span>${meter(p)}<span class="v">${pct(p)} <i>· ${k(c.used)} of ${k(c.size)}</i></span></div>`); }
+  if (s.loading) rows.push(`<div class="strip-row"><span>Plan</span>${meter(null)}<span class="v"><i>checking…</i></span></div>`);
+  const shown = s.providers.filter((p, i) => i === 0 || p.windows.some((w) => level(w.used)));
+  for (const p of shown) {
+    const w = tightest(p);
+    const cls = p.state === "stale" ? "" : level(w.used);
+    let v;
+    if (w.used === null) v = `${p.status ? "under limit" : "-"} <i>${p.resets}</i>`;
+    else if (w.used >= 100) v = `limit <i>· back in ${w.resets}</i>`;
+    else v = `${pct(w.used)} ${w.label} <i>· ${w.resets}${p.state === "stale" ? " · 42m old" : ""}</i>`;
+    rows.push(`<div class="strip-row ${cls}"><span>${p.name}</span>${meter(w.used, p.state === "stale" ? "stale" : "")}<span class="v">${v}</span></div>`);
+  }
+  return rows.join("");
+}
+
+function contextSection(c) {
+  if (c.state === "none") return `<div class="sect"><div class="sect-head"><span>This conversation</span><small>first mate</small></div>
+    <div class="ctx-line"><strong>-</strong><span>of the context window</span></div>${meter(null, "ctx-meter", true)}
+    <p class="ctx-note">Known after the first mate's first reply. The session reports it after every turn.</p></div>`;
+  const p = ctxPct(c);
+  const note = p >= 75 ? "Near the limit the first mate compacts on its own: older turns are summarised to make room. Nothing in the backlog or the fleet is lost." : `${k(c.size - c.used)} tokens of room left. It grows with every turn and drops when the first mate compacts.`;
+  return `<div class="sect"><div class="sect-head"><span>This conversation</span><small>first mate · as of ${c.asOf}</small></div>
+    <div class="ctx-line ${level(p, 75)}"><strong>${c.used.toLocaleString("en-US")} <span>of ${c.size.toLocaleString("en-US")} tokens</span></strong><span class="mono">${pct(p)}</span></div>
+    ${meter(p, "ctx-meter", true)}<p class="ctx-note">${note}</p>${c.event ? `<div class="ctx-event">${c.event}</div>` : ""}</div>`;
+}
+
+function providerRow(p, open) {
+  const w0 = tightest(p);
+  const whenCls = p.state === "stale" ? "" : level(w0.used);
+  const when = w0.used !== null && w0.used >= 100 ? `Back in ${p.resets}` : p.state === "stale" ? `Resets in ${p.resets}` : `Resets in ${p.resets}`;
+  const wins = p.windows.map((w) => `<span class="win ${p.state === "stale" ? "stale" : level(w.used)} ${w.early ? "early" : ""}" ${w.early ? 'title="Early reading: quota-axi has little history for this window yet"' : ""}>${w.label} ${meter(w.used, p.state === "stale" ? "stale" : w.early ? "early" : "", true)}<span class="n">${w.used === null ? "-" : `${w.early ? "~" : ""}${pct(w.used)}`}</span></span>`).join("");
+  const rows = p.windows.map((w) => `<dt>${w.label}</dt><dd>${w.pace || "not reported"}</dd><dd class="num">${w.resets ? `resets ${w.resets}` : ""}</dd>`).join("");
+  let extra = "";
+  if (p.ask) extra = `<div class="ask-box"><p>${p.ask.text}</p><div class="words">quota-axi: <code>${p.ask.words}</code></div><button>${p.ask.action}</button></div>`;
+  if (p.state === "stale") extra = `<div class="stale-box">These are the numbers from <b>${p.age}</b>. They'll update on the next good read.</div>`;
+  return `<div class="prov ${open ? "open" : ""}" data-prov="${p.id}">
+    <button class="prov-head"><span class="glyph">${p.glyph}</span><strong>${p.name}${p.plan ? `<small>${p.plan}</small>` : ""}${p.early ? `<span class="tag" title="quota-axi confidence: early">early</span>` : ""}</strong><span class="when ${whenCls}" title="${p.status && w0.used === null ? `${p.status} · ` : ""}${when}">${p.status && w0.used === null ? `${p.status} · ` : ""}${when}</span>${icon("chevron-right")}</button>
+    <div class="wins">${wins}</div>${extra}
+    <div class="detail"><dl>${rows}</dl><p>From ${p.source}.</p></div></div>`;
+}
+
+let othersOpen = false;
+function planSection(s) {
+  let body = "";
+  if (s.loading) body = `<div class="empty"><p>Reading plan limits…</p></div>`;
+  if (s.missingTool) body += `<div class="empty"><p>Plan limits come from <code>quota-axi</code>, which isn't installed. The first mate's setup names it: <code>npm i -g quota-axi</code>.</p></div>`;
+  if (s.readError) body += `<div class="stale-box">Can't refresh: quota-axi said <b>${s.readError}</b>.</div>`;
+  body += s.providers.map((p) => providerRow(p, openProv.has(p.id))).join("");
+  if (s.others.length) body += `<div class="sect" style="margin:6px -16px -14px;padding:10px 16px 12px"><button class="others" id="others">${othersOpen ? "▾" : "▸"} ${s.others.length} more providers not set up</button>${othersOpen ? `<ul class="others-list">${s.others.map(([n, w]) => `<li><span>${n}</span><span title="${w}">${w}</span></li>`).join("")}</ul>` : ""}</div>`;
+  return `<div class="sect"><div class="sect-head"><span>Plan limits</span><small>account-wide, crew included</small></div>${body}</div>`;
+}
+
+let state = { scenario: "today", theme: "light", open: true };
+const openProv = new Set();
+
+function render() {
+  const s = SCENARIOS[state.scenario];
+  document.documentElement.classList.toggle("dark", state.theme === "dark");
+  document.querySelectorAll("#theme button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === state.theme)));
+  document.querySelectorAll("#open button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === (state.open ? "1" : "0"))));
+  document.getElementById("scenarios").innerHTML = Object.entries(SCENARIOS).map(([key, v]) => `<button data-s="${key}" aria-pressed="${key === state.scenario}"><strong>${v.title}</strong><small>${v.sub}</small></button>`).join("");
+  document.getElementById("scenario-note").innerHTML = s.note;
+  document.getElementById("strip-slot").innerHTML = `<button class="strip" id="strip" aria-expanded="${state.open}" title="Usage">${stripRows(s)}</button>`;
+  document.getElementById("host-label").textContent = s.host;
+  document.getElementById("chat-label").textContent = s.host;
+  document.getElementById("live-dot").className = `live-dot ${s.degraded ? "amber" : ""}`;
+  document.getElementById("chat-dot").className = s.degraded ? "amber" : "";
+  const pop = document.getElementById("pop");
+  pop.hidden = !state.open;
+  pop.innerHTML = `<div class="pop-head"><strong>Usage</strong><small>${s.checked}</small><button class="icon-btn ${s.loading ? "spin" : ""}" title="Check plan limits again">${icon("refresh-cw")}</button></div>
+    <div class="pop-body">${contextSection(s.context)}${planSection(s)}</div>
+    <div class="pop-foot"><span>Context: the first mate's session</span><span>Plans: quota-axi</span></div>`;
+  wire();
+}
+
+function wire() {
+  document.querySelectorAll("#scenarios button").forEach((b) => b.onclick = () => { state.scenario = b.dataset.s; render(); });
+  document.getElementById("strip").onclick = () => { state.open = !state.open; render(); };
+  document.querySelectorAll(".prov-head").forEach((b) => b.onclick = () => { const id = b.parentElement.dataset.prov; openProv.has(id) ? openProv.delete(id) : openProv.add(id); render(); });
+  const others = document.getElementById("others");
+  if (others) others.onclick = () => { othersOpen = !othersOpen; render(); };
+}
+document.querySelectorAll("#theme button").forEach((b) => b.onclick = () => { state.theme = b.dataset.v; render(); });
+document.querySelectorAll("#open button").forEach((b) => b.onclick = () => { state.open = b.dataset.v === "1"; render(); });
+
+/* The gallery: each state once, built from the same pieces. */
+function gallery() {
+  const g = [];
+  const stripCard = (title, s, caption) => g.push(`<div class="card"><header>${title}</header><div class="strip-demo"><div class="strip">${stripRows(s)}</div></div><footer>${caption}</footer></div>`);
+  const rowCard = (title, p, caption) => g.push(`<div class="card"><header>${title}</header><div class="inner">${providerRow(p, false)}</div><footer>${caption}</footer></div>`);
+  stripCard("Strip · quiet", SCENARIOS.today, "Ink only. Context, then the first mate's provider by its tightest window.");
+  stripCard("Strip · warning", SCENARIOS.warn, "Amber past 80% of a window or 75% of context. A second provider joins only when it warns.");
+  stripCard("Strip · at limit", SCENARIOS.over, "Coral, and the number becomes when it ends.");
+  stripCard("Strip · first seconds", SCENARIOS.start, "Unknown is a hatched track and words, never 0%.");
+  rowCard("Row · live", SCENARIOS.today.providers[0], "Every window: percent and time-to-reset together.");
+  rowCard("Row · needs authorization", claudeNoKeychain, "What the session knows, what's missing, the one action, and quota-axi's words.");
+  rowCard("Row · early reading", codexLive, "quota-axi says its confidence is early: numbers are marked ~ and drawn softer.");
+  rowCard("Row · stale", SCENARIOS.stale.providers[0], "Last good numbers, faded, with their age.");
+  rowCard("Row · refused", SCENARIOS.over.providers[0], "The window at 100% says when it opens again.");
+  document.getElementById("gallery").innerHTML = g.join("");
+}
+
+render();
+gallery();
+</script>
+</body>
+</html>

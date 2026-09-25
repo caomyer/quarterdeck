@@ -7,10 +7,15 @@
 //!   artifact://localhost/task/<task-id>/<name>/rev-<n>/<file path>
 //!   artifact://localhost/chat/<name>/rev-<n>/<file path>
 //!
-//! and the pictures a review made of its own proposals:
+//! the pictures a review made of its own proposals and of the places it was written on,
+//! and nothing else in that folder, so the review text written there for the author stays on disk:
 //!
 //!   artifact://localhost/task/<task-id>/<name>/review-files/<file>
 //!   artifact://localhost/chat/<name>/review-files/<file>
+//!
+//! and the one library the review script loads, from the app itself:
+//!
+//!   artifact://localhost/_qd/snapdom.js
 //!
 //! which map to `data/<task-id>/artifacts/<name>/rev-<n>/files/<file path>`
 //! and `data/.artifacts/<name>/rev-<n>/files/<file path>`. firstmate's script
@@ -37,6 +42,14 @@ pub const SCHEME: &str = "artifact";
 
 /// Injected into every HTML document served; the script's own header owns what it does.
 const REVIEW_FRAME: &str = include_str!("review-frame.js");
+
+/// Where a page's review script loads the library that draws the page when the
+/// captain picks a place. It is served from the app, and only on the first
+/// pick, so no page carries it and no page can replace it.
+pub const PICTURE_LIBRARY: &str = "/_qd/snapdom.js";
+
+/// SnapDOM 3.1.0 (MIT, `vendor/snapdom.LICENSE`), vendored unchanged from npm.
+const SNAPDOM: &[u8] = include_bytes!("vendor/snapdom.js");
 
 /// Appends the review script to an HTML document, inside `</body>` when there is
 /// one. A document that is not UTF-8 comes back untouched, rather than guessed at.
@@ -130,7 +143,8 @@ pub fn resolve(data: &Path, request_path: &str) -> Result<PathBuf, Refusal> {
         }
         let folder = std::fs::canonicalize(artifact_dir.join("review-files")).map_err(|_| Refusal::Missing)?;
         let found = std::fs::canonicalize(folder.join(&file[0])).map_err(|_| Refusal::Missing)?;
-        if !found.starts_with(&folder) || !found.is_file() {
+        let picture = found.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ["png", "jpg", "jpeg"].iter().any(|kind| ext.eq_ignore_ascii_case(kind)));
+        if !found.starts_with(&folder) || !found.is_file() || !picture {
             return Err(Refusal::Missing);
         }
         return Ok(found);
@@ -190,6 +204,15 @@ fn not_found() -> Response<Vec<u8>> {
 }
 
 fn serve(data: Option<PathBuf>, request_path: &str) -> Response<Vec<u8>> {
+    if request_path == PICTURE_LIBRARY {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable")
+            .body(SNAPDOM.to_vec())
+            .unwrap_or_else(|_| not_found());
+    }
     let Some(data) = data else { return not_found() };
     let path = match resolve(&data, request_path) {
         Ok(path) => path,
@@ -296,6 +319,22 @@ mod tests {
     }
 
     #[test]
+    fn review_files_serve_only_pictures() {
+        let data = store("review-files");
+        let folder = data.join("t1/artifacts/plan/review-files");
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["t1-r2.jpg", "t2.png", "t3.JPEG", "review-1.md", "t2.excalidraw"] {
+            std::fs::write(folder.join(name), "x").unwrap();
+        }
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t1-r2.jpg"), Ok(folder.join("t1-r2.jpg")));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t2.png"), Ok(folder.join("t2.png")));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t3.JPEG"), Ok(folder.join("t3.JPEG")));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/review-1.md"), Err(Refusal::Missing), "the review text stays on disk");
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t2.excalidraw"), Err(Refusal::Missing));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
     fn a_complete_revision_serves_its_files() {
         let data = store("serve");
         let files = data.join("t1/artifacts/plan/rev-2/files");
@@ -319,6 +358,15 @@ mod tests {
         let image = serve(Some(data.clone()), "/task/t1/plan/rev-2/img/a.png");
         assert_eq!(image.body(), b"png", "only HTML carries the script");
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn the_picture_library_comes_from_the_app_whatever_the_home() {
+        let response = serve(None, PICTURE_LIBRARY);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/javascript; charset=utf-8");
+        assert!(response.body().starts_with(b"/*\n* SnapDOM\n* v3.1.0"), "the vendored library, unchanged");
+        assert_eq!(serve(None, "/_qd/other.js").status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

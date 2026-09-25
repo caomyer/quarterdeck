@@ -43,8 +43,8 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
-import { CheckCheck, RotateCcw, Shapes } from "lucide-react";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
@@ -294,6 +294,15 @@ export function App() {
   function navigate(next: View) {
     setView(next);
     setMobileNavOpen(false);
+  }
+
+  /** Settles comments from their review's card in chat, then reads the summary again so the card follows. */
+  async function settleFromChat(ref: ArtifactRef, threads: string[]) {
+    try {
+      for (const thread of threads) await host.reviewSettle(ref, thread, true);
+    } finally {
+      await host.reviewSummary().then(setReviews, () => undefined);
+    }
   }
 
   function showArtifact(artifact: Artifact, rev?: number) {
@@ -589,7 +598,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -620,7 +629,7 @@ export function App() {
               sendReady={bridge.sendReady}
               runtime={runtime.state}
               onRevision={(rev) => showArtifact(shownArtifact, rev)}
-              onComment={(body, anchor, thread) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread).then(setReview)}
+              onComment={(body, anchor, thread, picture) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread, picture).then(setReview)}
               onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
               onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => {
                 if (sent.message) bridge.noteSent(sent.message, sent.text);
@@ -1495,7 +1504,54 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpen
   </aside></div>;
 }
 
-type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision };
+type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision } | { type: "review"; message: ChatMessage; sent: SentPage };
+
+/** A review the captain sent, with the page it is about, as the chat draws it. */
+type SentPage = { key: string; ref: ArtifactRef; artifact?: Artifact; review: SentReview; threads: SentThread[] };
+
+/** The key the review summary files a page under. */
+function reviewKey(artifact: { scope: string; task: string | null; name: string }) {
+  return artifact.scope === "task" ? `task/${artifact.task}/${artifact.name}` : `chat/${artifact.name}`;
+}
+
+/**
+ * Every review sent, found by the chat message it became and, oldest first, by that message's first line, since a
+ * resumed conversation's history comes back without message ids.
+ */
+function sentReviews(reviews: ReviewSummary, artifacts: Artifact[]) {
+  const byMessage = new Map<string, SentPage>();
+  const byHeader = new Map<string, SentPage[]>();
+  for (const [key, page] of Object.entries(reviews)) {
+    const [scope, ...rest] = key.split("/");
+    const ref: ArtifactRef = scope === "task" ? { scope: "task", task: rest[0], name: rest[1] } : { scope: "chat", task: null, name: rest[0] };
+    const artifact = artifacts.find((candidate) => reviewKey(candidate) === key);
+    for (const review of page.sent ?? []) {
+      const sent: SentPage = { key, ref, artifact, review, threads: page.threads ?? [] };
+      if (review.message) byMessage.set(review.message, sent);
+      if (review.header) byHeader.set(review.header, [...byHeader.get(review.header) ?? [], sent]);
+    }
+  }
+  for (const pages of byHeader.values()) pages.sort((a, b) => a.review.at - b.review.at);
+  return { byMessage, byHeader };
+}
+
+/**
+ * Which review each captain message is: by its id, or else, for a resumed conversation's messages, by its first line,
+ * the latest such message taking the latest review with that line not already some message's own. One review is
+ * never two messages.
+ */
+function reviewsOf(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary) {
+  const { byMessage, byHeader } = sentReviews(reviews, artifacts);
+  const found = new Map<string, SentPage>();
+  const ids = new Set(messages.map((message) => message.id));
+  const unclaimed = new Map([...byHeader].map(([header, pages]) => [header, pages.filter((page) => !ids.has(page.review.message))]));
+  for (const message of [...messages].reverse()) {
+    if (message.who !== "captain") continue;
+    const own = byMessage.get(message.id) ?? unclaimed.get(message.text.split("\n")[0])?.pop();
+    if (own) found.set(message.id, own);
+  }
+  return found;
+}
 
 /**
  * Consecutive steps read as one group between the first mate's messages.
@@ -1510,7 +1566,8 @@ const CHAT_PAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** When this window opened: a page shared before it belongs with the resumed conversation, not with today's. */
 const WINDOW_OPENED = new Date().toISOString();
 
-function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
+function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary = {}) {
+  const sent = reviewsOf(messages, artifacts, reviews);
   const lastPast = messages.reduce((found, message, index) => message.past ? index : found, -1);
   // A resumed conversation comes back without times, so its pages cannot be placed
   // between its messages. They go after it, still under "Earlier", and "Today" keeps
@@ -1536,7 +1593,10 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[]) {
     if (!message.past) pushPages(message.createdAt);
     const past = message.past === true;
     const last = items.at(-1);
-    if (message.who !== "step") items.push({ type: "message", message });
+    // A review the captain sent is a card, not the text written for the first mate.
+    const review = sent.get(message.id);
+    if (review) items.push({ type: "review", message, sent: review });
+    else if (message.who !== "step") items.push({ type: "message", message });
     else if (last?.type === "steps" && last.past === past) last.steps.push(message);
     else items.push({ type: "steps", id: `steps-${message.id}`, steps: [message], past });
   });
@@ -1600,11 +1660,11 @@ function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; ho
   return <section className="approval-card" aria-label="The first mate is asking for your OK"><div className="approval-copy"><strong>The first mate wants to run</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : option.kind.startsWith("reject") ? "reject" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
 }
 
-function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
+function ChatView({ messages, artifacts, reviews, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
-  const items = chatItems(messages, artifacts);
+  const items = chatItems(messages, artifacts, reviews);
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   // Arriving with words already written (Push back, asking for a report) puts the caret after them, ready to go on.
@@ -1635,7 +1695,9 @@ function ChatView({ messages, artifacts, tasks, onOpenArtifact, outbox, draft, f
   return <div className="chat-view">{banners}<div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
     ? <div key={item.id} className={`day-label ${index > 0 ? "later" : ""}`}>{item.text}</div>
     : item.type === "artifact"
-      ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
+      ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} reviews={reviews} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
+    : item.type === "review"
+      ? <ReviewChatCard key={item.message.id} message={item.message} sent={item.sent} outbox={outbox[item.message.id]} running={running} tasks={tasks} onOpen={(rev) => item.sent.artifact && onOpenArtifact(item.sent.artifact, rev)} onSettle={(threads) => onSettle(item.sent.ref, threads)} />
     : item.type === "steps"
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
@@ -1666,7 +1728,8 @@ function MateText({ text }: { text: string }) {
   >{text}</ReactMarkdown></div>;
 }
 
-function ChatMessageView({ message, outbox, running, onResend }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void }) {
+/** How far a captain's message has got with the first mate, and what that means, for its footer. */
+function delivery(message: ChatMessage, outbox: OutboxView | undefined, running: boolean) {
   const status = !outbox ? null : outbox.errorKind === "not_sent"
     ? "Not sent"
     : outbox.errorKind === "failed"
@@ -1686,6 +1749,11 @@ function ChatMessageView({ message, outbox, running, onResend }: { message: Chat
       : outbox.status === "sent" || outbox.status === "likely_started"
         ? "The first mate has this and is working on it."
         : running ? "The first mate will read this when it finishes what it's doing." : "The first mate will read this when it starts.";
+  return { status, tooltip };
+}
+
+function ChatMessageView({ message, outbox, running, onResend }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void }) {
+  const { status, tooltip } = delivery(message, outbox, running);
   const resendAction = !outbox?.error ? null : outbox.resent
     ? <span className="resent-note">Sent again</span>
     : <button onClick={onResend}>{outbox.errorKind === "not_sent" ? "Retry" : "Send again"}</button>;
@@ -1987,9 +2055,99 @@ function ArtifactsView({ artifacts, tasks, reviews, backlog, calls, onOpen }: { 
   </div>;
 }
 
-function ArtifactChatCard({ artifact, revision, tasks, onOpen }: { artifact: Artifact; revision: ArtifactRevision; tasks: FleetTask[]; onOpen: () => void }) {
+function ArtifactChatCard({ artifact, revision, tasks, reviews, onOpen }: { artifact: Artifact; revision: ArtifactRevision; tasks: FleetTask[]; reviews?: ReviewSummary; onOpen: () => void }) {
   const from = revision.presented_by.role === "firstmate" ? "The first mate shared a page" : `${artifactOwner(artifact, tasks)} ${revision.rev === 1 ? "shared a page" : `revised a page · Rev ${revision.rev}`}`;
-  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-thumb" aria-hidden="true" /><div><strong>{revision.title}</strong><small>{from} · <time>{formatWhen(revision.presented_at)}</time></small>{revision.note && <p>{revision.note}</p>}</div><button onClick={onOpen}>Open review</button></article>;
+  // A revision that answers the captain's comments says so, since the review card above is where they are settled.
+  const sentIds = new Set((reviews?.[reviewKey(artifact)]?.threads ?? []).map((thread) => thread.id));
+  const answering = [...(revision.answers?.addressed ?? []), ...(revision.answers?.replies ?? []).map((reply) => reply.thread)].filter((id, index, all) => sentIds.has(id) && all.indexOf(id) === index);
+  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-thumb" aria-hidden="true" /><div><strong>{revision.title}</strong><small>{from} · <time>{formatWhen(revision.presented_at)}</time></small>{revision.note && <p>{revision.note}</p>}{answering.length > 0 && <p className="artifact-card-answers" data-testid="answers-review">Answers {answering.length === 1 ? "your comment" : `${answering.length} of your comments`}: {answering.join(", ")}</p>}</div><button onClick={onOpen}>Open review</button></article>;
+}
+
+const VERDICT_WORDS: Record<ReviewVerdict, string> = { changes: "Requests changes", approve: "Approved", comment: "Comments only" };
+
+/**
+ * A review the captain sent, drawn as what it is rather than the text written for the first mate: the page, the
+ * verdict, each comment with its words, what the author's later revisions say about each, and what is settled. It
+ * follows the review from sent to settled, then shrinks to one line, the way an answered call does. The text the
+ * first mate got stays one click away.
+ */
+function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettle }: { message: ChatMessage; sent: SentPage; outbox?: OutboxView; running: boolean; tasks: FleetTask[]; onOpen: (rev?: number) => void; onSettle: (threads: string[]) => Promise<unknown> }) {
+  const { artifact, review } = sent;
+  const [settling, setSettling] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const title = artifact?.title ?? sent.ref.name;
+  const threads = review.threads.map((id) => sent.threads.find((thread) => thread.id === id)).filter((thread): thread is SentThread => Boolean(thread));
+  const answers = artifact ? authorAnswers(artifact) : {};
+  const answerOf = (thread: SentThread) => {
+    const answer = answers[thread.id];
+    return answer && answer.rev > thread.rev ? answer : undefined;
+  };
+  const answeredIn = Math.max(0, ...threads.map((thread) => answerOf(thread)?.rev ?? 0));
+  // The revision the comments were written on, which is where a review's story starts.
+  const writtenOn = Math.min(review.rev, ...threads.map((thread) => thread.rev));
+  const settleable = threads.filter((thread) => thread.state === "open" && answerOf(thread)).map((thread) => thread.id);
+  const settle = async (ids: string[]) => {
+    setSettling(true);
+    setProblem(null);
+    try {
+      await onSettle(ids);
+    } catch (error) {
+      setProblem(`That did not settle: ${String(error)}`);
+    } finally {
+      setSettling(false);
+    }
+  };
+  if (threads.length > 0 && threads.every((thread) => thread.state === "resolved")) {
+    return <article className="review-card settled" data-testid="review-card" data-state="settled">
+      <CheckCheck size={15} />
+      <span><strong>Review of {title} settled</strong> · {threads.length === 1 ? "1 comment" : `${threads.length} comments`} · rev {writtenOn}{answeredIn > writtenOn ? ` → rev ${answeredIn}` : ""}</span>
+      {artifact && <button onClick={() => onOpen(answeredIn || review.rev)}>Open</button>}
+    </article>;
+  }
+  const { status, tooltip } = delivery(message, outbox, running);
+  const task = artifact?.scope === "task" ? tasks.find((candidate) => candidate.id === artifact.task) : undefined;
+  const working = task && LIVE_STATES.has(task.current_state.state) && !answeredIn ? `${task.id} · ${stateLabel(task.current_state.state)}` : null;
+  const where = artifact?.scope === "task" ? artifact.task : "Shared in chat";
+  return <article className="review-card" data-testid="review-card" data-state={answeredIn ? "answered" : "sent"}>
+    <header>
+      <span className="review-card-kicker">Your review</span>
+      <strong>{title}</strong>
+      <small>{where} · Rev {review.rev} · <em className={`review-verdict ${review.verdict}`}>{VERDICT_WORDS[review.verdict] ?? review.verdict}</em></small>
+    </header>
+    {threads.length === 0 && <p className="review-card-empty">No comments on the page itself.</p>}
+    {threads.length > 0 && <ul className="review-card-threads">
+      {threads.map((thread) => {
+        const answer = answerOf(thread);
+        return <li key={thread.id} data-thread={thread.id}>
+          <span className="thread-id">{thread.id}</span>
+          <div>
+            {thread.quote && <blockquote>{thread.quote}</blockquote>}
+            <p>{thread.said}</p>
+            {answer && <div className="thread-answer"><strong>{answer.reply ? `Answered in rev ${answer.rev}` : `Changed in rev ${answer.rev}`}</strong>{answer.reply && <p>{answer.reply}</p>}</div>}
+          </div>
+          <span className="review-card-marks">
+            {thread.picture && <span className="review-card-picture" title="Sent with a picture of this place"><Camera size={13} /></span>}
+            {thread.state === "resolved"
+              ? <em className="thread-state settled">Settled</em>
+              : answer && <button className="icon-button" title="Settle this" disabled={settling} onClick={() => void settle([thread.id])}><CheckCheck size={14} /></button>}
+          </span>
+        </li>;
+      })}
+    </ul>}
+    {review.answers.length > 0 && <ul className="file-chips review-card-answers">{review.answers.map((answer) => <li key={answer.decision} className="file-chip" title={answer.label}><Check size={13} /><span>{answer.label || answer.option}</span><small>recorded</small></li>)}</ul>}
+    <footer className="message-state review-card-trail">
+      {status && <time title={tooltip}>{status === "Reading" ? "With the first mate" : status.startsWith("Read by") ? `Read by the first mate ${status.slice("Read by ".length)}` : status}</time>}
+      {!status && !message.past && <time>{formatTime(message.createdAt)}</time>}
+      {working && <span className="review-card-live">{working}</span>}
+      {answeredIn > 0 && <span className="review-card-answered">Answered in rev {answeredIn}</span>}
+    </footer>
+    {(answeredIn > 0 || settleable.length > 0) && <div className="review-card-actions">
+      {artifact && answeredIn > 0 && <button className="primary" onClick={() => onOpen(answeredIn)}>Open rev {answeredIn}</button>}
+      {settleable.length > 0 && <button onClick={() => void settle(settleable)} disabled={settling}>{settleable.length === 1 ? "Settle it" : `Settle all ${settleable.length}`}</button>}
+    </div>}
+    {problem && <p className="review-card-problem" role="alert">{problem}</p>}
+    <details className="review-card-text"><summary>What the first mate was sent</summary><pre>{message.text}</pre></details>
+  </article>;
 }
 
 /**
@@ -2004,12 +2162,59 @@ function text(value: unknown, limit: number) {
   return typeof value === "string" ? value.slice(0, limit) : "";
 }
 
+/** A whole number of CSS pixels a page could plausibly measure, or nothing. */
+function pageNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1_000_000 ? Math.round(value) : null;
+}
+
+function pageBoxOf(value: unknown): PageBox | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const box = value as Record<string, unknown>;
+  const [x, y, w, h] = [box.x, box.y, box.w, box.h].map(pageNumber);
+  return x === null || y === null || w === null || h === null || w < 0 || h < 0 ? undefined : { x, y, w, h };
+}
+
+const PICTURE_REASONS: PictureReason[] = ["repeated", "opened", "wordless"];
+
+/** Why a picture is on for a pick, in the captain's words. */
+const PICTURE_WHY: Record<PictureReason, string> = {
+  repeated: "These words are in more than one place",
+  opened: "It's inside something you opened",
+  wordless: "There are no words of its own here",
+};
+
 function pageAnchor(value: unknown): ReviewAnchor | null {
   if (!value || typeof value !== "object") return null;
   const anchor = value as Record<string, unknown>;
   const quote = text(anchor.quote, 400);
   if (!quote.trim()) return null;
-  return { quote, prefix: text(anchor.prefix, 200), suffix: text(anchor.suffix, 200), path: text(anchor.path, 600) };
+  const kept: ReviewAnchor = { quote, prefix: text(anchor.prefix, 200), suffix: text(anchor.suffix, 200), path: text(anchor.path, 600) };
+  const element = text(anchor.element, 600);
+  if (element) kept.element = element;
+  const near = text(anchor.near, 200);
+  if (near) kept.near = near;
+  const occurrence = anchor.occurrence as Record<string, unknown> | null | undefined;
+  const [n, of, shown] = [occurrence?.n, occurrence?.of, occurrence?.shown].map(pageNumber);
+  if (n !== null && of !== null && n >= 1 && n <= of) kept.occurrence = { n, of, shown: shown === null ? of : Math.min(shown, of) };
+  const box = pageBoxOf(anchor.box);
+  if (box) kept.box = box;
+  const point = anchor.point as Record<string, unknown> | undefined;
+  const [px, py] = [point?.x, point?.y].map(pageNumber);
+  if (px !== null && py !== null) kept.point = { x: px, y: py };
+  const view = anchor.view as Record<string, unknown> | undefined;
+  const [vw, vh, scrolled] = [view?.w, view?.h, view?.scroll_y].map(pageNumber);
+  if (vw !== null && vh !== null && scrolled !== null && (view?.scheme === "light" || view?.scheme === "dark")) kept.view = { w: vw, h: vh, scroll_y: scrolled, scheme: view.scheme };
+  const reasons = Array.isArray(anchor.reasons) ? PICTURE_REASONS.filter((reason) => (anchor.reasons as unknown[]).includes(reason)) : [];
+  if (reasons.length) kept.reasons = reasons;
+  return kept;
+}
+
+/** A picture the page drew around a pick: only a JPEG of a sane size, and what part of the page it shows. */
+function pagePicture(value: Record<string, unknown>): PagePicture | null {
+  const jpeg = typeof value.jpeg === "string" && value.jpeg.startsWith("data:image/jpeg;base64,") && value.jpeg.length <= 3_000_000 ? value.jpeg : null;
+  const crop = pageBoxOf(value.crop);
+  const took = pageNumber(value.took_ms);
+  return jpeg && crop && crop.w > 0 && crop.h > 0 ? { jpeg, crop, took_ms: took ?? 0 } : null;
 }
 
 function sceneFileOk(file: string) {
@@ -2080,6 +2285,15 @@ function proposalPicture(thread: ReviewThread, url: string) {
   return `${base}/review-files/${encodeURIComponent(anchor.picture.split("/").at(-1) ?? "")}`;
 }
 
+/** The picture the page drew around a thread's place, kept beside the review. */
+function placePicture(thread: ReviewThread, url: string) {
+  if (thread.picture_preview) return thread.picture_preview;
+  const file = thread.picture?.file;
+  if (!file?.startsWith("review-files/")) return undefined;
+  const base = url.slice(0, url.lastIndexOf("/rev-"));
+  return `${base}/review-files/${encodeURIComponent(file.slice("review-files/".length))}`;
+}
+
 /** The words a thread is pinned to, for the rail. */
 function threadQuote(thread: ReviewThread) {
   const quote = thread.anchor?.quote?.trim();
@@ -2100,7 +2314,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   sendReady: boolean;
   runtime: HostRuntimeState;
   onRevision: (rev: number) => void;
-  onComment: (body: string, anchor?: ReviewAnchor, thread?: string) => Promise<unknown>;
+  onComment: (body: string, anchor?: ReviewAnchor, thread?: string, picture?: CommentPicture) => Promise<unknown>;
   onDiscard: (thread: string) => Promise<unknown>;
   /** Resolves to a warning when the review went only partly: answers recorded, message not sent. */
   onSubmit: (verdict: ReviewVerdict) => Promise<string | undefined>;
@@ -2116,6 +2330,13 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   const [findingsOpen, setFindingsOpen] = useState(false);
   const [commenting, setCommenting] = useState(false);
   const [pending, setPending] = useState<ReviewAnchor | null>(null);
+  // The page draws every pick; the comment keeps the drawing only while Picture is on.
+  const [pick, setPick] = useState<number | null>(null);
+  const [withPicture, setWithPicture] = useState(false);
+  const [drawn, setDrawn] = useState<Record<number, PagePicture | { error: string }>>({});
+  const drawnNow = useRef(drawn);
+  drawnNow.current = drawn;
+  const waitingFor = useRef(new Map<number, (result: PagePicture | { error: string }) => void>());
   const [draft, setDraft] = useState("");
   const [missing, setMissing] = useState<string[]>([]);
   const [scenes, setScenes] = useState<ScenePlace[]>([]);
@@ -2128,6 +2349,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     if (!verdictChosen) setVerdict(stake.verdict);
   }, [stake.verdict, verdictChosen]);
   const [sending, setSending] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const note = layoutNote(revision);
@@ -2171,7 +2393,16 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
         const anchor = commentingNow.current ? pageAnchor(data.anchor) : null;
         if (!anchor) return;
         setPending(anchor);
+        setPick(typeof data.pick === "number" && Number.isSafeInteger(data.pick) ? data.pick : null);
+        setWithPicture((anchor.reasons?.length ?? 0) > 0);
         setCommenting(false);
+      } else if (data.type === "qd:pictured") {
+        if (typeof data.pick !== "number") return;
+        const pickId = data.pick;
+        const result = pagePicture(data) ?? { error: text(data.error, 200) || "the page could not draw itself" };
+        setDrawn((current) => ({ ...current, [pickId]: result }));
+        waitingFor.current.get(pickId)?.(result);
+        waitingFor.current.delete(pickId);
       } else if (data.type === "qd:located") {
         const found = Array.isArray(data.missing) ? data.missing.filter((id): id is string => typeof id === "string") : [];
         setMissing((current) => current.join("\n") === found.join("\n") ? current : found);
@@ -2205,16 +2436,42 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     }
   }
 
+  /** A page that loads again counts its picks from the start, so what it drew before names nothing in it now. */
+  function forgetPicks() {
+    for (const resolve of waitingFor.current.values()) resolve({ error: "the page reloaded before it finished drawing" });
+    waitingFor.current.clear();
+    drawnNow.current = {};
+    setDrawn({});
+    setPick(null);
+    setPending(null);
+    setWithPicture(false);
+  }
+
+  /** The picture a new comment goes with, waiting briefly for the page to finish drawing it. */
+  async function pictureFor(anchor: ReviewAnchor): Promise<CommentPicture | undefined> {
+    if (!withPicture || pick === null) return anchor.reasons?.length ? { skipped: "the captain left the picture out" } : undefined;
+    const current = pick;
+    const result = drawnNow.current[current] ?? await new Promise<PagePicture | { error: string }>((resolve) => {
+      waitingFor.current.set(current, resolve);
+      setTimeout(() => resolve({ error: "the page took too long to draw itself" }), 4000);
+    });
+    return "jpeg" in result ? result : { skipped: result.error };
+  }
+
   async function save() {
     const body = draft.trim();
     if (!body || !pending) return;
     setProblem(null);
+    setSaving(true);
     try {
-      await onComment(body, pending);
+      await onComment(body, pending, undefined, await pictureFor(pending));
       setDraft("");
       setPending(null);
+      setPick(null);
     } catch (error) {
       setProblem(String(error));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -2255,23 +2512,24 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     <div className="artifact-body">
       <div className={`artifact-stage ${narrow ? "narrow" : ""}`}>
         {!loaded && <div className="artifact-loading">Opening the page…</div>}
-        <iframe ref={frame} title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => { setLoaded(true); setMissing([]); }} />
+        <iframe ref={frame} title={revision.title} src={url} sandbox="allow-scripts allow-forms allow-downloads" referrerPolicy="no-referrer" onLoad={() => { setLoaded(true); setMissing([]); forgetPicks(); }} />
       </div>
       <aside className="review-rail" aria-label="Your review">
         <header className="review-head"><strong>Your review</strong><small>{calls.some(isOpen) ? `Answering here also closes the captain's call on ${calls.filter(isOpen).length === 1 ? "this decision" : "these decisions"}.` : "Write on a part of the page, then send it all at once."}</small></header>
         {pending && <section className="comment-composer">
           <blockquote>{pending.quote.length > 160 ? `${pending.quote.slice(0, 160)}…` : pending.quote}</blockquote>
-          <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setDraft(""); } }} />
-          <div><button className="ghost" onClick={() => { setPending(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim()} onClick={() => void save()}>Comment</button></div>
+          {pick !== null && <PictureChoice on={withPicture} reasons={pending.reasons ?? []} drawn={drawn[pick]} onToggle={() => setWithPicture((current) => !current)} />}
+          <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setPick(null); setDraft(""); } }} />
+          <div><button className="ghost" onClick={() => { setPending(null); setPick(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim() || saving} onClick={() => void save()}>{saving ? "Saving…" : "Comment"}</button></div>
         </section>}
         {calls.length > 0 && <div className="decision-answers">
           {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} onAnswer={(option, label) => onAnswer(call, option, label)} />)}
         </div>}
         <div className="review-threads">
           {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment, then pick the words or the part of the page you mean.</p>}
-          {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
+          {live.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url) ?? placePicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
           {settled.length > 0 && <button className="settled-toggle" aria-expanded={showSettled} onClick={() => setShowSettled((current) => !current)}><ChevronRight size={13} className={showSettled ? "rotated" : ""} /> {settled.length} settled</button>}
-          {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
+          {showSettled && settled.map((thread) => <ReviewThreadCard key={thread.id} thread={thread} answer={answers[thread.id]} rev={revision.rev} missing={missing.includes(thread.id)} picture={proposalPicture(thread, url) ?? placePicture(thread, url)} onFocus={() => tell({ type: "qd:focus", id: thread.id })} onDiscard={() => void onDiscard(thread.id)} onSettle={(resolved) => void onSettle(thread.id, resolved)} />)}
         </div>
         <div className="review-send">
           {calls.some(isOpen) && <span className="review-send-label">Answer the decision</span>}
@@ -2286,6 +2544,30 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     {openScene && <Suspense fallback={<div className="scene-backdrop"><div className="scene-loading">Opening the diagram…</div></div>}>
       <SceneEditor place={openScene.place} scene={openScene.scene} onClose={() => setOpenScene(null)} onPropose={(proposal) => onScene(openScene.place, proposal)} />
     </Suspense>}
+  </div>;
+}
+
+/**
+ * Whether a new comment goes with a picture of its place. It starts on when the words alone may not say which place
+ * was meant, says why, and shows what the author would see. The picture is the page redrawing itself, not a
+ * screenshot, and the author is told so.
+ */
+function PictureChoice({ on, reasons, drawn, onToggle }: { on: boolean; reasons: PictureReason[]; drawn?: PagePicture | { error: string }; onToggle: () => void }) {
+  const why = reasons.map((reason) => PICTURE_WHY[reason]).join(" · ");
+  const reason = why ? `${why}. ` : "";
+  const status = !on
+    ? (why ? `Left out. ${why}.` : "The words say where this is.")
+    : !drawn
+      ? `${reason}Drawing the page…`
+      : "error" in drawn
+        ? `${reason}Couldn't draw the page: ${drawn.error}. The comment goes without it.`
+        : `${reason}The author gets this picture, a redraw of the page with the place outlined.`;
+  return <div className={`picture-choice ${on ? "on" : ""}`} data-testid="picture-choice">
+    <button type="button" className="picture-toggle" aria-pressed={on} onClick={onToggle} title={on ? "Send this comment without a picture" : "Send a picture of this place with the comment"}>{on ? <Camera size={14} /> : <CameraOff size={14} />} Picture</button>
+    <div>
+      {on && drawn && "jpeg" in drawn && <img src={drawn.jpeg} alt="The page redrawn around the place you picked, with it outlined" />}
+      <small>{status}</small>
+    </div>
   </div>;
 }
 
@@ -2347,7 +2629,7 @@ function ReviewThreadCard({ thread, answer, rev, missing, picture, onFocus, onDi
         : <button className="icon-button" title={thread.state === "resolved" ? "Open this again" : "Settle this"} onClick={(event) => { event.stopPropagation(); onSettle(thread.state !== "resolved"); }}>{thread.state === "resolved" ? <RotateCcw size={14} /> : <CheckCheck size={14} />}</button>}
     </header>
     <blockquote>{threadQuote(thread)}</blockquote>
-    {picture && <img className="thread-picture" src={picture} alt={`The diagram as you proposed it: ${threadQuote(thread)}`} />}
+    {picture && <img className="thread-picture" src={picture} alt={thread.anchor && "scene" in thread.anchor ? `The diagram as you proposed it: ${threadQuote(thread)}` : `The page redrawn around ${threadQuote(thread)}, with it outlined`} />}
     {thread.comments.map((comment, index) => <p key={index}>{comment.body}</p>)}
     {answered && <div className="thread-answer"><strong>{answer.reply ? `Answered in rev ${answer.rev}` : `Changed in rev ${answer.rev}`}</strong>{answer.reply && <p>{answer.reply}</p>}</div>}
     {missing && <small className="thread-missing">Not found in this revision.</small>}

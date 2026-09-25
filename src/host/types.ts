@@ -167,17 +167,48 @@ export type ArtifactRevision = {
   answers?: { addressed: string[]; replies: { thread: string; body: string }[] };
 };
 
-/** Where a comment sits on the page: the words themselves, a little text either side, and a fallback path. */
-export type ReviewAnchor = { quote: string; prefix: string; suffix: string; path: string };
+/** A rectangle in the page's CSS pixels, measured from its top left. */
+export type PageBox = { x: number; y: number; w: number; h: number };
+/** Why the words alone may not say which place the captain meant, so a picture goes with the comment. */
+export type PictureReason = "repeated" | "opened" | "wordless";
+/**
+ * Where a comment sits on the page: the words themselves, a little text either side, and a fallback path. A place
+ * picked since the page could describe itself also carries which match of the words it is, the element by what it
+ * is, the labels around it, where it sat, the window it was seen in, and why words alone may not be enough.
+ * `src-tauri/src/review-frame.js` owns what each part means.
+ */
+export type ReviewAnchor = {
+  quote: string;
+  prefix: string;
+  suffix: string;
+  path: string;
+  occurrence?: { n: number; of: number; shown: number } | null;
+  element?: string;
+  near?: string;
+  box?: PageBox;
+  point?: { x: number; y: number };
+  view?: { w: number; h: number; scroll_y: number; scheme: "light" | "dark" };
+  reasons?: PictureReason[];
+};
+/** What the page drew around a picked place: a small JPEG, which part of the page it shows, and how long it took. */
+export type PagePicture = { jpeg: string; crop: PageBox; took_ms: number };
+/** What goes with a new comment about its picture: the picture, or why there is none although one was due. */
+export type CommentPicture = PagePicture | { skipped: string };
+/** The picture a sent or saved thread keeps beside its review, as a file name under `review-files/`. */
+export type ThreadPicture = { file: string; crop: PageBox; method: "redraw"; took_ms: number; bytes: number };
 /** A thread on a diagram the page owns: the scene is the thing being changed, not a quote. */
 export type SceneAnchor = { scene: string; label: string; path: string; quote: string; scene_file: string; picture: string | null; /** Only the browser mock, which has no home to serve the picture from. */ preview?: string };
 export type ReviewComment = { body: string; at: number };
 /** One place on the page the captain wrote about. `sent_at` is null while it is still a draft. */
 /** `draft` until the review goes, then `open` until the captain settles it. */
 export type ReviewThreadState = "draft" | "open" | "resolved";
-export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | SceneAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[] };
+export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | SceneAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[]; picture?: ThreadPicture | null; picture_skipped?: string | null; /** Only the browser mock, which has no home to serve the picture from. */ picture_preview?: string };
 export type ReviewVerdict = "approve" | "changes" | "comment";
-export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[] };
+export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[]; /** The message's first line; absent in reviews sent before it was kept. */ header?: string | null; answers?: string[] | { decision: string; option: string; label: string }[] };
+/** A sent comment as the chat shows it. */
+export type SentThread = { id: string; rev: number; state: ReviewThreadState; quote: string; said: string; picture: boolean };
+/** A review as the chat shows it: what went, and the answers recorded with it. */
+export type SentReview = { at: number; verdict: ReviewVerdict; rev: number; message: string; header?: string | null; threads: string[]; answers: { decision: string; option: string; label: string }[] };
 /** What firstmate's intake did with an answer: `closed` is recorded; anything else is not. */
 export type IntakeResult = "closed" | "skipped" | "not_recorded";
 export type IntakeOutcome = { call: string; result: IntakeResult; detail: string };
@@ -198,6 +229,9 @@ export type ReviewSummary = Record<string, {
   answered: string[];
   /** Each sent comment the captain has not settled, with the revision it was written on, so a later revision can answer it. */
   open_threads?: { id: string; rev: number }[];
+  /** Each review sent, and every comment sent, so the chat can draw a review as a card rather than its text. */
+  sent?: SentReview[];
+  threads?: SentThread[];
 }>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */
@@ -489,7 +523,7 @@ export interface HostAdapter {
   /** The review of one page: every thread, and what has been sent. */
   reviewGet(ref: ArtifactRef): Promise<ReviewView>;
   /** Opens a thread on the page, or adds to one. Local until the review is sent. */
-  reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: ReviewAnchor, thread?: string): Promise<ReviewView>;
+  reviewComment(ref: ArtifactRef, rev: number, body: string, anchor?: ReviewAnchor, thread?: string, picture?: CommentPicture): Promise<ReviewView>;
   /** Takes back a thread that has not been sent. */
   reviewDiscard(ref: ArtifactRef, thread: string): Promise<ReviewView>;
   /** Records the staged answers through firstmate's intake, then sends the whole draft to the first mate as one message. */

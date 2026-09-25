@@ -18,7 +18,17 @@ function reviewPages(): Plugin {
     configureServer(server) {
       server.middlewares.use((request, response, next) => {
         const path = (request.url ?? "").split("?")[0];
-        if (!path.startsWith("/artifacts/") || !path.endsWith(".html")) return next();
+        // The library the review script loads when the captain picks a place, served as the app serves it.
+        if (path === "/_qd/snapdom.js") {
+          response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+          response.setHeader("Access-Control-Allow-Origin", "*");
+          response.end(readFileSync(new URL("./src-tauri/src/vendor/snapdom.js", import.meta.url)));
+          return;
+        }
+        if (!path.startsWith("/artifacts/")) return next();
+        // The page runs in an opaque origin, so its own fonts and module scripts are cross-origin requests, as in the app.
+        response.setHeader("Access-Control-Allow-Origin", "*");
+        if (!path.endsWith(".html")) return next();
         let page: string;
         try {
           // Only the fixtures: an encoded ".." must not walk out to any other page on disk.
