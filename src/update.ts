@@ -57,7 +57,7 @@ export type CheckView = {
  */
 export function checkView(update: AppUpdate | null, ago: (at: number) => string): CheckView | null {
   if (!update || update.state !== "none") return null;
-  if (!update.enabled) return { kind: "off", title: "This build does not update", detail: `${update.current} · only a release build checks for updates`, action: null };
+  if (!update.enabled) return { kind: "off", title: "This build does not update", detail: `${update.current} · updates are off for this build`, action: null };
   if (update.checking) {
     return update.downloading
       ? { kind: "checking", title: `Downloading ${update.downloading}…`, detail: "Its signature is checked before it is kept", action: null }
@@ -69,4 +69,24 @@ export function checkView(update: AppUpdate | null, ago: (at: number) => string)
   }
   if (!at) return { kind: "unchecked", title: "Not checked yet", detail: update.current, action: "Check now" };
   return { kind: "current", title: "Up to date", detail: `${update.current} · checked ${at}`, action: "Check now" };
+}
+
+/**
+ * The backend's word on the update, newest last. Events arrive in the order the backend sent them, and every change a
+ * command makes is also sent as one, so an event always applies. A command's reply travels another way and can land
+ * after an event sent later: it applies only when no event arrived while it was asked.
+ */
+export function updateFeed(apply: (update: AppUpdate) => void) {
+  let events = 0;
+  return {
+    event(update: AppUpdate) {
+      events += 1;
+      apply(update);
+    },
+    async reply(ask: () => Promise<AppUpdate>) {
+      const before = events;
+      const next = await ask();
+      if (events === before) apply(next);
+    },
+  };
 }

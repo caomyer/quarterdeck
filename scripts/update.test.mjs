@@ -5,7 +5,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkView, updateView } from "../src/update.ts";
+import { checkView, updateFeed, updateView } from "../src/update.ts";
 import { ago } from "../src/usage.ts";
 
 const base = { state: "none", current: "0.1.41", version: null, notes: null, error: null, installed: null, enabled: true, checking: false, downloading: null, checked_at_ms: null, check_error: null };
@@ -80,7 +80,7 @@ test("a check that failed says why, when it last looked, and can be tried again"
 test("a build that never looks says so plainly, with nothing to press", () => {
   const off = checkView({ ...base, enabled: false }, since);
   assert.deepEqual([off.kind, off.title, off.action], ["off", "This build does not update", null]);
-  assert.equal(off.detail, "0.1.41 · only a release build checks for updates");
+  assert.equal(off.detail, "0.1.41 · updates are off for this build");
 });
 
 test("while an update is held, the notice speaks and the line steps aside", () => {
@@ -89,4 +89,28 @@ test("while an update is held, the notice speaks and the line steps aside", () =
   }
   const installed = { ...base, checked_at_ms: NOW, installed: { version: "0.1.41", from: "0.1.40", notes: null } };
   assert.equal(checkView(installed, since).kind, "current", "after a restart, the note and the line both show");
+});
+
+test("a command's reply never overwrites an event that arrived while it was asked", async () => {
+  const shown = [];
+  const feed = updateFeed((update) => shown.push(update));
+  const checking = { ...base, checking: true };
+  const done = { ...base, checked_at_ms: NOW, check_error: "error sending request" };
+  await feed.reply(async () => {
+    feed.event(checking);
+    feed.event(done);
+    return checking;
+  });
+  assert.deepEqual(shown, [checking, done]);
+  assert.equal(checkView(shown.at(-1), since).action, "Try again");
+});
+
+test("a command's reply applies when no event came meanwhile, and a later event still wins", async () => {
+  const shown = [];
+  const feed = updateFeed((update) => shown.push(update));
+  const checking = { ...base, checking: true };
+  const done = { ...base, checked_at_ms: NOW };
+  await feed.reply(async () => checking);
+  feed.event(done);
+  assert.deepEqual(shown, [checking, done]);
 });
