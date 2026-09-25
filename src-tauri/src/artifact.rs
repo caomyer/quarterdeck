@@ -7,7 +7,8 @@
 //!   artifact://localhost/task/<task-id>/<name>/rev-<n>/<file path>
 //!   artifact://localhost/chat/<name>/rev-<n>/<file path>
 //!
-//! the pictures a review made of its own proposals and of the places it was written on:
+//! the pictures a review made of its own proposals and of the places it was written on,
+//! and nothing else in that folder, so the review text written there for the author stays on disk:
 //!
 //!   artifact://localhost/task/<task-id>/<name>/review-files/<file>
 //!   artifact://localhost/chat/<name>/review-files/<file>
@@ -142,7 +143,8 @@ pub fn resolve(data: &Path, request_path: &str) -> Result<PathBuf, Refusal> {
         }
         let folder = std::fs::canonicalize(artifact_dir.join("review-files")).map_err(|_| Refusal::Missing)?;
         let found = std::fs::canonicalize(folder.join(&file[0])).map_err(|_| Refusal::Missing)?;
-        if !found.starts_with(&folder) || !found.is_file() {
+        let picture = found.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ["png", "jpg", "jpeg"].iter().any(|kind| ext.eq_ignore_ascii_case(kind)));
+        if !found.starts_with(&folder) || !found.is_file() || !picture {
             return Err(Refusal::Missing);
         }
         return Ok(found);
@@ -314,6 +316,22 @@ mod tests {
         std::fs::write(data.join("t1/artifacts/plan/rev-3/files/My Plan.html"), "half").unwrap();
         std::fs::write(data.join("t1/report.md"), "report").unwrap();
         data
+    }
+
+    #[test]
+    fn review_files_serve_only_pictures() {
+        let data = store("review-files");
+        let folder = data.join("t1/artifacts/plan/review-files");
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["t1-r2.jpg", "t2.png", "t3.JPEG", "review-1.md", "t2.excalidraw"] {
+            std::fs::write(folder.join(name), "x").unwrap();
+        }
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t1-r2.jpg"), Ok(folder.join("t1-r2.jpg")));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t2.png"), Ok(folder.join("t2.png")));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t3.JPEG"), Ok(folder.join("t3.JPEG")));
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/review-1.md"), Err(Refusal::Missing), "the review text stays on disk");
+        assert_eq!(resolve(&data, "/task/t1/plan/review-files/t2.excalidraw"), Err(Refusal::Missing));
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]
