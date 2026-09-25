@@ -6,7 +6,8 @@
 // deciding: a call answered inside the page that argues it, in one review with the comments,
 // recorded through firstmate's intake, or straight from Bearings, a skip never shown as recorded,
 // every way to answer a call (an option, not now until a day, and words) kept by a call a page argues,
-// in Bearings and in the page itself, and a home that predates calls[], and a diagram the page owns:
+// in Bearings and in the page itself, a call put again after it was answered in words or not now being
+// answerable again in both, and a home that predates calls[], and a diagram the page owns:
 // opening it, proposing changes, and how they reach the author.
 //
 //   pnpm dev --port 4191 --strictPort
@@ -850,6 +851,68 @@ await resumed.close();
   await answeredCard.waitFor();
   check((await answeredCard.innerText()).includes("Answered in your review of"), "Bearings says a call answered in words in the page was answered there");
   await rail.close();
+}
+
+// `?reasked`: a dated Not now and words alone went with a review, and the first mate put both calls again. Each is
+// open again in Bearings and in the page, which keeps what was said then, and takes a new answer.
+{
+  const again = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  again.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await again.goto(`${baseUrl}/?artifacts&reasked`);
+  await again.waitForFunction(() => !document.querySelector(".app-loading"));
+  const openPage = async () => {
+    await again.locator(".nav-item", { hasText: "Artifacts" }).click();
+    await again.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+    await again.locator("[data-testid='decision-answer']").first().waitFor();
+  };
+  await openPage();
+  const download = again.locator("[data-testid='decision-answer'][data-call-id='res-model-download']");
+  const cellular = again.locator("[data-testid='decision-answer'][data-call-id='res-model-cellular']");
+  await download.locator(".decision-choices button", { hasText: "Not now" }).click();
+  await download.locator(".date-field input").fill("2026-10-03");
+  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  await cellular.locator(".reply-field textarea").fill("Pause, and tell the user why it stopped.");
+  await again.waitForTimeout(900);
+  await again.locator(".send-review").click();
+  await again.locator(".review-last").waitFor();
+  await cellular.locator("[data-testid='call-reasked']").waitFor();
+  await download.locator("[data-testid='call-reasked']").waitFor();
+  for (const [name, rail, said] of [["the dated Not now", download, "Not now. Ask me again on Oct 3."], ["the words", cellular, "Pause, and tell the user why it stopped."]]) {
+    check((await rail.locator("[data-testid='answer-earlier']").innerText()).endsWith(`: ${said}`), `put again, the page keeps ${name} as what was said then`);
+    check(await rail.locator(".reply-field textarea").isEditable() && (await rail.locator(".reply-field textarea").inputValue()) === "", `put again after ${name}, the page offers its words again, empty`);
+    check(await rail.locator(".decision-choices button:disabled").count() === 0 && await rail.locator(".decision-choices button").count() > 0, `put again after ${name}, the page offers every choice again`);
+    check(await rail.locator(".decision-sent, .decision-staged").count() === 0, `put again after ${name}, the page no longer says it went or is staged`);
+  }
+  for (const theme of ["light", "dark"]) {
+    await again.evaluate((dark) => document.documentElement.classList.toggle("dark", dark), theme === "dark");
+    await shot(again, `29-rail-put-again-${theme}`);
+  }
+  await again.evaluate(() => document.documentElement.classList.remove("dark"));
+
+  await again.locator(".nav-item", { hasText: "Bearings" }).click();
+  for (const id of ["res-model-download", "res-model-cellular"]) {
+    const card = again.locator(`.decision-card[data-call-id='${id}']`);
+    await card.waitFor();
+    check(await card.getAttribute("data-answered-in-review") === null && await card.locator("button", { hasText: "Answer now" }).count() === 1, `Bearings offers ${id}'s answer again once it is put again`);
+  }
+
+  // A new answer is taken, in words and by option, and goes with the next review.
+  await openPage();
+  await cellular.locator(".reply-field textarea").fill("Finish on cellular after all.");
+  await cellular.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  check((await cellular.locator("[data-testid='answer-earlier']").innerText()).endsWith(": Pause, and tell the user why it stopped."), "what was said then stays beside the new answer");
+  await download.locator(".decision-choices button", { hasText: "Wi-Fi only" }).click();
+  await download.locator(".decision-staged", { hasText: "recorded as it is sent" }).waitFor();
+  check((await again.locator(".send-review").innerText()) === "Send review · 2", "both new answers go with the next review");
+  await again.locator(".send-review").click();
+  await download.locator("[data-testid='call-answered']").waitFor();
+  await cellular.locator(".decision-sent").waitFor();
+  check((await cellular.locator("[data-testid='answer-words']").innerText()) === "Finish on cellular after all.", "the new words went");
+  await again.locator(".nav-item", { hasText: "Chat" }).click();
+  const texts = await Promise.all((await again.locator("[data-testid='review-card']").all()).map((card) => sentText(card)));
+  check(texts.at(-1).includes("\nres-model-cellular: Finish on cellular after all.") && !texts.at(-1).includes("Pause, and tell the user"), "the next review carries the new words alone");
+  check(texts.at(-2).includes("\nres-model-cellular: Pause, and tell the user why it stopped.") && texts.at(-2).includes("Not now. Ask me again on 2026-10-03."), "the review that carried the first answers still says what they were");
+  await again.close();
 }
 
 // A call whose options are not recorded is answered in words, in Bearings and in the page.

@@ -71,12 +71,12 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<ReviewView>("review_scene", { page: ref, rev, proposal: { scene, label, path, summary, sceneJson, pngBase64: png } });
   }
 
-  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords) {
-    return invoke<ReviewView>("review_answer", { page: ref, decision, option, label, onAnswer: onAnswer ?? null, words: words ?? null });
+  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords, asked?: string | null) {
+    return invoke<ReviewView>("review_answer", { page: ref, decision, option, label, onAnswer: onAnswer ?? null, words: words ?? null, asked: asked ?? null });
   }
 
-  callAnswer({ call, option, label, onAnswer, page, note }: CallAnswerRequest) {
-    return invoke<CallAnswered>("call_answer", { page, call, option, label, onAnswer, note: note ?? null });
+  callAnswer({ call, option, label, onAnswer, page, note, asked }: CallAnswerRequest) {
+    return invoke<CallAnswered>("call_answer", { page, call, option, label, onAnswer, note: note ?? null, asked: asked ?? null });
   }
 
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {

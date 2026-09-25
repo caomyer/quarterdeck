@@ -48,7 +48,7 @@ import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
+import { answeredBy, answeredByCaptain, answeredInReview, answerInWords, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, putAgainSince, recommended, resolveEvidence } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 import { RoutingSettings } from "./Routing";
@@ -430,7 +430,7 @@ export function App() {
     const unread = argued ? (reviews[artifactKey(argued)]?.seen_rev ?? null) === null : false;
     let outcome: AnswerNote;
     try {
-      const result = await host.callAnswer({ call: call.id, option: option.key, label: option.label, onAnswer: call.on_answer ?? "", page, note });
+      const result = await host.callAnswer({ call: call.id, option: option.key, label: option.label, onAnswer: call.on_answer ?? "", page, note, asked: call.updated_at ?? null });
       if (result.message && result.text) bridge.noteSent(result.message, result.text);
       outcome = { label: option.label, result: result.outcome.result, detail: result.outcome.detail, told: Boolean(result.message), warning: result.warning, unread };
     } catch (error) {
@@ -534,8 +534,8 @@ export function App() {
                 const evidence = evidenceOf(call);
                 const argument = argumentOf(evidence);
                 const pages = evidence.flatMap((item) => item.kind === "page" ? [item.artifact] : []);
-                // A review that already recorded an answer for it; the call leaves once the snapshot catches up.
-                const answeredIn = pages.find((artifact) => (reviews[artifactKey(artifact)]?.answered ?? []).includes(call.id));
+                // A review that already answered it; the call leaves once the snapshot catches up, or is open again once put again.
+                const answeredIn = pages.find((artifact) => answeredInReview(reviews[artifactKey(artifact)], call));
                 const seen = argument?.kind === "page" ? (reviews[artifactKey(argument.artifact)]?.seen_rev ?? null) !== null : null;
                 return <DecisionCard
                   key={call.id}
@@ -643,7 +643,7 @@ export function App() {
                 return sent.warning;
               })}
               calls={callsArguedBy(calls, shownArtifact)}
-              onAnswer={(call, answer) => host.reviewAnswer(artifactRef!, call.id, answer.option?.key, answer.option?.label, call.on_answer, answer.words).then(setReview)}
+              onAnswer={(call, answer) => host.reviewAnswer(artifactRef!, call.id, answer.option?.key, answer.option?.label, call.on_answer, answer.words, call.updated_at ?? null).then(setReview)}
               onScene={(place, proposal) => host.reviewScene(artifactRef!, shownRevision.rev, place.file, place.label, place.path, proposal.summary, proposal.scene, proposal.png).then(setReview)}
               onSettle={(thread, resolved) => host.reviewSettle(artifactRef!, thread, resolved).then(setReview)}
               onSeen={(rev) => host.reviewSeen(artifactRef!, rev).then(setReview)}
@@ -2037,8 +2037,7 @@ export function artifactStanding(artifact: Artifact, review: ReviewSummary[strin
   if (!task && argued.length > 0 && waiting.length === 0 && comments.waiting.length === 0 && comments.answered.length === 0) return "settled";
   const seen = review?.seen_rev ?? null;
   if (seen === null || artifact.latest.rev > seen) return "needs-you";
-  const answered = review?.answered ?? [];
-  if (waiting.some((call) => !answered.includes(call.id))) return "needs-you";
+  if (waiting.some((call) => !answeredInReview(review, call))) return "needs-you";
   // The author answered a comment: settling it or replying is the captain's move.
   if (comments.answered.length > 0) return "needs-you";
   if (waiting.length > 0) return "discussion";
@@ -2578,7 +2577,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
           <div><button className="ghost" onClick={() => { setPending(null); setPick(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim() || saving} onClick={() => void save()}>{saving ? "Saving…" : "Comment"}</button></div>
         </section>}
         {calls.length > 0 && <div className="decision-answers">
-          {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} onAnswer={(answer) => onAnswer(call, answer)} onPending={(flush) => { if (flush) typing.current.set(call.id, flush); else typing.current.delete(call.id); }} />)}
+          {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} before={review?.earlier.filter((answer) => answer.decision === call.id).at(-1)} onAnswer={(answer) => onAnswer(call, answer)} onPending={(flush) => { if (flush) typing.current.set(call.id, flush); else typing.current.delete(call.id); }} />)}
         </div>}
         <div className="review-threads">
           {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment, then pick the words or the part of the page you mean.</p>}
@@ -2635,25 +2634,38 @@ type RailAnswer = { option?: OptionChoice; words?: AnswerWords };
  * option is recorded through firstmate's intake, and words go in its message for the first mate to record. Answered
  * anywhere, it says by whom and how, instead of offering choices that could no longer do anything.
  */
-function RailCall({ call, revision, chosen, onAnswer, onPending }: {
+function RailCall({ call, revision, chosen, before, onAnswer, onPending }: {
   call: Call;
   revision: ArtifactRevision;
   chosen?: ReviewView["answers"][number];
+  /** The last answer that went and was answered anew once the call was put again. */
+  before?: ReviewView["answers"][number];
   onAnswer: (answer: RailAnswer) => Promise<unknown>;
   /** Hands the review a way to stage words still being typed, so sending never goes without them. */
   onPending: (flush: (() => Promise<unknown>) | null) => void;
 }) {
   const recorded = chosen?.recorded?.result === "closed";
   const refused = chosen?.recorded && !recorded ? chosen.recorded : null;
-  // Sent without the intake: words, or an option from before the app recorded answers itself. The first mate records it.
-  const handedOver = chosen !== undefined && chosen.sent_at !== null && !chosen.recorded;
+  // Sent without the intake: words, or an option from before the app recorded answers itself. The first mate records it,
+  // and it holds until the call is put again after it went; then it is what the captain said then.
+  const handed = chosen !== undefined && chosen.sent_at !== null && !chosen.recorded;
+  const reasked = handed && putAgainSince(call, chosen.sent_at!);
+  const handedOver = handed && !reasked;
   const locked = recorded || handedOver;
+  const current = reasked ? undefined : chosen;
+  const then = reasked ? chosen : before;
   const updated = !call.answer && optionsUpdatedSince(call, revision.presented_at);
   const when = (at: number) => formatWhen(new Date(at).toISOString());
-  const picked: OptionChoice | null = chosen && !refused ? call.options.find((option) => option.key === chosen.option) ?? null : null;
-  const [deferring, setDeferring] = useState(Boolean(chosen?.defer));
-  const [deferDate, setDeferDate] = useState(chosen?.defer ?? "");
-  const [note, setNote] = useState(chosen?.note ?? "");
+  const picked: OptionChoice | null = current && !refused ? call.options.find((option) => option.key === current.option) ?? null : null;
+  const [deferring, setDeferring] = useState(Boolean(current?.defer));
+  const [deferDate, setDeferDate] = useState(current?.defer ?? "");
+  const [note, setNote] = useState(current?.note ?? "");
+  useEffect(() => {
+    if (!reasked) return;
+    setDeferring(false);
+    setDeferDate("");
+    setNote("");
+  }, [reasked]);
   const typing = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latest = useRef({ picked, deferring, deferDate, note });
   latest.current = { picked, deferring, deferDate, note };
@@ -2679,6 +2691,7 @@ function RailCall({ call, revision, chosen, onAnswer, onPending }: {
 
   const worded = chosen !== undefined && chosen.option === null;
   const said = chosen && (chosen.note || chosen.defer) ? answerInWords(chosen.defer, chosen.note ?? "") : "";
+  const saidThen = then ? [then.label, answerInWords(then.defer, then.note ?? "")].filter(Boolean).join(". ") : "";
   return <section className="decision-answer" data-testid="decision-answer" data-call-id={call.id}>
     <header><span>Your call</span><small>{call.id}</small></header>
     {call.question && <p>{call.question}</p>}
@@ -2691,6 +2704,8 @@ function RailCall({ call, revision, chosen, onAnswer, onPending }: {
             {said && <blockquote className="decision-words" data-testid="answer-words">{worded ? said : `You added: ${said}`}</blockquote>}
           </>
         : <>
+            {reasked && <small className="decision-updated" data-testid="call-reasked">Asked again since your answer went</small>}
+            {then && saidThen && <blockquote className="decision-words" data-testid="answer-earlier">You said {when(then.sent_at!)}: {saidThen}</blockquote>}
             {call.options.length === 0 && <small className="decision-missing" data-testid="options-missing">This page argues a call whose options are not recorded, so answer it in words.</small>}
             <CallAnswerFields
               call={call}
@@ -2713,7 +2728,7 @@ function RailCall({ call, revision, chosen, onAnswer, onPending }: {
         ? <small className="decision-sent">Recorded {when(chosen!.recorded!.at)}</small>
         : handedOver
           ? <small className="decision-sent">Sent {when(chosen!.sent_at!)}{worded ? ", for the first mate to record" : ""}</small>
-          : chosen
+          : current
             ? <small className="decision-staged">{worded ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
             : deferring && !deferDate
               ? <small className="decision-staged pending">Pick the day to be asked again</small>

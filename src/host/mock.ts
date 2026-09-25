@@ -410,9 +410,15 @@ function mockHistory(home: string): { records: BacklogRecord[]; calls: Call[] } 
   return { records, calls };
 }
 
-/** An answer that can no longer change: recorded, or handed to the first mate to record before the app recorded answers. */
-function locked(answer: ReviewView["answers"][number]) {
-  return answer.recorded?.result === "closed" || (answer.sent_at !== null && !answer.recorded);
+/** Sent for the first mate to record, the intake never having recorded it: words, a date, or an option from before. */
+function handed(answer: ReviewView["answers"][number]) {
+  return answer.sent_at !== null && !answer.recorded;
+}
+
+/** As in the app: recorded, or handed to the first mate and the call not put again since. */
+function locked(answer: ReviewView["answers"][number], asked?: string | null) {
+  const put = Date.parse(asked ?? "");
+  return answer.recorded?.result === "closed" || (handed(answer) && !(Number.isFinite(put) && put > answer.sent_at!));
 }
 
 /** The lines the app's composer writes for answers the intake recorded. */
@@ -653,6 +659,24 @@ export class MockHostAdapter implements HostAdapter {
     return outcomes;
   }
 
+  /**
+   * `?reasked`: the first mate takes each answer in words a review carried and puts its call to the captain again a
+   * moment later, the way a dated Not now comes back on its day or a follow-up question re-opens a call.
+   */
+  private putAgain(decisions: string[]) {
+    const again = decisions.filter((decision) => !this.putAgainOnce.has(decision));
+    if (!again.length || !this.snapshot.fleet.calls) return;
+    for (const decision of again) this.putAgainOnce.add(decision);
+    this.later(1200, () => {
+      const at = new Date(Date.now() + 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+      const calls = this.snapshot.fleet.calls!.map((call) => again.includes(call.id) ? { ...call, updated_at: at } : call);
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls };
+      this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    });
+  }
+
+  private readonly putAgainOnce = new Set<string>();
+
   /** The dev server serves the review pages at the same paths the app's `artifact` scheme does. */
   artifactUrl(revision: ArtifactRevision) {
     return `/artifacts/${artifactPath(revision)}`;
@@ -680,7 +704,7 @@ export class MockHostAdapter implements HostAdapter {
 
   private review(ref: ArtifactRef): ReviewView {
     const key = `${ref.scope}/${ref.task}/${ref.name}`;
-    const current = this.reviews.get(key) ?? { threads: [], answers: [], draft_count: 0, staged_answers: 0, open_count: 0, sent: [], seen_rev: null, log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
+    const current = this.reviews.get(key) ?? { threads: [], answers: [], earlier: [], draft_count: 0, staged_answers: 0, open_count: 0, sent: [], seen_rev: null, log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
     this.reviews.set(key, current);
     return current;
   }
@@ -732,7 +756,7 @@ export class MockHostAdapter implements HostAdapter {
     }]);
   }
 
-  async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords) {
+  async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords, asked?: string | null) {
     const current = this.review(ref);
     const note = words?.note?.trim() || null;
     const defer = words?.defer || null;
@@ -740,13 +764,15 @@ export class MockHostAdapter implements HostAdapter {
     if (defer && option) throw new Error("not now is an answer of its own, not one added to an option");
     if (defer && !/^\d{4}-\d{2}-\d{2}$/.test(defer)) throw new Error(`'${defer}' is not a date`);
     // As in the app: a recorded answer is on the record and stays as it went; a skipped one can be chosen again.
-    if (current.answers.some((answer) => answer.decision === decision && locked(answer))) {
+    if (current.answers.some((answer) => answer.decision === decision && locked(answer, asked))) {
       throw new Error("that answer is already on the record; tell the first mate in chat if you have changed your mind");
     }
+    // As in the app: an answer that went and was answered anew is kept as what the captain said then.
+    const earlier = [...current.earlier, ...current.answers.filter((answer) => answer.decision === decision && answer.sent_at !== null)];
     const kept = current.answers.filter((answer) => answer.decision !== decision);
     // Choosing nothing and saying nothing takes the answer back off the tray.
     const answers = option || note || defer ? [...kept, { decision, option: option ?? null, label: option ? label ?? option : null, on_answer: onAnswer ?? null, note, defer, at: Date.now(), sent_at: null, recorded: null }] : kept;
-    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers });
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers, earlier });
     return this.settle(ref, current.threads);
   }
 
@@ -766,10 +792,10 @@ export class MockHostAdapter implements HostAdapter {
     return outcomes;
   }
 
-  async callAnswer({ call, option, label, onAnswer, page, note }: CallAnswerRequest) {
+  async callAnswer({ call, option, label, onAnswer, page, note, asked }: CallAnswerRequest) {
     let outcome: IntakeOutcome;
     if (page) {
-      await this.reviewAnswer(page, call, option, label, onAnswer);
+      await this.reviewAnswer(page, call, option, label, onAnswer, undefined, asked);
       outcome = this.recordStaged(page, call)[0];
     } else {
       outcome = this.intake([{ call, key: option, label }])[0];
@@ -809,13 +835,15 @@ export class MockHostAdapter implements HostAdapter {
         seen_rev: review.seen_rev,
         draft_count: review.draft_count,
         open_count: review.open_count,
-        answered: review.answers.filter(locked).map((answer) => answer.decision),
+        answered: review.answers.filter((answer) => answer.recorded?.result === "closed").map((answer) => answer.decision),
+        handed: Object.fromEntries(review.answers.filter(handed).map((answer) => [answer.decision, answer.sent_at!])),
         open_threads: review.threads.filter((thread) => thread.state === "open").map((thread) => ({ id: thread.id, rev: thread.rev })),
         // As the app sends it: each review with the answers it carried, and every comment that went.
         sent: review.sent.map((item) => ({
           ...item,
           answers: (item.answers ?? []).flatMap((decision) => {
-            const answer = review.answers.find((candidate) => candidate.decision === (typeof decision === "string" ? decision : decision.decision));
+            const said = [...review.answers, ...review.earlier].filter((candidate) => candidate.decision === (typeof decision === "string" ? decision : decision.decision));
+            const answer = said.find((candidate) => candidate.sent_at === item.at) ?? said[0];
             return answer ? [{ decision: answer.decision, option: answer.option, label: answer.label, note: answer.note ?? null, defer: answer.defer ?? null }] : [];
           }),
         })),
@@ -861,6 +889,7 @@ export class MockHostAdapter implements HostAdapter {
     const at = Date.now();
     const carried = [...told, ...worded];
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => carried.includes(answer) ? { ...answer, sent_at: at } : answer) });
+    if (reviewFlag("reasked")) this.putAgain(worded.map((answer) => answer.decision));
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
