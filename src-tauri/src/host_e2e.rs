@@ -1662,7 +1662,7 @@ async fn start_e2e_live_scratch_home() {
         // fm-spawn.sh moves the row to In flight as its last step, after launch delivery, so a healthy agent is
         // already running by the first reading that finds the row moved: no reading could show Launched. That is
         // this run not producing the condition, and it is reported as such, never passed.
-        (Some(a), None, Some(w)) if only_these && a < w && unseen_in_flight == 0 => not_exercised(&mut steps, "the drawer moves through Asked, Launched and Working, in that order", format!("Launched never readable: {evidence}")),
+        (Some(a), None, Some(w)) if only_these && a < w && unseen_in_flight == 0 => not_exercised(&mut steps, "the drawer moves through Asked, Launched and Working, in that order", format!("Launched is unreachable on a healthy spawn: fm-spawn.sh commits the row to In flight last, after launch delivery, so the agent is alive by the first reading that finds it moved; the mock check (pnpm starts) covers Launched instead. {evidence}")),
         _ => record(&mut steps, "the drawer moves through Asked, Launched and Working, in that order", false, evidence),
     }
     let alive = working_endpoint["status"] == "alive" && working_endpoint["agent_alive"] == "alive";
