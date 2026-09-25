@@ -679,7 +679,7 @@ export class MockHostAdapter implements HostAdapter {
       id: "t1", rev: 1, anchor: { quote: "under pace" } as ReviewAnchor, at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, sent_at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000,
       resolved_at: null, state: "open", comments: [{ body: "what does under pace mean?", at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000 }],
     }],
-    answers: [], draft_count: 0, staged_answers: 0, open_count: 1, seen_rev: 2, log: `${this.snapshot.fleet.fm_home}/data/${USAGE_TASK}/review.jsonl`,
+    answers: [], earlier: [], draft_count: 0, staged_answers: 0, open_count: 1, seen_rev: 2, log: `${this.snapshot.fleet.fm_home}/data/${USAGE_TASK}/review.jsonl`,
     // Sent by the window before this one, so its message id is not one this window has.
     sent: [{ at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, verdict: "changes", rev: 1, message: "m-yesterday", header: RESUMED_DAY_REVIEW, threads: ["t1"] }],
   }]] : []);
