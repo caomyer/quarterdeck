@@ -1226,5 +1226,6 @@ a { color: var(--sea); }
 .decision-answer .reply-field textarea { min-height: 56px; font-size: 13px; }
 .decision-answer .decision-missing { margin-bottom: 10px; }
 .decision-answer blockquote.decision-words { margin: 8px 0 0; padding: 8px 12px; border-left: 2px solid var(--sea); color: var(--ink-3); background: var(--surface-2); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+.decision-answer blockquote.decision-words + .call-answer-fields, .decision-answer blockquote.decision-words + .decision-missing { margin-top: 10px; }
 .decision-staged.pending { color: var(--muted); }
 .needs-banner li > .needs-tool { justify-self: start; }

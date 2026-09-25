@@ -5,7 +5,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerInWords, answeredBy, answeredByCaptain, answeredInReview, argumentOf, callsArguedBy, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "../src/calls.ts";
+import { answerInWords, answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "../src/calls.ts";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -22,18 +22,6 @@ function page(scope, task, name, title) {
 const board = page("chat", null, "model-download", "When may the app download the speech model?");
 const report = page("task", "res-transcripts-scout", "transcripts-report", "Which episodes already carry a transcript?");
 const title = (id) => ({ "res-transcripts-scout": "Resonance: transcripts" })[id] ?? id;
-
-test("an answer handed to the first mate holds until the call is put again, and a recorded one for good", () => {
-  const sent = Date.parse(ago(1));
-  const review = { answered: ["res-recorded"], handed: { "res-worded": sent } };
-  assert.equal(answeredInReview(review, call("res-worded", { updated_at: ago(2) })), true);
-  assert.equal(answeredInReview(review, call("res-worded", { updated_at: new Date(sent).toISOString() })), true);
-  assert.equal(answeredInReview(review, call("res-worded", { updated_at: ago(0.5) })), false);
-  assert.equal(answeredInReview(review, call("res-worded")), true);
-  assert.equal(answeredInReview(review, call("res-recorded", { updated_at: ago(0.5) })), true);
-  assert.equal(answeredInReview(review, call("res-other", { updated_at: ago(0.5) })), false);
-  assert.equal(answeredInReview(undefined, call("res-worded")), false);
-});
 
 test("a page is named the way evidence names it", () => {
   assert.equal(pageRef(board), "page:chat/model-download");

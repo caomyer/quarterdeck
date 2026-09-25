@@ -243,8 +243,6 @@ export type ReviewSummary = Record<string, {
   open_count: number;
   /** Calls whose answer the intake recorded: on the record for good. */
   answered: string[];
-  /** Calls answered for the first mate to record, and when the answer went: it holds until the call is put again after that. */
-  handed?: Record<string, number>;
   /** Each sent comment the captain has not settled, with the revision it was written on, so a later revision can answer it. */
   open_threads?: { id: string; rev: number }[];
   /** Each review sent, and every comment sent, so the chat can draw a review as a card rather than its text. */
@@ -253,9 +251,9 @@ export type ReviewSummary = Record<string, {
 }>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */
-export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; /** Answers handed to the first mate and then answered anew, the call having been put again: what the captain said then. */ earlier: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
+export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; /** Answers that went for the first mate to record and were followed by a new one: what the captain said then. */ earlier: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
 /** One answer given from Bearings: the call, the option, what the call declares, and the page that argues it. */
-export type CallAnswerRequest = { call: string; option: string; label: string; onAnswer: string; page: ArtifactRef | null; note?: string; /** The call's `updated_at` as the captain saw it. */ asked?: string | null };
+export type CallAnswerRequest = { call: string; option: string; label: string; onAnswer: string; page: ArtifactRef | null; note?: string };
 /** Which page a review belongs to. */
 export type ArtifactRef = { scope: "task" | "chat"; task: string | null; name: string };
 
@@ -572,8 +570,7 @@ export interface HostAdapter {
    * Stages the captain's answer to a call: an option, with any words added, or words alone, or not now until a date.
    * Nothing at all takes it back. `onAnswer` is what the call declares.
    */
-  /** `asked` is the call's `updated_at` as the captain saw it: an answer handed to the first mate holds until the call is put again after it. */
-  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords, asked?: string | null): Promise<ReviewView>;
+  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords): Promise<ReviewView>;
   /**
    * Answers one call now, from Bearings: firstmate's intake records it (noted in the review of `page`, the page that
    * argues it, when there is one), and only a recorded answer is told to the first mate.

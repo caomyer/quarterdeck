@@ -103,23 +103,6 @@ export function optionsUpdatedSince(call: Call, presentedAt: string) {
   return Number.isFinite(updated) && Number.isFinite(presented) && updated > presented;
 }
 
-/** Whether the call was put to the captain again after `at` (ms), when an answer handed to the first mate went. */
-export function putAgainSince(call: Call, at: number) {
-  const updated = Date.parse(call.updated_at ?? "");
-  return Number.isFinite(updated) && updated > at;
-}
-
-/**
- * Whether a page's review has answered the call: the intake recorded it, or an answer went to the first mate to
- * record and the call has not been put again since. Once it has, that answer is what the captain said then.
- */
-export function answeredInReview(review: { answered: string[]; handed?: Record<string, number> } | undefined, call: Call) {
-  if (!review) return false;
-  if (review.answered.includes(call.id)) return true;
-  const sent = review.handed?.[call.id];
-  return sent !== undefined && !putAgainSince(call, sent);
-}
-
 /** The recommended option, if the call names one. */
 export function recommended(call: Call) {
   return call.options.find((option) => option.recommended);
