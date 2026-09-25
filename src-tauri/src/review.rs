@@ -45,7 +45,7 @@
 //! message for the first mate to record, and is shown as sent once it has.
 //! Only the intake's record is final: while firstmate still asks the captain,
 //! an answer that went for the first mate to record can be followed by a new
-//! one, and the one it follows is kept in `earlier` as what the captain said then.
+//! one, and the last one it follows is kept in `earlier` as what the captain said then.
 //!
 //! Where a comment sits is the anchor `review-frame.js` describes: the words,
 //! which match of them it is, the element by what it is, the labels around it,
@@ -215,7 +215,10 @@ pub fn view(path: &Path) -> Value {
                 if answers.iter().any(|answer| answer["decision"] == decision.as_str() && is_recorded(answer)) {
                     continue;
                 }
-                earlier.extend(answers.iter().filter(|answer| answer["decision"] == decision.as_str() && !answer["sent_at"].is_null()).cloned());
+                if let Some(then) = answers.iter().find(|answer| answer["decision"] == decision.as_str() && !answer["sent_at"].is_null()).cloned() {
+                    earlier.retain(|answer: &Value| answer["decision"] != decision.as_str());
+                    earlier.push(then);
+                }
                 answers.retain(|answer: &Value| answer["decision"] != decision.as_str());
                 // Choosing nothing and saying nothing takes the answer back off the tray.
                 let said = |key: &str| event.get(key).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty());
@@ -1736,6 +1739,13 @@ mod tests {
         let page = &summary(&home.join("data"))["chat/board"];
         assert_eq!(page["sent"][1]["answers"][0]["note"], "Finish on cellular after all.");
         assert_eq!(page["sent"][0]["answers"][1]["note"], "Pause, but tell the user why.");
+
+        // Answered anew again, only the last answer it follows is kept as what the captain said then.
+        stage_answer(&log, "res-model-cellular", None, None, None, &words(Some("Ask the user each time."), None)).unwrap();
+        let current = view(&log);
+        let then: Vec<Value> = current["earlier"].as_array().unwrap().iter().filter(|a| a["decision"] == "res-model-cellular").map(|a| a["note"].clone()).collect();
+        assert_eq!(then, [json!("Finish on cellular after all.")]);
+        assert_eq!(current["earlier"].as_array().unwrap().len(), 2);
 
         // A recorded answer stays on the record.
         assert!(stage_answer(&log, "res-model-download", Some("prompt"), Some("Ask"), Some("done"), &Words::default()).is_err());

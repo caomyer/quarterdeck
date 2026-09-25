@@ -758,8 +758,9 @@ export class MockHostAdapter implements HostAdapter {
     if (current.answers.some((answer) => answer.decision === decision && recorded(answer))) {
       throw new Error("that answer is already on the record; tell the first mate in chat if you have changed your mind");
     }
-    // As in the app: an answer that went and was answered anew is kept as what the captain said then.
-    const earlier = [...current.earlier, ...current.answers.filter((answer) => answer.decision === decision && answer.sent_at !== null)];
+    // As in the app: the last answer that went and was answered anew is kept as what the captain said then.
+    const then = current.answers.find((answer) => answer.decision === decision && answer.sent_at !== null);
+    const earlier = then ? [...current.earlier.filter((answer) => answer.decision !== decision), then] : current.earlier;
     const kept = current.answers.filter((answer) => answer.decision !== decision);
     // Choosing nothing and saying nothing takes the answer back off the tray.
     const answers = option || note || defer ? [...kept, { decision, option: option ?? null, label: option ? label ?? option : null, on_answer: onAnswer ?? null, note, defer, at: Date.now(), sent_at: null, recorded: null }] : kept;

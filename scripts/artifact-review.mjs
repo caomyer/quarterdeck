@@ -828,6 +828,26 @@ await resumed.close();
   await openPage();
   check((await cellular.locator(".reply-field textarea").inputValue()) === "Pause, and tell the user why it stopped.", "staged words are there on coming back");
   check((await download.locator(".decision-choices button.selected").innerText()).includes("Wi-Fi only") && (await download.locator(".reply-field textarea").inputValue()) === "Say so in Settings too.", "a staged option keeps what was added to it");
+  // Coming back from another page, the review is read again, and what was staged shows once it has been.
+  const visitElsewhere = async () => {
+    await rail.locator(".nav-item", { hasText: "Artifacts" }).click();
+    await rail.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" }).click();
+    await rail.locator(".artifact-review .review-rail").waitFor();
+    await openPage();
+  };
+  await visitElsewhere();
+  check((await cellular.locator(".reply-field textarea").inputValue()) === "Pause, and tell the user why it stopped.", "staged words are there after another page");
+  check((await download.locator(".decision-choices button.selected").innerText()).includes("Wi-Fi only") && (await download.locator(".reply-field textarea").inputValue()) === "Say so in Settings too.", "a staged option keeps what was added to it after another page");
+  await download.locator(".decision-choices button", { hasText: "Not now" }).click();
+  await download.locator(".date-field input").fill("2026-10-03");
+  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  await visitElsewhere();
+  check((await download.locator(".decision-choices button", { hasText: "Not now" }).getAttribute("aria-pressed")) === "true" && (await download.locator(".date-field input").inputValue()) === "2026-10-03", "a staged Not now keeps its day after another page");
+  await download.locator(".decision-choices button", { hasText: "Wi-Fi only" }).click();
+  await download.locator(".decision-staged", { hasText: "recorded as it is sent" }).waitFor();
+  await download.locator(".reply-field textarea").fill("Say so in Settings too.");
+  await rail.waitForTimeout(900);
+  check((await cellular.locator(".reply-field textarea").inputValue()) === "Pause, and tell the user why it stopped.", "choosing on one call leaves the words staged on another");
 
   // Words still being typed as the review goes are not left behind.
   await cellular.locator(".reply-field textarea").fill("Pause, and tell the user why it stopped. Keep what was downloaded.");

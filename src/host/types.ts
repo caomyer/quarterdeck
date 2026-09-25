@@ -251,7 +251,7 @@ export type ReviewSummary = Record<string, {
 }>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */
-export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; /** Answers that went for the first mate to record and were followed by a new one: what the captain said then. */ earlier: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
+export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; /** For each decision, the single most recent answer that went for the first mate to record and was followed by a new one: what the captain said then. */ earlier: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
 /** One answer given from Bearings: the call, the option, what the call declares, and the page that argues it. */
 export type CallAnswerRequest = { call: string; option: string; label: string; onAnswer: string; page: ArtifactRef | null; note?: string };
 /** Which page a review belongs to. */

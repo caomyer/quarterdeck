@@ -245,11 +245,17 @@ export function App() {
   }, [focusedCall, view]);
   const artifactRef = useMemo<ArtifactRef | null>(() => openArtifact ? { scope: openArtifact.scope, task: openArtifact.task, name: openArtifact.name } : null, [openArtifact]);
 
+  // A page never shows another page's review, even for the render before its own is read.
+  const reviewKey = artifactRef ? `${artifactRef.scope}/${artifactRef.task}/${artifactRef.name}` : null;
+  const [reviewFor, setReviewFor] = useState(reviewKey);
+  if (reviewFor !== reviewKey) {
+    setReviewFor(reviewKey);
+    setReview(null);
+  }
   // The review is read from the home when a page opens, so a draft written before a relaunch is still there.
   useEffect(() => {
-    if (!artifactRef) return setReview(null);
+    if (!artifactRef) return;
     let active = true;
-    setReview(null);
     void host.reviewGet(artifactRef).then((next) => { if (active) setReview(next); }).catch(() => { if (active) setReview(null); });
     return () => { active = false; };
   }, [artifactRef?.scope, artifactRef?.task, artifactRef?.name]);
@@ -2577,8 +2583,8 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
           <textarea autoFocus value={draft} placeholder="What should change here?" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save(); if (event.key === "Escape") { setPending(null); setPick(null); setDraft(""); } }} />
           <div><button className="ghost" onClick={() => { setPending(null); setPick(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim() || saving} onClick={() => void save()}>{saving ? "Saving…" : "Comment"}</button></div>
         </section>}
-        {calls.length > 0 && <div className="decision-answers">
-          {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} before={review?.earlier.filter((answer) => answer.decision === call.id).at(-1)} onAnswer={(answer) => onAnswer(call, answer)} onPending={(flush) => { if (flush) typing.current.set(call.id, flush); else typing.current.delete(call.id); }} />)}
+        {review && calls.length > 0 && <div className="decision-answers">
+          {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review.answers.find((answer) => answer.decision === call.id)} before={review.earlier.find((answer) => answer.decision === call.id)} onAnswer={(answer) => onAnswer(call, answer)} onPending={(flush) => { if (flush) typing.current.set(call.id, flush); else typing.current.delete(call.id); }} />)}
         </div>}
         <div className="review-threads">
           {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment, then pick the words or the part of the page you mean.</p>}
