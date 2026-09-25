@@ -23,7 +23,12 @@
 //! Only a release build looks for updates, and `QUARTERDECK_UPDATES=off` stops
 //! even that, for a build an agent launches to test.
 //!
-//! Commands: `update_status`, `update_restart`, `update_cancel`, `update_seen`.
+//! The captain can ask it to look now. That runs the same check the schedule
+//! runs, verification and all, and leaves the schedule as it was; asking while
+//! a check runs joins it rather than starting another. The status says when it
+//! last looked and why that failed, if it did.
+//!
+//! Commands: `update_status`, `update_check`, `update_restart`, `update_cancel`, `update_seen`.
 //! Event: `app_update`, the whole status each time it changes.
 
 use crate::host::{Cmd, HostHandle};
@@ -38,6 +43,11 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 const FIRST_CHECK: Duration = Duration::from_secs(20);
 /// Releases follow merges, so a few hours is soon enough and never a burden.
 const EVERY: Duration = Duration::from_secs(4 * 60 * 60);
+/// Asking the endpoint what is newest is one small request, and a check that
+/// cannot end would hold the schedule and the captain's check with it.
+const LOOKUP_LIMIT: Duration = Duration::from_secs(60);
+/// Fetching a release is tens of megabytes, on whatever network the Mac has.
+const DOWNLOAD_LIMIT: Duration = Duration::from_secs(15 * 60);
 /// How often a restart that is waiting asks whether the turn has ended.
 const TURN_POLL: Duration = Duration::from_millis(500);
 const NOTE_FILE: &str = "update-note.json";
@@ -87,6 +97,36 @@ pub struct Updates {
 struct Inner<T = Ready> {
     ready: Option<Arc<T>>,
     phase: Phase,
+    /// A check is running, the schedule's or the captain's: there is only ever one.
+    checking: bool,
+    /// The version the running check found and is fetching.
+    downloading: Option<String>,
+    /// When the last check ended, and why it failed if it did.
+    checked_at_ms: Option<u64>,
+    check_error: Option<String>,
+}
+
+impl<T> Inner<T> {
+    fn new() -> Self {
+        Inner { ready: None, phase: Phase::Idle, checking: false, downloading: None, checked_at_ms: None, check_error: None }
+    }
+
+    /// Claims the one check. `false` while one runs: that check answers for this ask too.
+    fn begin_check(&mut self) -> bool {
+        if self.checking {
+            return false;
+        }
+        self.checking = true;
+        self.downloading = None;
+        true
+    }
+
+    fn end_check(&mut self, result: Result<(), String>, at_ms: u64) {
+        self.checking = false;
+        self.downloading = None;
+        self.checked_at_ms = Some(at_ms);
+        self.check_error = result.err();
+    }
 }
 
 impl<T: Held> Inner<T> {
@@ -113,13 +153,17 @@ impl<T: Held> Inner<T> {
             "version": self.ready.as_ref().map(|ready| ready.version()),
             "notes": self.ready.as_ref().and_then(|ready| ready.notes()),
             "error": match &self.phase { Phase::Failed(error) => Some(error.as_str()), _ => None },
+            "checking": self.checking,
+            "downloading": self.downloading,
+            "checked_at_ms": self.checked_at_ms,
+            "check_error": self.check_error,
         })
     }
 }
 
 impl Default for Updates {
     fn default() -> Self {
-        Updates { inner: Mutex::new(Inner { ready: None, phase: Phase::Idle }) }
+        Updates { inner: Mutex::new(Inner::new()) }
     }
 }
 
@@ -142,13 +186,31 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK).await;
         loop {
-            if let Err(problem) = check(&app).await {
-                // Offline, or a release still being published: the next check tries again.
-                log::warn!("could not check for an update: {problem}");
-            }
+            look(&app).await;
             tokio::time::sleep(EVERY).await;
         }
     });
+}
+
+/// The one way a check runs, for the schedule and the captain alike. A check
+/// already running answers for this ask too, so asking again never starts a
+/// second; how it ends arrives as `app_update` events.
+async fn look<R: Runtime>(app: &AppHandle<R>) {
+    if app.state::<Updates>().lock().begin_check() {
+        run_claimed(app).await;
+    }
+}
+
+/// Runs the check `begin_check` claimed, and says how it ended.
+async fn run_claimed<R: Runtime>(app: &AppHandle<R>) {
+    emit(app);
+    let result = check(app).await;
+    if let Err(problem) = &result {
+        // Offline, or a release still being published: the next check tries again.
+        log::warn!("could not check for an update: {problem}");
+    }
+    app.state::<Updates>().lock().end_check(result, now_ms());
+    emit(app);
 }
 
 /// One check: a version newer than both the running one and the one already
@@ -159,14 +221,21 @@ async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         return Ok(());
     }
     let updater = app.updater().map_err(|e| e.to_string())?;
-    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+    let found = tokio::time::timeout(LOOKUP_LIMIT, updater.check()).await.map_err(|_| "the update server did not answer".to_string())?;
+    let Some(update) = found.map_err(|e| e.to_string())? else {
         return Ok(());
     };
     if updates.lock().ready.as_ref().is_some_and(|ready| ready.update.version == update.version) {
         return Ok(());
     }
     log::info!("downloading version {} of the app", update.version);
-    let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    updates.lock().downloading = Some(update.version.clone());
+    emit(app);
+    // Downloading checks the signature against the public key in `tauri.conf.json`: nothing unsigned is kept.
+    let fetched = tokio::time::timeout(DOWNLOAD_LIMIT, update.download(|_, _| {}, || {}))
+        .await
+        .map_err(|_| format!("downloading version {} took too long", update.version))?;
+    let bytes = fetched.map_err(|e| e.to_string())?;
     {
         let mut inner = updates.lock();
         // A restart asked for meanwhile installs what it was shown, not this.
@@ -183,6 +252,7 @@ async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 fn status<R: Runtime>(app: &AppHandle<R>) -> Value {
     let current = app.package_info().version.to_string();
     let mut view = app.state::<Updates>().inner().lock().view();
+    view["enabled"] = Value::Bool(enabled());
     view["installed"] = crate::settings::settings_dir(app).map(|dir| read_note_in(&dir, &current)).unwrap_or(Value::Null);
     view["current"] = Value::String(current);
     view
@@ -200,6 +270,21 @@ fn set_phase<R: Runtime>(app: &AppHandle<R>, phase: Phase) {
 #[tauri::command]
 pub fn update_status(app: AppHandle) -> Value {
     status(&app)
+}
+
+/// Looks for an update now, as the schedule does, without moving the schedule.
+/// Answers at once, already checking; a check running is joined, not repeated.
+#[tauri::command]
+pub fn update_check(app: AppHandle) -> Result<Value, String> {
+    if !enabled() {
+        return Err("This build does not update itself.".to_string());
+    }
+    if !app.state::<Updates>().lock().begin_check() {
+        return Ok(status(&app));
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move { run_claimed(&handle).await });
+    Ok(status(&app))
 }
 
 /// Restarts into the waiting update once the first mate is not in a turn.
@@ -399,15 +484,41 @@ mod tests {
 
     #[test]
     fn the_update_is_named_while_it_installs_and_after_it_fails() {
-        let mut inner = Inner { ready: Some(Arc::new(Fake)), phase: Phase::Idle };
+        let mut inner = Inner { ready: Some(Arc::new(Fake)), ..Inner::new() };
         assert!(inner.start_install().is_none(), "only a restart that is waiting installs");
         inner.phase = Phase::Waiting;
         assert!(inner.start_install().is_some());
-        assert_eq!(inner.view(), json!({"state": "installing", "version": "0.1.5", "notes": "Faster start", "error": null}));
+        assert_eq!(inner.view(), json!({"state": "installing", "version": "0.1.5", "notes": "Faster start", "error": null, "checking": false, "downloading": null, "checked_at_ms": null, "check_error": null}));
         inner.phase = Phase::Failed("disk full".to_string());
-        assert_eq!(inner.view(), json!({"state": "failed", "version": "0.1.5", "notes": "Faster start", "error": "disk full"}));
+        assert_eq!(inner.view(), json!({"state": "failed", "version": "0.1.5", "notes": "Faster start", "error": "disk full", "checking": false, "downloading": null, "checked_at_ms": null, "check_error": null}));
         inner.phase = Phase::Waiting;
         assert!(inner.start_install().is_some(), "asking again retries the update held");
+    }
+
+    #[test]
+    fn asking_to_check_while_one_runs_joins_it() {
+        let mut inner: Inner<Fake> = Inner::new();
+        assert!(inner.begin_check(), "nothing is running, so this ask starts the check");
+        assert!(!inner.begin_check(), "a second ask joins the running check");
+        assert!(!inner.begin_check(), "and so does a third");
+        assert_eq!(inner.view()["checking"], json!(true));
+        inner.end_check(Ok(()), 1_000);
+        assert!(inner.begin_check(), "once it ends, the next ask looks again");
+    }
+
+    #[test]
+    fn a_check_says_when_it_ended_and_why_it_failed() {
+        let mut inner: Inner<Fake> = Inner::new();
+        assert!(inner.begin_check());
+        inner.downloading = Some("0.1.5".to_string());
+        assert_eq!(inner.view()["downloading"], json!("0.1.5"));
+        inner.end_check(Err("the update server did not answer".to_string()), 1_000);
+        let view = inner.view();
+        assert_eq!([&view["checking"], &view["downloading"], &view["checked_at_ms"], &view["check_error"]], [&json!(false), &Value::Null, &json!(1_000), &json!("the update server did not answer")]);
+        assert!(inner.begin_check());
+        assert_eq!(inner.view()["check_error"], json!("the update server did not answer"), "the last failure stands while the next check runs");
+        inner.end_check(Ok(()), 2_000);
+        assert_eq!([&inner.view()["checked_at_ms"], &inner.view()["check_error"]], [&json!(2_000), &Value::Null], "a good check clears it");
     }
 
     #[test]

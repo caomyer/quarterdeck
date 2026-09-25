@@ -334,6 +334,10 @@ export type QuotaRead = { providers: QuotaProvider[] | null; read_at_ms: number 
  * and waiting for the captain; `waiting`: the restart they asked for waits for the first mate's turn to end;
  * `failed`: installing failed and the update is still held, so asking again retries. `installed` is what the last
  * update brought, while its version is the one running, until the captain has read it.
+ *
+ * The rest is the looking, the schedule's and the captain's alike: `enabled` is false in a build that never looks,
+ * `checking` while a check runs, `downloading` the version it found and is fetching, and `checked_at_ms` and
+ * `check_error` when the last check ended and why it failed.
  */
 export type AppUpdate = {
   state: "none" | "ready" | "waiting" | "installing" | "failed";
@@ -342,6 +346,11 @@ export type AppUpdate = {
   notes: string | null;
   error: string | null;
   installed: { version: string; from: string | null; notes: string | null } | null;
+  enabled: boolean;
+  checking: boolean;
+  downloading: string | null;
+  checked_at_ms: number | null;
+  check_error: string | null;
 };
 
 export type SnapshotError = { source: string; error: string };
@@ -472,6 +481,8 @@ export interface HostAdapter {
   allowQuotaKeychain(): Promise<QuotaRead>;
   /** Where the app's own update stands. Reads only. */
   updateStatus(): Promise<AppUpdate>;
+  /** Looks for an update now, as the schedule does, without moving it. Answers at once, already checking; asked while a check runs, it joins that one. */
+  updateCheck(): Promise<AppUpdate>;
   /** Restarts into the waiting update once the first mate is not in a turn. Answers at once; `onUpdate` says how it goes. */
   updateRestart(): Promise<AppUpdate>;
   /** Takes back a restart still waiting for a turn to end. */

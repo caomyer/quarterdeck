@@ -9,6 +9,7 @@ This page says how, and what the captain sets up once.
    It stamps the version `0.1.<run number>`, builds the app, signs it, and publishes a GitHub Release holding the updater's archive, its signature, and `latest.json`.
 2. The app reads `https://github.com/caomyer/quarterdeck/releases/latest/download/latest.json` 20 seconds after launch and every 4 hours after that (`src-tauri/src/update.rs`).
    It downloads a newer version on its own and checks its signature against the public key in `src-tauri/tauri.conf.json` before it keeps it.
+   Without an update waiting, the sidebar says when it last looked, and Check now looks at once: the same check, signature and all, joined rather than repeated if one is running, and the 4-hour schedule stays as it was.
 3. The sidebar says "Update ready", with what changed behind "What's new".
    Restart installs it once the first mate's current turn has ended; quitting installs it too.
    After the restart the sidebar says once what the update brought.
@@ -136,4 +137,4 @@ A file `gh` downloads is not marked as downloaded from the internet, so macOS op
 
 A build you make reports version `0.1.0`, so it is offered the latest release like any other copy.
 An app an agent launches to test must set `QUARTERDECK_UPDATES=off`, or quitting it installs the latest release over the build being tested.
-A debug build (`pnpm tauri dev`) never looks for updates.
+A debug build (`pnpm tauri dev`) never looks for updates, and its sidebar says so.

@@ -8,7 +8,7 @@ function errorText(error: unknown) {
 
 /**
  * The app's own update: read when the window opens, then kept by the backend's events. The backend decides when to
- * look, download and install; the window only shows it and passes on what the captain asks.
+ * look, download and install; the window only shows it and passes on what the captain asks, looking now among them.
  */
 export function useUpdate(adapter: HostAdapter) {
   const [update, setUpdate] = useState<AppUpdate | null>(null);
@@ -36,6 +36,7 @@ export function useUpdate(adapter: HostAdapter) {
   return {
     update,
     problem,
+    check: useCallback(() => act(() => adapter.updateCheck()), [act, adapter]),
     restart: useCallback(() => act(() => adapter.updateRestart()), [act, adapter]),
     cancel: useCallback(() => act(() => adapter.updateCancel()), [act, adapter]),
     seen: useCallback(() => act(() => adapter.updateSeen()), [act, adapter]),

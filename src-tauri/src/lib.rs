@@ -86,6 +86,7 @@ pub fn run() {
       review::review_scene,
       review::call_answer,
       update::update_status,
+      update::update_check,
       update::update_restart,
       update::update_cancel,
       update::update_seen,

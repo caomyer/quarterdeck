@@ -476,7 +476,7 @@ export function App() {
           })}
         </div>
         <Usage context={bridge.context} rateLimit={bridge.rateLimit} quota={quota} runtime={runtime.state} sendReady={bridge.sendReady} compaction={bridge.compaction} onCompact={() => void bridge.compactNow()} onDismissCompaction={bridge.dismissCompaction} />
-        <UpdateNotice update={appUpdate.update} problem={appUpdate.problem} runtime={runtime.state} onRestart={() => void appUpdate.restart()} onCancel={() => void appUpdate.cancel()} onSeen={() => void appUpdate.seen()} />
+        <UpdateNotice update={appUpdate.update} problem={appUpdate.problem} runtime={runtime.state} onRestart={() => void appUpdate.restart()} onCancel={() => void appUpdate.cancel()} onSeen={() => void appUpdate.seen()} onCheck={() => void appUpdate.check()} />
         <div className="sidebar-footer">
           <div className="connection"><span className={`live-dot state-${runtime.state} ${degraded ? "degraded" : ""}`} /><span><strong>First Mate</strong><small>{hostLabel}</small></span></div>
           <button className="runtime-button" disabled={runtime.state === "restarting"} onClick={runningHere ? stopHost : () => void bridge.start()}>{runtime.state === "locked_by_other" ? "Check again" : runningHere ? "Stop" : "Start"}</button>

@@ -213,6 +213,10 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<AppUpdate>("update_status");
   }
 
+  updateCheck() {
+    return invoke<AppUpdate>("update_check");
+  }
+
   updateRestart() {
     return invoke<AppUpdate>("update_restart");
   }

@@ -815,6 +815,10 @@ export class MockHostAdapter implements HostAdapter {
     return this.updates.status();
   }
 
+  updateCheck() {
+    return this.updates.check();
+  }
+
   updateRestart() {
     return this.updates.restart();
   }
