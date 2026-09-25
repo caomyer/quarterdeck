@@ -160,6 +160,17 @@ case "${1:-} ${2:-}" in
     [ -z "${FM_TEST_GH_MERGE_HOOK:-}" ] || "$FM_TEST_GH_MERGE_HOOK"
     exit 0
     ;;
+  "pr edit")
+    [ -n "${FM_TEST_GH_BODY:-}" ] && [ "${FM_TEST_GH_EDIT_FAIL:-0}" = 0 ] || exit 1
+    cp "${!#}" "$FM_TEST_GH_BODY"
+    exit 0
+    ;;
+esac
+case " $* " in
+  *" --json body -q .body "*)
+    [ -z "${FM_TEST_GH_BODY:-}" ] || { cat "$FM_TEST_GH_BODY"; printf '\n'; }
+    exit 0
+    ;;
 esac
 case " $* " in
   *" api repos/"*"/issues/"*"/comments?per_page=100 "*|*" api repos/"*"/pulls/"*"/reviews?per_page=100 "*|*" api repos/"*"/pulls/"*"/comments?per_page=100 "*)
@@ -648,6 +659,38 @@ SH
     [ ! -e "$dir/home/state/$id.meta" ] || fail "legacy task teardown retained metadata"
   done
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
+}
+
+# The no-mistakes pr step glues a screenshot under an embedded log's
+# </details>; registration repairs that body, once, and never lets the repair
+# decide whether the merge poll is armed.
+test_registration_repairs_a_glued_pr_body() {
+  local dir url=https://github.com/o/r/pull/7
+  dir=$(make_case pr-body-repair)
+  write_task_meta "$dir"
+  printf '%s\n' '```' 'all artifact review checks passed' '```' '</details>' \
+    '![Bearings (light)](https://github.com/user-attachments/assets/5ccef719)' > "$dir/body"
+  FM_TEST_GH_BODY="$dir/body" run_check_entry "$dir" task-a "$url" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "registration with a glued PR body failed"
+  grep -qF 'pr-body: repaired 1 line(s)' "$dir/stderr" || fail "registration did not report the body repair"
+  [ "$(sed -n 5p "$dir/body")" = "" ] && [ "$(sed -n 6p "$dir/body")" = '![Bearings (light)](https://github.com/user-attachments/assets/5ccef719)' ] \
+    || fail "the PR body did not get a blank line between </details> and the screenshot"
+  grep -qx 'armed: state/task-a.check.sh' "$dir/stdout" || fail "the poll was not armed after the repair"
+
+  : > "$dir/gh.log"
+  FM_TEST_GH_BODY="$dir/body" run_check_entry "$dir" task-a "$url" > /dev/null 2> "$dir/stderr" \
+    || fail "re-registration failed"
+  ! grep -q '^pr edit ' "$dir/gh.log" || fail "a repaired body was written again"
+  ! grep -q 'pr-body' "$dir/stderr" || fail "a correct body was reported"
+
+  dir=$(make_case pr-body-refused)
+  write_task_meta "$dir"
+  printf '%s\n' '</details>' '![shot](https://example.com/a.png)' > "$dir/body"
+  FM_TEST_GH_BODY="$dir/body" FM_TEST_GH_EDIT_FAIL=1 run_check_entry "$dir" task-a "$url" \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "a refused repair failed the registration"
+  grep -qF 'actionable: pr-body: refused: gh pr edit failed' "$dir/stderr" || fail "a refused repair was not reported"
+  grep -qx 'armed: state/task-a.check.sh' "$dir/stdout" || fail "a refused repair unarmed the poll"
+  pass "registration repairs a glued PR body once and arms the poll whatever the repair does"
 }
 
 run_watcher_bounded() {
@@ -2774,6 +2817,7 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
+test_registration_repairs_a_glued_pr_body
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

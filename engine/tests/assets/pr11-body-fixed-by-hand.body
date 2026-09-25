@@ -1,0 +1,519 @@
+## Intent
+
+Can you compare how our report comment sends the context over, versus lavish-axi? Because as the last review goes, do you really have enough information and context to know where I comment on?
+I am not in favor of sending over the png screenshot as it consumes local space as well as more token consumption.
+How do we render this in chat? Show an example comparing now, versus how you plan to render it in chat. I feel we can do a much better job in rendering these kind of 1p interaction responses and feedback, and make it feel more native.
+adopt-snapdom, and one ship for both (but can be done in separate commits)
+
+## The defect this fixes
+
+The captain's comment t2 on the usage-panel mock (task qd-usage-design-1, rev 1) quoted "under pace: lasts past the reset".
+Those words appear twice in that panel, on the 5h row and on the weekly row.
+The element was also 0 × 0 when the page opened, because it sits inside the Claude row, which is shut until someone expands it.
+The review reached the first mate as only those words and the comment, with the element path and the text either side left in the log.
+Firstmate's relay then dropped even the log path.
+So the worker could not tell which row was meant, and could not see the place without guessing what to open.
+
+That case is now pinned twice.
+A Rust test in `src-tauri/src/review.rs` feeds in the t2 anchor, with its real quote, prefix, suffix and positional path.
+It checks that both the first mate's message and the crewmate's relay file carry these lines:
+- "match 1 of the 4 places these words appear in the page's text, 2 of them on screen"
+- "Usage › Plan limits › Claude › 5h"
+- the `div.prov.open[data-prov=claude]` element
+- the picture's path
+
+`pnpm artifacts` also picks that cell on a copy of the real mock (`?usage-t2`).
+
+## Why `engine/AGENTS.md` changes
+
+The engine is firstmate's shared material, so this change needs a reason of its own.
+Hop two, firstmate retelling the review to the crewmate, is where the anchor was actually lost in t2: the first mate got the words and the log path, and the crewmate got less.
+Fixing only what the page captures would have left the lossier hop as it was.
+The change is deliberately one line.
+It tells firstmate to send the review's relay file to the crewmate unchanged, using the `bin/fm-send.sh` line the review gives, and to put any framing of its own in a separate message.
+
+## The picture: a redraw, sent as a path only
+
+The picture is not a screenshot of what the captain saw.
+The page redraws itself with SnapDOM when a place is picked.
+Layout and words are right, but images from other sites, canvases and fine detail can differ.
+The message to the author says so on every picture line, so no one mistakes it for a photograph.
+
+The captain turned down a PNG in every comment because of disk space and token cost, so:
+- Only the file's path goes in the message, about 15 tokens. The JPEG itself is opened only when the author needs it.
+- It is a small 1x JPEG, about 11–20 KB for t2.
+- It is taken only when the words cannot pin the place down: they repeat on screen, the place is inside something opened, or there are no words there. A Picture toggle in the comment box lets the captain overrule that.
+- It is deleted when its draft is taken back, or when its thread is settled while the words are still on the page.
+
+## Two commits, as the captain asked
+
+- `8161f63` covers where a comment sits: the richer anchor, the redrawn picture, the review message and relay file, and the one engine line.
+- `b7b565a` shows a sent review in chat as a card that follows it until it is settled, instead of a bubble of the text written for the first mate.
+- The later `no-mistakes(...)` commits are the pipeline's fixes to those two.
+
+## What was checked in a browser
+
+- **Browser mock, both themes:** `pnpm artifacts` against the mock, in light and dark, covering the t2 picture in the comment box, the review card when sent, answered and settled, settling from chat, and the t2 card. So did the other page suites: projects, tones, onboarding, attach, usage, routing.
+- **chrome-devtools-axi 0.1.35, by hand, both themes:** the chat card. That pass sent a review with no comment, so it showed the card's empty state.
+- **Inside the real sandbox, in WebKit as well as Chrome:** the picture was checked in a standalone WKWebView built with Swift, with the app's exact sandbox attributes, both unscrolled and scrolled 300 px. It was correct each time, in 150–200 ms.
+- **Not checked:** the Tauri app itself was not run, and its native window was not screenshotted.
+
+## Test-page placeholders changed, then the t2 anchor re-checked
+
+The lint step flagged em dashes on the copied usage-panel test page, used as placeholders for an empty reading at lines 574, 584 and 597.
+They are now plain hyphens.
+Those lines are in the page's rendering code, while the t2 words are in its data at line 436, which is unchanged.
+After the change, `pnpm artifacts` was re-run on the pushed commit (`4a5b57c`) and every t2 check passed: the match count, the nearby labels, the `.prov.open` element, and the picture drawn from inside the sandbox.
+
+## What Changed
+
+- **More detail on where a comment sits.** `review-frame.js` now records more about the spot the captain picked:
+  - which match of the quoted words it is, and how many matches are on screen
+  - the element's id, classes, data attributes and open states, plus the headings and labels around it
+  - its box, and the window size, scroll position and colour scheme it was seen in
+- **A picture only when the words can't pin down the spot.** That covers three cases: the words appear more than once, the spot is inside something the captain opened, or there are no words there.
+  - In those cases the page redraws itself with SnapDOM 3.1.0 and sends a small cropped JPEG with the spot outlined. SnapDOM is vendored under MIT and served by the app at `artifact://localhost/_qd/snapdom.js`.
+  - `review.rs` checks the JPEG and saves it as `review-files/<thread>-r<rev>.jpg`. It deletes the file when a draft is taken back, or when a settled thread's words are still on the page.
+  - Only the file path goes into the message, which says the picture is a redraw, not a screenshot.
+- **Richer messages to the author.** The review message now lists each part of the location on its own labelled line, with the page's exact file and the picture's path.
+  - For a crewmate's page, the same text is also written to `review-files/review-<n>.md`.
+  - The message and `engine/AGENTS.md` tell firstmate to forward that file unchanged.
+- **Sent reviews show in chat as cards** (`App.tsx`, `styles.css`), replacing the plain text bubble. Each card shows:
+  - the verdict and each comment, with the quote it sits on and a mark when a picture went with it
+  - any recorded answers, and when the first mate read the review and when the author's task is working on it
+  - under each comment, whether a later revision changed or answered it, with actions to open that revision and to settle comments from chat
+  - Once every comment is settled, the card shrinks to one line.
+  - The review log's `sent` event now keeps the message's first line, and the review summary lists each sent review and its comments. That is how chat finds a card again in a resumed conversation.
+- **Test fixture and checks.** A usage-panel fixture page (`?usage-t2`) was added. `pnpm artifacts` checks the picture and the chat card on it, in both themes. The Vite mock serves fixture files with a CORS header, and `AGENTS.md` describes the new checks.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Risk Assessment
+
+✅ Low: The only new code since the last review is a one-line change: the summary re-read after a chat-card settle now catches its own error, so the card reports the settle's outcome and not a summary read failure. The earlier fixes checked out as correct on a re-trace: frame-reload clears picks and the pending place, headers are matched uniquely, settle errors show on the card. No new reachable defect turned up in the anchor capture, picture validation and storage, relay file, or chat card paths.
+
+## Testing
+
+<code>I started Vite on its own port and ran `pnpm artifacts` against it with screenshots in both themes: all 238 checks passed. Those checks cover the t2 usage-panel flow: the words that locate a comment, the in-sandbox redraw JPEG sent only when words are not enough, the picture&#39;s review-files path in the message, and the chat review card, including settling from it. I also drove two probes through the UI. In one, the frame reloads while the composer is open: the stale place is dropped, picking again draws a fresh picture, and no page errors appear. In the other, the mock&#39;s reviewSettle and/or reviewSummary is made to fail: a failed settle shows &#34;That did not settle: &lt;settle error&gt;&#34; on the card, and a failed summary re-read alone shows no false error. The Rust review and artifact unit tests pass. Matching a resumed conversation to its reviews after a restart could not be driven, because the mock keeps no state across a reload. I removed a 2 GB `src-tauri/target` left from an earlier round, and the worktree is clean.</code>
+
+- Live validation: ✅ go - 7 of 9 scenarios driven live against the product
+
+| Scenario | Result | Live | Evidence |
+| --- | --- | --- | --- |
+| Captain comments on a repeated, opened-only place (t2) and the author is told which row in words: match n of m, element path, near trail | ✅ pass | live | pnpm artifacts: &#39;t2: the author is told &#34;near Usage › Plan limits › Claude › 5h&#34;&#39;, &#39;which of the two cells on screen&#39;, &#39;element div#pop...dd&#39; |
+| When words cannot pin the place, the page redraws itself with snapdom inside its sandbox and a small JPEG goes with the comment, not a PNG screenshot | ✅ pass | live | pnpm artifacts: &#39;t2: the page draws itself around the place from inside its sandbox&#39;, &#39;review-files/t1-r1.jpg&#39;, &#39;not a screenshot of the captain&#39;s screen&#39;; shots/23-t2-picture-*.png |
+| A sent review shows in chat as a native card naming the page, verdict, each comment and the revision that answered it | ✅ pass | live | pnpm artifacts card checks; shots/10-review-card-*.png |
+| Settling a comment from the chat card collapses the card to one settled line | ✅ pass | live | pnpm artifacts &#39;a comment settled from its card in chat is settled&#39;; shots/10b-review-settled-*.png |
+| Adversarial: settle fails from the chat card and the card shows the settle&#39;s own error | ✅ pass | live | settle-probe.log [settle-fails], [both-fail]; settle-settle-fails.png |
+| Adversarial: settle succeeds but the summary re-read fails, and the card shows no false &#39;did not settle&#39; | ✅ pass | live | settle-probe.log [summary-fails] |
+| Adversarial: the review frame reloads while the composer is open, the stale place is dropped, and a new pick draws a fresh picture | ✅ pass | live | reload-probe.log; probe-1/2/3 screenshots |
+| After an app restart, each past review message in a resumed conversation maps to its own review, even with identical headers | ⏸️ untested | no | The Vite mock keeps review state in memory and loses it on reload, so a resumed history cannot be staged there. Driving it needs a live host restart against a scratch home (host_e2e_live_relaunch plus… |
+| The packaged Tauri app serves the snapdom library and review pictures through its own artifact scheme | ⏸️ untested | no | The native Tauri app was not launched. That needs `pnpm tauri dev` with QUARTERDECK_SETTINGS_DIR pointing at a scratch home and macOS Screen Recording permission to capture it. Only the Vite mock, whi… |
+
+![t2 comment: in-sandbox redraw picture beside the words (light)](https://github.com/user-attachments/assets/9aca2409-a377-4ca1-ab5d-c3fee64253ef)
+![t2 comment picture (dark)](https://github.com/user-attachments/assets/b109a4a8-c8ae-4491-9966-658808046e0b)
+![Sent review as a chat card (dark)](https://github.com/user-attachments/assets/5f7d35ef-03bf-4214-8056-7b345cb9df0b)
+![Settled review card collapsed to one line](https://github.com/user-attachments/assets/f4a395a4-9399-4b29-819b-34333f9d7c7d)
+![Settle failure shown on the chat card](https://github.com/user-attachments/assets/704f67ea-f931-4f21-8ddb-0655be907280)
+
+<details>
+<summary>Evidence: Settle probe transcript</summary>
+
+<code>[settle-fails] card state=answered; error line=That did not settle: Error: home unreadable (injected); page errors=none&#10;[summary-fails] card state=answered; says &#34;did not settle&#34;=false; page errors=none&#10;[both-fail] error line=That did not settle: Error: home unreadable (injected); page errors=none</code>
+
+```text
+[settle-fails] card state=answered; says "did not settle"=true; error line=That did not settle: Error: home unreadable (injected); page errors=none
+[summary-fails] card state=answered; says "did not settle"=false; error line=none; page errors=none
+[both-fail] card state=answered; says "did not settle"=true; error line=That did not settle: Error: home unreadable (injected); page errors=none
+```
+</details>
+
+<details>
+<summary>Evidence: Frame reload probe transcript</summary>
+
+<code>before reload: composer open = true&#10;after reload: composer open = false ; threads = 0&#10;picked again: composer open = true&#10;saved thread has picture = true&#10;page errors: none</code>
+
+```text
+before reload: composer open = true
+after reload: composer open = false ; threads = 0
+after reload: comment mode on = false
+picked again: composer open = true
+saved thread has picture = true ; text: t1 Not sent yet under pace: lasts past the reset picked again after reload
+page errors: none
+```
+</details>
+
+![Frame reload: picked again after reload](https://github.com/user-attachments/assets/2c197979-df6d-477d-86ea-d3ad3fbccdda)
+
+<details>
+<summary>Evidence: pnpm artifacts full log</summary>
+
+```text
+
+> firstmate-desktop-mvp@0.0.1 artifacts ~/.no-mistakes/worktrees/d75daa889db3/01M38YP4C0SBXZGXT1AR2YSQKF
+> node scripts/artifact-review.mjs
+
+ok: Captain's Call counts the four open calls, and a report that argues one is not counted again
+ok: the sidebar counts the same four
+ok: a finished scout whose report argues an open call is not offered twice
+ok: the call names the scout's report as its argument
+ok: a finished scout leaves Underway once its report is offered
+ok: Underway says how long a task has been going (started 1 h 35 min ago)
+ok: Decided for you lists the calls the first mate made
+ok: a decision says what was decided
+ok: a decision says why
+ok: a decision names its task by title
+ok: a decision links what it points at
+ok: a pull request link reads as its number
+ok: a decision's task opens that task
+ok: Push back puts the decision in the composer
+ok: Push back leaves the caret in the composer
+ok: Push back sends nothing by itself
+ok: a decision can be dismissed
+ok: a dismissed decision stays dismissed after a reload
+ok: the dismissed decision is the one that was dismissed
+ok: Recently Landed shows what landed and the call the captain answered
+ok: an answered and closed call shows as done
+ok: the answered call says what the captain chose, and what it was based on
+ok: what the answer was based on is a link to it
+ok: a call answered on a bare date reads as that day (Sep 21)
+ok: a landed PR links the PR
+ok: a landed task with a page offers it
+ok: a landed scout says it reported
+ok: a report without a page is asked for in chat
+ok: bearings: the window does not scroll sideways (0px)
+ok: the drawer is titled by the task's title
+ok: the task id sits beside the title
+ok: the drawer never says harness busy
+ok: the drawer says what the worker is doing in plain words
+ok: the drawer does not call a status note the instructions
+ok: the drawer shows the worker's latest note, labelled as such
+ok: the drawer says how long the task has been going
+ok: a scout's drawer has no PR section
+ok: the worker's screen starts folded
+ok: the worker's screen opens on request
+ok: Escape closes the drawer
+ok: a click outside the drawer closes it
+ok: a click on the sidebar while the drawer is open is not swallowed
+ok: Read the argument opens the scout's report
+ok: a finished scout's report that argues an open call starts on Request changes
+ok: the hint says the call waits on the page, not that nothing does
+ok: answering every call the page argues turns the review to Approve
+ok: the Approve hint says the answer goes with it
+ok: a verdict the captain picks stays theirs, and still carries the answer
+ok: back from the report returns to Bearings
+ok: the list shows the pages still in play
+ok: the newest page comes first
+ok: a task page names its project, task and revision
+ok: a page nobody has opened says so
+ok: a clean page carries no flag
+ok: only the groups with pages in them show
+ok: pages waiting on the captain come first
+ok: every unread page needs the captain
+ok: a page whose task landed is settled
+ok: the settled group says how many it holds
+ok: settled pages stay folded away
+ok: the settled group opens on its own
+ok: a chat page whose calls are all closed is settled, read or not
+ok: the landed page is the one that landed
+ok: a landed page says nothing is waiting on it
+ok: a landed page that argues no call starts the review on Comment
+ok: the hint says why nothing waits on a landed page
+ok: Request changes never claims a landed task is waiting
+ok: the settled group folds again
+ok: list: the window does not scroll sideways (0px)
+ok: the review screen is titled by the page
+ok: the subtitle names the owner and revision
+ok: the latest revision opens by default
+ok: the revision says what changed
+ok: the frame is sandboxed without same-origin or top navigation (allow-scripts allow-forms allow-downloads)
+ok: the page cannot reach into the app
+ok: the loading note clears once the page loads
+ok: a live scout's page that argues no call starts on Comment
+ok: review: the window does not scroll sideways (0px)
+ok: a revision presented with findings carries the flag
+ok: the flag opens the findings the presenter accepted
+ok: the flag closes the findings again
+ok: narrow shows the page at the check's narrow width (500px)
+ok: picking Rev 1 shows Rev 1
+ok: the subtitle follows the picked revision
+ok: a revision with a clean check has no flag
+ok: a newer revision is announced, not swapped in
+ok: opening the newest revision clears the announcement
+ok: back returns to the list
+ok: chat shows each revision presented in the last day (4)
+ok: the first revision reads as a shared page
+ok: a later revision reads as a revision
+ok: a first mate page says who shared it
+ok: chat: the window does not scroll sideways (0px)
+ok: a chat card opens the revision it announced
+ok: back returns to chat
+ok: the task drawer lists the task's pages
+ok: opening a page closes the drawer
+ok: back returns to Bearings
+ok: a page with no review says so
+ok: comment mode says what to do
+ok: turning comment mode on leaves the page where it was
+ok: the composer quotes what was clicked
+ok: picking a place leaves comment mode
+ok: the comment joins the review
+ok: a new comment is a draft, not a message
+ok: the send button counts the draft
+ok: the page highlights where the comment sits
+ok: a second comment joins the same review
+ok: a draft comment can be taken back
+ok: the count follows what is left
+ok: leaving the page and coming back keeps the draft
+ok: a comment says which revision it was written on
+ok: a sent comment says so
+ok: the review records its verdict
+ok: the draft count clears once it is sent
+ok: a sent comment cannot be taken back
+ok: the first mate is told the verdict
+ok: the review's comments reach the first mate
+ok: a comment taken back is never sent
+ok: a sent review is not shown as a bubble of its own text
+ok: the card names the page and the verdict
+ok: the card shows each comment in the captain's words
+ok: a review a later revision answered reads as answered
+ok: the card says which revision answered each comment
+ok: the card opens the revision that answered it
+ok: the revision's own card says which comments it answers
+ok: chat with a review card: the window does not scroll sideways (0px)
+ok: a comment a later revision answered is not counted as waiting
+ok: a page whose author answered every comment needs the captain
+ok: the rail shows the revision that answered the comment
+ok: a sent comment is not a draft
+ok: a settled comment leaves the waiting list
+ok: settled comments are kept, out of the way
+ok: a settled comment says so
+ok: settling can be undone
+ok: a review whose comments are all settled shrinks to one line
+ok: the line says what was settled and across which revisions (Review of AI titles for snips settled · 1 comment · rev 2 → rev 3
+Open)
+ok: a page with nothing waiting carries no chip
+ok: a read page with live work moves to its author
+ok: the list says a comment is still unsent
+ok: a call with a page to argue it says so
+ok: its options wait behind Answer now
+ok: the call names the page that argues it
+ok: the call says how many options and which is recommended
+ok: a question the title already asks is not said twice
+ok: a page that argues two calls offers both
+ok: the page offers the call's own question
+ok: options unchanged since the page say nothing
+ok: options changed after the page was presented say so
+ok: a page arguing an open call starts on Request changes
+ok: the hint says what Request changes does to an open call
+ok: every recorded option is offered
+ok: the recommendation is marked
+ok: an answer is staged, not sent
+ok: the answer counts towards the review
+ok: the answer and the comment travel together
+ok: the answer says firstmate recorded it
+ok: the card shows the answer recorded with the review
+ok: the first mate is told the answer is already recorded
+ok: the answer names the call and the option key, as recorded
+ok: the first mate is never asked to do the recording
+ok: the comment goes in the same message
+ok: a recorded call leaves Captain's Call once the snapshot has it closed
+ok: the recorded answer lands as what the captain chose
+ok: the rail says who answered and how, once the call is answered
+ok: an answered call offers no live buttons
+ok: a call raised before its page existed is argued by the page its origin presented
+ok: reading the argument is the primary action
+ok: Answer now says a choice is recorded at once
+ok: answering before opening the argument is noted, quietly
+ok: the card says the answer is recorded
+ok: the card keeps the note that the argument was not opened
+ok: the first mate is told the answer is already recorded
+ok: the call leaves once firstmate has it closed
+ok: the answer lands based on the page that argued it
+ok: what an answer was based on opens from Recently Landed
+ok: a page with a diagram offers to open it
+ok: the editor opens the page's own diagram
+ok: the scene draws on a canvas
+ok: an unchanged diagram is not filed as a change
+ok: proposing closes the editor
+ok: the proposal reads as a thread on that diagram
+ok: the thread says what changed, in the diagram's own terms
+ok: a proposal is a draft like any comment
+ok: the rail shows what was proposed
+ok: the message names the diagram
+ok: the message points at the scene the author can take up
+ok: a page cannot open the composer on its own
+ok: a page cannot open a file of its choosing as a diagram
+ok: a forged anchor keeps its words
+ok: a forged anchor brings no picture into the app
+ok: review in a narrow window: the window does not scroll sideways (0px)
+ok: a step group keeps the fact that a step failed (2 steps
+1 came back with an error
+ran bin/fm-fleet-snapshot.sh --json · ran test -f data/res-ai-titles/report.md)
+ok: a step group does not sound the alarm over a failed probe
+ok: a failed step is not painted in the alarm colour
+ok: pages from before this window stay under Earlier (earlier,page,page,page,page)
+ok: a call nothing argues offers its options inline
+ok: its options, and Not now
+ok: a keyed option is recorded, and the button says so
+ok: a skipped answer is shown as not recorded
+ok: with the intake's reason
+ok: nothing about a skipped answer reaches the first mate
+ok: the rail shows a skipped answer as not recorded
+ok: a skipped answer can be chosen again
+ok: the review never claims a skipped answer
+ok: a call answered in chat says so in the rail
+ok: and offers no buttons
+ok: Bearings with Answer now open in a narrow window: the window does not scroll sideways (0px)
+ok: an older home counts Bearings' calls
+ok: its call is answered in words
+ok: with no options but Not now
+ok: and no evidence
+ok: no Decided for you without calls[]
+ok: no answers read back from prose
+ok: no call cards in the rail without calls[]
+ok: Captain's Call counts a finished report beside the three open calls
+ok: a finished scout's report is offered where the captain looks first
+ok: the report card names the task by its title
+ok: the report card says what the scout found
+ok: a finished scout's report that argues nothing starts the review on Comment
+ok: the hint says why nothing waits on it
+ok: a comment settled from its card in chat is settled
+ok: a settled review card, dark: the window does not scroll sideways (0px)
+ok: a settled review card, light: the window does not scroll sideways (0px)
+ok: t2: a place words cannot pin down starts with its picture on
+ok: t2: the comment box says why (Picture
+These words are in more than one place · It's inside something you opened. Drawing the page…)
+ok: t2: the page draws itself around the place from inside its sandbox
+ok: t2: the draft keeps its picture
+ok: t2: the card marks the comment that went with a picture
+ok: t2: the card says the author is at work on it
+ok: t2: the author is told "t1 on \"under pace: lasts past the reset\": what does underpace mean?"
+ok: t2: the author is told "of them on screen"
+ok: t2: the author is told "near     Usage › Plan limits › Claude › 5h"
+ok: t2: the author is told "element  div#pop.pop > div.pop-body > div.sect > div.prov.open[data-prov=claude] > div.detail > dl > dd"
+ok: t2: the author is told "/artifacts/usage-panel/review-files/t1-r1.jpg"
+ok: t2: the author is told "not a screenshot of the captain's screen"
+ok: t2: which of the two cells on screen
+ok: t2: the positional path stays in the log
+
+all artifact review checks passed
+```
+</details>
+
+- Outcome: 🔧 2 issues found → auto-fixed ✅ across 2 runs (11m23s)
+
+## Pipeline
+
+Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+
+<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"4a5b57ca837738e1624928d3fb59a7fcbe6531e7","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"pending"}]} -->
+
+<details>
+<summary>✅ **intent** - passed</summary>
+
+✅ No issues found.
+</details>
+
+<details>
+<summary>✅ **Rebase** - passed</summary>
+
+✅ No issues found.
+</details>
+
+<details>
+<summary>🔧 **Review** - 4 issues found → auto-fixed (3) ✅</summary>
+
+- ⚠️ `src/App.tsx:1524` - In a resumed conversation, the chat finds a review by its first line, but that line is not unique. Two reviews of the same page on the same revision with the same verdict get the same header, for example two &#34;Comments only&#34; reviews on rev 1 before the author revises. The header is `Captain&#39;s review of &#34;X&#34; (task Y, rev 1): Comments only.`, written at src-tauri/src/review.rs:828. `byHeader.set` keeps only the last one. After a restart both past captain messages match that review, so the first message&#39;s card shows the second review&#39;s comments, trail and settle buttons, and the error is silent. Fix: keep a list per header and hand them out in order (the nth past message with that header gets the nth sent review), or put something that tells them apart into the header. The same matching applies in the mock (src/host/mock.ts sent header).
+- ⚠️ `src/App.tsx:297` - If settling from the chat card fails, the captain is not told. `settleFromChat` settles one thread at a time and only re-reads the summary after all of them succeed. The card&#39;s `settle` (App.tsx:2062) uses try/finally with no catch and is called as `void settle(...)`. If `reviewSettle` rejects partway through &#34;Settle all N&#34; (for example because the home became unreadable), the rejection goes unhandled and nothing appears on screen. The summary is also not refreshed, so threads that were settled before the failure still show as open. Fix: re-read the summary in a finally block and show the error on the card, as the review screen does with `problem`.
+- ⚠️ `src-tauri/src/artifact.rs:351` - The new test asserts `REVIEW_FRAME.contains(PICTURE_LIBRARY)`, which only greps the review script&#39;s source for a string. That proves nothing about behaviour: review-frame.js builds the URL from its own literal, and the match would still pass if the line were dead code or commented out. The behaviour is already covered for real by `pnpm artifacts` (?usage-t2), which checks that the picture is drawn from inside the sandbox. Remove this assertion. The status, content-type and served-bytes checks on the served response can stay.
+- ℹ️ `src-tauri/src/review-frame.js:57` - If the frame reloads in place, a comment can pick up an old picture. The pick counter lives in the page (`picks`) and starts again at 0 whenever the iframe document reloads. The review screen&#39;s `drawn` map (App.tsx, keyed by pick number) lives in `ArtifactReview`, which is keyed only by revision. When a page reloads within the same revision (for example a form submit, since the sandbox allows forms, or the page navigating itself), the next pick is 1 again. `pictureFor` then finds the earlier `drawn[1]` straight away, and the new comment is saved with a picture of an earlier place. Fix: clear `drawn` and `waitingFor` on `qd:ready` or on the iframe&#39;s `onLoad`.
+
+🔧 Fix applied.
+4 issues (2 warnings, 2 infos) still open:
+
+- ⚠️ `src/App.tsx:1524` - In a resumed conversation, the chat finds a review by its first line, but that line is not unique. Two reviews of the same page on the same revision with the same verdict get the same header, for example two &#34;Comments only&#34; reviews on rev 1 before the author revises. The header is `Captain&#39;s review of &#34;X&#34; (task Y, rev 1): Comments only.`, written at src-tauri/src/review.rs:828. `byHeader.set` keeps only the last one. After a restart both past captain messages match that review, so the first message&#39;s card shows the second review&#39;s comments, trail and settle buttons, and the error is silent. Fix: keep a list per header and hand them out in order (the nth past message with that header gets the nth sent review), or put something that tells them apart into the header. The same matching applies in the mock (src/host/mock.ts sent header).
+- ⚠️ `src/App.tsx:297` - If settling from the chat card fails, the captain is not told. `settleFromChat` settles one thread at a time and only re-reads the summary after all of them succeed. The card&#39;s `settle` (App.tsx:2062) uses try/finally with no catch and is called as `void settle(...)`. If `reviewSettle` rejects partway through &#34;Settle all N&#34; (for example because the home became unreadable), the rejection goes unhandled and nothing appears on screen. The summary is also not refreshed, so threads that were settled before the failure still show as open. Fix: re-read the summary in a finally block and show the error on the card, as the review screen does with `problem`.
+- ℹ️ `src-tauri/src/review-frame.js:57` - If the frame reloads in place, a comment can pick up an old picture. The pick counter lives in the page (`picks`) and starts again at 0 whenever the iframe document reloads. The review screen&#39;s `drawn` map (App.tsx, keyed by pick number) lives in `ArtifactReview`, which is keyed only by revision. When a page reloads within the same revision (for example a form submit, since the sandbox allows forms, or the page navigating itself), the next pick is 1 again. `pictureFor` then finds the earlier `drawn[1]` straight away, and the new comment is saved with a picture of an earlier place. Fix: clear `drawn` and `waitingFor` on `qd:ready` or on the iframe&#39;s `onLoad`.
+- ℹ️ `src/App.tsx:2441` - This defect is in the round-1 fix for stale-pick-pictures. `forgetPicks` now runs on the iframe&#39;s `onLoad` and sets `pick` to null, but it leaves `pending` and `withPicture` alone. Suppose a page reloads itself (a form submit, or the page navigating) while the comment composer is open for a place the words cannot pin down, so `withPicture` is true. When the captain saves, `pictureFor` sees `pick === null` and records `{ skipped: &#34;the captain left the picture out&#34; }`. The author is told the captain chose to leave the picture out, which is not what happened. The fix: in `forgetPicks`, also clear `withPicture`, or record a reason that says the page reloaded. Of the two, clearing `pending`, `withPicture` and `draft` so the stale anchor is dropped is the honest option.
+
+🔧 Fix applied.
+5 issues (2 warnings, 3 infos) still open:
+
+- ⚠️ `src/App.tsx:1524` - In a resumed conversation, the chat finds a review by its first line, but that line is not unique. Two reviews of the same page on the same revision with the same verdict get the same header, for example two &#34;Comments only&#34; reviews on rev 1 before the author revises. The header is `Captain&#39;s review of &#34;X&#34; (task Y, rev 1): Comments only.`, written at src-tauri/src/review.rs:828. `byHeader.set` keeps only the last one. After a restart both past captain messages match that review, so the first message&#39;s card shows the second review&#39;s comments, trail and settle buttons, and the error is silent. Fix: keep a list per header and hand them out in order (the nth past message with that header gets the nth sent review), or put something that tells them apart into the header. The same matching applies in the mock (src/host/mock.ts sent header).
+- ⚠️ `src/App.tsx:297` - If settling from the chat card fails, the captain is not told. `settleFromChat` settles one thread at a time and only re-reads the summary after all of them succeed. The card&#39;s `settle` (App.tsx:2062) uses try/finally with no catch and is called as `void settle(...)`. If `reviewSettle` rejects partway through &#34;Settle all N&#34; (for example because the home became unreadable), the rejection goes unhandled and nothing appears on screen. The summary is also not refreshed, so threads that were settled before the failure still show as open. Fix: re-read the summary in a finally block and show the error on the card, as the review screen does with `problem`.
+- ℹ️ `src-tauri/src/review-frame.js:57` - If the frame reloads in place, a comment can pick up an old picture. The pick counter lives in the page (`picks`) and starts again at 0 whenever the iframe document reloads. The review screen&#39;s `drawn` map (App.tsx, keyed by pick number) lives in `ArtifactReview`, which is keyed only by revision. When a page reloads within the same revision (for example a form submit, since the sandbox allows forms, or the page navigating itself), the next pick is 1 again. `pictureFor` then finds the earlier `drawn[1]` straight away, and the new comment is saved with a picture of an earlier place. Fix: clear `drawn` and `waitingFor` on `qd:ready` or on the iframe&#39;s `onLoad`.
+- ℹ️ `src/App.tsx:2441` - This defect is in the round-1 fix for stale-pick-pictures. `forgetPicks` now runs on the iframe&#39;s `onLoad` and sets `pick` to null, but it leaves `pending` and `withPicture` alone. Suppose a page reloads itself (a form submit, or the page navigating) while the comment composer is open for a place the words cannot pin down, so `withPicture` is true. When the captain saves, `pictureFor` sees `pick === null` and records `{ skipped: &#34;the captain left the picture out&#34; }`. The author is told the captain chose to leave the picture out, which is not what happened. The fix: in `forgetPicks`, also clear `withPicture`, or record a reason that says the page reloaded. Of the two, clearing `pending`, `withPicture` and `draft` so the stale anchor is dropped is the honest option.
+- ℹ️ `src/App.tsx:301` - This edge case is in the round-1 fix for settle-errors-swallowed. `settleFromChat` now re-reads the summary in a `finally` block with `setReviews(await host.reviewSummary())`. If that re-read rejects, its error takes the place of the settle&#39;s own outcome. So when every `reviewSettle` succeeds but the summary read fails, the card still shows &#34;That did not settle: ...&#34;, which is wrong because the threads were settled. And when both calls fail, the captain sees the summary&#39;s error instead of the settle&#39;s. Fix: catch the summary re-read on its own (for example `await host.reviewSummary().then(setReviews, () =&gt; {})`, or put its error in a separate message), so the settle outcome is what the card reports.
+
+🔧 Fix applied.
+✅ Re-checked - no issues remain.
+</details>
+
+<details>
+<summary>🔧 **Test** - 2 issues found → auto-fixed ✅</summary>
+
+- ⚠️ `src-tauri/src/review-frame.js:550` - The picture snapdom draws uses fallback fonts, not the page&#39;s own. snapdom fetches the page&#39;s @font-face files with credentials &#39;include&#39;, because the frame&#39;s location.origin matches the font URL even though the sandboxed document&#39;s origin is &#39;null&#39;. The server answers with `Access-Control-Allow-Origin: *`, and browsers reject a wildcard on a credentialed request, so the fetch fails. The console says: &#34;must not be the wildcard &#39;*&#39; when the request&#39;s credentials mode is &#39;include&#39;&#34;. The picture still draws and outlines the right place (`picture-wildcard.jpg` next to `page-region-wildcard.png`), but its text is in fallback fonts. `artifact.rs` sends the same wildcard, so the packaged app very likely behaves the same way; I did not verify that in the packaged app. Possible fixes: have the frame script tell snapdom to fetch without credentials, or answer these requests with `Access-Control-Allow-Origin: null` plus `Allow-Credentials`.
+- ℹ️ `vite.config.ts:28` - Fixed a gap in the test harness: the Vite mock served fixture files other than HTML without `Access-Control-Allow-Origin`. The app&#39;s scheme sends that header on every artifact file, so in the mock the new usage-panel fixture&#39;s fonts were blocked in the sandboxed frame and the page rendered differently from the app. The mock now adds the header to every `/artifacts/` response. `pnpm artifacts` still passes all 238 checks after the change.
+- Live validation: ✅ go - 5 of 8 scenarios driven live against the product
+
+| Scenario | Result | Live | Evidence |
+| --- | --- | --- | --- |
+| Captain comments on a place the words cannot pin down (t2 on the usage panel) and the comment box offers a sandbox-drawn picture with the reason | ✅ pass | live | `pnpm artifacts` t2 checks; shots/23-t2-picture-*.png; picture-wildcard.jpg |
+| The author is told which place: match count, surrounding text, element path, the near breadcrumb, box, and a JPEG path, never a screen PNG | ✅ pass | live | `pnpm artifacts` t2 &#39;the author is told ...&#39; checks; shots/24-t2-card-light.png |
+| A sent review appears in chat as a native card (page, verdict, comments, trail, raw text folded away), not a bubble of raw text | ✅ pass | live | `pnpm artifacts` review-card checks; shots/10-review-card-*.png |
+| A later revision answers a comment: the card shows it as answered, offers Open rev N and Settle it, and shrinks to one line once settled | ✅ pass | live | `pnpm artifacts`; shots/10b-review-settled-*.png; &#39;a comment settled from its card in chat is settled&#39; |
+| Adversarial: the frame reloads while the composer is open, so the pending place and old pick are dropped and a new pick draws a fresh picture | ✅ pass | live | reload-probe.log; probe-2-after-reload.png; probe-3-picked-again.png |
+| Adversarial: settling from the card fails partway, so the card shows the settle error and the summary still refreshes | ⏸️ untested | no | The browser mock has no fault injection for reviewSettle or reviewSummary, and the Tauri host needs an unreadable scratch home to make it fail. Adding a `?settle-fails` mock switch would allow a live… |
+| Adversarial: in a resumed conversation, two reviews with the same header each map to their own past message | ⏸️ untested | no | The mock&#39;s `?history` resumed conversation has no sent reviews with duplicate headers. It needs a fixture with them, or a live relaunch run (`host_e2e_live_relaunch`, which spends model tokens). |
+| Backend: the review text carries the locator and a kept JPEG, and the app scheme serves the snapdom library | ⏸️ untested | no | The prior payload established this only through Rust unit tests (`cargo test --lib review`, `cargo test --lib artifact::`), not a live run of the packaged Tauri app against a scratch home; driving it… |
+
+- <code>`FIRSTMATE_URL=http://127.0.0.1:5791 ARTIFACT_SHOTS=&lt;evidence&gt;/shots pnpm artifacts` (run twice, before and after the Vite CORS fix; 238 checks passed both times)</code>
+- <code>Custom Playwright probe `reload-probe.mjs` against the running UI: open the composer for the t2 cell, reload the review iframe in place, check the composer and pending place are gone, pick again, save the comment with a fresh picture</code>
+- `Custom Playwright probe that pulled the snapdom picture out of the composer and compared it with the page region, and captured the console showing the font fetch blocked`
+- <code>`cargo test --lib review` (23 passed, 1 live test ignored)</code>
+- <code>`cargo test --lib artifact::` (5 passed, including the served snapdom library and served revision files)</code>
+- <code>`curl -I` of a fixture woff2 through Vite to confirm the ACAO header after the fix</code>
+
+🔧 Fix applied.
+✅ Re-checked - no issues remain.
+- Live validation: ✅ go - 7 of 9 scenarios driven live against the product
+
+| Scenario | Result | Live | Evidence |
+| --- | --- | --- | --- |
+| Captain comments on a repeated, opened-only place (t2) and the author is told which row in words: match n of m, element path, near trail | ✅ pass | live | pnpm artifacts: &#39;t2: the author is told &#34;near Usage › Plan limits › Claude › 5h&#34;&#39;, &#39;which of the two cells on screen&#39;, &#39;element div#pop...dd&#39; |
+| When words cannot pin the place, the page redraws itself with snapdom inside its sandbox and a small JPEG goes with the comment, not a PNG screenshot | ✅ pass | live | pnpm artifacts: &#39;t2: the page draws itself around the place from inside its sandbox&#39;, &#39;review-files/t1-r1.jpg&#39;, &#39;not a screenshot of the captain&#39;s screen&#39;; shots/23-t2-picture-*.png |
+| A sent review shows in chat as a native card naming the page, verdict, each comment and the revision that answered it | ✅ pass | live | pnpm artifacts card checks; shots/10-review-card-*.png |
+| Settling a comment from the chat card collapses the card to one settled line | ✅ pass | live | pnpm artifacts &#39;a comment settled from its card in chat is settled&#39;; shots/10b-review-settled-*.png |
+| Adversarial: settle fails from the chat card and the card shows the settle&#39;s own error | ✅ pass | live | settle-probe.log [settle-fails], [both-fail]; settle-settle-fails.png |
+| Adversarial: settle succeeds but the summary re-read fails, and the card shows no false &#39;did not settle&#39; | ✅ pass | live | settle-probe.log [summary-fails] |
+| Adversarial: the review frame reloads while the composer is open, the stale place is dropped, and a new pick draws a fresh picture | ✅ pass | live | reload-probe.log; probe-1/2/3 screenshots |
+| After an app restart, each past review message in a resumed conversation maps to its own review, even with identical headers | ⏸️ untested | no | The Vite mock keeps review state in memory and loses it on reload, so a resumed history cannot be staged there. Driving it needs a live host restart against a scratch home (host_e2e_live_relaunch plus… |
+| The packaged Tauri app serves the snapdom library and review pictures through its own artifact scheme | ⏸️ untested | no | The native Tauri app was not launched. That needs `pnpm tauri dev` with QUARTERDECK_SETTINGS_DIR pointing at a scratch home and macOS Screen Recording permission to capture it. Only the Vite mock, whi… |
+
+- <code>`FIRSTMATE_URL=http://127.0.0.1:5791 ARTIFACT_SHOTS=&lt;evidence&gt;/r2/shots pnpm artifacts` (238 checks, including the t2 usage-panel scenario and settling from the chat card)</code>
+- <code>`node settle-probe.mjs`: drives Settle on the chat review card with the mock&#39;s reviewSettle and/or reviewSummary made to fail via a Playwright module rewrite (the failures are faked)</code>
+- <code>`node reload-probe.mjs`: reloads the review frame while the comment composer is open, then picks again</code>
+- <code>`cargo test review` (23 passed)</code>
+- <code>`cargo test artifact` (6 passed)</code>
+</details>
+
+<details>
+<summary>✅ **Document** - passed</summary>
+
+✅ No issues found.
+</details>
+
+<details>
+<summary>🔧 **Lint** - 1 issue found → auto-fixed ✅</summary>
+
+- ℹ️ `src/fixtures/review-pages/artifacts/task/qd-usage-design-1/usage-panel/rev-1/usage-panel.html:574` - The new usage-panel review fixture uses the em dash character as an on-screen placeholder for an empty reading, at lines 574, 584 and 597. AGENTS.md says no em dashes in code. This fixture copies a crew-authored design page, and the captain&#39;s t2 comment in the artifact test is anchored on that page&#39;s text, so I left it alone rather than risk changing what the test relies on. Decide whether to swap it for a plain &#39;-&#39; or another placeholder.
+
+🔧 Fix applied.
+✅ Re-checked - no issues remain.
+</details>
+
+<details>
+<summary>✅ **Push** - passed</summary>
+
+✅ No issues found.
+</details>

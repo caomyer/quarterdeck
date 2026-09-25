@@ -122,6 +122,7 @@ case "$*" in
   'pr view '*headRefOid,reviewDecision*)
     jq -n --arg head "$(cat "$FORGE/head")" '{headRefOid:$head,reviewDecision:"APPROVED"}' ;;
   'pr view '*headRefOid*) cat "$FORGE/head" ;;
+  'pr view '*' --json body -q .body') printf '\n' ;;
   'pr view '*state*) printf 'OPEN\n' ;;
   'api repos/o/r/pulls/8')
     jq -n --arg head "$(cat "$FORGE/head")" '{state:"open",user:{login:"author"},head:{sha:$head},draft:false,mergeable:true,merged_at:null}' ;;
