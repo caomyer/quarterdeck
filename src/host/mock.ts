@@ -235,6 +235,21 @@ function mockArtifacts(home: string): MockHome {
     entry: "usage-panel.html", bytes: 107732, presented_at: at(5), presented_by: { role: "crew", task: USAGE_TASK }, layout: { status: "clean", issues: [] },
   };
   if (reviewFlag("usage-t2")) artifacts.push({ scope: "task", task: USAGE_TASK, name: "usage-panel", title: usage.title, latest: usage, revisions: [usage] });
+  if (reviewFlag("resumed-day")) {
+    // The captain's own day: pages from nearly a day ago, at the trailing edge of the chat's window.
+    const flow: ArtifactRevision = {
+      scope: "chat", task: null, name: "nm-flow", rev: 1, title: "How no-mistakes carries a change", note: null,
+      entry: "nm-flow.html", bytes: 5200, presented_at: at(RESUMED_DAY_MINUTES.flow), presented_by: { role: "firstmate" }, layout: { status: "clean", issues: [] },
+    };
+    const panel = [
+      { ...usage, presented_at: at(RESUMED_DAY_MINUTES.panel1) },
+      { ...usage, rev: 2, note: "Said what \"under pace\" means.", presented_at: at(RESUMED_DAY_MINUTES.panel2) },
+    ];
+    artifacts.push(
+      { scope: "chat", task: null, name: "nm-flow", title: flow.title, latest: flow, revisions: [flow] },
+      { scope: "task", task: USAGE_TASK, name: "usage-panel", title: usage.title, latest: panel[1], revisions: panel },
+    );
+  }
   const usageTask = mockTask(home, USAGE_TASK, "scout", "working", 30, { detail: "harness busy (claude-hook)", note: "Designing the usage panel.", report: false, observedAt: at(1) });
   const planTask = mockTask(home, ARTIFACT_TASK, "scout", "working", 95, { detail: "harness busy (claude-hook)", note: "Revising the titles plan.", report: false, observedAt: at(2) });
   const reportTask = mockTask(home, REPORT_TASK, "scout", "done", 27 * 60, { detail: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", note: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", report: true, observedAt: at(2) });
@@ -455,6 +470,27 @@ const EARLIER_CONVERSATION: HistoryItem[] = [
   { who: "mate", text: "Two calls: the resonance titles PR is ready to merge, and foreman wants a yes or no on Wi-Fi only uploads." },
 ];
 
+/**
+ * `?resumed-day`, with `?artifacts`: a first mate resumed after a day of work, as a relaunch brings it back, so none of
+ * it has a time. The captain reviewed the usage panel's first revision in it, so that review is the one thing the app
+ * knows the time of. The last exchange is from minutes ago, and every page is older than it.
+ */
+const RESUMED_DAY_MINUTES = { flow: 23 * 60 + 50, panel1: 23 * 60 + 34, review: 23 * 60 + 30, panel2: 23 * 60 + 24 };
+const RESUMED_DAY_REVIEW = 'Captain\'s review of "usage-panel" (rev 1): Requests changes.';
+const RESUMED_DAY: HistoryItem[] = [
+  { who: "captain", text: "Show me how no-mistakes carries a change from my branch to a PR." },
+  { who: "step", text: "bin/fm-artifact.sh present --chat nm-flow.html" },
+  { who: "mate", text: "It is on the nm-flow page: each gate, and who answers it." },
+  { who: "captain", text: "And the usage panel?" },
+  { who: "mate", text: "The scout's first cut is up as usage-panel." },
+  { who: "captain", text: `${RESUMED_DAY_REVIEW}\nt1 on "under pace": what does under pace mean?` },
+  { who: "mate", text: "Revision 2 says what it means." },
+  { who: "captain", text: "Good. Park it until tomorrow." },
+  { who: "mate", text: "Parked." },
+  { who: "captain", text: "Morning. What changed overnight?" },
+  { who: "mate", text: "Nothing needs you yet: two scouts are still working." },
+];
+
 /** `?markdown`: one reply in the shapes a first mate actually writes, for reviewing chat formatting. */
 const MARKDOWN_SAMPLE: HistoryItem[] = [
   { who: "captain", text: "Where are we on the titles work?" },
@@ -519,9 +555,11 @@ export class MockHostAdapter implements HostAdapter {
   /** The session's conversation so far, which a resumed session sends back as `history`. */
   private transcript: HistoryItem[] = reviewFlag("markdown")
     ? [...MARKDOWN_SAMPLE]
-    : reviewFlag("history")
-      ? [...EARLIER_CONVERSATION]
-      : [];
+    : reviewFlag("resumed-day")
+      ? [...RESUMED_DAY]
+        : reviewFlag("history")
+        ? [...EARLIER_CONVERSATION]
+        : [];
   private streaming = false;
   private readonly snapshot = MockHostAdapter.fixtureSnapshot();
   private routing = MockHostAdapter.initialRouting();
@@ -610,7 +648,15 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   /** Reviews live in memory here; the app keeps them in the home beside the revisions. */
-  private readonly reviews = new Map<string, ReviewView>();
+  private readonly reviews = new Map<string, ReviewView>(reviewFlag("resumed-day") ? [[`task/${USAGE_TASK}/usage-panel`, {
+    threads: [{
+      id: "t1", rev: 1, anchor: { quote: "under pace" } as ReviewAnchor, at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, sent_at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000,
+      resolved_at: null, state: "open", comments: [{ body: "what does under pace mean?", at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000 }],
+    }],
+    answers: [], draft_count: 0, staged_answers: 0, open_count: 1, seen_rev: 2, log: `${this.snapshot.fleet.fm_home}/data/${USAGE_TASK}/review.jsonl`,
+    // Sent by the window before this one, so its message id is not one this window has.
+    sent: [{ at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, verdict: "changes", rev: 1, message: "m-yesterday", header: RESUMED_DAY_REVIEW, threads: ["t1"] }],
+  }]] : []);
   /** Threads ever opened per review, discarded ones included, which is how the app numbers them too. */
   private readonly opened = new Map<string, number>();
 
@@ -1316,8 +1362,8 @@ export class MockHostAdapter implements HostAdapter {
         }
         // `?session-lost`: the host couldn't resume the previous session, so the startup opens a fresh one.
         if (item.type === "session" && reviewFlag("session-lost")) payload.previous_session_lost = true;
-        // `?history`: the startup resumes the previous session instead of opening a new one.
-        if (item.type === "session" && reviewFlag("history") && !reviewFlag("session-lost")) payload.mode = "loaded";
+        // `?history` and `?resumed-day`: the startup resumes the previous session instead of opening a new one.
+        if (item.type === "session" && (reviewFlag("history") || reviewFlag("resumed-day")) && !reviewFlag("session-lost")) payload.mode = "loaded";
         const event = this.normalize(item.type, payload);
         this.emit(event);
         if (event.type === "session" && event.payload.mode === "loaded") this.emit({ type: "history", payload: { items: [...this.transcript] } });

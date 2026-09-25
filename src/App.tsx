@@ -49,6 +49,7 @@ import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAt
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
+import { latestTime, pagePlaces } from "./chatorder";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 import { RoutingSettings } from "./Routing";
 
@@ -1587,40 +1588,31 @@ function reviewsOf(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
  * Consecutive steps read as one group between the first mate's messages.
  * A resumed session's history reads as "Earlier", and "Today" starts after its last item.
  * A message still waiting keeps its place inside the history, so it stays under "Earlier".
- * A page presented in the last day shows where it happened among this window's messages, and after a resumed
- * session's history, whose items carry no time. A day rather than the calendar date, so a page shared just before
- * midnight does not drop out of the conversation a minute later.
+ * A page presented in the last day shows where it happened among the conversation's messages. A day rather than the
+ * calendar date, so a page shared just before midnight does not drop out of the conversation a minute later.
  */
 const CHAT_PAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-/** When this window opened: a page shared before it belongs with the resumed conversation, not with today's. */
-const WINDOW_OPENED = new Date().toISOString();
 
 function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary = {}) {
   const sent = reviewsOf(messages, artifacts, reviews);
   const lastPast = messages.reduce((found, message, index) => message.past ? index : found, -1);
-  // A resumed conversation comes back without times, so its pages cannot be placed
-  // between its messages. They go after it, still under "Earlier", and "Today" keeps
-  // to what happened since: before, yesterday's pages sat under "Today".
-  const liveFrom = messages.find((message) => !message.past)?.createdAt ?? WINDOW_OPENED;
   const items: ChatItem[] = [{ type: "label", id: "label-top", text: lastPast >= 0 ? "Earlier" : "Today" }];
   const since = Date.now() - CHAT_PAGE_WINDOW_MS;
-  const pages = artifacts
-    .flatMap((artifact) => artifact.revisions.map((revision) => ({ artifact, revision })))
-    .filter(({ revision }) => Date.parse(revision.presented_at) >= since)
-    .sort((a, b) => a.revision.presented_at.localeCompare(b.revision.presented_at));
-  const pushPages = (before?: string) => {
-    while (pages.length && (before === undefined || pages[0].revision.presented_at < before)) {
+  const shown = artifacts
+    .flatMap((artifact) => artifact.revisions.map((revision) => ({ artifact, revision, at: Date.parse(revision.presented_at) })))
+    .filter(({ at }) => at >= since)
+    .sort((a, b) => a.at - b.at);
+  // A page never renders below a message newer than it: pagePlaces (src/chatorder.ts) holds that, from the bounds.
+  const places = pagePlaces(messages.map((message) => latestTime(message, sent.get(message.id)?.review.at)), shown.map(({ at }) => at));
+  const pages = shown.map((page, index) => ({ ...page, place: places[index] }));
+  const pushPages = (place: number) => {
+    while (pages.length && pages[0].place <= place) {
       const { artifact, revision } = pages.shift()!;
       items.push({ type: "artifact", id: `artifact-${artifact.scope}-${artifact.task}-${artifact.name}-${revision.rev}`, artifact, revision });
     }
   };
   messages.forEach((message, index) => {
-    if (lastPast >= 0 && index === lastPast + 1) {
-      pushPages(liveFrom < WINDOW_OPENED ? liveFrom : WINDOW_OPENED);
-      items.push({ type: "label", id: `label-${message.id}`, text: "Today" });
-    }
-    if (!message.past) pushPages(message.createdAt);
+    pushPages(index);
     const past = message.past === true;
     const last = items.at(-1);
     // A review the captain sent is a card, not the text written for the first mate.
@@ -1629,12 +1621,10 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
     else if (message.who !== "step") items.push({ type: "message", message });
     else if (last?.type === "steps" && last.past === past) last.steps.push(message);
     else items.push({ type: "steps", id: `steps-${message.id}`, steps: [message], past });
+    if (index === lastPast && (index < messages.length - 1 || pages.length)) items.push({ type: "label", id: `label-today-${message.id}`, text: "Today" });
   });
-  if (lastPast >= 0 && lastPast === messages.length - 1) {
-    pushPages(WINDOW_OPENED);
-    if (pages.length) items.push({ type: "label", id: "label-today-pages", text: "Today" });
-  }
-  pushPages();
+  // Only pages newer than every message are left, so they end the conversation.
+  pushPages(messages.length);
   return items;
 }
 

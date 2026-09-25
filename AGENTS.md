@@ -59,7 +59,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
 - Backend: `cd src-tauri && cargo clippy --all-targets && cargo test`.
 - The look is tokens: palette, type (Instrument Sans and IBM Plex Mono, bundled from `@fontsource`) and surfaces are declared once at the top of `src/styles.css`, light in `:root` and dark in `:root.dark`.
   Style with the tokens, never a literal colour: `pnpm tones` compares what it sees against them.
-- How every screen reads captain calls (`src/calls.ts`), how a project's logbook reads closed work (`src/logbook.ts`) and how a task's body keeps the lines its filer wrote (`src/taskbody.ts`): `pnpm test`, which needs no server.
+- How every screen reads captain calls (`src/calls.ts`), how a project's logbook reads closed work (`src/logbook.ts`), how a task's body keeps the lines its filer wrote (`src/taskbody.ts`) and where the chat places a page among messages that may carry no time (`src/chatorder.ts`, whose invariant is that a page never sits below a newer message): `pnpm test`, which needs no server.
   Calls come only from the snapshot's `calls[]`, which `bin/fm-captain-hold.sh` owns; the app answers them through its `answers` intake (`src-tauri/src/calls.rs`) and never closes one itself.
   Closed work beyond the snapshot's few recent rows comes only from `bin/fm-history.sh`, read when a project page opens; the app never parses the backlog or its archive itself.
 - Live test of a project's history, which spends no tokens and changes nothing in the home:

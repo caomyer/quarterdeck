@@ -613,6 +613,44 @@ const firstToday = order.indexOf("today");
 check(order[0] === "earlier" && order.includes("page") && (firstToday === -1 || order.lastIndexOf("page") < firstToday), `pages from before this window stay under Earlier (${order.join(",")})`);
 await resumed.close();
 
+// `?resumed-day`: a day of conversation resumed with no times, its last exchange minutes old and every page older.
+// A page never renders below a message newer than it, so none sits below that last exchange, as they all did once.
+// The one time the history holds is the review the captain sent on the usage panel's first revision: that revision
+// stays above it, and the second, presented after it, follows it. The review's card keeps its message's place.
+{
+  const day = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  day.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await day.goto(`${baseUrl}/?artifacts&resumed-day`);
+  await day.waitForFunction(() => !document.querySelector(".app-loading"));
+  await day.locator(".nav-item", { hasText: "Chat" }).click();
+  await day.locator(".chat-messages .captain-message", { hasText: "Morning. What changed overnight?" }).waitFor();
+  await day.locator(".chat-messages [data-testid='review-card']").waitFor();
+  const stream = await day.evaluate(() => [...document.querySelectorAll(".chat-messages > *")].map((element) => {
+    if (element.matches(".day-label")) return `label:${element.textContent.trim().toLowerCase()}`;
+    if (element.matches("[data-testid='artifact-card']")) return `page:${element.querySelector("strong")?.textContent.trim()}|${/Rev (\d+)/.exec(element.textContent)?.[1] ?? "1"}`;
+    if (element.matches("[data-testid='review-card']")) return "review";
+    return `said:${element.textContent.replace(/\s+/g, " ").trim()}`;
+  }));
+  const at = (test) => stream.findIndex(test);
+  const shown = ` (${stream.join(" / ")})`;
+  const lastExchange = at((item) => item.includes("Morning. What changed overnight?"));
+  const pages = stream.flatMap((item, index) => item.startsWith("page:") ? [index] : []);
+  const flow = at((item) => item.startsWith("page:How no-mistakes carries a change"));
+  const panel = (rev) => at((item) => item.startsWith("page:Usage panel") && item.endsWith(`|${rev}`));
+  const review = at((item) => item === "review");
+  const checkDay = (ok, what) => check(ok, ok ? what : what + shown);
+  checkDay(lastExchange > 0 && pages.length === 7 && pages.every((index) => index < lastExchange), "no page renders below the resumed conversation's last exchange, which is newer than all of them");
+  checkDay(flow > 0 && panel(1) > flow && review > panel(1), "a page stays above the review sent on it, and pages keep their order");
+  checkDay(panel(2) > review && panel(2) < at((item) => item.includes("Revision 2 says what it means")), "a page presented after a review the history holds follows that review");
+  const said = stream.filter((item) => item.startsWith("said:") || item === "review");
+  const card = said.indexOf("review");
+  checkDay(said[card - 1]?.includes("first cut is up as usage-panel") && said[card + 1]?.includes("Revision 2 says what it means"), "the review's card keeps its message's place in the resumed conversation");
+  checkDay(!stream.includes("label:today"), "nothing after the resumed conversation, so no Today");
+  await day.locator(".chat-messages [data-testid='artifact-card']").first().scrollIntoViewIfNeeded();
+  await shot(day, "25-resumed-day");
+  await day.close();
+}
+
 // A skip is never shown as recorded: not from Bearings, and not from the review rail.
 {
   const skipping = await browser.newPage({ viewport: { width: 1440, height: 900 } });
