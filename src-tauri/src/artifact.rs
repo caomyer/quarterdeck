@@ -34,7 +34,9 @@
 //! Every HTML document it serves also carries `review-frame.js`, which lets the
 //! captain comment on the page. The file on disk is never changed, and the
 //! script stays inert until the review screen speaks to it, so the page still
-//! opens the same way anywhere else.
+//! opens the same way anywhere else. A page takes the app's theme, not the
+//! Mac's, through `prefers-color-scheme`, which follows the window's appearance
+//! (`src/theme.ts`), so every revision already presented follows it unchanged.
 //!
 //! Starting the first mate in a home that can present artifacts also records
 //! `quarterdeck` in its `config/presentation`, unless the home already names a
