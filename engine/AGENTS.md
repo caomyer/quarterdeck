@@ -533,7 +533,7 @@ The configured `tasks-axi` backend is the durable queue; the tracked default is 
 It tracks work items only, never agents; persistent secondmates never appear as backlog items.
 Work routed to a secondmate is recorded in that secondmate home's own backlog, not the main backlog.
 A decision is simply a task held for the captain: create the task with `bin/fm-tasks-axi.sh add` when needed, then always hold it through `bin/fm-captain-hold.sh hold <id> --reason "<reason>"`, with `--until <date>` when the captain defers it.
-Raise every call with its content on that hold - `--question`, the `--option <key>=<label>` choices, and `--recommend` - and pass `--origin <task>` when the call comes out of a task's work, which is how a scout's `## Proposed call` becomes a call; record every decision you make on the captain's behalf with `decide`.
+Raise every call with its content on that hold - `--question`, the `--option <key>=<label>` choices, and `--recommend` - and pass `--origin <task>` when the call comes out of another task's work (a held task that already has a report or page is its own origin), which is how a scout's `## Proposed call` becomes a call; record every decision you make on the captain's behalf with `decide`.
 The first mate or a scout raises calls through `hold`, never any other way, so every call has one owner and `--origin` makes its evidence automatic.
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item and hold it through that wrapper.
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.

@@ -2,7 +2,7 @@
 # Behavior tests for a captain call's single source of truth in
 # bin/fm-captain-hold.sh: the sidecar record `hold` and `offer` write, evidence
 # attached explicitly and derived from --origin whatever the presentation
-# order, `decide` for calls settled on the captain's behalf, `list` and the
+# order, a held task that produced work standing as its own origin, `decide` for calls settled on the captain's behalf, `list` and the
 # fleet snapshot's calls[], the answer's machine lines written by `answers` and
 # `answer` with their closed channel vocabulary, the declared on_answer, the
 # one-time `migrate`, and the shims that
@@ -136,6 +136,121 @@ test_origin_evidence_is_derived_whatever_the_presentation_order() {
   assert_equals 2 "$(jq '.evidence | length' "$home/state/calls/sample-origin-call.json")" \
     "derived evidence is never written into the record"
   pass "a call raised with --origin is argued by everything its origin produced, in any order"
+}
+
+test_held_work_that_produced_something_is_its_own_origin() {
+  local home call
+  home=$(make_home self-origin)
+  printf '%s\n' '## In flight' '' \
+    '- [ ] sample-paged - Scout that presented a page (repo: sample) (kind: scout) (since 2026-09-01)' \
+    '- [ ] sample-reported - Scout that wrote a report (repo: sample) (kind: scout) (since 2026-09-01)' \
+    '' '## Queued' '' '## Done' > "$home/data/backlog.md"
+  mkdir -p "$home/data/sample-paged"
+  printf 'kind=scout\n' > "$home/state/sample-paged.meta"
+  present "$home" sample-paged sample-findings >/dev/null || fail "present on the paged scout failed"
+  scout_task "$home" sample-reported
+
+  run_captain "$home" hold sample-paged --reason 'paged scout call' >/dev/null \
+    || fail "bare hold of the paged scout failed"
+  call=$(call_json "$home" sample-paged)
+  assert_equals 'sample-paged|["page:task/sample-paged/sample-findings"]' \
+    "$(printf '%s' "$call" | jq -r '[.origin, (.evidence|tojson)] | join("|")')" \
+    "a bare hold of a task that presented a page links that page with no flag"
+  assert_equals 0 "$(jq '.evidence | length' "$home/state/calls/sample-paged.json")" \
+    "the link is the recorded origin, not a copied evidence ref"
+
+  run_captain "$home" hold sample-reported --reason 'reported scout call' \
+    --question 'Which way should the sample go?' --option left='Go left' --option right='Go right' >/dev/null \
+    || fail "hold of the reported scout failed"
+  present "$home" sample-reported sample-later >/dev/null || fail "present after the hold failed"
+  call=$(call_json "$home" sample-reported)
+  assert_equals 'sample-reported|["report:sample-reported","page:task/sample-reported/sample-later"]' \
+    "$(printf '%s' "$call" | jq -r '[.origin, (.evidence|tojson)] | join("|")')" \
+    "a held task's report and a page it presents later both argue its call"
+  pass "holding work that already produced something makes it the call's origin"
+}
+
+test_a_defaulted_origin_links_without_changing_the_close() {
+  local home call body
+  home=$(make_home self-origin-close)
+  printf '%s\n' '## In flight' '' \
+    '- [ ] sample-bare - Scout with a report and a page (repo: sample) (kind: scout) (since 2026-09-01)' \
+    '' '## Queued' '' '## Done' > "$home/data/backlog.md"
+  scout_task "$home" sample-bare
+  present "$home" sample-bare sample-bare-page >/dev/null || fail "present on the scout failed"
+
+  run_captain "$home" hold sample-bare --reason 'bare scout call' >/dev/null || fail "bare hold failed"
+  assert_equals 'sample-bare|null' \
+    "$(jq -r '[.origin, (.on_answer|tostring)] | join("|")' "$home/state/calls/sample-bare.json")" \
+    "a defaulted origin is recorded without declaring a close mode"
+  call=$(call_json "$home" sample-bare)
+  assert_equals 'sample-bare|["report:sample-bare","page:task/sample-bare/sample-bare-page"]' \
+    "$(printf '%s' "$call" | jq -r '[.origin, (.evidence|tojson)] | join("|")')" \
+    "the report and page argue the call through the origin"
+
+  printf 'sample-bare\tkeep going\t\trelease\n' | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "release of the bare hold failed"
+  body=$(cd "$home" && tasks-axi show sample-bare --full)
+  assert_contains "$body" "held: no" "the released scout resumed"
+  CALL_NOW=2026-09-18T13:00:00Z run_captain "$home" hold sample-bare --reason 'bare scout call again' >/dev/null \
+    || fail "second bare hold failed"
+  assert_equals 'sample-bare|null' \
+    "$(jq -r '[.origin, (.on_answer|tostring)] | join("|")' "$home/state/calls/sample-bare.json")" \
+    "a re-hold of a self-origin call still declares no close mode"
+
+  printf 'sample-bare\tlooks good\t\n' | CALL_NOW=2026-09-18T13:00:00Z run_captain "$home" answers --source "a chat relay" >/dev/null \
+    || fail "chat-shaped answer failed"
+  body=$(cd "$home" && tasks-axi show sample-bare --full)
+  assert_contains "$body" "state: done" "an empty mode still closes a bare hold as done"
+  call=$(call_json "$home" sample-bare)
+  assert_equals 'closed|sample-bare|["report:sample-bare","page:task/sample-bare/sample-bare-page"]' \
+    "$(printf '%s' "$call" | jq -r '[.state, .origin, (.evidence|tojson)] | join("|")')" \
+    "the answered call keeps its linked evidence"
+  pass "a defaulted origin links the held work without changing how the call closes"
+}
+
+test_a_held_task_is_not_its_own_origin_when_it_should_not_be() {
+  local home call
+  home=$(make_home no-self-origin)
+  printf '%s\n' '## In flight' '' \
+    '- [ ] sample-idle - Work that has produced nothing (repo: sample) (kind: ship) (since 2026-09-01)' \
+    '- [ ] sample-gated - Work gated on another scout (repo: sample) (kind: ship) (since 2026-09-01)' \
+    '- [ ] sample-named - Work whose call names a scout (repo: sample) (kind: ship) (since 2026-09-01)' \
+    '' '## Queued' '' '## Done' > "$home/data/backlog.md"
+  scout_task "$home" sample-scout
+  scout_task "$home" sample-gated
+  scout_task "$home" sample-named
+
+  run_captain "$home" hold sample-idle --reason 'idle work call' >/dev/null || fail "bare hold of idle work failed"
+  assert_absent "$home/state/calls/sample-idle.json" "a bare hold of work that produced nothing wrote a record"
+  run_captain "$home" hold sample-idle --reason 'idle work call' --option a='A' --option b='B' >/dev/null \
+    || fail "hold of idle work with content failed"
+  assert_equals 'null|[]' "$(call_json "$home" sample-idle | jq -r '[(.origin|tostring), (.evidence|tojson)] | join("|")')" \
+    "work that has produced nothing is not made an origin"
+
+  mkdir -p "$home/data/sample-reused"
+  printf '# An earlier task under this id\n' > "$home/data/sample-reused/report.md"
+  run_captain "$home" hold sample-reused --title 'A new call under a reused id' --reason 'reused id call' >/dev/null \
+    || fail "hold that creates its task failed"
+  assert_absent "$home/state/calls/sample-reused.json" "a task the hold created was made its own origin"
+
+  run_captain "$home" hold sample-gated --reason 'gated call' --origin sample-scout >/dev/null \
+    || fail "hold with an explicit origin failed"
+  assert_equals 'sample-scout|["report:sample-scout"]' \
+    "$(call_json "$home" sample-gated | jq -r '[.origin, (.evidence|tojson)] | join("|")')" \
+    "an explicit --origin wins over the held task's own work"
+
+  run_captain "$home" hold sample-named --reason 'named call' --origin sample-scout >/dev/null \
+    || fail "first hold of the named call failed"
+  printf 'later\n' > "$home/named-decision.txt"
+  run_captain "$home" answer sample-named --decision-file "$home/named-decision.txt" --release >/dev/null \
+    || fail "releasing the named call failed"
+  CALL_NOW=2026-09-19T12:00:00Z run_captain "$home" hold sample-named --reason 'named call' --until 2026-10-01 >/dev/null \
+    || fail "deferring re-hold of the named call failed"
+  assert_equals 'sample-scout|["report:sample-scout"]' \
+    "$(call_json "$home" sample-named | jq -r '[.origin, (.evidence|tojson)] | join("|")')" \
+    "a re-hold without --origin keeps the origin the call's record names"
+  pass "a held task is not made its own origin when it produced nothing, was just created, or the call names another"
 }
 
 test_offer_and_evidence_change_a_call() {
@@ -516,6 +631,9 @@ test_the_retired_surfaces_are_shims() {
 test_hold_records_the_call_and_refuses_what_nobody_could_answer
 test_a_hold_without_content_is_still_a_call
 test_origin_evidence_is_derived_whatever_the_presentation_order
+test_held_work_that_produced_something_is_its_own_origin
+test_a_defaulted_origin_links_without_changing_the_close
+test_a_held_task_is_not_its_own_origin_when_it_should_not_be
 test_offer_and_evidence_change_a_call
 test_answers_write_machine_lines_and_honor_on_answer
 test_answered_via_is_a_closed_channel_vocabulary
