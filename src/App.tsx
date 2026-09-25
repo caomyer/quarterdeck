@@ -10,8 +10,10 @@ import {
   CircleQuestionMark,
   CircleSlash,
   CircleX,
+  CirclePlay,
   Crop,
   Clock3,
+  Ellipsis,
   ExternalLink,
   FileText,
   FolderGit2,
@@ -30,6 +32,7 @@ import {
   Radio,
   RefreshCw,
   Search,
+  Send,
   Settings,
   ShieldQuestion,
   ShipWheel,
@@ -37,19 +40,21 @@ import {
   Trash2,
   Sun,
   TerminalSquare,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type TaskFile, type TaskNote } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type StartAsk, type StartMode, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, answerInWords, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
+import { askedHow, BUSY, judgeDetail, launchedAt, lighterReason, MODE_CHOICES, modeLine, postureHint, type StartInputs, type StartPhase, startPhase, wantsFreshReading, wantsReadingAfterTurn } from "./start";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 import { RoutingSettings } from "./Routing";
 
@@ -80,6 +85,8 @@ function postureFor(task: FleetTask) {
 
 function postureForProject(mode: string, yolo: boolean) {
   if (mode === "local-only") return "Stays on this machine · You land it";
+  // The first mate checks product work fully and sends internal tooling straight to a PR (engine/AGENTS.md "Intake and authority").
+  if (mode === "no-mistakes-prod-only") return yolo ? "Product work fully checked · Merges itself" : "Product work fully checked before a PR · You merge";
   if (yolo) return mode === "no-mistakes" ? "Fully checked · Merges itself" : "Opens a PR directly · Merges itself";
   return mode === "no-mistakes" ? "Fully checked before a PR · You merge" : "Opens a PR directly · You merge";
 }
@@ -230,6 +237,36 @@ export function App() {
   // A queued row is kept by id, so its drawer reads each new snapshot's row rather than the one it opened with.
   const [queuedId, setQueuedId] = useState<string | null>(null);
   useEffect(() => setQueuedId(null), [view, selectedProject]);
+  // Every task's latest ask to start it, read from the home, so a relaunch still knows what the captain asked.
+  const [asks, setAsks] = useState<Record<string, StartAsk>>({});
+  useEffect(() => {
+    void host.startAsks().then(setAsks, () => setAsks({}));
+  }, [bridge.home]);
+  // When the first mate was last seen out of a turn, so an ask read in a turn that has ended can be judged.
+  const [quietSince, setQuietSince] = useState<number | null>(null);
+  useEffect(() => setQuietSince((current) => BUSY.includes(runtime.state) ? null : current ?? Date.now()), [runtime.state]);
+  const queuedRecord = queuedId ? records.get(queuedId) : undefined;
+  const queuedTask = queuedId ? fleet?.tasks.find((task) => task.id === queuedId) : undefined;
+  const queuedAsk = queuedId ? asks[queuedId] ?? null : null;
+  const startInputs: StartInputs | null = queuedRecord ? {
+    record: queuedRecord, task: queuedTask, orphans: fleet?.main_inventory?.orphan_in_flight ?? [], ask: queuedAsk,
+    delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, runtime: runtime.state, sendReady: bridge.sendReady,
+    quietSince, snapshotAt: fleet ? Date.parse(fleet.generated) : 0, now: Date.now(),
+  } : null;
+  const phase = startInputs ? startPhase(startInputs) : null;
+  // Only a fresh reading moves a launch on, and snapshots follow file changes, not a clock: a worker that never
+  // started changes nothing, so while the drawer waits on one it asks for a reading now and then.
+  const readingsWanted = phase !== null && wantsFreshReading(phase);
+  useEffect(() => {
+    if (!readingsWanted) return;
+    const timer = window.setInterval(() => void bridge.refreshSnapshot(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [readingsWanted, bridge.refreshSnapshot]);
+  // A first mate that only answers in chat changes nothing under the home either, so the turn's end asks for one.
+  const readingAfterTurn = startInputs !== null && wantsReadingAfterTurn(startInputs);
+  useEffect(() => {
+    if (readingAfterTurn) void bridge.refreshSnapshot();
+  }, [readingAfterTurn, bridge.refreshSnapshot]);
   const waitingIn = (name: string) => waiting.filter((call) => callProject(call, records) === name);
   // What a project has underway, the same wherever it is counted: a finished scout waiting to be read is not.
   const underwayIn = (project: ProjectSummary) => project.tasks.filter((task) => !readyIds.has(task.id) && records.get(task.id)?.state !== "done");
@@ -366,6 +403,16 @@ export function App() {
     const next = [...dismissedDecided.filter((item) => known.has(item)), id];
     setDismissedDecided(next);
     writeDismissed(next);
+  }
+
+  /**
+   * Hands a queued task to the first mate: one message, which it answers the way it answers the captain in chat,
+   * and a record of the ask. The drawer then follows the row and the snapshot, never this call's word.
+   */
+  async function startWork(record: BacklogRecord, mode: StartMode, note: string) {
+    const ask = await host.startWork({ task: record.id, project: record.repo ?? selectedProject ?? "", title: record.title, kind: record.kind ?? "ship", mode, note });
+    if (ask.message) bridge.noteSent(ask.message, ask.text);
+    setAsks((current) => ({ ...current, [ask.task]: ask }));
   }
 
   function openTask(id: string) {
@@ -659,7 +706,20 @@ export function App() {
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
       {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => setSettingsOpen(false)} />}
-      {queuedId && records.get(queuedId) && <QueuedDrawer record={records.get(queuedId)!} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedId)} reviews={reviews} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onClose={() => setQueuedId(null)} />}
+      {queuedRecord && phase && (queuedTask && fleet && LAUNCH_PHASES.has(phase)
+        ? <TaskDrawer task={queuedTask} title={withinProject(queuedRecord.title, selectedProject ?? "")} record={queuedRecord} now={now} reviews={reviews} onAskReport={() => { setQueuedId(null); draftInChat(askAboutReport(taskTitle(queuedTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setQueuedId(null); setShowEverything(false); }}
+            launch={{ phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, onDraft: draftInChat }} />
+        : <QueuedDrawer record={queuedRecord} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedRecord.id)} reviews={reviews} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onClose={() => setQueuedId(null)}
+            start={{
+              phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined,
+              posture: bridge.projects.find((project) => project.name === (queuedRecord.repo ?? selectedProject))?.mode,
+              call: calls.find((call) => call.id === queuedRecord.id && isOpen(call)) ? queuedRecord.id : null,
+              onStart: (mode, note) => startWork(queuedRecord, mode, note),
+              onChat: () => navigate("chat"),
+              onStartHost: () => void bridge.start(),
+              onOpenCall: (id) => { navigate("bearings"); setFocusedCall(id); },
+              onDraft: draftInChat,
+            }} />)}
       {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
       {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
     </div>
@@ -1513,34 +1573,136 @@ const CLOSED_AS: Record<LogEntry["kind"], (entry: LogEntry) => string> = {
   closed: () => "Closed",
 };
 
+/** What the queued drawer needs to offer Start work and follow the ask, all of it read by App. */
+type QueuedStart = {
+  phase: StartPhase;
+  ask: StartAsk | null;
+  delivery?: OutboxView;
+  /** The project's posture as `data/projects.md` registers it, such as `no-mistakes-prod-only`. */
+  posture?: string;
+  /** The open call this row is, to answer rather than start. */
+  call: string | null;
+  onStart: (mode: StartMode, note: string) => Promise<void>;
+  onChat: () => void;
+  onStartHost: () => void;
+  onOpenCall: (id: string) => void;
+  onDraft: (text: string) => void;
+};
+
+/** Phases a registered worker is in, which the live task drawer shows. */
+const LAUNCH_PHASES = new Set<StartPhase>(["starting", "working", "didnt_start", "unconfirmed", "underway"]);
+
+/** A short age for a status card: seconds while they matter, then the drawer's usual minutes. */
+function shortAge(ms: number) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return seconds < 60 ? `${seconds}s` : formatDuration(ms);
+}
+
+/** What asking about a task's start says, drafted in chat for the captain to finish and send. */
+const START_QUESTIONS = {
+  relaunch: (id: string) => `${id} didn't start: a worker was launched, but no agent is running in it. Can you relaunch it?`,
+  unconfirmed: (id: string) => `Is the worker for ${id} running? The app can't see whether its agent started.`,
+  orphaned: (id: string) => `${id} is marked in flight, but no worker is registered for it. Can you finish starting it, or put it back in the queue?`,
+};
+
 /**
  * A task waiting its turn, read from its backlog row: what it is waiting on, what was asked, and any page it
- * already carries. There is no worker to show; the row's state says whether one has picked it up since it opened.
+ * already carries. From here the captain can hand it to the first mate, and the drawer then follows that ask
+ * until a worker is registered, when the live task drawer takes over.
  */
-function QueuedDrawer({ record, project, now, artifacts, reviews, source, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
+function QueuedDrawer({ record, project, now, artifacts, reviews, source, start, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; start: QueuedStart; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
   const body = bodyBlocks(record.body_lines, record.body_excerpt);
   const kind = KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task";
-  const pickedUp = record.state === "in_flight";
   const closed = record.state === "done";
-  const tone = !pickedUp && !closed && record.hold_reason ? "amber" : "muted";
-  const label = pickedUp ? "Underway" : closed ? "Closed" : record.hold_reason ? "Waiting" : "Queued";
-  const detail = pickedUp ? `${kind} · picked up by a worker` : closed ? `${kind} · closed` : record.hold_reason ?? `${kind} · waiting its turn`;
   const notes = useTaskNotes(record.id);
   const panel = useDrawerDismiss(onClose);
-  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="queued-drawer">
+  const clock = useNow(5_000);
+  const { phase, ask, delivery } = start;
+  const ship = (record.kind ?? "ship") === "ship";
+  const status: { tone: Tone; icon: React.ReactNode; label: string; detail: string; since?: number } =
+    phase === "held" && record.captain_actionable ? { tone: "amber", icon: <CircleQuestionMark size={16} />, label: "Waiting", detail: record.hold_reason ?? "Waiting on your answer." }
+    : phase === "asked" && ask ? { tone: "blue", icon: <Ellipsis size={16} />, label: "Handed to the first mate", detail: ship ? "It is writing the brief and choosing how this ships." : "It is writing the brief.", since: ask.at }
+    : phase === "not_sent" && ask ? { tone: "coral", icon: <TriangleAlert size={16} />, label: "Not sent", detail: ask.message ? "The first mate stopped before it read your ask." : "Your ask didn't reach the first mate.", since: ask.at }
+    : phase === "not_started" && ask ? { tone: "amber", icon: <CircleQuestionMark size={16} />, label: "Not started", detail: "The first mate answered in chat instead of starting it.", since: ask.at }
+    : phase === "orphaned" ? { tone: "amber", icon: <TriangleAlert size={16} />, label: "Not picked up", detail: "Marked in flight, but no worker is registered for it." }
+    : phase === "in_flight" ? { tone: "muted", icon: <Clock3 size={16} />, label: "In flight", detail: `${kind} · marked in flight, with no worker in this snapshot yet` }
+    : closed ? { tone: "muted", icon: <Clock3 size={16} />, label: "Closed", detail: `${kind} · closed` }
+    : record.hold_reason ? { tone: "amber", icon: <Clock3 size={16} />, label: "Waiting", detail: record.hold_reason }
+    : { tone: "muted", icon: <Clock3 size={16} />, label: "Queued", detail: `${kind} · waiting its turn` };
+  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="queued-drawer" data-phase={phase}>
     <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(record.title, project)}</h2><small className="drawer-id">{record.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
-    <div className="drawer-status"><span className={`task-state tone-${tone}`}><Clock3 size={16} /></span><div><strong className={`tone-${tone}`}>{label}</strong><span>{detail}</span></div></div>
+    <div className="drawer-status" data-testid="start-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{status.label}</strong><span>{status.detail}</span></div>{status.since !== undefined && <time className="drawer-age" title={formatWhen(new Date(status.since).toISOString())}>{shortAge(clock - status.since)}</time>}</div>
     <div className="drawer-scroll">
+      <StartSection record={record} start={start} ship={ship} />
       <TaskFiles taskId={record.id} notes={notes.notes} />
       {body.length > 0 ? <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection> : <DrawerSection title="What was asked"><div className="brief-block"><p>The row says nothing more than its title.</p></div></DrawerSection>}
-      <TaskNotesThread read={notes} running={pickedUp} closed={closed} />
+      <TaskNotesThread read={notes} running={record.state === "in_flight"} closed={closed} />
       {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">
         <div><span className="timeline-icon"><GitBranch size={15} /></span><span><strong>Filed</strong><small>{kind}</small></span><time>{record.since ? shortDay(record.since, now) : "Undated"}</time></div>
+        {ask && <AskedLine ask={ask} delivery={delivery} />}
       </div></DrawerSection>
     </div>
     <footer className="drawer-footer">From {source ?? "the fleet snapshot"}</footer>
   </aside></div>;
+}
+
+/** The ask on a task's timeline: when it went, and whether the first mate has read it. */
+function AskedLine({ ask, delivery }: { ask: StartAsk; delivery?: OutboxView }) {
+  const read = !ask.message || delivery?.errorKind ? "Not sent"
+    : !delivery ? "Read"
+    : delivery.status === "picked_up" ? `Read ${delivery.readAt ? formatTime(delivery.readAt) : ""}`.trim()
+    : "Waiting to be read";
+  return <div data-testid="timeline-asked"><span className="timeline-icon"><Send size={14} /></span><span><strong>Handed to the first mate</strong><small>{read}</small></span><time>{formatWhen(new Date(ask.at).toISOString())}</time></div>;
+}
+
+/**
+ * Start work, in the queued drawer: the one place a queued task is handed to the first mate. It sends the ask only
+ * when the captain presses Hand to the first mate, with their note and, for a ship, the mode if they pick one.
+ */
+function StartSection({ record, start, ship }: { record: BacklogRecord; start: QueuedStart; ship: boolean }) {
+  const { phase, ask } = start;
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [mode, setMode] = useState<StartMode>("judge");
+  const [sending, setSending] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // A new ask closes the panel; asking again starts from what was asked last.
+  useEffect(() => { setOpen(false); }, [ask?.at]);
+  async function send(chosen: StartMode, words: string) {
+    setSending(true);
+    setProblem(null);
+    try {
+      await start.onStart(ship ? chosen : "judge", words);
+    } catch (error) {
+      setProblem(String(error));
+    } finally {
+      setSending(false);
+    }
+  }
+  function reopen() {
+    setNote(ask?.note ?? "");
+    setMode(ask?.mode ?? "judge");
+    setOpen(true);
+  }
+  const failure = problem && <p className="start-problem" role="alert">{problem}</p>;
+  if (phase === "closed" || phase === "in_flight") return null;
+  if (phase === "held") return <DrawerSection title="Start work"><div className="brief-block start-block" data-testid="start-work"><p>{record.captain_actionable ? "This waits on your answer, not on a worker." : "This is a call, not work, and it has your answer. The first mate closes it."}</p>{start.call && <div className="start-actions"><button className="btn-base" onClick={() => start.onOpenCall(start.call!)}>Open the call</button></div>}</div></DrawerSection>;
+  if (phase === "orphaned") return <DrawerSection title="What to do"><div className="brief-block start-block warn" data-testid="start-work"><p>The start was interrupted part way. The first mate can finish it or put the task back.</p><div className="start-actions"><button className="btn-base primary" onClick={() => start.onDraft(START_QUESTIONS.orphaned(record.id))}>Ask the first mate</button></div></div></DrawerSection>;
+  if (phase === "asked" && ask) return <DrawerSection title="Start work"><div className="brief-block start-block" data-testid="start-work"><dl>{ask.note && <><dt>You said</dt><dd>{ask.note}</dd></>}{ship && <><dt>How</dt><dd>{askedHow(ask.mode)}</dd></>}</dl><div className="start-actions"><button className="landed-link" onClick={start.onChat}>See it in chat</button></div></div></DrawerSection>;
+  if (phase === "not_sent" && ask) return <DrawerSection title="Start work"><div className="brief-block start-block bad" data-testid="start-work"><p>Nothing was started. The task is still queued.</p>{(ask.error || start.delivery?.error) && <p className="start-why">{ask.error ?? start.delivery?.error}</p>}<div className="start-actions"><button className="btn-base primary" disabled={sending} onClick={() => void send(ask.mode, ask.note ?? "")}>{sending ? "Sending…" : "Send again"}</button>{ask.message && <button className="landed-link" onClick={start.onChat}>See it in chat</button>}</div>{failure}</div></DrawerSection>;
+  if (phase === "not_started" && !open) return <DrawerSection title="Start work"><div className="brief-block start-block warn" data-testid="start-work"><p>Read its answer: it may need something from you first.</p><div className="start-actions"><button className="btn-base primary" onClick={start.onChat}>Open chat</button><button className="btn-base" onClick={reopen}>Start work…</button></div></div></DrawerSection>;
+  if (phase === "offline") return <DrawerSection title="Start work"><div className="brief-block start-block" data-testid="start-work"><p>Only the first mate starts work, and it isn't running.</p><div className="start-actions"><button className="btn-base primary" disabled title="Start the first mate first">Start work…</button><button className="btn-base" onClick={start.onStartHost}>Start the first mate</button></div></div></DrawerSection>;
+  if (!open) {
+    const hint = ship ? postureHint(start.posture) : null;
+    return <DrawerSection title="Start work"><div className="brief-block start-block new" data-testid="start-work"><p>The first mate will write the brief, {ship ? "pick how it ships, " : ""}and start a worker.</p><div className="start-actions"><button className="btn-base primary" onClick={reopen}><Send size={13} /> Start work…</button>{hint && <span className="start-hint">{hint}</span>}</div></div></DrawerSection>;
+  }
+  return <DrawerSection title="Start work"><div className="brief-block start-block new" data-testid="start-panel">
+    <label className="start-field"><span><b>Anything to add?</b> Goes into the brief as your words.</span><textarea value={note} onChange={(event) => setNote(event.target.value)} disabled={sending} aria-label="Anything to add?" placeholder="Optional" /></label>
+    {ship && <fieldset className="start-modes" disabled={sending}><legend>How it ships</legend>{MODE_CHOICES.map((choice) => <label key={choice.mode} className={mode === choice.mode ? "on" : ""}><input type="radio" name={`start-mode-${record.id}`} value={choice.mode} checked={mode === choice.mode} onChange={() => setMode(choice.mode)} /><span>{choice.label}<small>{choice.mode === "judge" ? judgeDetail(start.posture) : choice.detail}</small></span></label>)}</fieldset>}
+    <div className="start-actions"><button className="btn-base primary" disabled={sending} onClick={() => void send(mode, note)}><Send size={13} /> {sending ? "Handing over…" : "Hand to the first mate"}</button><button className="btn-base" disabled={sending} onClick={() => setOpen(false)}>Cancel</button></div>
+    {failure}
+  </div></DrawerSection>;
 }
 
 /** A closed task, read from its backlog row: what was asked, what it left behind, and how it closed. */
@@ -1882,9 +2044,30 @@ const KIND_NAMES: Record<string, string> = { scout: "Scout", ship: "Ship", secon
  * brief it was given, so the note is labelled as what it is. The worker's screen is kept, folded: its top is
  * the brief being delivered, which is plumbing, so it opens on its newest lines.
  */
-function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void }) {
+/**
+ * A worker the captain started from its drawer, while its start is still the news: whether its agent has been seen
+ * alive, and how it ships. Once the worker speaks for itself (`underway`), the drawer is the live task drawer alone.
+ */
+type LaunchView = { phase: StartPhase; ask: StartAsk | null; delivery?: OutboxView; onDraft: (text: string) => void };
+
+/** How a launch reads in the status card, from what the snapshot read of the worker's agent and nothing else. */
+function launchStatus(phase: StartPhase, task: FleetTask, clock: number, note: string, size = 16): { tone: Tone; icon: React.ReactNode; label: string; detail: string } | null {
+  const launched = launchedAt(task);
+  if (phase === "starting") return { tone: "blue", icon: <Ellipsis size={size} />, label: "Starting", detail: "A worker was launched. Waiting to see it running." };
+  if (phase === "working") return { tone: "green", icon: <CirclePlay size={size} />, label: "Working", detail: note || "Its agent is running." };
+  if (phase === "didnt_start") return { tone: "coral", icon: <CircleX size={size} />, label: "Didn't start", detail: `A worker was launched${launched ? ` ${formatDuration(clock - launched)} ago` : ""}, but no agent is running in it.` };
+  if (phase === "unconfirmed") return { tone: "amber", icon: <TriangleAlert size={size} />, label: "Launched, not confirmed", detail: "The worker hasn't written anything yet, and the app can't see whether its agent is running." };
+  return null;
+}
+
+function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose, launch }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void; launch?: LaunchView }) {
   const [capture, setCapture] = useState<{ text: string; observed_at?: string } | null>(null);
-  const [screenOpen, setScreenOpen] = useState(false);
+  // A worker with no agent in it is shown with its screen open: the screen is the evidence.
+  const [screenOpen, setScreenOpen] = useState(launch?.phase === "didnt_start");
+  useEffect(() => {
+    if (launch?.phase === "didnt_start") setScreenOpen(true);
+  }, [launch?.phase]);
+  const clock = useNow(5_000);
   const screen = useRef<HTMLPreElement>(null);
   useEffect(() => {
     let active = true;
@@ -1905,17 +2088,33 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
   // A scout reports and never opens a PR, and a task that stays on this machine is landed by the captain.
   const prApplies = task.kind === "ship" && task.mode !== "local-only";
   const timeline = [
-    ...(started ? [{ key: "start", title: started.exact ? "Started" : "Filed", detail: `${KIND_NAMES[task.kind] ?? task.kind} · ${task.harness} · ${sinceLabel(started, now)}`, time: formatStart(started), icon: <GitBranch size={15} /> }] : []),
+    ...(launch?.ask ? [{ key: "asked", title: "Handed to the first mate", detail: launch.delivery?.status === "picked_up" && launch.delivery.readAt ? `Read ${formatTime(launch.delivery.readAt)}` : "Read", time: formatWhen(new Date(launch.ask.at).toISOString()), icon: <Send size={14} /> }] : []),
+    ...(started ? [{ key: "start", title: started.exact ? (launch ? "Launched" : "Started") : "Filed", detail: launch && started.exact ? `${task.harness} · ${task.backend}` : `${KIND_NAMES[task.kind] ?? task.kind} · ${task.harness} · ${sinceLabel(started, now)}`, time: formatStart(started), icon: <GitBranch size={15} /> }] : []),
     // A finished worker's last note is usually its state's detail too, and says it once.
     ...(lastEvent.note && lastEvent.note !== statusDetail ? [{ key: "event", title: `Last update · ${stateLabel(lastEvent.state)}`, detail: lastEvent.note, time: "Latest", icon: <Radio size={15} /> }] : []),
     { key: "now", title: stateLabel(task.current_state.state), detail: statusDetail, time: formatTime(task.current_state.observed_at), icon: taskStatus(task.current_state.state, 15).icon },
   ];
+  const launching = launch ? launchStatus(launch.phase, task, clock, lastEvent.note) : null;
+  // While a start is the news, the timeline's latest line is what the probe read, not the pane's busy signature,
+  // which reads a shell left at a prompt as busy.
+  if (launching) timeline[timeline.length - 1] = { key: "now", title: launching.label, detail: launching.detail, time: formatTime(task.endpoint.observed_at), icon: launchStatus(launch!.phase, task, clock, lastEvent.note, 15)!.icon };
   const captureText = capture?.text ?? `status: ${task.endpoint.status}\nbackend: ${task.backend}\nworker: ${task.endpoint.agent_alive}\nworktree: ${task.paths.worktree.present ? task.paths.worktree.path : "missing"}\nobserved: ${task.endpoint.observed_at}`;
   const panel = useDrawerDismiss(onClose);
-  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel}>
+  const shownStatus = launching ?? { tone: status.tone, icon: status.icon, label: stateLabel(task.current_state.state), detail: statusDetail };
+  // The mode is the worker's own, from the snapshot; a lighter one than asked says why, in the first mate's words.
+  const how = launching && task.kind === "ship" ? modeLine(task.mode) : null;
+  const why = how ? (launch?.ask?.mode === "direct-PR" && task.mode === "direct-PR" ? "You asked for it." : lighterReason(record, task.mode)) : null;
+  const screen_ = <section className="drawer-section" data-testid="worker-screen"><button className="fold-toggle" aria-expanded={screenOpen} onClick={() => setScreenOpen((open) => !open)}><ChevronRight size={14} className={screenOpen ? "rotated" : ""} /><h3>Worker's screen</h3><small>{capture?.observed_at ? `Updated ${formatTime(capture.observed_at)}` : "Updating…"}</small></button>
+    {!screenOpen && launch?.phase === "unconfirmed" && <div className="brief-block start-block"><p className="start-faded">Open it to see whether the agent is up.</p><div className="start-actions"><button className="btn-base" onClick={() => setScreenOpen(true)}>Show the screen</button><button className="landed-link" onClick={() => launch.onDraft(START_QUESTIONS.unconfirmed(task.id))}>Ask the first mate</button></div></div>}
+    {screenOpen && <><p className="worker-caption">Read-only, newest at the bottom. To change anything, tell the first mate.</p><div className="worker-screen"><header><TerminalSquare size={14} /><span>{task.endpoint.target}</span></header><pre ref={screen}>{captureText}</pre></div></>}
+  </section>;
+  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid={launch ? "queued-drawer" : undefined} data-phase={launch?.phase}>
     <header className="drawer-header"><div><span>{projectName(task.project)}</span><h2 data-testid="drawer-title">{title}</h2><small className="drawer-id">{task.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
-    <div className="drawer-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{stateLabel(task.current_state.state)}</strong>{statusDetail && <span>{statusDetail}</span>}</div>{started?.exact && <time className="drawer-age" data-testid="drawer-age" title={`Started ${formatStart(started)}`}>{formatDuration(now - started.ms)}</time>}</div>
+    <div className="drawer-status" data-testid="start-status"><span className={`task-state tone-${shownStatus.tone}`}>{shownStatus.icon}</span><div><strong className={`tone-${shownStatus.tone}`}>{shownStatus.label}</strong>{shownStatus.detail && <span>{shownStatus.detail}</span>}</div>{started?.exact && <time className="drawer-age" data-testid="drawer-age" title={`Started ${formatStart(started)}`}>{launching ? shortAge(clock - started.ms) : formatDuration(now - started.ms)}</time>}</div>
     <div className="drawer-scroll">
+      {launch?.phase === "didnt_start" && <DrawerSection title="What to do"><div className="brief-block start-block bad" data-testid="start-work"><p>The first mate may already be fixing it. If it hasn't said so in chat, ask it.</p><div className="start-actions"><button className="btn-base primary" onClick={() => launch.onDraft(START_QUESTIONS.relaunch(task.id))}>Ask the first mate to relaunch</button></div></div></DrawerSection>}
+      {how && <DrawerSection title="How it ships"><div className="brief-block" data-testid="how-it-ships"><p><span className="mode-chip">{task.mode}</span> {how}</p>{why && <p className="start-why">{why}</p>}</div></DrawerSection>}
+      {(launch?.phase === "didnt_start" || launch?.phase === "unconfirmed") && screen_}
       <TaskFiles taskId={task.id} notes={notes.notes} />
       {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}
       <DrawerSection title="Latest from the worker"><div className="brief-block"><p>{lastEvent.note || "The worker hasn't written a note yet."}</p></div></DrawerSection>
@@ -1924,9 +2123,7 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
       {report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.key}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection>
       {prApplies && <DrawerSection title="PR"><div className="pr-block">{task.pr.url ? <a href={task.pr.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {task.pr.url}</a> : <span><GitBranch size={15} /> No PR yet</span>}</div></DrawerSection>}
-      <section className="drawer-section"><button className="fold-toggle" aria-expanded={screenOpen} onClick={() => setScreenOpen((open) => !open)}><ChevronRight size={14} className={screenOpen ? "rotated" : ""} /><h3>Worker's screen</h3><small>{capture?.observed_at ? `Updated ${formatTime(capture.observed_at)}` : "Updating…"}</small></button>
-        {screenOpen && <><p className="worker-caption">Read-only, newest at the bottom. To change anything, tell the first mate.</p><div className="worker-screen"><header><TerminalSquare size={14} /><span>{task.endpoint.target}</span></header><pre ref={screen}>{captureText}</pre></div></>}
-      </section>
+      {launch?.phase !== "didnt_start" && launch?.phase !== "unconfirmed" && screen_}
       <button className="show-everything" onClick={onToggle}><ChevronDown size={16} className={expanded ? "rotated" : ""} /><span>Show everything</span></button>
       {expanded && <div className="machine-details"><dl><dt>Task</dt><dd>{task.id}</dd><dt>Branch</dt><dd>none recorded</dd><dt>Isolated copy</dt><dd>{task.paths.worktree.present ? task.paths.worktree.path : "missing"}</dd><dt>Worker runtime</dt><dd>{task.harness} on {task.backend}</dd><dt>Spawn</dt><dd>{task.spawn_gen ?? "not recorded"}</dd><dt>Status line</dt><dd>{task.current_state.raw}</dd><dt>Log</dt><dd>{lastEvent.raw}</dd>{report && <><dt>Report</dt><dd>{report}</dd></>}</dl><div className="step-chips"><span>Registered</span><span>{task.current_state.freshness}</span><span>Endpoint {task.endpoint.status}</span><span>PR {task.pr.source}</span><span>Report {task.paths.report.present ? "ready" : "none"}</span></div></div>}
     </div>

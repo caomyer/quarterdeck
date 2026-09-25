@@ -48,6 +48,8 @@ import type {
   Routing,
   RoutingStart,
   SnapshotEvent,
+  StartAsk,
+  StartRequest,
 } from "./types";
 
 type RecordedEvent = { t_ms: number; type: HostEvent["type"]; payload: Record<string, unknown> };
@@ -145,6 +147,10 @@ const ANSWERED_CALL = "res-upload-wifi";
 /** The scout whose usage-panel mock the captain's t2 comment was written on. */
 const USAGE_TASK = "qd-usage-design-1";
 
+/** `?start`: a queued scout and a queued ship, to start from their drawers. */
+const START_SCOUT = "res-chapters-scout";
+const START_SHIP = "res-waveform-colors";
+
 /** A call nothing argues, so Bearings offers its options inline. */
 const UNARGUED_CALL = "foreman-auto-merge";
 
@@ -178,7 +184,7 @@ function mockTask(home: string, id: string, kind: string, state: string, started
       report: { path: `${home}/data/${id}/report.md`, present: fields.report },
     },
     current_state: { state, source: state === "working" ? "pane" : "status-log", detail: fields.detail, raw: `${state}: ${fields.detail}`, observed_at: fields.observedAt, freshness: "fresh" },
-    endpoint: { target: `fm:${id}`, exists: true, agent_alive: "yes", status: "alive", observed_at: fields.observedAt, freshness: "fresh" },
+    endpoint: { target: `fm:${id}`, exists: true, agent_alive: "alive", status: "alive", observed_at: fields.observedAt, freshness: "fresh" },
     pr: { url: null, source: "none" },
     hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: fields.report, last_event_text: "" },
     actions: { watch: "", steer: "", return_channel_note: null },
@@ -293,6 +299,17 @@ function mockArtifacts(home: string): MockHome {
       body_excerpt: "Resolution recorded by fm-captain-hold.",
     }),
   ];
+  // `?start`: two rows waiting their turn with nothing holding them, a scout and a ship, to start from their drawers.
+  if (reviewFlag("start")) records.push(
+    backlogRow(START_SCOUT, "Resonance: which feeds publish chapters?", {
+      kind: "scout", state: "queued", current_role: "queued", since: day(1),
+      body_lines: ["Sample 200 feeds and count how many carry `podcast:chapters`.", "Say whether snips can lean on them for their titles."],
+    }),
+    backlogRow(START_SHIP, "Resonance: colour the snip waveform by speaker", {
+      state: "queued", current_role: "queued", since: day(2),
+      body_lines: ["The waveform is one colour, so a two-person snip reads as one voice.", "Colour each speaker's stretch from the transcript's speaker turns."],
+    }),
+  );
   const call = (id: string, title: string, fields: Partial<Call>): Call => ({
     id, title, question: null, options: [], on_answer: "done", state: "open", bucket: "live", captain_actionable: true, origin: null, about: null,
     evidence: [], raised_by: "firstmate", raised_at: at(30), updated_at: at(30), answer: null, decided: null, ...fields,
@@ -963,6 +980,8 @@ export class MockHostAdapter implements HostAdapter {
       });
       return;
     }
+    // Like the host's own, `starting` names the home the first mate starts in, so sending there works from now on.
+    this.emit({ type: "state", payload: { state: "starting", home: this.snapshot.fleet.fm_home } });
     this.emit({ type: "state", payload: { state: "idle" } });
     this.later(300, () => this.reportUsage());
   }
@@ -1072,7 +1091,7 @@ export class MockHostAdapter implements HostAdapter {
       return id;
     }
     if (reviewFlag("records-chat")) this.recordToldInChat(text);
-    const run = () => this.deliver(id, text);
+    const run = () => text.startsWith("Start work on ") ? this.startTurn(id, text) : this.deliver(id, text);
     if (this.state === "starting") this.deferred.push(run);
     else run();
     return id;
@@ -1091,6 +1110,171 @@ export class MockHostAdapter implements HostAdapter {
       this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((item) => item.id === call.id ? { ...item, state: "closed" as const, captain_actionable: false, answer: { key: null, label, by: "captain" as const, via: "chat", at } } : item) };
       this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
     });
+  }
+
+  /**
+   * The asks `src-tauri/src/start.rs` records, here in memory. `?start=earlier` begins with an ask for the queued scout
+   * sent before this launch, so the host's outbox no longer holds it: it was read, and the row is still queued.
+   */
+  private readonly asks = new Map<string, StartAsk>(reviewValue("start") === "earlier" ? [[START_SCOUT, {
+    at: Date.now() - 60 * 60_000, task: START_SCOUT, project: "resonance", title: "Resonance: which feeds publish chapters?", kind: "scout",
+    mode: "judge", note: null, message: "mock-earlier", error: null,
+    header: "Start work on res-chapters-scout (resonance): Resonance: which feeds publish chapters?", text: "Start work on res-chapters-scout (resonance): Resonance: which feeds publish chapters?",
+  }]] : []);
+  private startRefused = false;
+
+  /**
+   * Hands a task to the first mate as `start_work` does: the message in start.rs's words, sent the ordinary way, and
+   * the ask recorded. `?start=unsent`: the host does not take the first ask, as when the first mate is not running here.
+   */
+  async startWork({ task, project, title, kind, mode, note }: StartRequest): Promise<StartAsk> {
+    const how = { judge: "your call, by the project's posture.", "no-mistakes": "full checks (no-mistakes).", "direct-PR": "straight to a PR (direct-PR)." }[mode];
+    if (!how) throw new Error(`'${mode}' is not a way a task ships`);
+    if (kind !== "ship" && mode !== "judge") throw new Error(`a ${kind} has no delivery mode to choose`);
+    const words = note?.trim() || null;
+    const text = [`Start work on ${task} (${project}): ${title.split(/\s+/).join(" ")}`, ...(kind === "ship" ? [`How it ships: ${how}`] : []), ...(words ? [`From me: ${words}`] : [])].join("\n");
+    const refuse = reviewValue("start") === "unsent" && !this.startRefused;
+    this.startRefused ||= refuse;
+    const message = refuse ? null : await this.send(text);
+    const ask: StartAsk = { at: Date.now(), task, project, title, kind, mode, note: words, message, error: refuse ? "The first mate isn't running in this folder." : null, header: text.split("\n")[0], text };
+    this.asks.set(task, ask);
+    return ask;
+  }
+
+  async startAsks() {
+    return Object.fromEntries(this.asks);
+  }
+
+  /**
+   * The first mate's turn on an ask to start work, by `?start=<outcome>`:
+   * `launch` (the default) briefs and spawns, the pane holding only a shell at first and its agent seen alive a moment
+   * later; `light` does the same under direct-PR, noting why in the row; `decline` answers in chat instead; `refused-mode`,
+   * `refused-blanks`, `refused-empty` and `refused-unknown` meet fm-spawn.sh's refusals, in its words; `hold` puts a
+   * question to the captain on the row; `no-agent` registers a worker whose agent never started; `unconfirmed` one on
+   * a backend with no classifier; `orphan` moves the row with no worker registered; `failed` errors before reading it;
+   * and `slow` is still reading it.
+   */
+  private startTurn(id: string, text: string) {
+    const task = text.match(/^Start work on (\S+) /)?.[1] ?? "";
+    const outcome = reviewValue("start") || "launch";
+    const step = (n: number, title: string, status = "completed") => {
+      this.emit({ type: "tool_call", payload: { id: `start-${n}-${id}`, title, kind: "execute", status: "in_progress" } });
+      this.emit({ type: "tool_update", payload: { id: `start-${n}-${id}`, status } });
+    };
+    const say = (words: string) => this.emit({ type: "text", payload: { chunk: words, origin: "prompt" } });
+    const end = () => {
+      this.outstanding.delete(id);
+      this.emit({ type: "outbox", payload: { id, status: "picked_up" } });
+      this.emit({ type: "state", payload: { state: "idle" } });
+    };
+    this.emit({ type: "outbox", payload: { id, status: "sent" } });
+    this.emit({ type: "state", payload: { state: "prompt_turn" } });
+    if (outcome === "slow") return;
+    if (outcome === "failed") {
+      this.later(300, () => {
+        this.outstanding.delete(id);
+        this.emit({ type: "outbox", payload: { id, status: "failed", error: "The first mate's turn ended with an error before it read this." } });
+        this.emit({ type: "state", payload: { state: "idle" } });
+      });
+      return;
+    }
+    const kind = this.snapshot.fleet.backlog?.records.find((record) => record.id === task)?.kind ?? "ship";
+    const scout = kind === "scout";
+    // fm-spawn.sh's own words for each refusal (engine/bin/fm-spawn.sh), which the first mate passes on.
+    const refusals: Record<string, string> = {
+      "refused-mode": `error: delivery mismatch for ${task}: the brief says mode=no-mistakes but this spawn passed --mode direct-PR; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree`,
+      "refused-blanks": `error: data/${task}/brief.md still contains {TASK} or {FIRSTMATE_SPEC}; fill ## Captain's intent and ## Firstmate spec before spawn`,
+      "refused-empty": `error: data/${task}/brief.md must contain nonempty ## Captain's intent and ## Firstmate spec subsections (or a nonempty legacy # Task body) before spawn`,
+      "refused-unknown": `error: task ${task} has no backlog item in this home, so dispatching it would leave a worker no record owns; add it first (bin/fm-tasks-axi.sh add ${task} '<title>' --kind ${kind}) and re-run`,
+    };
+    const mode = outcome === "light" ? "direct-PR" : "no-mistakes";
+    this.later(250, () => {
+      this.emit({ type: "outbox", payload: { id, status: "likely_started" } });
+      step(1, `bin/fm-brief.sh ${task} ${scout ? "--scout" : `--mode ${mode}`}`);
+    });
+    this.later(500, () => {
+      if (outcome === "decline") {
+        say(`I haven't started ${task}: it needs the snip lifecycle work to land first, and that is still in review. Say the word and I'll start it anyway.`);
+        return end();
+      }
+      if (refusals[outcome]) {
+        step(2, `bin/fm-spawn.sh ${task} ${scout ? "--scout" : `--mode ${mode} --yolo off`}`, "failed");
+        say(`fm-spawn.sh refused to start ${task}, so it is still queued:\n\n    ${refusals[outcome]}\n\nI'll fix the brief and try again if you want.`);
+        return end();
+      }
+      if (outcome === "hold") {
+        this.holdForCaptain(task);
+        say(`Before I start ${task} I need your word on one thing, so I've put it to you as a call.`);
+        return end();
+      }
+      step(2, `bin/fm-spawn.sh ${task} ${scout ? "--scout" : `--mode ${mode} --yolo off`}`);
+      this.spawnFor(task, kind, mode, outcome);
+      say(`Started ${task}${scout ? " as a scout" : ` under ${mode}`}.`);
+      end();
+      // Its agent comes up a moment after the spawn, and the snapshot sees it the next time it reads.
+      if (outcome === "launch" || outcome === "light") this.later(2500, () => this.seeAgent(task, "alive"));
+    });
+  }
+
+  /** fm-spawn.sh's part, as the snapshot shows it: the row in flight and, but for `orphan`, its worker registered. */
+  private spawnFor(task: string, kind: string, mode: string, outcome: string) {
+    const home = this.snapshot.fleet.fm_home;
+    const now = new Date().toISOString();
+    const fleet = this.snapshot.fleet;
+    const records = (fleet.backlog?.records ?? []).map((record) => record.id !== task ? record : {
+      ...record, state: "in_flight", current_role: "in_flight",
+      // The first mate notes why a task ships lighter than its project's posture, in the row, as engine/AGENTS.md has it.
+      body_lines: outcome === "light" ? [...(record.body_lines ?? []), "Mode: direct-PR, because this only changes the app's own drawing code and nothing a listener sees changes."] : record.body_lines,
+    });
+    const launchedMinutesAgo = outcome === "no-agent" ? 3 : outcome === "unconfirmed" ? 5 : 0;
+    const worker = mockTask(home, task, kind, "unknown", launchedMinutesAgo, { detail: "harness state unavailable", note: "", report: false, observedAt: now });
+    worker.mode = kind === "scout" ? "scout" : mode;
+    worker.paths.status_log = { present: false, last_event: { state: "", note: "", raw: "" } };
+    // Right after a spawn the pane holds only a shell, so the probe reads no agent yet; a backend with no classifier reads unknown.
+    worker.endpoint = outcome === "unconfirmed"
+      ? { ...worker.endpoint, agent_alive: "unknown", status: "unknown" }
+      : { ...worker.endpoint, agent_alive: "dead", status: "dead" };
+    if (outcome === "unconfirmed") worker.backend = "zellij";
+    // qd-spawn-race-1 as it was recorded: the pane's busy signature read busy while the pane held only a shell.
+    if (outcome === "no-agent" || outcome === "unconfirmed") worker.current_state = { ...worker.current_state, state: "working", source: "pane", detail: "harness busy (fm-spawn)", raw: "state: working · source: pane · harness busy (fm-spawn)" };
+    const orphan = outcome === "orphan";
+    this.snapshot.fleet = {
+      ...fleet, generated: now,
+      backlog: { ...fleet.backlog, records },
+      tasks: orphan ? fleet.tasks : [...fleet.tasks, worker],
+      main_inventory: { valid: !orphan, reason: orphan ? `in-flight backlog item has no child metadata: ${task}` : null, orphan_in_flight: orphan ? [task] : [], unstructured_current_count: 0 },
+    };
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+  }
+
+  /** The snapshot's next reading of a worker's agent, through the probe. */
+  private seeAgent(task: string, status: "alive" | "dead") {
+    const now = new Date().toISOString();
+    this.snapshot.fleet = {
+      ...this.snapshot.fleet, generated: now,
+      tasks: this.snapshot.fleet.tasks.map((worker) => worker.id !== task ? worker : {
+        ...worker,
+        current_state: { ...worker.current_state, state: "working", source: "pane", detail: "harness busy (claude-hook)", observed_at: now },
+        endpoint: { ...worker.endpoint, agent_alive: status, status, observed_at: now },
+      }),
+    };
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+  }
+
+  /** `?start=hold`: the first mate turns the ask into a call on the row, as `bin/fm-captain-hold.sh` would. */
+  private holdForCaptain(task: string) {
+    const now = new Date().toISOString();
+    const fleet = this.snapshot.fleet;
+    const question = "Should the chapters come from the feed, or from the transcript when a feed has none?";
+    this.snapshot.fleet = {
+      ...fleet, generated: now,
+      backlog: { ...fleet.backlog, records: (fleet.backlog?.records ?? []).map((record) => record.id !== task ? record : { ...record, hold_kind: "captain", hold_reason: question, captain_actionable: true, current_role: "held" }) },
+      calls: [...(fleet.calls ?? []), {
+        id: task, title: "Resonance: where should chapters come from?", question, options: [{ key: "feed", label: "The feed only", recommended: true }, { key: "both", label: "The feed, else the transcript", recommended: false }],
+        on_answer: "release", state: "open", bucket: "live", captain_actionable: true, origin: null, about: null, evidence: [], raised_by: "firstmate", raised_at: now, updated_at: now, answer: null, decided: null,
+      }],
+    };
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
   }
 
   /** Sizes of the files the mock's picker offers, by where they are. */
@@ -1290,6 +1474,8 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   async refreshSnapshot() {
+    // `?start`: a fresh reading is stamped with when it was taken, as firstmate stamps its own, since the drawer judges by it.
+    if (reviewFlag("start")) this.snapshot.fleet = { ...this.snapshot.fleet, generated: new Date().toISOString() };
     this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
   }
 
@@ -1414,7 +1600,8 @@ export class MockHostAdapter implements HostAdapter {
           payload.bearings = this.snapshot.bearings;
           payload.fleet = this.snapshot.fleet;
           payload.projects = [
-            { name: "resonance", mode: "no-mistakes", yolo: false, description: "Desktop podcast tools" },
+            // `?start`: resonance ships product work checked and internal tooling straight to a PR, as quarterdeck does.
+            { name: "resonance", mode: reviewFlag("start") ? "no-mistakes-prod-only" : "no-mistakes", yolo: false, description: "Desktop podcast tools" },
             { name: "foreman", mode: "direct-PR", yolo: true, description: "Agent supervision" },
           ];
         }

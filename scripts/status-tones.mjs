@@ -24,7 +24,7 @@ const task = (state) => ({
   id: `task-${state}`, kind: "ship", harness: "claude", mode: "no-mistakes", yolo: "off", project: `${home}/projects/resonance`, backend: "tmux",
   paths: { status_log: { present: true, last_event: { state, note: `A task that is ${state}.`, raw: `${state}` } }, worktree: { path: `${home}/worktrees/task-${state}`, present: true }, report: { path: "", present: false } },
   current_state: { state, source: "pane", detail: "", raw: `state=${state}`, observed_at: "2026-09-16T07:41:00Z", freshness: "fresh" },
-  endpoint: { target: `fm:task-${state}`, exists: true, agent_alive: "yes", status: "alive", observed_at: "2026-09-16T07:41:00Z", freshness: "fresh" },
+  endpoint: { target: `fm:task-${state}`, exists: true, agent_alive: "alive", status: "alive", observed_at: "2026-09-16T07:41:00Z", freshness: "fresh" },
   pr: { url: null, source: "gh" },
   hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "" },
   actions: { watch: "", steer: "", return_channel_note: null },

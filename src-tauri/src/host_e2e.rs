@@ -1465,3 +1465,232 @@ async fn compact_e2e_live_scratch_home() {
     let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
+
+// --------------------------------------------------------------- start ---
+
+/// Where a queued task's drawer stands, worked out by `src/start.ts` itself from
+/// what the app would be holding at that moment, so the order this test checks is
+/// the order the drawer would show.
+fn drawer_phase(inputs: &Value) -> String {
+    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/start.ts");
+    // The app keeps a read time as ISO text and the snapshot's stamp as the engine wrote it; both are turned into what
+    // App.tsx turns them into.
+    let script = "const [module, raw] = process.argv.slice(1); const { startPhase } = await import(module); const inputs = JSON.parse(raw); if (inputs.delivery?.readAtMs) inputs.delivery.readAt = new Date(inputs.delivery.readAtMs).toISOString(); inputs.snapshotAt = Date.parse(inputs.generated); process.stdout.write(startPhase(inputs));";
+    let node = crate::envpath::resolve("node").expect("node is installed");
+    let output = std::process::Command::new(node)
+        .args(["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", script])
+        .arg(module.canonicalize().expect("src/start.ts"))
+        .arg(inputs.to_string())
+        .output()
+        .expect("run node");
+    assert!(output.status.success(), "node: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).expect("the phase is text")
+}
+
+/// What the app holds about the host at this moment, folded from its events the
+/// way `use-host.ts` and `App.tsx` fold them: the ask's delivery, the runtime,
+/// and when the first mate was last seen out of a turn.
+fn host_view(events: &Events, message: &str, opened: u64) -> (Value, String, Option<u64>) {
+    let mut delivery = Value::Null;
+    let mut runtime = "stopped".to_string();
+    let mut quiet = Some(opened);
+    for (event, body) in &events.seen {
+        let at = body["at_ms"].as_u64().unwrap_or_else(now_ms);
+        if event == "state" {
+            runtime = body["state"].as_str().unwrap_or_default().to_string();
+            let busy = ["starting", "prompt_turn", "agent_turn", "restarting"].contains(&runtime.as_str());
+            quiet = if busy { None } else { quiet.or(Some(at)) };
+        }
+        if event == "outbox" && body["id"] == message {
+            let status = body["state"].as_str().unwrap_or_default();
+            delivery = json!({"status": status});
+            if status == "picked_up" {
+                delivery["readAtMs"] = json!(at);
+            }
+            if status == "failed" {
+                delivery["errorKind"] = json!("failed");
+                delivery["error"] = body["error"].clone();
+            }
+        }
+    }
+    (delivery, runtime, quiet)
+}
+
+/// A live run of starting work from a queued task's drawer, which spends model
+/// tokens: a queued scout is handed to the first mate in the message the drawer
+/// sends, and the drawer must move through Asked, Launched and Working in that
+/// order, with Working only once the snapshot has seen the scout's agent alive.
+///
+/// ```sh
+/// cd src-tauri && FM_E2E_HOME=<scratch home> cargo test start_e2e_live_scratch_home -- --ignored --nocapture
+/// ```
+///
+/// The home must register a project `hello` whose clone is at `projects/hello`.
+/// The scout row is filed through firstmate's own intake, the ask is composed,
+/// sent and recorded by `start.rs` exactly as the Start work button does, and the
+/// first mate briefs and spawns it by its own rules: nothing about the launch is
+/// hand-built. The scout is small and torn down at the end.
+#[tokio::test]
+#[ignore = "live: runs the real claude-agent-acp and a real scout against a firstmate scratch home"]
+async fn start_e2e_live_scratch_home() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+    assert!(home.join("projects/hello/.git").exists(), "the scratch home needs the project hello at projects/hello");
+    let before = lock_status(&home);
+    assert!(
+        before == "lock: free" || before.starts_with("lock: stale"),
+        "the scratch home's lock is not free ({before}); another host may be using it"
+    );
+
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
+    let run = now_ms();
+    let data_dir = out.join(format!("appdata-start-{run}"));
+    std::fs::create_dir_all(&data_dir).expect("create the app data folder");
+    let recording = out.join(format!("start-{run}.jsonl"));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).expect("create the recording")),
+        data_dir,
+        tx,
+    });
+    println!("home: {}\nrecording: {}", home.display(), recording.display());
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
+    let mut events = Events { rx, seen: Vec::new() };
+    let mut steps = Vec::new();
+    let opened = now_ms();
+
+    recorder.mark("1", "host_start");
+    let from = events.now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
+    let ready = match session {
+        Some(i) => events.find(i, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await,
+        None => None,
+    };
+    let running = started.is_ok() && ready.is_some();
+    record(&mut steps, "start: the first mate is running", running, format!("start={started:?}; state={}", events.body(ready)["state"]));
+
+    // 2. A queued scout, filed through firstmate's own intake.
+    let task = format!("hello-lines-{}", run % 1_000_000);
+    let title = "Hello: how many lines does the README have?";
+    let filed = std::process::Command::new(home.join("bin").join("fm-tasks-axi.sh"))
+        .args(["add", &task, title, "--kind", "scout", "--repo", "hello", "--queue", "--body"])
+        .arg("Read README.md in the hello project and write a one-line report saying how many lines it has. Nothing else.")
+        .env("FM_HOME", &home)
+        .current_dir(&home)
+        .output()
+        .expect("run fm-tasks-axi.sh");
+    let queued = snapshot_json(&home)["backlog"]["records"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["id"] == task.as_str() && row["state"] == "queued"));
+    record(&mut steps, "a queued scout row is filed", filed.status.success() && queued, format!("fm-tasks-axi: {}", String::from_utf8_lossy(&filed.stderr).trim()));
+
+    if !(running && queued) {
+        not_exercised(&mut steps, "the drawer moves through Asked, Launched and Working, in that order", "nothing to start".into());
+        let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+        let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+        assert!(failed.is_empty(), "failed: {failed:?}");
+        return;
+    }
+
+    // 3. Start work, exactly as the drawer's button does it: compose, send, record.
+    recorder.mark("3", "hand the scout to the first mate");
+    let note = "This is an automated live test in a scratch home. Start it the way you start any scout, and keep the brief short.";
+    let text = crate::start::compose(&task, "hello", title, "scout", "judge", Some(note)).expect("compose the ask");
+    println!("--- the ask ---\n{text}\n---------------");
+    let sent = send(&host, text.clone()).await;
+    let ask_record = crate::start::ask_record(&task, "hello", title, "scout", "judge", Some(note), &text, &sent);
+    crate::start::append(&crate::start::log_path(&home), &ask_record).expect("record the ask");
+    let message = sent.clone().unwrap_or_default();
+    record(&mut steps, "the ask reaches the host", sent.is_ok(), format!("send={sent:?}"));
+
+    // 4. Follow the drawer from what the app would read, until it says Working.
+    let mut seen: Vec<(String, Value)> = Vec::new();
+    let mut timings = Vec::new();
+    let mut working_endpoint = Value::Null;
+    let (mut registered_queued, mut unseen_in_flight) = (0, 0);
+    let deadline = Instant::now() + Duration::from_secs(900);
+    while Instant::now() < deadline {
+        events.now();
+        let read_at = Instant::now();
+        let snapshot = snapshot_json(&home);
+        timings.push(read_at.elapsed().as_millis());
+        let (delivery, runtime, quiet) = host_view(&events, &message, opened);
+        let record = snapshot["backlog"]["records"].as_array().and_then(|rows| rows.iter().find(|row| row["id"] == task.as_str()).cloned());
+        let worker = snapshot["tasks"].as_array().and_then(|rows| rows.iter().find(|row| row["id"] == task.as_str()).cloned());
+        let Some(record) = record else { break };
+        let generated = snapshot["generated"].as_str().unwrap_or_default();
+        let inputs = json!({
+            "record": record, "task": worker, "orphans": snapshot["main_inventory"]["orphan_in_flight"].clone(),
+            "ask": ask_record, "delivery": if delivery.is_null() { Value::Null } else { delivery },
+            "runtime": runtime, "sendReady": true, "quietSince": quiet,
+            "generated": generated, "now": now_ms(),
+        });
+        let phase = drawer_phase(&inputs);
+        let endpoint = worker.as_ref().map(|task| task["endpoint"].clone()).unwrap_or(Value::Null);
+        if worker.is_some() && record["state"] == "queued" {
+            registered_queued += 1;
+        }
+        if worker.is_some() && record["state"] == "in_flight" && endpoint["status"] != "alive" {
+            unseen_in_flight += 1;
+        }
+        if seen.last().map(|(last, _)| last != &phase).unwrap_or(true) {
+            println!("   drawer: {phase} (row {}, endpoint {}, agent {})", record["state"], endpoint["status"], endpoint["agent_alive"]);
+            recorder.line("drawer", &json!({"phase": phase, "row": record["state"], "endpoint": endpoint}));
+            seen.push((phase.clone(), endpoint.clone()));
+        }
+        if phase == "working" {
+            working_endpoint = endpoint;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let order: Vec<&str> = seen.iter().map(|(phase, _)| phase.as_str()).collect();
+    let at = |name: &str| order.iter().position(|phase| *phase == name);
+    let only_these = order.iter().all(|phase| ["asked", "starting", "working"].contains(phase));
+    let evidence = format!("seen: {}; readings with the row in flight and its agent not yet seen alive: {unseen_in_flight}; readings with the worker registered and the row still queued: {registered_queued}", order.join(" > "));
+    match (at("asked"), at("starting"), at("working")) {
+        (Some(a), Some(l), Some(w)) => record(&mut steps, "the drawer moves through Asked, Launched and Working, in that order", only_these && a < l && l < w, evidence),
+        // fm-spawn.sh moves the row to In flight as its last step, after launch delivery, so a healthy agent is
+        // already running by the first reading that finds the row moved: no reading could show Launched. That is
+        // this run not producing the condition, and it is reported as such, never passed.
+        (Some(a), None, Some(w)) if only_these && a < w && unseen_in_flight == 0 => not_exercised(&mut steps, "the drawer moves through Asked, Launched and Working, in that order", format!("Launched never readable: {evidence}")),
+        _ => record(&mut steps, "the drawer moves through Asked, Launched and Working, in that order", false, evidence),
+    }
+    let alive = working_endpoint["status"] == "alive" && working_endpoint["agent_alive"] == "alive";
+    record(&mut steps, "Working is shown only once the snapshot has seen the agent alive", alive, format!("endpoint when Working: {working_endpoint}"));
+    let launched_unseen = seen.iter().filter(|(phase, _)| phase == "starting").map(|(_, endpoint)| endpoint["status"].to_string()).collect::<Vec<_>>();
+    println!("   endpoint while Launched: {}", launched_unseen.join(", "));
+    timings.sort_unstable();
+    println!("   fleet snapshot with the probe: median {} ms, max {} ms over {} reads", timings[timings.len() / 2], timings.last().copied().unwrap_or(0), timings.len());
+
+    // 5. Leave the scratch home as it was: the scout finishes, or is torn down.
+    recorder.mark("5", "tear the scout down");
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    let report = home.join("data").join(&task).join("report.md");
+    let deadline = Instant::now() + Duration::from_secs(300);
+    while alive && Instant::now() < deadline && !report.exists() {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+    let teardown = std::process::Command::new(home.join("bin").join("fm-teardown.sh"))
+        .arg(&task)
+        .env("FM_HOME", &home)
+        .current_dir(&home)
+        .output();
+    match teardown {
+        Ok(output) => println!("   teardown: {} {}", output.status, String::from_utf8_lossy(&output.stderr).trim()),
+        Err(error) => println!("   teardown could not run: {error}"),
+    }
+
+    println!("\nrecording: {}", recording.display());
+    let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+    assert!(failed.is_empty(), "failed: {failed:?}");
+}

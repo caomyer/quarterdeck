@@ -36,7 +36,8 @@ case "${1:-}" in
     case "$*" in
       *pane_current_command*)
         case "$target" in
-          *dead-secondmate*) printf 'zsh\n' ;;
+          *dead-secondmate*|*shell-only*) printf 'zsh\n' ;;
+          *unattributed*) printf 'node\n' ;;
           *) printf 'codex\n' ;;
         esac
         ;;
@@ -1045,6 +1046,52 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
+# A crewmate's endpoint liveness is the process-level probe, not pane presence.
+# qd-spawn-race-1: fm-spawn.sh reported success while the pane held only a shell
+# at a continuation prompt, and current_state read that pane as busy. The probe
+# must say dead there, alive only for a proven agent process, and unknown on a
+# backend with no classifier, for scouts and ship crewmates alike.
+test_crewmate_endpoint_liveness_is_probed() {
+  local home fakebin out gen
+  home=$(make_home crew-liveness)
+  mkdir -p "$home/projects/wt"
+  fm_write_meta "$home/state/live-scout.meta" \
+    "window=firstmate:fm-live-scout" "worktree=$home/projects/wt" "project=alpha" \
+    "harness=codex" "kind=scout" "mode=scout" "yolo=off"
+  fm_write_meta "$home/state/shell-only-ship.meta" \
+    "window=firstmate:fm-shell-only-ship" "worktree=$home/projects/wt" "project=alpha" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" shell-only-ship)
+  "$ROOT/bin/fm-busy-event.sh" apply "$home/state" shell-only-ship busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  fm_write_meta "$home/state/unclassified-ship.meta" \
+    "backend=cmux" "window=workspace:surface" "worktree=$home/projects/wt" "project=alpha" \
+    "harness=codex" "kind=ship" "mode=direct-PR" "yolo=off"
+  fm_write_meta "$home/state/unattributed-scout.meta" \
+    "window=firstmate:fm-unattributed-scout" "worktree=$home/projects/wt" "project=alpha" \
+    "harness=claude" "kind=scout" "mode=scout" "yolo=off"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "live-scout")
+    | .endpoint.exists == true and .endpoint.agent_alive == "alive" and .endpoint.status == "alive"
+  ' >/dev/null || fail "a scout with a proven agent process must read alive: $out"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "shell-only-ship")
+    | .endpoint.exists == true and .endpoint.agent_alive == "dead" and .endpoint.status == "dead"
+      and .current_state.state == "working"
+  ' >/dev/null || fail "a ship crewmate whose pane holds only a shell must read dead even while current_state reads busy: $out"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "unclassified-ship")
+    | .endpoint.agent_alive == "unknown" and .endpoint.status != "alive"
+  ' >/dev/null || fail "a backend with no classifier must never read alive: $out"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "unattributed-scout")
+    | .endpoint.exists == true and .endpoint.agent_alive == "unknown" and .endpoint.status == "unknown"
+  ' >/dev/null || fail "a present endpoint whose process cannot be attributed must read unknown, not alive: $out"
+  pass "crewmate endpoint liveness is the process-level probe for every local task"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
@@ -1063,3 +1110,4 @@ test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
+test_crewmate_endpoint_liveness_is_probed

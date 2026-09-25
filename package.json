@@ -18,7 +18,8 @@
     "routing": "node scripts/routing.mjs",
     "usage": "node scripts/usage.mjs",
     "updates": "node scripts/app-update.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs"
+    "starts": "node scripts/start-work.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",

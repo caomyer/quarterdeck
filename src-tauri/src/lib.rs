@@ -12,6 +12,7 @@ mod review;
 mod routing;
 mod settings;
 mod snapshot;
+mod start;
 mod update;
 
 use tauri::Manager;
@@ -37,6 +38,7 @@ pub fn run() {
       app.manage(snapshot::SnapshotHandle::spawn(app.handle().clone()));
       app.manage(host::HostHandle::spawn(app.handle().clone()));
       app.manage(review::Writes::default());
+      app.manage(start::Asks::default());
       app.manage(quota::Quota::default());
       app.manage(update::Updates::default());
       update::settle_note(app.handle());
@@ -88,6 +90,8 @@ pub fn run() {
       review::review_answer,
       review::review_scene,
       review::call_answer,
+      start::start_work,
+      start::start_asks,
       update::update_status,
       update::update_check,
       update::update_restart,

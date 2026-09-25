@@ -786,6 +786,36 @@ a { color: var(--sea); }
 .pr-block a:hover { text-decoration: underline; }
 .report-block { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .report-block .landed-link { flex: none; }
+/* Start work, in a queued task's drawer: handing it to the first mate, and following that ask. */
+.start-block { display: flex; flex-direction: column; gap: 10px; }
+.start-block.new { border-color: var(--sea); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sea) 14%, transparent); }
+.start-block.warn { border-color: var(--brand-edge); background: var(--brand-wash); }
+.start-block.bad { border-color: var(--coral-edge); background: var(--coral-wash); }
+.start-block dl:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.start-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.start-actions .btn-base { height: 32px; padding: 0 12px; font-size: 12.5px; }
+.btn-base.primary { border-color: var(--primary); color: var(--on-primary); background: var(--primary); font-weight: 600; }
+.btn-base.primary:hover:not(:disabled) { border-color: var(--sea); color: var(--on-accent); background: var(--sea); }
+.btn-base:not(.primary):hover:not(:disabled) { border-color: var(--control-hover); }
+.start-hint { color: var(--faint); font-size: 12px; }
+.brief-block p.start-why { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.brief-block:not(.start-block) p + p.start-why { margin-top: 6px; }
+.brief-block p.start-faded { color: var(--faint); font-size: 12.5px; }
+.start-problem { margin: 0; color: var(--coral); font-size: 12.5px; overflow-wrap: anywhere; }
+.start-field { display: flex; flex-direction: column; gap: 6px; }
+.start-field > span { color: var(--faint); font-size: 12.5px; }
+.start-field b { color: var(--ink-2); font-weight: 600; }
+.start-field textarea { width: 100%; min-height: 60px; resize: vertical; padding: 8px 10px; border: 1px solid var(--control); border-radius: 8px; outline: 0; color: var(--ink); background: var(--surface-2); font-size: 13px; line-height: 1.5; field-sizing: content; max-height: 200px; }
+.start-field textarea:focus { border-color: var(--sea); }
+.start-field textarea::placeholder { color: var(--fainter); }
+.start-modes { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.start-modes legend { margin-bottom: 6px; padding: 0; color: var(--ink-2); font-size: 12.5px; font-weight: 600; }
+.start-modes label { display: flex; align-items: flex-start; gap: 9px; padding: 8px 10px; border: 1px solid var(--control); border-radius: 8px; color: var(--ink-2); background: var(--surface); font-size: 12.5px; cursor: pointer; }
+.start-modes label:hover { border-color: var(--control-hover); }
+.start-modes label.on { border-color: var(--sea); background: color-mix(in srgb, var(--sea) 7%, var(--surface)); }
+.start-modes input { flex: none; margin: 2px 0 0; accent-color: var(--sea); }
+.start-modes small { display: block; margin-top: 1px; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+.mode-chip { display: inline-block; margin-right: 4px; padding: 0 7px; border-radius: 9px; color: var(--ink-3); background: var(--surface-3); font: 600 11.5px/1.7 var(--mono); }
 .worker-screen { overflow: hidden; border: 1px solid var(--terminal-edge); border-radius: 10px; background: var(--terminal-bg); }
 .worker-caption { margin: -4px 0 10px; color: var(--muted); font-size: 12.5px; }
 .worker-screen header { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid rgb(255 255 255 / 10%); color: var(--terminal-ink); font: 11.5px var(--mono); }
