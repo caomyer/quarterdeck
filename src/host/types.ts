@@ -61,6 +61,15 @@ export type BacklogRecord = {
   body_excerpt?: string | null;
 };
 
+/** A file a task carries, as `bin/fm-task-note.sh show --json` names it: its clean name, where it is, and what it was called. */
+export type TaskFile = { name: string; path: string; bytes: number; original: string };
+
+/** One note on a task: evidence, a change of scope, or a decision about the work, for whoever works it. */
+export type TaskNote = { id: string; at: string; by: string; scope: boolean; body: string; files: TaskFile[] };
+
+/** Every note a task carries, oldest first, as `bin/fm-task-note.sh show --json` prints them. */
+export type TaskNotes = { schema: string; task: string; notes: TaskNote[] };
+
 /** One option a call offers, as `bin/fm-captain-hold.sh` records it. */
 export type CallOption = { key: string; label: string; recommended: boolean };
 
@@ -489,6 +498,15 @@ export interface HostAdapter {
   cancelTurn(): Promise<void>;
   getState(): Promise<HostStateSnapshot>;
   paneCapture(taskId: string): Promise<PaneCapture>;
+  /** A task's notes, oldest first; `null` from a firstmate that cannot keep them. */
+  taskNotes(taskId: string): Promise<TaskNotes | null>;
+  /**
+   * Adds the captain's note to a task through firstmate's writer: words, files the captain picked, or both. Returns
+   * the task's notes after it; a refusal rejects with the reason.
+   */
+  taskNoteAdd(taskId: string, body: string, sources: string[]): Promise<TaskNotes>;
+  /** Where a picture a task carries is shown from. */
+  taskFileUrl(taskId: string, file: TaskFile): string;
   /** A page of a project's closed work, newest first; `null` from a firstmate that cannot list it. */
   projectHistory(repo: string, options?: { after?: string | null; limit?: number }): Promise<ProjectHistory | null>;
   getHome(): Promise<HomeStatus>;

@@ -59,6 +59,70 @@ check(/\bwaiting\b/i.test(await queue.nth(1).locator(".task-chip").innerText()),
 check(!(await page.locator("[data-testid='project-page']").innerText()).includes("Resonance:"), "titles drop the project name the page already says");
 await shot(page, "project");
 
+// A queued task opens, and reads the way its filer wrote it.
+await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+const queued = page.locator("[data-testid='queued-drawer']");
+await queued.waitFor();
+check((await queued.locator("[data-testid='drawer-title']").innerText()) === "Snip from the Lock Screen and AirPods", "a queued task opens, titled within its project");
+check((await queued.locator(".drawer-status").innerText()).includes("Waits on the snip lifecycle work landing"), "and says what it waits on");
+const body = queued.locator(".drawer-section", { hasText: "What was asked" }).locator("[data-testid='task-body']");
+check(await body.locator("p").count() === 3, "each line the filer wrote stays its own paragraph");
+check(await body.locator("li").count() === 2, "the filer's list stays a list");
+check(JSON.stringify(await body.locator(".body-label").allInnerTexts()) === JSON.stringify(["SYMPTOM", "WHAT TO BUILD"]), "labels in capitals lead their paragraphs");
+check((await body.locator("code").innerText()) === "MPRemoteCommandCenter", "backticks read as code");
+
+// What the task carries beside its row: the picture a worker is handed as a path, and the notes for whoever works it.
+const sections = await queued.locator(".drawer-section > h3").allInnerTexts();
+check(sections[0] === "File" && sections[1] === "What was asked", `the evidence comes first, then what was asked (${sections.slice(0, 3).join(", ")})`);
+const file = queued.locator("[data-testid='task-file']");
+check(await file.locator("img").count() === 1, "a picture on the task shows as a thumbnail");
+check((await file.locator("code").innerText()).endsWith("/data/res-lockscreen/files/Lock-Screen-9.41-AM.png"), "with the clean path a worker is handed");
+check((await file.locator("strong").innerText()) === "Lock Screen 9.41\u202fAM.png", "and the name it had when it was added");
+await file.locator("button.task-file-thumb").click();
+check(await page.locator("[data-testid='picture-view']").count() === 1, "the thumbnail opens the whole picture");
+await shot(page, "project-queued-picture");
+await page.keyboard.press("Escape");
+check(await page.locator("[data-testid='picture-view']").count() === 0 && await queued.count() === 1, "Escape closes the picture and leaves the task open");
+const notes = queued.locator("[data-testid='task-note']");
+check(await notes.count() === 2, "the task's notes are listed, oldest first");
+check((await notes.nth(1).innerText()).includes("Changes scope"), "a note that changes scope says so");
+check(await queued.locator("[data-testid='note-composer'] button", { hasText: "Add to task" }).isDisabled(), "an empty note cannot be added");
+await shot(page, "project-queued");
+
+// The captain adds evidence: words and a file, kept on the task through firstmate's writer.
+await queued.getByLabel("Add a note to this task").fill("The widget should snip even when Focus is on.");
+await queued.locator("[data-testid='note-composer'] button", { hasText: "Files" }).click();
+check(await queued.locator("[data-testid='note-composer'] .file-chip").count() === 2, "picked files wait on the note until it is added");
+await queued.locator("[data-testid='note-composer'] .file-chip", { hasText: "Release brief" }).getByRole("button").click();
+await queued.locator("[data-testid='note-composer'] button", { hasText: "Add to task" }).click();
+await page.waitForFunction(() => document.querySelectorAll("[data-testid='queued-drawer'] [data-testid='task-note']").length === 3);
+const added = notes.nth(2);
+check((await added.locator("header strong").innerText()) === "You", "the note is the captain's");
+check((await added.innerText()).includes("snip even when Focus is on"), "with the captain's words");
+check((await queued.locator("[data-testid='task-file'] code").nth(1).innerText()).endsWith("/files/cran-2026-09-22.png"), "and the file under a name safe to hand a worker");
+check((await queued.getByLabel("Add a note to this task").inputValue()) === "", "the composer clears once the note is kept");
+check((await queued.locator(".note-hint").innerText()).includes("handed to whoever works it"), "a queued task says who receives the note");
+await page.keyboard.press("Escape");
+check(await queued.count() === 0, "Escape closes a queued task");
+
+// A refused note keeps the captain's words and says why, in firstmate's words.
+await openProject(page, "resonance", "&note-refused");
+await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+await queued.getByLabel("Add a note to this task").fill("See the attached recording.");
+await queued.locator("[data-testid='note-composer'] button", { hasText: "Add to task" }).click();
+await queued.locator(".attach-problems").waitFor();
+check((await queued.locator(".attach-problems").innerText()).includes("over the 104857600 cap"), "a refused note says why");
+check((await queued.getByLabel("Add a note to this task").inputValue()) === "See the attached recording.", "and keeps what the captain wrote");
+
+// A firstmate that keeps no notes shows no notes, and a failed read offers to try again.
+await openProject(page, "resonance", "&no-notes");
+await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+check(await queued.locator("[data-testid='task-files'], [data-testid='note-composer']").count() === 0, "without fm-task-note.sh there is no Files or Notes section");
+await openProject(page, "resonance", "&notes-error");
+await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+check(await queued.locator("[data-testid='notes-error']").count() === 1, "a failed notes read says so and offers to try again");
+await openProject(page, "resonance");
+
 // The logbook: every closed row once, newest first, with the rows that delivered nothing hidden until asked for.
 const ids = await logIds(page);
 check(new Set(ids).size === ids.length, "each closed task appears once, though the snapshot and the history both list recent ones");

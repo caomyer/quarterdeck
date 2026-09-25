@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="520" viewBox="0 0 390 520">
+  <!-- A made-up phone Lock Screen, standing in for a captain's screenshot on a task in the browser mock. -->
+  <rect width="390" height="520" rx="36" fill="#1e2e2b"/>
+  <text x="195" y="120" fill="#edf2ef" font-family="system-ui, sans-serif" font-size="64" font-weight="300" text-anchor="middle">9:41</text>
+  <text x="195" y="160" fill="#aebbb8" font-family="system-ui, sans-serif" font-size="18" text-anchor="middle">Tuesday 22 September</text>
+  <rect x="40" y="330" width="310" height="92" rx="20" fill="#36423f"/>
+  <text x="64" y="370" fill="#edf2ef" font-family="system-ui, sans-serif" font-size="18" font-weight="600">Resonance</text>
+  <text x="64" y="398" fill="#aebbb8" font-family="system-ui, sans-serif" font-size="15">Unlock to snip the last 30 seconds</text>
+</svg>

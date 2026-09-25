@@ -311,7 +311,7 @@ async fn run_json(home: &Path, script: &str, args: &[&str]) -> Result<Value, Str
     serde_json::from_str(&output).map_err(|e| format!("{script} printed invalid JSON: {e}"))
 }
 
-async fn run_script(home: &Path, script: &str, args: &[&str], limit: Duration) -> Result<String, String> {
+pub(crate) async fn run_script(home: &Path, script: &str, args: &[&str], limit: Duration) -> Result<String, String> {
     let child = envpath::command(home.join("bin").join(script))
         .args(args)
         .env("FM_HOME", home)

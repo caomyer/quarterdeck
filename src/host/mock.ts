@@ -6,6 +6,7 @@ import recordedStream from "./mock-event-stream.json";
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
 import { MockUpdates } from "./mock-update";
 import { mockUsage } from "./mock-usage";
+import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
 import type {
   AppUpdate,
@@ -32,6 +33,9 @@ import type {
   PaneCapture,
   ProjectHistory,
   QuotaRead,
+  TaskFile,
+  TaskNote,
+  TaskNotes,
   ReasonKind,
   CommentPicture,
   ReviewAnchor,
@@ -235,9 +239,23 @@ function mockArtifacts(home: string): MockHome {
   const planTask = mockTask(home, ARTIFACT_TASK, "scout", "working", 95, { detail: "harness busy (claude-hook)", note: "Revising the titles plan.", report: false, observedAt: at(2) });
   const reportTask = mockTask(home, REPORT_TASK, "scout", "done", 27 * 60, { detail: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", note: "Report written: 2 of 9281 sampled episodes carry a publisher transcript.", report: true, observedAt: at(2) });
   const records: BacklogRecord[] = [
-    backlogRow(ARTIFACT_TASK, "Resonance: AI titles for snips", { kind: "scout", since: day(0) }),
+    backlogRow(ARTIFACT_TASK, "Resonance: AI titles for snips", {
+      kind: "scout", since: day(0),
+      body_lines: ["Plan how a snip gets a title it earns, on the phone, before any model ships.", "- Compare an on-device model with the server one.", "- Say what a wrong title costs the captain."],
+    }),
     backlogRow(REPORT_TASK, "Resonance: which episodes already carry a transcript?", { kind: "scout", since: day(1) }),
-    backlogRow("res-lockscreen", "Resonance: snip from the Lock Screen and AirPods", { state: "queued", current_role: "queued", since: day(2), hold_reason: "Waits on the snip lifecycle work landing" }),
+    backlogRow("res-lockscreen", "Resonance: snip from the Lock Screen and AirPods", {
+      state: "queued", current_role: "queued", since: day(2), hold_reason: "Waits on the snip lifecycle work landing",
+      // A body written the way firstmate files one: a paragraph per line, a list, labels, and code.
+      body_lines: [
+        "SYMPTOM, reported by the captain: a snip needs the phone unlocked and the app open.",
+        "WHAT TO BUILD:",
+        "- A Lock Screen widget that snips the last 30 seconds.",
+        "- The AirPods stem press does the same, through `MPRemoteCommandCenter`.",
+        "App-side only. Verify on a locked phone, not the simulator.",
+      ],
+      body_excerpt: "SYMPTOM, reported by the captain: a snip needs the phone unlocked and the app open.",
+    }),
     backlogRow(REPORTED_TASK, "Resonance: how often do feeds change their artwork?", {
       kind: "scout", state: "done", current_role: "done", since: day(3), completion: { verb: "reported", date: day(1) }, report_path: `${home}/data/${REPORTED_TASK}/report.md`,
     }),
@@ -1169,6 +1187,52 @@ export class MockHostAdapter implements HostAdapter {
 
   async refreshSnapshot() {
     this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+  }
+
+  /**
+   * The notes firstmate's `bin/fm-task-note.sh` keeps beside each task, here in memory. The queued Lock Screen task
+   * carries a picture and a change of scope, the way the first mate files a captain's screenshot.
+   */
+  private readonly notes = new Map<string, TaskNote[]>([
+    ["res-lockscreen", [
+      {
+        id: "n1", at: "2026-09-22T09:14:00Z", by: "firstmate", scope: false,
+        body: "The captain's picture of what the Lock Screen shows today.",
+        files: [{ name: "Lock-Screen-9.41-AM.png", path: "/home/data/res-lockscreen/files/Lock-Screen-9.41-AM.png", bytes: 482_113, original: "Lock Screen 9.41\u202fAM.png" }],
+      },
+      { id: "n2", at: "2026-09-22T10:02:00Z", by: "firstmate", scope: true, body: "AirPods can wait: ship the Lock Screen widget on its own first.", files: [] },
+    ]],
+  ]);
+
+  /** `?no-notes`: a firstmate without `fm-task-note.sh`. `?notes-error` fails the read. */
+  async taskNotes(taskId: string): Promise<TaskNotes | null> {
+    if (reviewFlag("no-notes")) return null;
+    if (reviewFlag("notes-error")) throw new Error("fm-task-note.sh exited with 1: the notes in data/x/notes cannot be read");
+    return { schema: "fm-task-notes.v1", task: taskId, notes: this.notes.get(taskId) ?? [] };
+  }
+
+  /** `?note-refused` refuses every add, in the script's words. */
+  async taskNoteAdd(taskId: string, body: string, sources: string[]): Promise<TaskNotes> {
+    if (!body.trim() && sources.length === 0) throw new Error("Write a note or add a file first.");
+    if (reviewFlag("note-refused")) throw new Error("fm-task-note.sh exited with 1: fm-task-note: /Users/captain/Desktop/huge.mov is 2147483648 bytes, over the 104857600 cap; tell the worker where it is instead");
+    const notes = this.notes.get(taskId) ?? [];
+    const taken = new Set(notes.flatMap((note) => note.files.map((file) => file.name)));
+    const files = sources.map((source): TaskFile => {
+      const original = source.split("/").pop() ?? source;
+      let name = original.replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^[-.]+/, "").replace(/-+$/, "") || "file";
+      const [stem, ext] = name.includes(".") ? [name.slice(0, name.lastIndexOf(".")), name.slice(name.lastIndexOf("."))] : [name, ""];
+      for (let n = 2; taken.has(name); n += 1) name = `${stem}-${n}${ext}`;
+      taken.add(name);
+      return { name, path: `${this.snapshot.fleet.fm_home}/data/${taskId}/files/${name}`, bytes: this.pickable.get(source) ?? 0, original };
+    });
+    notes.push({ id: `n${notes.length + 1}`, at: new Date().toISOString(), by: "captain", scope: false, body: body.trim(), files });
+    this.notes.set(taskId, notes);
+    return { schema: "fm-task-notes.v1", task: taskId, notes };
+  }
+
+  /** Every picture in the mock is the one fixture, served by the dev server. */
+  taskFileUrl(_taskId: string, _file: TaskFile) {
+    return lockScreenPicture;
   }
 
   /**

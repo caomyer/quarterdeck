@@ -6,6 +6,7 @@ mod envpath;
 mod host;
 #[cfg(test)]
 mod host_e2e;
+mod notes;
 mod quota;
 mod review;
 mod routing;
@@ -75,6 +76,8 @@ pub fn run() {
       snapshot::snapshot_latest,
       snapshot::pane_capture,
       snapshot::project_history,
+      notes::task_notes,
+      notes::task_note_add,
       review::review_get,
       review::review_comment,
       review::review_discard,

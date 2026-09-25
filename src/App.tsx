@@ -39,13 +39,14 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
+import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
@@ -225,6 +226,9 @@ export function App() {
   const history = useProjectHistory(view === "project" ? selectedProject : null, fleet?.generated);
   const [logEntry, setLogEntry] = useState<LogEntry | null>(null);
   useEffect(() => setLogEntry(null), [view, selectedProject]);
+  // A queued row is kept by id, so its drawer reads each new snapshot's row rather than the one it opened with.
+  const [queuedId, setQueuedId] = useState<string | null>(null);
+  useEffect(() => setQueuedId(null), [view, selectedProject]);
   const waitingIn = (name: string) => waiting.filter((call) => callProject(call, records) === name);
   // What a project has underway, the same wherever it is counted: a finished scout waiting to be read is not.
   const underwayIn = (project: ProjectSummary) => project.tasks.filter((task) => !readyIds.has(task.id) && records.get(task.id)?.state !== "done");
@@ -616,6 +620,7 @@ export function App() {
           onOpenCall={(id) => { navigate("bearings"); setFocusedCall(id); }}
           onOpenReport={(item) => item.page ? showArtifact(item.page) : draftInChat(askAboutReport(taskTitle(item.task.id)))}
           onOpenEntry={setLogEntry}
+          onOpenQueued={(record) => setQueuedId(record.id)}
         />}
         {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} backlog={records} calls={calls} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
@@ -647,6 +652,7 @@ export function App() {
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
       {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => setSettingsOpen(false)} />}
+      {queuedId && records.get(queuedId) && <QueuedDrawer record={records.get(queuedId)!} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedId)} reviews={reviews} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onClose={() => setQueuedId(null)} />}
       {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
       {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
     </div>
@@ -1315,7 +1321,7 @@ function useProjectHistory(project: string | null, stamp: string | undefined) {
 
 type ProjectReport = { task: FleetTask; page?: Artifact; report: string | null };
 
-function ProjectView({ project, now, taskTitle, records, waiting, reports, underway, queued, recent, calls, history, onOpenTask, onOpenCall, onOpenReport, onOpenEntry }: {
+function ProjectView({ project, now, taskTitle, records, waiting, reports, underway, queued, recent, calls, history, onOpenTask, onOpenCall, onOpenReport, onOpenEntry, onOpenQueued }: {
   project: ProjectSummary;
   now: number;
   taskTitle: (id: string) => string;
@@ -1331,6 +1337,7 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
   onOpenCall: (id: string) => void;
   onOpenReport: (item: ProjectReport) => void;
   onOpenEntry: (entry: LogEntry) => void;
+  onOpenQueued: (record: BacklogRecord) => void;
 }) {
   const needs = waiting.length + reports.length;
   const title = (text: string) => withinProject(text, project.name);
@@ -1372,7 +1379,7 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
       })}</div>
       {queued.length > 0 && <div className="task-list" data-testid="project-queue">{queued.map((record) => {
         const detail = [KIND_NAMES[record.kind ?? ""] ?? record.kind, record.since && `filed ${shortDay(record.since, now)}`, record.hold_reason].filter(Boolean).join(" · ");
-        return <div className="task-row wide static" key={record.id}><span className="task-state tone-muted"><Clock3 size={16} /></span><span className="task-copy"><strong>{title(record.title)}</strong><small>{detail}</small></span><span className={`task-chip tone-${record.hold_reason ? "amber" : "muted"}`}>{record.hold_reason ? "waiting" : "queued"}</span></div>;
+        return <button className="task-row wide" key={record.id} data-id={record.id} onClick={() => onOpenQueued(record)}><span className="task-state tone-muted"><Clock3 size={16} /></span><span className="task-copy"><strong>{title(record.title)}</strong><small>{detail}</small></span><span className={`task-chip tone-${record.hold_reason ? "amber" : "muted"}`}>{record.hold_reason ? "waiting" : "queued"}</span><ChevronRight size={16} /></button>;
       })}</div>}
       {underway.length + queued.length === 0 && <EmptyState label="Nothing is underway or queued in this project." />}
     </DashboardSection>
@@ -1465,24 +1472,45 @@ const CLOSED_AS: Record<LogEntry["kind"], (entry: LogEntry) => string> = {
   closed: () => "Closed",
 };
 
+/**
+ * A task waiting its turn, read from its backlog row: what it is waiting on, what was asked, and any page it
+ * already carries. There is no worker to show; the row's state says whether one has picked it up since it opened.
+ */
+function QueuedDrawer({ record, project, now, artifacts, reviews, source, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
+  const body = bodyBlocks(record.body_lines, record.body_excerpt);
+  const kind = KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task";
+  const pickedUp = record.state === "in_flight";
+  const closed = record.state === "done";
+  const tone = !pickedUp && !closed && record.hold_reason ? "amber" : "muted";
+  const label = pickedUp ? "Underway" : closed ? "Closed" : record.hold_reason ? "Waiting" : "Queued";
+  const detail = pickedUp ? `${kind} · picked up by a worker` : closed ? `${kind} · closed` : record.hold_reason ?? `${kind} · waiting its turn`;
+  const notes = useTaskNotes(record.id);
+  const panel = useDrawerDismiss(onClose);
+  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="queued-drawer">
+    <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(record.title, project)}</h2><small className="drawer-id">{record.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
+    <div className="drawer-status"><span className={`task-state tone-${tone}`}><Clock3 size={16} /></span><div><strong className={`tone-${tone}`}>{label}</strong><span>{detail}</span></div></div>
+    <div className="drawer-scroll">
+      <TaskFiles taskId={record.id} notes={notes.notes} />
+      {body.length > 0 ? <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection> : <DrawerSection title="What was asked"><div className="brief-block"><p>The row says nothing more than its title.</p></div></DrawerSection>}
+      <TaskNotesThread read={notes} running={pickedUp} closed={closed} />
+      {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
+      <DrawerSection title="Timeline"><div className="timeline">
+        <div><span className="timeline-icon"><GitBranch size={15} /></span><span><strong>Filed</strong><small>{kind}</small></span><time>{record.since ? shortDay(record.since, now) : "Undated"}</time></div>
+      </div></DrawerSection>
+    </div>
+    <footer className="drawer-footer">From {source ?? "the fleet snapshot"}</footer>
+  </aside></div>;
+}
+
 /** A closed task, read from its backlog row: what was asked, what it left behind, and how it closed. */
 function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpenArtifact, onAskReport, onClose }: { entry: LogEntry; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; onClose: () => void }) {
   const look = LOG_LOOK[entry.kind];
   const record = entry.record;
   const call = entry.call;
-  const notes = (record.body_lines ?? []).map((line) => line.trim()).filter((line) => line && !BOOKKEEPING.test(line));
-  const ask = notes.length ? notes.join(" ") : record.body_excerpt && !BOOKKEEPING.test(record.body_excerpt) ? record.body_excerpt : null;
+  const body = bodyBlocks(record.body_lines, record.body_excerpt);
+  const notes = useTaskNotes(entry.id);
   const days = record.since && entry.date ? Math.round((Date.parse(entry.date) - Date.parse(record.since)) / DAY_MS) : null;
-  const panel = useRef<HTMLElement>(null);
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    const outside = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node)) close.current(); };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close.current(); };
-    document.addEventListener("pointerdown", outside, true);
-    window.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("pointerdown", outside, true); window.removeEventListener("keydown", escape); };
-  }, []);
+  const panel = useDrawerDismiss(onClose);
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="log-drawer">
     <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(entry.title, project)}</h2><small className="drawer-id">{entry.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status"><span className={`task-state tone-${look.tone}`}>{look.icon}</span><div><strong className={`tone-${look.tone}`}>{outcomeLine(entry, now)}</strong><span>{KIND_NAMES[record.kind ?? ""] ?? look.chip}{days !== null && days >= 0 && ` · ${tookLine(entry.kind, days)}`}</span></div></div>
@@ -1491,7 +1519,9 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpen
         {call.question && <p>{call.question}</p>}
         {call.answer && <dl><dt>Answer</dt><dd>{call.answer.label}</dd>{call.decided?.why && <><dt>Why</dt><dd>{call.decided.why}</dd></>}</dl>}
       </div></DrawerSection>}
-      {ask && <DrawerSection title={call ? "From the backlog" : "What was asked"}><div className="brief-block"><p>{ask}</p></div></DrawerSection>}
+      <TaskFiles taskId={entry.id} notes={notes.notes} />
+      {body.length > 0 && <DrawerSection title={call ? "From the backlog" : "What was asked"}><TaskBody blocks={body} /></DrawerSection>}
+      <TaskNotesThread read={notes} running={false} closed />
       {entry.pr && <DrawerSection title="PR"><div className="pr-block"><a href={entry.pr} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {entry.pr}</a></div></DrawerSection>}
       {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
       {entry.report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={entry.report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
@@ -1817,9 +1847,6 @@ function HostHealthBanner({ warning, onRestart }: { warning: HealthWarning; onRe
 
 const KIND_NAMES: Record<string, string> = { scout: "Scout", ship: "Ship", secondmate: "Second mate", captain: "Call" };
 
-/** Backlog body lines that are bookkeeping rather than anything a person wrote about the task. */
-const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:|Answer key:|Answered by:|Answered via:)/;
-
 /**
  * One task, led by what its worker is doing now. The snapshot carries the worker's latest note but not the
  * brief it was given, so the note is labelled as what it is. The worker's screen is kept, folded: its top is
@@ -1842,7 +1869,8 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
   const statusDetail = plainDetail(task.current_state.detail ?? "") || status.summary;
   const lastEvent = task.paths.status_log.last_event;
   const started = startedAt(task, record);
-  const backlogNotes = (record?.body_lines ?? []).map((line) => line.trim()).filter((line) => line && !BOOKKEEPING.test(line));
+  const body = bodyBlocks(record?.body_lines, record?.body_excerpt);
+  const notes = useTaskNotes(task.id);
   const report = task.paths.report.present ? task.paths.report.path : null;
   // A scout reports and never opens a PR, and a task that stays on this machine is landed by the captain.
   const prApplies = task.kind === "ship" && task.mode !== "local-only";
@@ -1853,23 +1881,15 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
     { key: "now", title: stateLabel(task.current_state.state), detail: statusDetail, time: formatTime(task.current_state.observed_at), icon: taskStatus(task.current_state.state, 15).icon },
   ];
   const captureText = capture?.text ?? `status: ${task.endpoint.status}\nbackend: ${task.backend}\nworker: ${task.endpoint.agent_alive}\nworktree: ${task.paths.worktree.present ? task.paths.worktree.path : "missing"}\nobserved: ${task.endpoint.observed_at}`;
-  // The drawer is not modal: a press anywhere outside it closes it and still does what it was aimed at, so
-  // a click on the sidebar or another task is never swallowed by the drawer going away.
-  const panel = useRef<HTMLElement>(null);
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    const outside = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node)) close.current(); };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close.current(); };
-    document.addEventListener("pointerdown", outside, true);
-    window.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("pointerdown", outside, true); window.removeEventListener("keydown", escape); };
-  }, []);
+  const panel = useDrawerDismiss(onClose);
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel}>
     <header className="drawer-header"><div><span>{projectName(task.project)}</span><h2 data-testid="drawer-title">{title}</h2><small className="drawer-id">{task.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{stateLabel(task.current_state.state)}</strong>{statusDetail && <span>{statusDetail}</span>}</div>{started?.exact && <time className="drawer-age" data-testid="drawer-age" title={`Started ${formatStart(started)}`}>{formatDuration(now - started.ms)}</time>}</div>
     <div className="drawer-scroll">
-      <DrawerSection title="Latest from the worker"><div className="brief-block"><p>{lastEvent.note || "The worker hasn't written a note yet."}</p>{backlogNotes.length > 0 && <dl><dt>Backlog</dt><dd>{backlogNotes.join(" ")}</dd></dl>}</div></DrawerSection>
+      <TaskFiles taskId={task.id} notes={notes.notes} />
+      {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}
+      <DrawerSection title="Latest from the worker"><div className="brief-block"><p>{lastEvent.note || "The worker hasn't written a note yet."}</p></div></DrawerSection>
+      <TaskNotesThread read={notes} running={LIVE_STATES.has(task.current_state.state)} closed={false} />
       {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed={record?.state === "done"} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
       {report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.key}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection>
@@ -2635,6 +2655,163 @@ function ReviewThreadCard({ thread, answer, rev, missing, picture, onFocus, onDi
     {missing && <small className="thread-missing">Not found in this revision.</small>}
     {thread.rev !== rev && <small className="thread-rev">Written on rev {thread.rev}</small>}
   </article>;
+}
+
+/** Whether a task file is a picture the drawer can show; the app's scheme serves nothing else of a task's files. */
+const PICTURE = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
+
+type NotesRead = { status: "loading" | "ready" | "unsupported" | "error"; notes: TaskNote[]; error?: string };
+
+/**
+ * The notes and files a task carries, read through firstmate's `fm-task-note.sh` when its details open, and the
+ * captain's own added through the same script. A firstmate without it reads as `unsupported` and shows nothing.
+ */
+function useTaskNotes(taskId: string) {
+  const [read, setRead] = useState<NotesRead>({ status: "loading", notes: [] });
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setRead((current) => ({ status: "loading", notes: current.notes }));
+    host.taskNotes(taskId).then(
+      (found) => { if (active) setRead(found ? { status: "ready", notes: found.notes } : { status: "unsupported", notes: [] }); },
+      (error) => { if (active) setRead({ status: "error", notes: [], error: String(error) }); },
+    );
+    return () => { active = false; };
+  }, [taskId, attempt]);
+  const add = async (body: string, sources: string[]) => {
+    const found = await host.taskNoteAdd(taskId, body, sources);
+    setRead({ status: "ready", notes: found.notes });
+  };
+  return { ...read, add, retry: () => setAttempt((count) => count + 1) };
+}
+
+/** Who added a note, in the captain's words. */
+function noteAuthor(by: string) {
+  if (by === "captain") return "You";
+  if (by === "firstmate") return "The first mate";
+  return by;
+}
+
+/** A picture shown whole over the window. Escape or a press anywhere closes it, and only it. */
+function PictureView({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopImmediatePropagation(); onClose(); } };
+    window.addEventListener("keydown", escape, true);
+    return () => window.removeEventListener("keydown", escape, true);
+  }, [onClose]);
+  return <div className="picture-view" role="dialog" aria-label={alt} data-testid="picture-view" onClick={onClose}><img src={src} alt={alt} /></div>;
+}
+
+/**
+ * Every file the task's notes carry, newest last: a picture as a thumbnail that opens whole, anything else by name.
+ * Each shows the path a worker is handed, since that is what the file is to whoever works the task.
+ */
+function TaskFiles({ taskId, notes }: { taskId: string; notes: TaskNote[] }) {
+  const [shown, setShown] = useState<TaskFile | null>(null);
+  const files = notes.flatMap((note) => note.files.map((file) => ({ file, note })));
+  if (files.length === 0) return null;
+  return <DrawerSection title={files.length === 1 ? "File" : `Files · ${files.length}`}>
+    <div className="task-files" data-testid="task-files">{files.map(({ file, note }) => {
+      const picture = PICTURE.test(file.name);
+      const detail = `${noteAuthor(note.by)} · ${formatWhen(note.at)} · ${formatBytes(file.bytes)}`;
+      return <div className="task-file" key={file.path} data-testid="task-file">
+        {picture
+          ? <button className="task-file-thumb" onClick={() => setShown(file)} title="Show the whole picture"><img src={host.taskFileUrl(taskId, file)} alt={file.original} /></button>
+          : <span className="task-file-thumb icon"><FileText size={18} /></span>}
+        <span className="task-file-copy"><strong title={file.original}>{file.original}</strong><small>{detail}</small><code title="The path a worker is handed">{file.path}</code></span>
+      </div>;
+    })}</div>
+    {shown && <PictureView src={host.taskFileUrl(taskId, shown)} alt={shown.original} onClose={() => setShown(null)} />}
+  </DrawerSection>;
+}
+
+/**
+ * What whoever works the task must know, beyond what was asked: evidence, a change of scope, a decision about the
+ * work. It is a record on the task, not a conversation, so it has no replies; `running` says the worker already has
+ * its instructions and is not told of a note added now.
+ */
+function TaskNotesThread({ read, running, closed }: { read: ReturnType<typeof useTaskNotes>; running: boolean; closed: boolean }) {
+  const [draft, setDraft] = useState("");
+  const [files, setFiles] = useState<PickedFile[]>([]);
+  const [problems, setProblems] = useState<string[]>([]);
+  const [busy, setBusy] = useState<"picking" | "adding" | null>(null);
+  if (read.status === "unsupported" || (closed && read.notes.length === 0 && read.status !== "error")) return null;
+  const pick = async () => {
+    setBusy("picking");
+    try {
+      const result = await host.pickFiles();
+      if (!result) return;
+      setFiles((current) => [...current.filter((kept) => !result.picked.some((file) => file.source === kept.source)), ...result.picked]);
+      setProblems(result.refused.map((item) => item.problem));
+    } catch (error) {
+      setProblems([`The files could not be added: ${String(error)}`]);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const add = async () => {
+    setBusy("adding");
+    setProblems([]);
+    try {
+      await read.add(draft, files.map((file) => file.source));
+      setDraft("");
+      setFiles([]);
+    } catch (error) {
+      setProblems([String(error).replace(/^Error: /, "")]);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return <DrawerSection title="Notes">
+    {read.status === "error" && <p className="notes-error" data-testid="notes-error">Couldn't read this task's notes. <button className="text-link" onClick={read.retry}>Try again</button></p>}
+    {read.notes.length > 0 && <div className="task-notes" data-testid="task-notes">{read.notes.map((note) => {
+      const body = bodyBlocks(note.body.split("\n"));
+      return <article className={`task-note ${note.scope ? "scope" : ""}`} key={note.id} data-testid="task-note">
+        <header><strong>{noteAuthor(note.by)}</strong>{note.scope && <span className="scope-tag">Changes scope</span>}<time>{formatWhen(note.at)}</time></header>
+        {body.length > 0 && <TaskBody blocks={body} />}
+        {note.files.length > 0 && <ul className="file-chips" aria-label="Files on this note">{note.files.map((file) => <li key={file.path} className="file-chip" title={file.path}><Paperclip size={13} /><span>{file.original}</span><small>{formatBytes(file.bytes)}</small></li>)}</ul>}
+      </article>;
+    })}</div>}
+    {!closed && read.status !== "error" && <div className="note-composer" data-testid="note-composer">
+      {files.length > 0 && <ul className="file-chips" aria-label="Files to add">{files.map((file) => <li key={file.source} className="file-chip" title={file.source}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => setFiles((current) => current.filter((kept) => kept.source !== file.source))} disabled={busy === "adding"} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}
+      {problems.length > 0 && <ul className="attach-problems" role="alert">{problems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={() => setProblems([])} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}
+      <textarea value={draft} readOnly={busy === "adding"} onChange={(event) => setDraft(event.target.value)} placeholder="Evidence, or a change to what this task must do" aria-label="Add a note to this task" />
+      <div>
+        <span className="note-hint">{running ? "Kept on the task. The worker already running isn't told; ask the first mate if it needs this now." : "Kept on the task, and handed to whoever works it."}</span>
+        <button className="attach-button" onClick={pick} disabled={busy !== null} title="Add files to this note">{busy === "picking" ? "Adding…" : "Files"}</button>
+        <button className="send-button" onClick={add} disabled={busy !== null || (!draft.trim() && files.length === 0)}>{busy === "adding" ? "Adding…" : "Add to task"}</button>
+      </div>
+    </div>}
+  </DrawerSection>;
+}
+
+/**
+ * A drawer is not modal: a press anywhere outside it closes it and still does what it was aimed at, so a click on
+ * the sidebar or another task is never swallowed by the drawer going away. Escape closes it too.
+ */
+function useDrawerDismiss(onClose: () => void) {
+  const panel = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node)) close.current(); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close.current(); };
+    document.addEventListener("pointerdown", outside, true);
+    window.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside, true); window.removeEventListener("keydown", escape); };
+  }, []);
+  return panel;
+}
+
+function BodySpans({ spans }: { spans: Span[] }) {
+  return <>{spans.map((span, index) => span.code ? <code key={index}>{span.text}</code> : <Fragment key={index}>{span.text}</Fragment>)}</>;
+}
+
+/** A backlog row's body as its filer wrote it: a paragraph per line, their lists, and the labels that lead them. */
+function TaskBody({ blocks }: { blocks: BodyBlock[] }) {
+  return <div className="brief-block task-body" data-testid="task-body">{blocks.map((block, index) => block.type === "list"
+    ? <ul key={index}>{block.items.map((item, at) => <li key={at}><BodySpans spans={item} /></li>)}</ul>
+    : <p key={index}>{block.label && <strong className="body-label">{block.label}</strong>}<BodySpans spans={block.spans} /></p>)}</div>;
 }
 
 function DrawerSection({ title, children }: { title: string; children: React.ReactNode }) {

@@ -125,6 +125,9 @@ check(!(await drawer.innerText()).includes("harness busy"), "the drawer never sa
 check((await drawer.locator(".drawer-status").innerText()).includes("Busy in its terminal."), "the drawer says what the worker is doing in plain words");
 check(await drawer.locator("h3", { hasText: "Instructions" }).count() === 0, "the drawer does not call a status note the instructions");
 check((await drawer.locator(".drawer-section", { hasText: "Latest from the worker" }).innerText()).includes("Revising the titles plan."), "the drawer shows the worker's latest note, labelled as such");
+const sections = await drawer.locator(".drawer-section > h3").allInnerTexts();
+check(sections[0] === "What was asked" && sections[1] === "Latest from the worker", `what was asked comes before the worker's note (${sections.slice(0, 2).join(", ")})`);
+check(await drawer.locator("[data-testid='task-body'] li").count() === 2, "the body keeps the filer's list");
 check(/^1 h 3\d min$/.test(await drawer.locator("[data-testid='drawer-age']").innerText()), "the drawer says how long the task has been going");
 check(await drawer.locator("h3", { hasText: /^PR$/ }).count() === 0, "a scout's drawer has no PR section");
 check(await drawer.locator(".worker-screen").count() === 0, "the worker's screen starts folded");
