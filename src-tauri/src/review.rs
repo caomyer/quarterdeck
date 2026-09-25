@@ -17,7 +17,11 @@
 //!                                                 one review, sent: the chat message it became
 //!                                                 and that message's first line, which is how
 //!                                                 the chat finds it again in a resumed conversation
-//!   {at, kind: "answer", decision, option, label, on_answer}  a choice on a call the page argues
+//!   {at, kind: "answer", decision, option, label, on_answer, note?, defer?}
+//!                                                 an answer to a call the page argues: one of its
+//!                                                 options, with anything the captain added, or,
+//!                                                 with no option, words alone or a date to be
+//!                                                 asked again on
 //!   {at, kind: "recorded", decision, result, detail}  what firstmate's intake did with it
 //!   {at, kind: "told", answers[], message}        recorded answers told to the first mate outside a review
 //!   {at, kind: "resolved" | "reopened", id}       the captain settles a thread
@@ -36,7 +40,9 @@
 //! the staged answers first, notes what it did with each, and then tells the
 //! first mate which answers are already recorded, so it does the follow-up
 //! rather than the recording. The app never closes a call itself, and an
-//! answer the intake skipped is shown as not recorded, never as sent.
+//! answer the intake skipped is shown as not recorded, never as sent. An answer
+//! in words has no option for the intake to take, so it goes in the review's
+//! message for the first mate to record, and is shown as sent once it has.
 //!
 //! Where a comment sits is the anchor `review-frame.js` describes: the words,
 //! which match of them it is, the element by what it is, the labels around it,
@@ -90,6 +96,17 @@ pub struct Proposal {
     scene_json: String,
     png_base64: String,
 }
+
+/// What the captain said in words with an answer: anything added to an option,
+/// or, with no option, the answer itself, and a date to be asked again on.
+#[derive(Deserialize, Default, Clone)]
+pub struct Words {
+    pub note: Option<String>,
+    pub defer: Option<String>,
+}
+
+/// An answer in words is kept whole in the log; this is only a guard against a runaway paste.
+const WORDS_LIMIT: usize = 4000;
 
 /// What the captain says about the page as a whole, and what it does to the task.
 const VERDICTS: [(&str, &str); 3] = [
@@ -195,13 +212,16 @@ pub fn view(path: &Path) -> Value {
                     continue;
                 }
                 answers.retain(|answer: &Value| answer["decision"] != decision.as_str());
-                // Choosing nothing takes the answer back off the tray.
-                if event.get("option").and_then(Value::as_str).is_some() {
+                // Choosing nothing and saying nothing takes the answer back off the tray.
+                let said = |key: &str| event.get(key).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty());
+                if event.get("option").and_then(Value::as_str).is_some() || said("note") || said("defer") {
                     answers.push(json!({
                         "decision": decision,
                         "option": event.get("option").cloned().unwrap_or(Value::Null),
                         "label": event.get("label").cloned().unwrap_or(Value::Null),
                         "on_answer": event.get("on_answer").cloned().unwrap_or(Value::Null),
+                        "note": event.get("note").cloned().unwrap_or(Value::Null),
+                        "defer": event.get("defer").cloned().unwrap_or(Value::Null),
                         "at": event.get("at").cloned().unwrap_or(Value::Null),
                         "sent_at": Value::Null,
                         "recorded": Value::Null,
@@ -276,6 +296,22 @@ pub fn view(path: &Path) -> Value {
 /// Chosen, and not through firstmate's intake yet.
 fn is_staged(answer: &Value) -> bool {
     answer["recorded"].is_null() && answer["sent_at"].is_null()
+}
+
+/// One of the call's options, which is what the intake takes; an answer in words has none.
+fn is_keyed(answer: &Value) -> bool {
+    answer["option"].is_string()
+}
+
+/// Staged, and one the intake can take.
+fn is_staged_keyed(answer: &Value) -> bool {
+    is_staged(answer) && is_keyed(answer)
+}
+
+/// What the next review carries: recorded answers the first mate has not been
+/// told of, and answers in words, which only the first mate can record.
+fn goes_with_review(answer: &Value) -> bool {
+    is_untold(answer) || (is_staged(answer) && !is_keyed(answer))
 }
 
 /// Recorded by the intake.
@@ -467,7 +503,9 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Va
     let block = review_block(revision, verdict, threads, log)?;
     let (header, rest) = block.split_once('\n').unwrap_or((block.as_str(), ""));
     let mut lines = vec![header.to_string(), author_line(revision, relay)];
-    lines.extend(recorded_lines(answers));
+    let (keyed, worded): (Vec<Value>, Vec<Value>) = answers.iter().cloned().partition(is_keyed);
+    lines.extend(recorded_lines(&keyed));
+    lines.extend(worded_lines(&worded));
     lines.push(rest.to_string());
     Ok(lines.join("\n"))
 }
@@ -485,8 +523,35 @@ fn recorded_lines(answers: &[Value]) -> Vec<String> {
         let label = answer.get("label").and_then(Value::as_str).unwrap_or_default();
         let said = if label.is_empty() { String::new() } else { format!(" (\"{}\")", shorten(label, 200)) };
         lines.push(format!("Recorded: {decision} = {key}{said}"));
+        if let Some(note) = answer["note"].as_str().map(str::trim).filter(|note| !note.is_empty()) {
+            lines.push(format!("  The captain added: {}", shorten(note, 1200)));
+        }
     }
     lines
+}
+
+/// The answers the captain gave in words. Nothing has recorded them, since the
+/// intake takes only an option's key, so the first mate records each as said.
+fn worded_lines(answers: &[Value]) -> Vec<String> {
+    if answers.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec!["Answered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh as the captain said it (a date to be asked again on is a hold until then), then do the follow-up:".to_string()];
+    for answer in answers {
+        let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
+        lines.push(format!("{decision}: {}", shorten(&answer_words(answer), 1200)));
+    }
+    lines
+}
+
+/// An answer in words as the captain gave it: not now, until a date, and whatever they wrote.
+fn answer_words(answer: &Value) -> String {
+    let note = answer["note"].as_str().map(str::trim).unwrap_or_default();
+    match answer["defer"].as_str() {
+        Some(date) if note.is_empty() => format!("Not now. Ask me again on {date}."),
+        Some(date) => format!("Not now. Ask me again on {date}. {note}"),
+        None => note.to_string(),
+    }
 }
 
 /// The revision a review is about, read from its own record.
@@ -766,7 +831,7 @@ fn answers_where(log: &Path, keep: fn(&Value) -> bool) -> Vec<Value> {
 /// The answers chosen in this review that have not been through the intake yet,
 /// as the intake takes them.
 pub fn staged(log: &Path) -> Vec<Keyed> {
-    answers_where(log, is_staged)
+    answers_where(log, is_staged_keyed)
         .iter()
         .map(|answer| Keyed {
             call: answer["decision"].as_str().unwrap_or_default().to_string(),
@@ -788,9 +853,10 @@ pub fn note_outcomes(log: &Path, answers: &[Keyed], outcomes: &[Outcome]) -> Res
     Ok(view(log))
 }
 
-/// The one message a review sends, with the draft comments and recorded answers
-/// it is made of, so what goes out and what is noted as sent cannot drift apart.
-/// Composed after the intake has run: only answers it recorded are in it.
+/// The one message a review sends, with the draft comments and answers it is
+/// made of, so what goes out and what is noted as sent cannot drift apart.
+/// Composed after the intake has run: of the options, only those it recorded
+/// are in it, and every answer in words is.
 pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>, Vec<Value>), String> {
     let log = dir.join("review.jsonl");
     let current = view(&log);
@@ -798,7 +864,7 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
         .as_array()
         .map(|threads| threads.iter().filter(|thread| thread["sent_at"].is_null()).cloned().collect())
         .unwrap_or_default();
-    let answers = answers_where(&log, is_untold);
+    let answers = answers_where(&log, goes_with_review);
     let revision = revision_record(dir, rev)?;
     // A crewmate's page gets the review through firstmate, as a file, so nothing about where a comment sits is retold.
     let relay = match crew_author(&revision) {
@@ -928,7 +994,7 @@ pub async fn answer_one(home: &Path, log: Option<&Path>, keyed: &Keyed) -> Resul
     let outcomes = match log {
         Some(log) => {
             let (log_at, staged) = (log.to_path_buf(), keyed.clone());
-            blocking(move || stage_answer(&log_at, &staged.call, Some(&staged.key), Some(&staged.label), Some(&staged.on_answer))).await?;
+            blocking(move || stage_answer(&log_at, &staged.call, Some(&staged.key), Some(&staged.label), Some(&staged.on_answer), &Words::default())).await?;
             record_staged(home, log, Some(&keyed.call)).await?
         }
         None => calls::record(home, std::slice::from_ref(keyed)).await.iter().map(|outcome| outcome.to_json(&keyed.call)).collect(),
@@ -1063,7 +1129,7 @@ pub fn summary(data: &Path) -> Value {
                                 decisions
                                     .iter()
                                     .filter_map(|decision| labels.iter().find(|answer| answer["decision"] == *decision))
-                                    .map(|answer| json!({"decision": answer["decision"], "option": answer["option"], "label": answer["label"]}))
+                                    .map(|answer| json!({"decision": answer["decision"], "option": answer["option"], "label": answer["label"], "note": answer["note"], "defer": answer["defer"]}))
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -1110,15 +1176,31 @@ pub async fn review_summary(app: AppHandle) -> Result<Value, String> {
     blocking(move || Ok(summary(&data_dir(&app)?))).await
 }
 
-/// Stages the captain's choice on a call this page argues, or takes it back
-/// when `option` is absent. `on_answer` is what the call declares, handed to
-/// the intake as it is. Nothing is recorded until the review is sent; once the
-/// intake has recorded it, it is on the record, and changing it is a new
-/// conversation with the first mate, not an edit. An answer the intake skipped
-/// can be chosen again.
-pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Option<&str>, on_answer: Option<&str>) -> Result<Value, String> {
+/// Stages the captain's answer to a call this page argues: one of its options,
+/// with anything they added in `words.note`, or, with no option, the note alone
+/// or a date to be asked again on. Nothing at all takes the answer back.
+/// `on_answer` is what the call declares, handed to the intake as it is.
+/// Nothing is recorded until the review is sent; once the intake has recorded
+/// it, or an answer in words has gone to the first mate, it is on the record,
+/// and changing it is a new conversation with the first mate, not an edit. An
+/// answer the intake skipped can be chosen again.
+pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Option<&str>, on_answer: Option<&str>, words: &Words) -> Result<Value, String> {
     if !artifact::valid_task_id(decision) {
         return Err("that is not a task".to_string());
+    }
+    let note = words.note.as_deref().map(str::trim).filter(|note| !note.is_empty());
+    if note.is_some_and(|note| note.chars().count() > WORDS_LIMIT) {
+        return Err(format!("an answer in words is kept under {WORDS_LIMIT} characters"));
+    }
+    let defer = words.defer.as_deref().filter(|date| !date.is_empty());
+    if let Some(date) = defer {
+        if option.is_some() {
+            return Err("not now is an answer of its own, not one added to an option".to_string());
+        }
+        let plain = date.len() == 10 && date.chars().enumerate().all(|(at, c)| if at == 4 || at == 7 { c == '-' } else { c.is_ascii_digit() });
+        if !plain {
+            return Err(format!("'{date}' is not a date"));
+        }
     }
     let already = view(log)["answers"]
         .as_array()
@@ -1126,14 +1208,19 @@ pub fn stage_answer(log: &Path, decision: &str, option: Option<&str>, label: Opt
     if already {
         return Err("that answer is already on the record; tell the first mate in chat if you have changed your mind".to_string());
     }
-    append(
-        log,
-        &json!({"at": now_ms(), "kind": "answer", "decision": decision, "option": option, "label": label, "on_answer": on_answer}),
-    )?;
+    let mut event = json!({"at": now_ms(), "kind": "answer", "decision": decision, "option": option, "label": label, "on_answer": on_answer});
+    if let Some(note) = note {
+        event["note"] = json!(note);
+    }
+    if let Some(date) = defer {
+        event["defer"] = json!(date);
+    }
+    append(log, &event)?;
     Ok(view(log))
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn review_answer(
     app: AppHandle,
     writes: TauriState<'_, Writes>,
@@ -1142,9 +1229,11 @@ pub async fn review_answer(
     option: Option<String>,
     label: Option<String>,
     on_answer: Option<String>,
+    words: Option<Words>,
 ) -> Result<Value, String> {
     let _one_writer = writes.0.lock().await;
-    blocking(move || stage_answer(&log_path(&app, &page)?, &decision, option.as_deref(), label.as_deref(), on_answer.as_deref())).await
+    let words = words.unwrap_or_default();
+    blocking(move || stage_answer(&log_path(&app, &page)?, &decision, option.as_deref(), label.as_deref(), on_answer.as_deref(), &words)).await
 }
 
 /// Files a proposed diagram beside the review and opens a thread for it. The
@@ -1373,8 +1462,8 @@ mod tests {
         assert_eq!(current["answers"][0]["sent_at"], 5);
 
         // Once sent it is on the record: neither taking it back nor choosing again changes it.
-        assert!(stage_answer(&path, "res-model", None, None, None).is_err());
-        assert!(stage_answer(&path, "res-model", Some("eager"), Some("Keep downloading eagerly"), Some("done")).is_err());
+        assert!(stage_answer(&path, "res-model", None, None, None, &Words::default()).is_err());
+        assert!(stage_answer(&path, "res-model", Some("eager"), Some("Keep downloading eagerly"), Some("done"), &Words::default()).is_err());
         append(&path, &json!({"at": 6, "kind": "answer", "decision": "res-model", "option": Value::Null})).unwrap();
         let current = view(&path);
         assert_eq!(current["answers"][0]["option"], "prompt");
@@ -1535,8 +1624,8 @@ mod tests {
         let dir = home.join("data/.artifacts/board");
         revision_on_disk(&dir);
         let log = dir.join("review.jsonl");
-        stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done")).unwrap();
-        stage_answer(&log, "res-model-cellular", Some("pause"), Some("Pause until Wi-Fi"), Some("release")).unwrap();
+        stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done"), &Words::default()).unwrap();
+        stage_answer(&log, "res-model-cellular", Some("pause"), Some("Pause until Wi-Fi"), Some("release"), &Words::default()).unwrap();
         assert_eq!(view(&log)["staged_answers"], 2);
 
         let outcomes = record_staged(&home, &log, None).await.unwrap();
@@ -1564,10 +1653,54 @@ mod tests {
         assert_eq!(summary(&home.join("data"))["chat/board"]["answered"], json!(["res-model-download"]));
 
         // A recorded answer is on the record; a skipped one can be chosen again, and goes to the intake again.
-        assert!(stage_answer(&log, "res-model-download", Some("prompt"), Some("Ask"), Some("done")).is_err());
-        stage_answer(&log, "res-model-cellular", Some("finish"), Some("Finish on cellular"), Some("done")).unwrap();
+        assert!(stage_answer(&log, "res-model-download", Some("prompt"), Some("Ask"), Some("done"), &Words::default()).is_err());
+        stage_answer(&log, "res-model-cellular", Some("finish"), Some("Finish on cellular"), Some("done"), &Words::default()).unwrap();
         assert_eq!(staged(&log).len(), 1);
         assert_eq!(staged(&log)[0].key, "finish");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn an_answer_in_words_goes_with_the_review_for_the_first_mate_to_record() {
+        let home = home_with_intake("intake-words", "closed: res-model-download recorded; closed");
+        let dir = home.join("data/.artifacts/board");
+        revision_on_disk(&dir);
+        let log = dir.join("review.jsonl");
+        let words = |note: Option<&str>, defer: Option<&str>| Words { note: note.map(str::to_string), defer: defer.map(str::to_string) };
+        // An option with something added, words alone, and not now until a date: three ways to answer a call.
+        stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done"), &words(Some(" Say so in Settings. "), None)).unwrap();
+        stage_answer(&log, "res-model-cellular", None, None, Some("done"), &words(Some("Pause, but tell the user why."), None)).unwrap();
+        stage_answer(&log, "res-transcripts-source", None, None, Some("release"), &words(None, Some("2026-10-03"))).unwrap();
+        let current = view(&log);
+        assert_eq!(current["staged_answers"], 3);
+        assert_eq!(current["answers"][0]["note"], "Say so in Settings.");
+        assert_eq!(current["answers"][2]["defer"], "2026-10-03");
+        // Not now is its own answer, a date is a date, and nothing said is nothing staged.
+        assert!(stage_answer(&log, "res-other", Some("x"), Some("X"), None, &words(None, Some("2026-10-03"))).is_err());
+        assert!(stage_answer(&log, "res-other", None, None, None, &words(None, Some("next week"))).is_err());
+        stage_answer(&log, "res-other", None, None, None, &words(Some("   "), None)).unwrap();
+        assert_eq!(view(&log)["staged_answers"], 3);
+
+        // Only the option goes to the intake: it takes keys, and words have none.
+        assert_eq!(staged(&log).iter().map(|answer| answer.call.as_str()).collect::<Vec<_>>(), ["res-model-download"]);
+        record_staged(&home, &log, None).await.unwrap();
+        assert_eq!(std::fs::read_to_string(home.join("fed")).unwrap(), "res-model-download\twifi-only\tWi-Fi only\tdone\n");
+
+        let (text, threads, carried) = draft(&dir, 1, "approve").unwrap();
+        assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only\")\n  The captain added: Say so in Settings."), "{text}");
+        assert!(text.contains("\nAnswered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh"), "{text}");
+        assert!(text.contains("\nres-model-cellular: Pause, but tell the user why."), "{text}");
+        assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-10-03."), "{text}");
+        assert_eq!(carried.len(), 3);
+        record_sent(&log, "approve", 1, &threads, &carried, "out-1", &text).unwrap();
+
+        // Sent, an answer in words is on the record like a recorded one: the page and Bearings both say it went.
+        let current = view(&log);
+        assert_eq!(current["staged_answers"], 0);
+        assert!(stage_answer(&log, "res-model-cellular", None, None, None, &words(Some("Changed my mind"), None)).is_err());
+        let page = &summary(&home.join("data"))["chat/board"];
+        assert_eq!(page["answered"], json!(["res-model-download", "res-model-cellular", "res-transcripts-source"]));
+        assert_eq!(page["sent"][0]["answers"][1], json!({"decision": "res-model-cellular", "option": null, "label": null, "note": "Pause, but tell the user why.", "defer": null}));
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -1577,7 +1710,7 @@ mod tests {
         let dir = home.join("data/.artifacts/board");
         let log = dir.join("review.jsonl");
         // Something else staged on the same page stays staged for its review.
-        stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done")).unwrap();
+        stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done"), &Words::default()).unwrap();
         let keyed = Keyed { call: "res-transcripts-source".into(), key: "publisher-first".into(), label: "Publisher first".into(), on_answer: "release".into() };
         let outcome = answer_one(&home, Some(&log), &keyed).await.unwrap();
         assert_eq!(outcome["result"], "closed");
@@ -1841,7 +1974,7 @@ mod tests {
     fn the_summary_gives_the_chat_each_review_as_it_went() {
         let (dir, log) = crew_page("chat-card", "under pace: lasts past the reset");
         add_comment(&log, 1, "what does underpace mean?", Some(t2_anchor()), None, picture(data_url("jpeg", &tiny_jpeg(20, 20)))).unwrap();
-        stage_answer(&log, "qd-usage-design-1", Some("strip"), Some("One quiet strip in the sidebar footer"), Some("release")).unwrap();
+        stage_answer(&log, "qd-usage-design-1", Some("strip"), Some("One quiet strip in the sidebar footer"), Some("release"), &Words::default()).unwrap();
         append(&log, &json!({"at": 2, "kind": "recorded", "decision": "qd-usage-design-1", "result": "closed", "detail": ""})).unwrap();
         let (text, threads, told) = draft(&dir, 1, "changes").unwrap();
         record_sent(&log, "changes", 1, &threads, &told, "m1790147648486-20", &text).unwrap();
@@ -1851,7 +1984,7 @@ mod tests {
         assert_eq!(sent["message"], "m1790147648486-20");
         assert_eq!(sent["header"], "Captain's review of \"Usage panel: context and plan limits\" (task qd-usage-design-1, rev 1): Requests changes.");
         assert_eq!(sent["threads"], json!(["t1"]));
-        assert_eq!(sent["answers"], json!([{"decision": "qd-usage-design-1", "option": "strip", "label": "One quiet strip in the sidebar footer"}]));
+        assert_eq!(sent["answers"], json!([{"decision": "qd-usage-design-1", "option": "strip", "label": "One quiet strip in the sidebar footer", "note": null, "defer": null}]));
         assert_eq!(page["threads"][0], json!({"id": "t1", "rev": 1, "state": "open", "quote": "under pace: lasts past the reset", "said": "what does underpace mean?", "picture": true}));
         let _ = std::fs::remove_dir_all(data);
     }

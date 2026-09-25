@@ -9,6 +9,7 @@ import { mockUsage } from "./mock-usage";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
 import type {
+  AnswerWords,
   AppUpdate,
   Artifact,
   ArtifactRef,
@@ -311,9 +312,10 @@ function mockArtifacts(home: string): MockHome {
       evidence: ["page:chat/model-download"], raised_at: at(30), updated_at: at(30),
     }),
     // The same page's second call, whose options changed after the page was presented.
+    // `?options-missing`: its options are not recorded, so it can only be answered in words.
     call("res-model-cellular", "Resonance: what happens when a download leaves Wi-Fi?", {
       question: "If the phone leaves Wi-Fi halfway through the download, what happens?",
-      options: [option("pause", "Pause, and carry on when Wi-Fi is back", true), option("finish", "Finish on cellular if under 20 MB are left")],
+      options: reviewFlag("options-missing") ? [] : [option("pause", "Pause, and carry on when Wi-Fi is back", true), option("finish", "Finish on cellular if under 20 MB are left")],
       evidence: ["page:chat/model-download"], raised_at: at(20), updated_at: at(0.5),
     }),
     // Raised from a scout's work before its report page existed: the page comes through the origin.
@@ -414,11 +416,20 @@ function locked(answer: ReviewView["answers"][number]) {
 }
 
 /** The lines the app's composer writes for answers the intake recorded. */
-function recordedLines(answers: { decision: string; option: string; label: string }[]) {
+function recordedLines(answers: { decision: string; option: string | null; label: string | null; note?: string | null }[]) {
   if (!answers.length) return [];
   return [
     "Answers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:",
-    ...answers.map((answer) => `Recorded: ${answer.decision} = ${answer.option} ("${answer.label}")`),
+    ...answers.flatMap((answer) => [`Recorded: ${answer.decision} = ${answer.option} ("${answer.label}")`, ...(answer.note ? [`  The captain added: ${answer.note}`] : [])]),
+  ];
+}
+
+/** The lines the app's composer writes for answers in words, which only the first mate can record. */
+function wordedLines(answers: ReviewView["answers"]) {
+  if (!answers.length) return [];
+  return [
+    "Answered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh as the captain said it (a date to be asked again on is a hold until then), then do the follow-up:",
+    ...answers.map((answer) => `${answer.decision}: ${[answer.defer ? `Not now. Ask me again on ${answer.defer}.` : "", answer.note ?? ""].filter(Boolean).join(" ")}`),
   ];
 }
 
@@ -721,14 +732,20 @@ export class MockHostAdapter implements HostAdapter {
     }]);
   }
 
-  async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null) {
+  async reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords) {
     const current = this.review(ref);
+    const note = words?.note?.trim() || null;
+    const defer = words?.defer || null;
+    // As in the app: not now is an answer of its own, and a date is a date.
+    if (defer && option) throw new Error("not now is an answer of its own, not one added to an option");
+    if (defer && !/^\d{4}-\d{2}-\d{2}$/.test(defer)) throw new Error(`'${defer}' is not a date`);
     // As in the app: a recorded answer is on the record and stays as it went; a skipped one can be chosen again.
     if (current.answers.some((answer) => answer.decision === decision && locked(answer))) {
       throw new Error("that answer is already on the record; tell the first mate in chat if you have changed your mind");
     }
     const kept = current.answers.filter((answer) => answer.decision !== decision);
-    const answers = option ? [...kept, { decision, option, label: label ?? option, on_answer: onAnswer ?? null, at: Date.now(), sent_at: null, recorded: null }] : kept;
+    // Choosing nothing and saying nothing takes the answer back off the tray.
+    const answers = option || note || defer ? [...kept, { decision, option: option ?? null, label: option ? label ?? option : null, on_answer: onAnswer ?? null, note, defer, at: Date.now(), sent_at: null, recorded: null }] : kept;
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers });
     return this.settle(ref, current.threads);
   }
@@ -736,8 +753,9 @@ export class MockHostAdapter implements HostAdapter {
   /** Runs the intake for the review's staged answers (or only `only`), and notes what it did with each. */
   private recordStaged(ref: ArtifactRef, only?: string) {
     const current = this.review(ref);
-    const staged = current.answers.filter((answer) => answer.sent_at === null && !answer.recorded && (!only || answer.decision === only));
-    const outcomes = this.intake(staged.map((answer) => ({ call: answer.decision, key: answer.option, label: answer.label })));
+    // As in the app: the intake takes only an option's key, so an answer in words never goes to it.
+    const staged = current.answers.filter((answer) => answer.option !== null && answer.sent_at === null && !answer.recorded && (!only || answer.decision === only));
+    const outcomes = this.intake(staged.map((answer) => ({ call: answer.decision, key: answer.option!, label: answer.label ?? answer.option! })));
     const at = Date.now();
     const answers = current.answers.map((answer) => {
       const outcome = staged.includes(answer) ? outcomes.find((item) => item.call === answer.decision) : undefined;
@@ -798,7 +816,7 @@ export class MockHostAdapter implements HostAdapter {
           ...item,
           answers: (item.answers ?? []).flatMap((decision) => {
             const answer = review.answers.find((candidate) => candidate.decision === (typeof decision === "string" ? decision : decision.decision));
-            return answer ? [{ decision: answer.decision, option: answer.option, label: answer.label }] : [];
+            return answer ? [{ decision: answer.decision, option: answer.option, label: answer.label, note: answer.note ?? null, defer: answer.defer ?? null }] : [];
           }),
         })),
         threads: review.threads.filter((thread) => thread.sent_at !== null).map((thread) => ({
@@ -821,10 +839,13 @@ export class MockHostAdapter implements HostAdapter {
     const current = this.review(ref);
     const draft = current.threads.filter((thread) => thread.sent_at === null);
     const told = current.answers.filter((answer) => answer.sent_at === null && answer.recorded?.result === "closed");
+    // Answers in words go with every review until one carries them; the first mate records them.
+    const worded = current.answers.filter((answer) => answer.option === null && answer.sent_at === null && !answer.recorded);
     const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
     const text = [
       `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
       ...recordedLines(told),
+      ...wordedLines(worded),
       // The same shape the app's own composer writes, so the browser review sees what a first mate would.
       ...draft.flatMap((thread) => {
         const anchor = thread.anchor as { quote?: string; scene?: string; scene_file?: string; picture?: string | null } | null;
@@ -838,11 +859,12 @@ export class MockHostAdapter implements HostAdapter {
     ].join("\n");
     const message = await this.send(text);
     const at = Date.now();
-    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => told.includes(answer) ? { ...answer, sent_at: at } : answer) });
+    const carried = [...told, ...worded];
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => carried.includes(answer) ? { ...answer, sent_at: at } : answer) });
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
-      [...current.sent, { at, verdict, rev, message, header: text.split("\n")[0], threads: draft.map((thread) => thread.id), answers: told.map((answer) => answer.decision) }],
+      [...current.sent, { at, verdict, rev, message, header: text.split("\n")[0], threads: draft.map((thread) => thread.id), answers: carried.map((answer) => answer.decision) }],
     );
     return { message, text, review, outcomes };
   }

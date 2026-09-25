@@ -139,3 +139,16 @@ export function linkLabel(href: string) {
     return href;
   }
 }
+
+/** A day to be asked again on, as the captain says it: Oct 3. It is the calendar day picked, wherever the Mac is. */
+export function askAgainDay(date: string) {
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${date}T12:00:00`));
+}
+
+/** An answer in words, as every surface says it: not now until a day, what the captain wrote, or both. */
+export function answerInWords(defer: string | null | undefined, note: string) {
+  const words = note.trim();
+  if (!defer) return words;
+  const later = `Not now. Ask me again on ${askAgainDay(defer)}.`;
+  return words ? `${later} ${words}` : later;
+}

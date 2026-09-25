@@ -43,12 +43,12 @@ import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type ReviewVerdict, type ReviewView, type TaskFile, type TaskNote } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 import { RoutingSettings } from "./Routing";
@@ -631,7 +631,7 @@ export function App() {
               revision={shownRevision}
               url={host.artifactUrl(shownRevision)}
               review={review}
-              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records, calls, (review?.answers ?? []).filter((answer) => answer.sent_at === null && answer.option).map((answer) => answer.decision))}
+              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records, calls, (review?.answers ?? []).filter((answer) => answer.sent_at === null))}
               sendReady={bridge.sendReady}
               runtime={runtime.state}
               onRevision={(rev) => showArtifact(shownArtifact, rev)}
@@ -643,7 +643,7 @@ export function App() {
                 return sent.warning;
               })}
               calls={callsArguedBy(calls, shownArtifact)}
-              onAnswer={(call, option, label) => host.reviewAnswer(artifactRef!, call.id, option, label, call.on_answer).then(setReview)}
+              onAnswer={(call, answer) => host.reviewAnswer(artifactRef!, call.id, answer.option?.key, answer.option?.label, call.on_answer, answer.words).then(setReview)}
               onScene={(place, proposal) => host.reviewScene(artifactRef!, shownRevision.rev, place.file, place.label, place.path, proposal.summary, proposal.scene, proposal.png).then(setReview)}
               onSettle={(thread, resolved) => host.reviewSettle(artifactRef!, thread, resolved).then(setReview)}
               onSeen={(rev) => host.reviewSeen(artifactRef!, rev).then(setReview)}
@@ -1089,9 +1089,41 @@ function NotRecorded({ note }: { note: AnswerNote }) {
 }
 
 /**
- * One call waiting on the captain. A call something argues leads with reading that argument, and can be answered
- * right here too. A call nothing argues offers its options inline. An answer with a key goes through firstmate's
- * intake and the card says what it did; anything else is words to the first mate, tracked like any message.
+ * The ways to answer a call, the same on every surface that answers one: one of its options, not now until a day, and
+ * words, as the answer itself or added to an option. Linking a call to the page that argues it never takes one away.
+ * What choosing does, recording at once or going with a review, is the surface's; what the captain can say is not.
+ */
+function CallAnswerFields({ call, layout, picked, deferring, deferDate, note, adding, disabled, onPick, onDefer, onDate, onNote }: {
+  call: Call;
+  /** Chips across a card, or one choice per row in the review rail. */
+  layout: "chips" | "list";
+  picked: string | null;
+  deferring: boolean;
+  deferDate: string;
+  note: string;
+  /** Whether the words go with a chosen option rather than being the answer. */
+  adding: boolean;
+  disabled: boolean;
+  onPick: (option: OptionChoice) => void;
+  onDefer: () => void;
+  onDate: (date: string) => void;
+  onNote: (note: string) => void;
+}) {
+  return <div className="call-answer-fields" data-testid="answer-fields">
+    <div className={layout === "list" ? "decision-choices" : "suggestion-chips"}>
+      {call.options.map((option) => <button key={option.key} className={picked === option.key ? "selected" : ""} aria-pressed={picked === option.key} disabled={disabled} onClick={() => onPick(option)}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}
+      <button className={deferring ? "selected" : ""} aria-pressed={deferring} disabled={disabled} onClick={onDefer}><span>Not now</span></button>
+    </div>
+    {deferring && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} min={localDay(new Date().toISOString()) ?? undefined} disabled={disabled} onChange={(event) => onDate(event.target.value)} /></label>}
+    <label className="reply-field"><span>{adding ? "Anything to add for the first mate?" : call.options.length ? "Or answer in words" : "Answer in words"}</span><textarea value={note} disabled={disabled} onChange={(event) => onNote(event.target.value)} /></label>
+  </div>;
+}
+
+/**
+ * One call waiting on the captain, as one card whether or not something argues it, answered the same ways either
+ * way. A call something argues leads with reading that argument and keeps its answer folded under Answer now; a call
+ * nothing argues has only the answer to offer, so it is open. An answer with a key goes through firstmate's intake
+ * and the card says what it did; anything else is words to the first mate, tracked like any message.
  */
 function DecisionCard({ call, project, now, argument, seenArgument, answered, answeredIn, state, answerText, runtime, onSend, onAnswer, onStart, onReadArgument, onOpenPage }: {
   call: Call;
@@ -1115,7 +1147,8 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
   const [note, setNote] = useState("");
   const [dateOpen, setDateOpen] = useState(false);
   const [deferDate, setDeferDate] = useState("");
-  const [quickOpen, setQuickOpen] = useState(false);
+  // Only an argued call folds its answer away, so the argument is read first.
+  const [answering, setAnswering] = useState(false);
   const [recording, setRecording] = useState<string | null>(null);
   // Options with a key go through the intake; that needs the call to say how an answer closes it.
   const keyed = call.options.length > 0 && Boolean(call.on_answer);
@@ -1134,10 +1167,11 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
     }
   }
 
-  const words = deferDate
-    ? `not now. Ask me again on ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${deferDate}T12:00:00`))}.`
+  // Not now says nothing until it has a day to be asked again on.
+  const words = dateOpen
+    ? deferDate ? answerInWords(deferDate, note) : ""
     : [selection && !keyed ? selection.label : "", note.trim()].filter(Boolean).join(". ");
-  const recordPick = keyed && selection && !deferDate ? selection : null;
+  const recordPick = keyed && selection && !dateOpen ? selection : null;
   const preview = words && !recordPick ? `On the ${name}: ${words.replace(/[.]*$/, ".")}` : "…";
 
   if (state) {
@@ -1175,46 +1209,46 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
     // Answered in a review; the card goes once the snapshot has the call closed.
     return <article className="decision-card read call-tone-green" data-call-id={call.id} data-answered-in-review="true"><div className="decision-body">{meta}<h3 data-testid="decision-title">{heading}</h3><div className="call-state tone-green"><Check size={16} /><span><strong>Answered in your review of “{answeredIn}”</strong><small>This leaves the list once firstmate has closed it.</small></span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</div></div></article>;
   }
-  if (argument && onReadArgument) {
-    // Something argues this one, so reading it comes first; answering here is for a captain who already knows.
-    return <article className="decision-card" data-call-id={call.id} data-argued="true">
-      <div className="decision-body">
-        {meta}
-        <h3 data-testid="decision-title">{heading}</h3>
-        {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
-        <p className="call-argued" data-testid="argued-by">Argued by <strong>{argument.title}</strong></p>
-        {failed && <NotRecorded note={failed} />}
-      </div>
-      <div className="decision-actions">
-        <span>{optionSummary(call)}</span>
-        <div className="report-actions">
-          {keyed && <button className="quiet" aria-expanded={quickOpen} onClick={() => setQuickOpen((open) => !open)}>Answer now</button>}
-          <button onClick={onReadArgument}>Read the argument</button>
-        </div>
-      </div>
-      {quickOpen && keyed && <div className="call-quick" data-testid="answer-now">
-        <p>Choosing an option records it as your answer right away. To change it afterwards, tell the first mate.</p>
-        {seenArgument === false && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argument.title}” yet.</p>}
-        <div className="suggestion-chips">{call.options.map((option) => <button key={option.key} className={recording === option.key ? "selected" : ""} disabled={recording !== null} onClick={() => void record(option)}><span>{recording === option.key ? `Recording “${option.label}”…` : option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}</div>
-      </div>}
-    </article>;
-  }
+  const argued = argument && onReadArgument ? argument : null;
+  const folded = argued !== null && !answering;
   const buttonLabel = recordPick ? (recording ? "Recording…" : "Record answer") : "Send";
-  const hint = recordPick ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}` : preview !== "…" ? `→ sends: ${preview}` : "";
-  return <article className="decision-card" data-call-id={call.id} data-inline="true">
+  const hint = recordPick ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}` : preview !== "…" ? `→ sends: ${preview}` : dateOpen ? "Pick the day to be asked again" : "";
+  const submit = <button disabled={recording !== null || (!recordPick && preview === "…")} onClick={() => recordPick ? void record(recordPick, note.trim() || undefined) : onSend(preview)}>{buttonLabel}</button>;
+  return <article className="decision-card" data-call-id={call.id} data-argued={argued ? "true" : undefined} data-inline={argued ? undefined : "true"}>
     <div className="decision-body">
       {meta}
       <h3 data-testid="decision-title">{heading}</h3>
       {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
+      {argued && <p className="call-argued" data-testid="argued-by">Argued by <strong>{argued.title}</strong></p>}
       {failed && <NotRecorded note={failed} />}
-      <div className="suggestion-chips">
-        {call.options.map((option) => <button className={selection?.key === option.key ? "selected" : ""} key={option.key} disabled={recording !== null} onClick={() => { setSelection(option); setDateOpen(false); setDeferDate(""); }}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}
-        <button className={dateOpen ? "selected" : ""} disabled={recording !== null} onClick={() => { setDateOpen(true); setSelection(null); }}>Not now</button>
-      </div>
-      {dateOpen && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} onChange={(event) => setDeferDate(event.target.value)} /></label>}
-      <label className="reply-field"><span>{recordPick ? "Anything to add for the first mate?" : call.options.length ? "Or answer in words" : "Answer in words"}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} /></label>
+      {!folded && <>
+        {argued && seenArgument === false && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argued.title}” yet.</p>}
+        <CallAnswerFields
+          call={call}
+          layout="chips"
+          picked={selection?.key ?? null}
+          deferring={dateOpen}
+          deferDate={deferDate}
+          note={note}
+          adding={recordPick !== null || dateOpen}
+          disabled={recording !== null}
+          onPick={(option) => { setSelection(option); setDateOpen(false); setDeferDate(""); }}
+          onDefer={() => { setDateOpen(true); setSelection(null); }}
+          onDate={setDeferDate}
+          onNote={setNote}
+        />
+      </>}
     </div>
-    <div className="decision-actions"><span>{hint}</span><button disabled={recording !== null || (!recordPick && preview === "…")} onClick={() => recordPick ? void record(recordPick, note.trim() || undefined) : onSend(preview)}>{buttonLabel}</button></div>
+    <div className="decision-actions">
+      <span>{folded ? optionSummary(call) : hint}</span>
+      {argued
+        ? <div className="report-actions">
+            <button className="quiet" aria-expanded={answering} onClick={() => setAnswering((open) => !open)}>Answer now</button>
+            <button className={folded ? "" : "quiet"} onClick={onReadArgument}>Read the argument</button>
+            {!folded && submit}
+          </div>
+        : submit}
+    </div>
   </article>;
 }
 
@@ -2144,7 +2178,11 @@ function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettl
         </li>;
       })}
     </ul>}
-    {review.answers.length > 0 && <ul className="file-chips review-card-answers">{review.answers.map((answer) => <li key={answer.decision} className="file-chip" title={answer.label}><Check size={13} /><span>{answer.label || answer.option}</span><small>recorded</small></li>)}</ul>}
+    {review.answers.length > 0 && <ul className="file-chips review-card-answers">{review.answers.map((answer) => {
+      // An option went through the intake; words went in the message, for the first mate to record.
+      const said = answer.option === null ? answerInWords(answer.defer, answer.note ?? "") : answer.label || answer.option;
+      return <li key={answer.decision} className="file-chip" title={said}><Check size={13} /><span>{said}</span><small>{answer.option === null ? "sent" : "recorded"}</small></li>;
+    })}</ul>}
     <footer className="message-state review-card-trail">
       {status && <time title={tooltip}>{status === "Reading" ? "With the first mate" : status.startsWith("Read by") ? `Read by the first mate ${status.slice("Read by ".length)}` : status}</time>}
       {!status && !message.past && <time>{formatTime(message.createdAt)}</time>}
@@ -2258,7 +2296,7 @@ const LIVE_STATES = new Set(["working", "blocked", "parked", "paused", "unknown"
  * task has finished or landed, a scout's report that argues no call, or a chat page with no open call holds
  * nothing up, so it starts on Comment, and every hint says what the verdict does for this page, not in general.
  */
-function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>, known: Call[], staged: string[] = []): ReviewStake {
+function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>, known: Call[], staged: ReviewView["answers"] = []): ReviewStake {
   const calls = callsArguedBy(known, artifact).filter(isOpen);
   const taskId = artifact.scope === "task" ? artifact.task : null;
   const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
@@ -2269,8 +2307,11 @@ function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string
   // A call this page argues waits on it whatever became of the task that wrote it: a finished
   // scout's report is often exactly the argument an open call is decided from.
   // Once every call this page argues has an answer waiting to go, the captain has decided from the case as argued.
-  if (calls.length > 0 && calls.every((call) => staged.includes(call.id))) {
-    return { verdict: "approve", hints: { approve: "The case reads well, and your answer is recorded as it is sent.", changes: "Asks for another revision; your answer is still recorded as it is sent.", comment: "Thoughts only; your answer is still recorded as it is sent." } };
+  if (calls.length > 0 && calls.every((call) => staged.some((answer) => answer.decision === call.id))) {
+    // An option is recorded as the review goes; words go to the first mate, who records them.
+    const words = staged.some((answer) => answer.option === null);
+    const [goes, still] = words ? ["goes to the first mate", "still goes to the first mate"] : ["is recorded", "is still recorded"];
+    return { verdict: "approve", hints: { approve: `The case reads well, and your answer ${goes} as it is sent.`, changes: `Asks for another revision; your answer ${still} as it is sent.`, comment: `Thoughts only; your answer ${still} as it is sent.` } };
   }
   if (calls.length > 0) {
     return { verdict: "changes", hints: { changes: "The first mate revises the case before you decide.", approve: "The case reads well as it is argued.", comment: "Thoughts only; the call stays open until you answer it." } };
@@ -2332,7 +2373,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   onSeen: (rev: number) => Promise<unknown>;
   /** Every call whose evidence contains this page. */
   calls: Call[];
-  onAnswer: (call: Call, option?: string, label?: string) => Promise<unknown>;
+  onAnswer: (call: Call, answer: RailAnswer) => Promise<unknown>;
   onScene: (place: ScenePlace, proposal: SceneProposal) => Promise<unknown>;
 }) {
   const [narrow, setNarrow] = useState(false);
@@ -2485,10 +2526,14 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
     }
   }
 
+  // Words still being typed into a call, staged before the review goes so it never leaves without them.
+  const typing = useRef(new Map<string, () => Promise<unknown>>());
+
   async function send() {
     setSending(true);
     setProblem(null);
     try {
+      await Promise.all([...typing.current.values()].map((flush) => flush()));
       const warning = await onSubmit(verdict);
       if (warning) setProblem(warning);
     } catch (error) {
@@ -2533,7 +2578,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
           <div><button className="ghost" onClick={() => { setPending(null); setPick(null); setDraft(""); }}>Cancel</button><button disabled={!draft.trim() || saving} onClick={() => void save()}>{saving ? "Saving…" : "Comment"}</button></div>
         </section>}
         {calls.length > 0 && <div className="decision-answers">
-          {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} onAnswer={(option, label) => onAnswer(call, option, label)} />)}
+          {calls.map((call) => <RailCall key={call.id} call={call} revision={revision} chosen={review?.answers.find((answer) => answer.decision === call.id)} onAnswer={(answer) => onAnswer(call, answer)} onPending={(flush) => { if (flush) typing.current.set(call.id, flush); else typing.current.delete(call.id); }} />)}
         </div>}
         <div className="review-threads">
           {threads.length === 0 && !pending && calls.length === 0 && <p className="review-empty">Nothing written yet. Use Comment, then pick the words or the part of the page you mean.</p>}
@@ -2581,40 +2626,98 @@ function PictureChoice({ on, reasons, drawn, onToggle }: { on: boolean; reasons:
   </div>;
 }
 
+/** What the rail stages for a call: an option, words, or not now until a day. Nothing at all takes it back. */
+type RailAnswer = { option?: OptionChoice; words?: AnswerWords };
+
 /**
- * A call this page argues, in the review rail. Open, it offers the call's own options; a choice is staged with the
- * review and recorded through firstmate's intake as the review goes. Answered anywhere, it says by whom and how,
- * instead of offering choices that could no longer do anything.
+ * A call this page argues, in the review rail. Open, it offers every way to answer it that Bearings does: its own
+ * options, not now until a day, and words. What the captain says is staged with the review; as the review goes, an
+ * option is recorded through firstmate's intake, and words go in its message for the first mate to record. Answered
+ * anywhere, it says by whom and how, instead of offering choices that could no longer do anything.
  */
-function RailCall({ call, revision, chosen, onAnswer }: { call: Call; revision: ArtifactRevision; chosen?: ReviewView["answers"][number]; onAnswer: (option?: string, label?: string) => Promise<unknown> }) {
+function RailCall({ call, revision, chosen, onAnswer, onPending }: {
+  call: Call;
+  revision: ArtifactRevision;
+  chosen?: ReviewView["answers"][number];
+  onAnswer: (answer: RailAnswer) => Promise<unknown>;
+  /** Hands the review a way to stage words still being typed, so sending never goes without them. */
+  onPending: (flush: (() => Promise<unknown>) | null) => void;
+}) {
   const recorded = chosen?.recorded?.result === "closed";
   const refused = chosen?.recorded && !recorded ? chosen.recorded : null;
-  // Sent before the app recorded answers itself: the first mate was asked to record it.
+  // Sent without the intake: words, or an option from before the app recorded answers itself. The first mate records it.
   const handedOver = chosen !== undefined && chosen.sent_at !== null && !chosen.recorded;
   const locked = recorded || handedOver;
   const updated = !call.answer && optionsUpdatedSince(call, revision.presented_at);
   const when = (at: number) => formatWhen(new Date(at).toISOString());
+  const picked: OptionChoice | null = chosen && !refused ? call.options.find((option) => option.key === chosen.option) ?? null : null;
+  const [deferring, setDeferring] = useState(Boolean(chosen?.defer));
+  const [deferDate, setDeferDate] = useState(chosen?.defer ?? "");
+  const [note, setNote] = useState(chosen?.note ?? "");
+  const typing = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latest = useRef({ picked, deferring, deferDate, note });
+  latest.current = { picked, deferring, deferDate, note };
+
+  /** Stages what the rail says now. Not now waits for its day, so until then it takes the answer back. */
+  function stage(next: Partial<typeof latest.current> = {}) {
+    if (typing.current) clearTimeout(typing.current);
+    typing.current = null;
+    onPending(null);
+    const { picked: option, deferring: later, deferDate: day, note: words } = { ...latest.current, ...next };
+    if (later) return onAnswer(day ? { words: { defer: day, note: words } } : {});
+    return onAnswer({ option: option ?? undefined, words: { note: words } });
+  }
+
+  function type(words: string) {
+    setNote(words);
+    if (typing.current) clearTimeout(typing.current);
+    const flush = () => stage({ note: words });
+    typing.current = setTimeout(() => void flush(), 500);
+    onPending(flush);
+  }
+  useEffect(() => () => { if (typing.current) clearTimeout(typing.current); }, []);
+
+  const worded = chosen !== undefined && chosen.option === null;
+  const said = chosen && (chosen.note || chosen.defer) ? answerInWords(chosen.defer, chosen.note ?? "") : "";
   return <section className="decision-answer" data-testid="decision-answer" data-call-id={call.id}>
     <header><span>Your call</span><small>{call.id}</small></header>
     {call.question && <p>{call.question}</p>}
     {updated && <small className="decision-updated" data-testid="options-updated">Options updated since rev {revision.rev}</small>}
     {call.answer
       ? <p className="decision-answered" data-testid="call-answered"><Check size={13} /><span>{answeredBy(call.answer)}: <strong>{call.answer.label}</strong></span></p>
-      : call.options.length === 0
-        ? <small className="decision-missing">This page argues a call whose options are not recorded. Answer it in chat.</small>
-        : <div className="decision-choices">{call.options.map((option) => {
-            const picked = chosen?.option === option.key && !refused;
-            return <button key={option.key} className={picked ? "picked" : ""} aria-pressed={picked} disabled={locked} onClick={() => void onAnswer(picked ? undefined : option.key, option.label)}>
-              <span>{option.label}</span>{option.recommended && <small>Recommended</small>}
-            </button>;
-          })}</div>}
-    {!call.answer && chosen && (refused
+      : locked
+        ? <>
+            {!worded && <div className="decision-choices">{call.options.map((option) => <button key={option.key} className={chosen?.option === option.key ? "selected" : ""} aria-pressed={chosen?.option === option.key} disabled><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}</div>}
+            {said && <blockquote className="decision-words" data-testid="answer-words">{worded ? said : `You added: ${said}`}</blockquote>}
+          </>
+        : <>
+            {call.options.length === 0 && <small className="decision-missing" data-testid="options-missing">This page argues a call whose options are not recorded, so answer it in words.</small>}
+            <CallAnswerFields
+              call={call}
+              layout="list"
+              picked={picked?.key ?? null}
+              deferring={deferring}
+              deferDate={deferDate}
+              note={note}
+              adding={picked !== null || deferring}
+              disabled={false}
+              onPick={(option) => { const next = picked?.key === option.key ? null : option; setDeferring(false); setDeferDate(""); void stage({ picked: next, deferring: false, deferDate: "" }); }}
+              onDefer={() => { const next = !deferring; setDeferring(next); void stage({ picked: null, deferring: next }); }}
+              onDate={(day) => { setDeferDate(day); void stage({ deferDate: day }); }}
+              onNote={type}
+            />
+          </>}
+    {!call.answer && (refused
       ? <small className="decision-refused" role="alert">Not recorded: {refused.detail}</small>
       : recorded
-        ? <small className="decision-sent">Recorded {when(chosen.recorded!.at)}</small>
+        ? <small className="decision-sent">Recorded {when(chosen!.recorded!.at)}</small>
         : handedOver
-          ? <small className="decision-sent">Sent {when(chosen.sent_at!)}</small>
-          : <small className="decision-staged">Goes with your review, and is recorded as it is sent</small>)}
+          ? <small className="decision-sent">Sent {when(chosen!.sent_at!)}{worded ? ", for the first mate to record" : ""}</small>
+          : chosen
+            ? <small className="decision-staged">{worded ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
+            : deferring && !deferDate
+              ? <small className="decision-staged pending">Pick the day to be asked again</small>
+              : null)}
   </section>;
 }
 

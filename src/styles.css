@@ -430,6 +430,7 @@ a { color: var(--sea); }
 .decision-body > p { max-width: 72ch; margin: 10px 0 0; color: var(--ink-3); font-size: 14px; line-height: 1.6; text-wrap: pretty; }
 .decision-body > p.call-argued { margin-top: 12px; color: var(--muted); font-size: 13px; }
 .call-argued strong { color: var(--sea); font-weight: 500; }
+.decision-body > p.call-unread { margin-top: 4px; color: var(--amber); font-size: 12.5px; }
 .decision-actions, .report-card .report-actions { display: flex; align-items: center; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--rule); background: var(--surface-2); }
 .decision-actions > span { flex: 1; overflow: hidden; color: var(--muted); font-family: var(--mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 /* Only the preview of what an answer sends is code; a note beside a button is prose. */
@@ -442,7 +443,7 @@ a { color: var(--sea); }
 .decision-actions .report-actions { gap: 6px; }
 .suggestion-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .suggestion-chips button { height: auto; min-height: 38px; padding: 8px 14px; white-space: normal; text-align: left; }
-.suggestion-chips button small { color: var(--green); font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.suggestion-chips button small { flex: none; color: var(--green); font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .suggestion-chips button.selected { border-color: var(--sea); color: var(--on-accent); background: var(--sea); font-weight: 600; }
 .suggestion-chips button.selected small { color: inherit; opacity: .85; }
 .suggestion-chips button:disabled { cursor: default; opacity: 1; }
@@ -453,12 +454,6 @@ a { color: var(--sea); }
 .reply-field textarea { width: 100%; min-height: 64px; resize: vertical; padding: 11px 13px; border: 1px solid var(--control); border-radius: 10px; outline: 0; color: var(--ink); background: var(--surface); font-size: 14px; line-height: 1.5; }
 .reply-field textarea:focus { border-color: var(--sea); }
 /* Answering from Bearings: the options, what choosing does, and whether the argument was read first. */
-.call-quick { padding: 16px 24px 18px; border-top: 1px solid var(--rule); background: var(--surface-2); }
-.call-quick > p { margin: 0 0 4px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-.call-quick > p.call-unread { color: var(--ink); font-weight: 500; }
-.call-quick .suggestion-chips { margin-top: 10px; }
-.call-quick .suggestion-chips button { background: var(--surface); }
-.call-quick .suggestion-chips button.selected { background: var(--sea); }
 .call-answer { max-width: 72ch; margin: 10px 0 0; padding-left: 12px; border-left: 2px solid color-mix(in srgb, var(--sea) 55%, var(--border)); color: var(--muted); font-size: 13.5px; line-height: 1.55; }
 .call-state { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px 16px; border-radius: 10px; color: var(--amber); background: var(--surface-2); }
 .call-state > span { display: flex; flex: 1; flex-direction: column; gap: 3px; }
@@ -1098,10 +1093,10 @@ a { color: var(--sea); }
 .decision-choices button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; padding: 8px 12px; border: 1px solid var(--control); border-radius: 9px; color: var(--ink); background: var(--surface); font-size: 13px; line-height: 1.35; text-align: left; transition: border-color .12s ease; }
 .decision-choices button:hover:not(:disabled) { border-color: var(--control-hover); }
 .decision-choices button:disabled { cursor: default; opacity: 1; }
-.decision-choices button:disabled:not(.picked) { opacity: .55; }
-.decision-choices button.picked { border-color: var(--sea); color: var(--on-accent); background: var(--sea); font-weight: 600; }
+.decision-choices button:disabled:not(.selected) { opacity: .55; }
+.decision-choices button.selected { border-color: var(--sea); color: var(--on-accent); background: var(--sea); font-weight: 600; }
 .decision-choices small { flex: none; color: var(--green); font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-.decision-choices button.picked small { color: inherit; opacity: .85; }
+.decision-choices button.selected small { color: inherit; opacity: .85; }
 .decision-staged { display: block; margin-top: 9px; color: var(--sea); font-size: 12px; font-weight: 500; }
 .decision-sent { display: block; margin-top: 9px; color: var(--green); font-size: 12px; font-weight: 500; }
 .decision-missing { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
@@ -1150,7 +1145,6 @@ a { color: var(--sea); }
   .decision-actions { flex-wrap: wrap; padding: 14px 16px; }
   .decision-actions > span { flex-basis: 100%; white-space: normal; }
   .decision-actions .report-actions { margin-left: auto; }
-  .call-quick { padding: 14px 16px; }
   .report-card { flex-direction: column; align-items: stretch; }
   .report-card .decision-body { padding: 18px 16px 8px; }
   .report-card .report-actions { justify-content: flex-end; padding: 0 16px 16px; }
@@ -1223,4 +1217,14 @@ a { color: var(--sea); }
 /* The rail keeps its send button in view: the calls and the threads share what height is left, each scrolling. */
 .decision-answers { flex: 0 1 auto; min-height: 0; overflow: auto; }
 .review-threads { flex: 1 1 0; min-height: 96px; }
+/* With nothing written yet, the calls have the whole rail rather than scrolling above an empty space. */
+.review-threads:empty { display: none; }
+/* In the rail, words and a day to be asked again fit its width, under the choices. */
+.decision-answer .date-field { margin-top: 10px; }
+.decision-answer .date-field input { flex: 1; min-width: 0; }
+.decision-answer .reply-field { margin-top: 12px; }
+.decision-answer .reply-field textarea { min-height: 56px; font-size: 13px; }
+.decision-answer .decision-missing { margin-bottom: 10px; }
+.decision-answer blockquote.decision-words { margin: 8px 0 0; padding: 8px 12px; border-left: 2px solid var(--sea); color: var(--ink-3); background: var(--surface-2); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+.decision-staged.pending { color: var(--muted); }
 .needs-banner li > .needs-tool { justify-self: start; }

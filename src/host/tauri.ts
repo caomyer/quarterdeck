@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, TaskFile, TaskNotes } from "./types";
+import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, TaskFile, TaskNotes } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -71,8 +71,8 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<ReviewView>("review_scene", { page: ref, rev, proposal: { scene, label, path, summary, sceneJson, pngBase64: png } });
   }
 
-  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null) {
-    return invoke<ReviewView>("review_answer", { page: ref, decision, option, label, onAnswer: onAnswer ?? null });
+  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords) {
+    return invoke<ReviewView>("review_answer", { page: ref, decision, option, label, onAnswer: onAnswer ?? null, words: words ?? null });
   }
 
   callAnswer({ call, option, label, onAnswer, page, note }: CallAnswerRequest) {
