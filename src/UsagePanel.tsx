@@ -5,16 +5,7 @@ import { createPortal } from "react-dom";
 import type { ContextReading, HostRuntimeState, QuotaRead, RateLimit } from "./host/types";
 import type { Compaction } from "./host/use-host";
 import { ago, contextEvent, contextLevel, contextPercent, type Level, percent, type ProviderView, providerViews, stripLine, stripProviders, tokens, tokensExact, until, type WindowView } from "./usage";
-
-/** Resets and ages count down on screen: the panel reads the clock on every render, and renders at least this often. */
-function useNow(every = 30_000) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => setTick((tick) => tick + 1), every);
-    return () => window.clearInterval(timer);
-  }, [every]);
-  return Date.now();
-}
+import { useNow } from "./use-now";
 
 const LIVE: HostRuntimeState[] = ["idle", "prompt_turn", "agent_turn"];
 

@@ -1,5 +1,6 @@
-// Checks the app's own update in the sidebar on the browser mock: quiet without one, what an update waiting says and
-// does, a restart that waits for the first mate's turn to end, a failed install, and the note after the restart.
+// Checks the app's own update in the sidebar on the browser mock: without one, when the app last looked and looking now,
+// found, failed or in a build that never looks; what an update waiting says and does, a restart that waits for the
+// first mate's turn to end, a failed install, and the note after the restart.
 //
 //   pnpm dev --port 4194 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4194 pnpm updates
@@ -31,6 +32,8 @@ async function open(query, { clock = false } = {}) {
 
 const notice = (page) => page.locator(".update-notice");
 const said = (page) => notice(page).innerText();
+const looking = (page) => page.locator(".update-check");
+const saysLooking = (page, words, timeout = 5000) => page.waitForFunction((text) => document.querySelector(".update-check")?.textContent?.includes(text), words, { timeout });
 
 async function shot(page, name) {
   if (!shots) return;
@@ -56,19 +59,79 @@ async function readable(page, what) {
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
 }
 
-// No update: nothing in the sidebar says anything about one.
+// No update: a quiet line says when the app last looked, and looking now says it is looking, then when it looked.
 {
   const page = await open("");
-  await page.waitForTimeout(600);
-  check(await notice(page).count() === 0, "without an update the sidebar says nothing about one");
+  await looking(page).waitFor();
+  const text = await looking(page).innerText();
+  check(text.includes("Up to date") && text.includes("0.1.41 · checked 40m ago"), "without an update, the line says it is up to date and when it last looked");
+  check(await page.locator(".update-notice .update-head").count() === 1, "and nothing more");
+  await readable(page, "up to date");
+  await shot(page, "current");
+  await looking(page).getByRole("button", { name: "Check now", exact: true }).click();
+  await saysLooking(page, "Checking for updates");
+  check(await looking(page).getByRole("button").count() === 0, "while it looks there is no button to press again");
+  await shot(page, "checking");
+  await saysLooking(page, "checked just now");
+  check((await looking(page).innerText()).includes("Up to date"), "and when it finds nothing, it is up to date as of just now");
+  await page.close();
+}
+
+// Asked to look, it finds one: fetching it, then the update waiting, with the line stepping aside.
+{
+  const page = await open("?update=found");
+  await looking(page).getByRole("button", { name: "Check now", exact: true }).click();
+  await saysLooking(page, "Downloading 0.1.42");
+  check((await looking(page).innerText()).includes("signature"), "a version found is fetched and its signature checked, and it says so");
+  await notice(page).filter({ hasText: "Update ready: 0.1.42" }).waitFor({ timeout: 5000 });
+  check(await looking(page).count() === 0, "once it is waiting, the notice says so and the line steps aside");
+  await page.close();
+}
+
+// A check that fails says why, and can be tried again.
+{
+  const page = await open("?update=offline");
+  await looking(page).getByRole("button", { name: "Check now", exact: true }).click();
+  await saysLooking(page, "Couldn't check for updates");
+  const text = await looking(page).innerText();
+  check(text.includes("error sending request") && text.includes("tried just now"), "a failed check says why and when it tried");
+  check(await looking(page).getByRole("button", { name: "Try again", exact: true }).isVisible(), "and offers to try again");
+  await readable(page, "check failed");
+  await shot(page, "check-failed");
+  await looking(page).getByRole("button", { name: "Try again", exact: true }).click();
+  await saysLooking(page, "Checking for updates");
+  check(true, "trying again looks again");
+  await page.close();
+}
+
+// Not checked yet since launch: it says so rather than claiming to be up to date.
+{
+  const page = await open("?update=unchecked");
+  await looking(page).waitFor();
+  const text = await looking(page).innerText();
+  check(!text.includes("Up to date") && text.includes("Not checked yet"), "before the first check it does not claim to be up to date");
+  check(await looking(page).getByRole("button", { name: "Check now", exact: true }).isVisible(), "and offers to look now");
+  await page.close();
+}
+
+// A build that never looks says so, with nothing to press.
+{
+  const page = await open("?update=dev");
+  await looking(page).waitFor();
+  check((await looking(page).innerText()).includes("This build does not update"), "a build that never looks says so plainly");
+  check(await looking(page).getByRole("button").count() === 0, "and offers no button that would do nothing");
+  await readable(page, "dev build");
+  await shot(page, "dev");
   await page.close();
 }
 
 // One found after the page opened, as the backend's background check finds it.
 {
   const page = await open("?update=late");
-  check(await notice(page).count() === 0, "before the check finds one, nothing shows");
-  await notice(page).waitFor({ timeout: 5000 });
+  check((await said(page)).includes("Up to date"), "before the check finds one, it is up to date");
+  await saysLooking(page, "Checking for updates");
+  check(true, "the schedule's check shows as it runs, as the captain's does");
+  await notice(page).filter({ hasText: "Update ready" }).waitFor({ timeout: 5000 });
   check((await said(page)).includes("Update ready: 0.1.42"), "an update found later appears on its own");
   await page.close();
 }
@@ -93,8 +156,8 @@ async function readable(page, what) {
   await page.waitForFunction(() => document.querySelector(".update-notice")?.textContent?.includes("Updated to 0.1.42"), null, { timeout: 5000 });
   check((await said(page)).includes("From 0.1.41"), "after the restart it says once what it updated from");
   await notice(page).getByRole("button", { name: "Dismiss", exact: true }).click();
-  await page.waitForFunction(() => !document.querySelector(".update-notice"), null, { timeout: 3000 });
-  check(true, "and dismissed, it is gone");
+  await page.waitForFunction(() => !document.querySelector(".update-notice")?.textContent?.includes("Updated to"), null, { timeout: 3000 });
+  check(await looking(page).isVisible(), "and dismissed, the note is gone and the line about looking stays");
   await page.close();
 }
 
