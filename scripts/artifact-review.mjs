@@ -892,7 +892,7 @@ await resumed.close();
   await again.locator(".nav-item", { hasText: "Bearings" }).click();
   const card = again.locator(".decision-card[data-call-id='res-model-download']");
   await card.waitFor({ state: "detached" });
-  check(true, "held until its day, the call leaves Captain's call");
+  check(await card.count() === 0 && await again.locator(".decision-card[data-call-id='res-model-cellular']").count() === 1, "held until its day, the call leaves Captain's call while the others stay");
   await card.waitFor();
   check(await card.getAttribute("data-answered-in-review") === null && await card.locator("button", { hasText: "Answer now" }).count() === 1, "its day come, Bearings offers the call's answer again");
 
@@ -910,12 +910,47 @@ await resumed.close();
   check((await download.locator("[data-testid='answer-earlier']").innerText()).endsWith(": Not now. Ask me again on Oct 3."), "what was said then stays beside the new answer");
   await again.locator(".send-review").click();
   await download.locator("[data-testid='call-answered']").waitFor();
-  check(true, "the new answer is recorded");
+  check((await download.locator("[data-testid='call-answered']").innerText()).includes("Wi-Fi only, with visible progress") && await download.locator("textarea, .decision-choices button").count() === 0, "the new answer is recorded, and the page asks nothing more");
   await again.locator(".nav-item", { hasText: "Chat" }).click();
   const texts = await Promise.all((await again.locator("[data-testid='review-card']").all()).map((item) => sentText(item)));
   check(texts.at(-1).includes("Recorded: res-model-download = wifi-only"), "the next review carries the new answer");
   check(texts.at(-2).includes("\nres-model-download: Not now. Ask me again on 2026-10-03."), "the review that carried the Not now still says what it was");
   await again.close();
+}
+
+// `?records-chat`: words staged in the page for a call the captain then answers in chat, which the first mate
+// records, never go with a later review: the call is answered, so the page takes them back.
+{
+  const elsewhere = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  elsewhere.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await elsewhere.goto(`${baseUrl}/?artifacts&records-chat`);
+  await elsewhere.waitForFunction(() => !document.querySelector(".app-loading"));
+  const openPage = async () => {
+    await elsewhere.locator(".nav-item", { hasText: "Artifacts" }).click();
+    await elsewhere.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+    await elsewhere.locator("[data-testid='decision-answer']").first().waitFor();
+  };
+  await openPage();
+  const cellular = elsewhere.locator("[data-testid='decision-answer'][data-call-id='res-model-cellular']");
+  await cellular.locator(".reply-field textarea").fill("Pause, and tell the user why it stopped.");
+  await cellular.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  check((await elsewhere.locator(".send-review").innerText()) === "Send review · 1", "words staged in the page wait to go with the review");
+
+  await elsewhere.locator(".nav-item", { hasText: "Bearings" }).click();
+  const card = elsewhere.locator(".decision-card[data-call-id='res-model-cellular']");
+  await card.locator("button", { hasText: "Answer now" }).click();
+  await card.locator(".reply-field textarea").fill("Finish on cellular after all.");
+  await card.locator(".decision-actions button", { hasText: "Send" }).click();
+  await card.waitFor({ state: "detached" });
+
+  await openPage();
+  await cellular.locator("[data-testid='call-answered']").waitFor();
+  await elsewhere.locator(".send-review", { hasText: /^Send review$/ }).waitFor({ timeout: 5000 }).catch(() => undefined);
+  check((await elsewhere.locator(".send-review").innerText()) === "Send review", "once the call is answered elsewhere, the page takes back the words it had staged");
+  await elsewhere.locator(".nav-item", { hasText: "Chat" }).click();
+  const told = await elsewhere.locator(".captain-message").allInnerTexts();
+  check(told.some((text) => text.includes("On the res model cellular: Finish on cellular after all.")), "the answer given in chat went");
+  await elsewhere.close();
 }
 
 // A call whose options are not recorded is answered in words, in Bearings and in the page.

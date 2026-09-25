@@ -1070,10 +1070,26 @@ export class MockHostAdapter implements HostAdapter {
       this.compact(id);
       return id;
     }
+    if (reviewFlag("records-chat")) this.recordToldInChat(text);
     const run = () => this.deliver(id, text);
     if (this.state === "starting") this.deferred.push(run);
     else run();
     return id;
+  }
+
+  /**
+   * `?records-chat`: the first mate records a call the captain answered in words in chat, the way Bearings words it,
+   * and the call closes a moment later.
+   */
+  private recordToldInChat(text: string) {
+    const call = this.snapshot.fleet.calls?.find((item) => item.state === "open" && text.startsWith(`On the ${item.id.replace(/-/g, " ")}: `));
+    if (!call) return;
+    const label = text.slice(`On the ${call.id.replace(/-/g, " ")}: `.length);
+    this.later(1200, () => {
+      const at = new Date().toISOString();
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((item) => item.id === call.id ? { ...item, state: "closed" as const, captain_actionable: false, answer: { key: null, label, by: "captain" as const, via: "chat", at } } : item) };
+      this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    });
   }
 
   /** Sizes of the files the mock's picker offers, by where they are. */

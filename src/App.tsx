@@ -2681,6 +2681,13 @@ function RailCall({ call, revision, chosen, before, onAnswer, onPending }: {
     return onAnswer({ option: option ?? undefined, words: { note: words } });
   }
 
+  // Answered or closed some other way, the call takes back what waits here, so it never goes with a later review.
+  const settled = call.answer !== null || call.state !== "open";
+  const waiting = chosen !== undefined && chosen.sent_at === null && !chosen.recorded;
+  useEffect(() => {
+    if (settled && waiting) void stage({ picked: null, deferring: false, deferDate: "", note: "" });
+  }, [settled, waiting]);
+
   function type(words: string) {
     setNote(words);
     if (typing.current) clearTimeout(typing.current);
