@@ -64,9 +64,14 @@
 #     against current_state; hints.pending_decision and hints.blocked_event are
 #     booleans derived from that set.
 #     endpoint.exists is the cheap local backend endpoint-presence read.
-#     endpoint.agent_alive is populated for local secondmates only, where it is
-#     useful return-channel supervision data; remote secondmates use "unknown"
-#     without a probe, and other tasks use "not_checked".
+#     endpoint.agent_alive is fm_backend_agent_alive's process-level read for
+#     every local task with an endpoint target: "alive" only when a harness
+#     agent process is proven, "dead" when the endpoint confidently has none or
+#     is gone, and "unknown" when the backend has no classifier or the read was
+#     ambiguous. Remote secondmates use "unknown" without a probe, and a local
+#     task with no recorded target uses "not_checked". endpoint.status folds
+#     both reads: "absent" when the endpoint is gone, else agent_alive's
+#     alive/dead, else "unknown".
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   artifacts[]: presented review artifacts, newest first, exactly as
 #     `bin/fm-artifact.sh list --json` reports them; that script owns the shape.
@@ -454,7 +459,7 @@ snapshot_task_generation_is_current() {  # <captured-meta> <id>
 prefetch_task_observations() {  # <meta> <id>
   local meta=$1 id=$2 remote_host current_file endpoint_file current_pid='' current_rc=0
   local status_log status_capture report_path report_capture
-  local kind backend target endpoint_exists=null agent_alive=not_checked generation_current=1
+  local backend target endpoint_exists=null agent_alive=not_checked generation_current=1
   remote_host=$(meta_value "$meta" remote_host)
   current_file="$SNAPSHOT_TASK_DIR/$id.json"
   endpoint_file="$SNAPSHOT_TASK_DIR/$id.endpoint"
@@ -476,7 +481,6 @@ prefetch_task_observations() {  # <meta> <id>
   elif [ "$generation_current" = 1 ]; then
     crew_state_json "$id" "$meta" "$status_capture" > "$current_file" &
     current_pid=$!
-    kind=$(meta_value "$meta" kind)
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     if [ -n "$target" ]; then
@@ -485,9 +489,10 @@ prefetch_task_observations() {  # <meta> <id>
       else
         endpoint_exists=false
       fi
-      if [ "$kind" = secondmate ]; then
-        agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
-      fi
+      # Every local task with an endpoint gets the process-level probe: pane
+      # presence says nothing about the agent, since a pane can hold only a
+      # shell (qd-spawn-race-1), and current_state reads that shell as busy.
+      agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
     fi
   else
     jq -n '{state:"unknown",source:"none",detail:"task generation changed during snapshot",raw:""}' \

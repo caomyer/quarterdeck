@@ -497,11 +497,14 @@ EOF
       and (.doing | contains("release A or B") | not)))
       and (.decisions_open | any(.owner == "domain-alpha") | not)
   ' >/dev/null || fail "status-only child decision leaked into Bearings: $json"
+  # The fake tmux answers display-message but lists no windows, so the pane
+  # reads present while the crewmate liveness probe finds no agent in it.
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
     .secondmate_current.records[] | select(.id == "domain-alpha") | .endpoints[] | select(.id == "phase8")
-    | .endpoint.status == "unknown"
+    | .endpoint.status == "dead"
+      and .endpoint.agent_alive == "dead"
       and .endpoint.exists == true
       and .endpoint.freshness == "fresh"
       and .endpoint.observed_at == "2026-07-11T18:00:00Z"

@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, TaskFile, TaskNotes } from "./types";
+import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, StartAsk, StartRequest, TaskFile, TaskNotes } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -89,6 +89,14 @@ export class TauriHostAdapter implements HostAdapter {
 
   reviewSummary() {
     return invoke<ReviewSummary>("review_summary");
+  }
+
+  startWork({ task, project, title, kind, mode, note }: StartRequest) {
+    return invoke<StartAsk>("start_work", { task, project, title, kind, mode, note: note ?? null });
+  }
+
+  startAsks() {
+    return invoke<Record<string, StartAsk>>("start_asks");
   }
 
   /** Waits until every event is being listened to: a start's history is sent once, and a window that missed it would show no earlier conversation. */

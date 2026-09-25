@@ -73,7 +73,7 @@ check((await body.locator("code").innerText()) === "MPRemoteCommandCenter", "bac
 
 // What the task carries beside its row: the picture a worker is handed as a path, and the notes for whoever works it.
 const sections = await queued.locator(".drawer-section > h3").allInnerTexts();
-check(sections[0] === "File" && sections[1] === "What was asked", `the evidence comes first, then what was asked (${sections.slice(0, 3).join(", ")})`);
+check(sections[0] === "Start work" && sections[1] === "File" && sections[2] === "What was asked", `Start work comes first, then the evidence, then what was asked (${sections.slice(0, 3).join(", ")})`);
 const file = queued.locator("[data-testid='task-file']");
 check(await file.locator("img").count() === 1, "a picture on the task shows as a thumbnail");
 check((await file.locator("code").innerText()).endsWith("/data/res-lockscreen/files/Lock-Screen-9.41-AM.png"), "with the clean path a worker is handed");

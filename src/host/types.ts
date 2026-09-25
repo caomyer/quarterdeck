@@ -280,7 +280,33 @@ export type FleetSnapshot = {
    * whose firstmate predates it, which show Bearings' own list instead.
    */
   calls?: Call[];
+  /** The main home's inventory checks; `orphan_in_flight` names in-flight backlog rows no worker is registered for. */
+  main_inventory?: { valid: boolean; reason: string | null; orphan_in_flight: string[]; unstructured_current_count: number };
 };
+
+/** How the captain says a task should ship: `judge` leaves it to the first mate, by the project's posture. */
+export type StartMode = "judge" | "no-mistakes" | "direct-PR";
+
+/**
+ * One ask to start a queued task, as `src-tauri/src/start.rs` records it in `data/.starts/asks.jsonl`: what was
+ * asked, and the id the host gave the message, or why it did not take it. The latest per task is its ask.
+ */
+export type StartAsk = {
+  at: number;
+  task: string;
+  project: string;
+  title: string;
+  kind: string;
+  mode: StartMode;
+  note: string | null;
+  message: string | null;
+  error: string | null;
+  header: string;
+  text: string;
+};
+
+/** What starting work asks for: the task as its row names it, and the captain's optional mode and note. */
+export type StartRequest = { task: string; project: string; title: string; kind: string; mode: StartMode; note?: string | null };
 
 export type SnapshotProject = { name: string; mode: string; yolo: boolean; description?: string; added?: string | null };
 
@@ -582,6 +608,13 @@ export interface HostAdapter {
   reviewSeen(ref: ArtifactRef, rev: number): Promise<ReviewView>;
   /** Every page's review at a glance, for the list. */
   reviewSummary(): Promise<ReviewSummary>;
+  /**
+   * Hands a queued task to the first mate in one message and records the ask. A message the host did not take is
+   * recorded with why, in `error`; only a failure to record rejects.
+   */
+  startWork(request: StartRequest): Promise<StartAsk>;
+  /** Every task's latest ask in the home, by task id. */
+  startAsks(): Promise<Record<string, StartAsk>>;
 }
 
 /** The path both adapters serve a revision's page under: `task/<id>/<name>/rev-<n>/<entry>` or `chat/<name>/rev-<n>/<entry>`. */
