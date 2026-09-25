@@ -5,6 +5,8 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
+# A GitHub PR's body is then repaired by bin/fm-pr-body-fix.sh; its result is
+# reported on stderr and never decides whether the poll is armed.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -147,6 +149,17 @@ else
   PR_POLL_PUBLISH_LOCK_HELD=0
   echo "error: could not publish PR poll" >&2
   exit 1
+fi
+# The no-mistakes pr step renders an HTML block glued to the markdown after it,
+# so a screenshot shows as raw text; registration runs after that step has
+# finished, and bin/fm-pr-body-fix.sh's header owns the repair and its proof.
+# A body that needs nothing is not written, and a refusal never unarms the poll.
+if [ "$PROVIDER" = github ] && command -v gh >/dev/null 2>&1; then
+  PR_BODY_RESULT=$("$SCRIPT_DIR/fm-pr-body-fix.sh" "$URL" 2>&1) \
+    || printf 'actionable: %s\n' "$PR_BODY_RESULT" >&2
+  case "$PR_BODY_RESULT" in
+    "pr-body: repaired"*) printf '%s\n' "$PR_BODY_RESULT" >&2 ;;
+  esac
 fi
 # The contribution observer uses the same authenticated check mechanism and
 # owns verdict freshness, required actors and external feedback separately from

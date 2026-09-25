@@ -266,6 +266,7 @@ case "\${1:-} \${2:-}" in
     case " \$* " in
       *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' 'MERGED' '$head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+      *"--json body"*) printf '\n' ; exit 0 ;;
     esac
     ;;
 esac

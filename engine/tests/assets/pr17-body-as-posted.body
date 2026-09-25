@@ -1,0 +1,477 @@
+## Intent
+
+PROBLEM, observed 2026-09-23: the captain could not answer a captain's call in words - not on the artifact review page, and not in Bearings either. Firstmate's first diagnosis was WRONG and this body replaces it: the artifact page is not merely behind Bearings, Bearings loses the field too.
+
+ROOT CAUSE, src/App.tsx DecisionCard (:1095):
+The component has TWO MUTUALLY EXCLUSIVE BRANCHES chosen by whether the call has a linked argument page.
+- :1177, taken when 'argument && onReadArgument' - the call IS argued by a page. Renders an 'Answer now' toggle (:1120 'keyed') revealing OPTION BUTTONS ONLY (:1195). No free-text field, no 'Not now' deferral.
+- :1208-1214, the fallback when the call has NO argument page. Renders option chips, a 'Not now' button with a date field (:1211), AND the textarea labelled 'Or answer in words' (:1214).
+So linking a call to the page that argues it REMOVES the captain's ability to answer in words or defer with a date. The affordances are lost exactly when the call carries the most context.
+
+The artifact review page (:2607-2626, section.decision-answer) is options-only as well, so with an argued call there is NO surface anywhere offering free text.
+
+HOW IT WAS SEEN: the captain first reported a call not appearing on its artifact page; that was missing page evidence and firstmate attached it (page:task/qd-nm-flow-1/nm-flow). Attaching it flipped the call into the argued branch, which is when the 'answer in words' field disappeared from Bearings. The fix caused the second symptom, which is also the clearest proof of the branch behaviour.
+
+'DEFER' WAS NEVER MISSING: the record carried all four options and both branches map every option. What he lost was free text and the dated 'Not now', not an option. Firstmate earlier wrote that dropped options would be a separate defect - that line is withdrawn; nothing drops options.
+
+WHAT TO FIX:
+1. An argued call must keep free-text answering and the dated deferral. Decide whether the argued branch gains them or the two branches converge on one card; say which and why.
+2. Bring the artifact review page (:2607-2626) to the same answer affordances, since deciding beside the evidence is the entire reason a call is linked to a page.
+3. Keep what the artifact page already does well: :2612 shows an existing answer, :2304 warns when options changed since the revision being read, :2308 handles a call with no recorded options, :2315-2320 distinguish staged, sent and recorded.
+
+Do not change the evidence-ref matching in src/calls.ts:21-24; that is correct and is what makes the link durable.
+
+App-side. Verify in both themes with chrome-devtools-axi 0.1.35, and cover it in the scripts/*.mjs page checks alongside the existing call coverage.
+
+LINE NUMBERS REFRESHED 2026-09-25 against main 490ccf1, after PRs #10, #11, #13 and #14 landed and App.tsx grew to 2830 lines. Verified now: DecisionCard at :1095, the argued branch at :1177 (if (argument && onReadArgument)), the dated Not now at :1211, the "Or answer in words" textarea at :1214, and the artifact page decision-answer section at :2607. Treat every line number here as a pointer to be re-confirmed, not a fact: this file is edited constantly and the anchors that matter are the code shapes, not the offsets.
+
+LATER, THE CAPTAIN DECIDED (stop-here): ship this first. Bearings does not yet show an answer sent in a page review until firstmate records it, so the same call could be answered twice differently; that gap is filed as its own task, qd-pending-answer-1, and is not part of this change.
+
+## What Changed
+
+- Bearings now draws every call through a single `DecisionCard` answer form: the options, a dated "Not now", and words that can stand alone or go with an option. An argued call still leads with its argument and folds the form under "Answer now". Before, linking a call to its page dropped free text and the dated deferral. A dated "Not now" now keeps the words written beside it, and it can't be sent until a day is picked.
+- The artifact review page's answer rail uses the same form. A call with no recorded options can now be answered in words there too. The rail still shows:
+  - the recorded answer
+  - a warning when the options changed since the revision being read
+  - staged, sent and recorded answers as separate states
+- Answers stored with a review can now be words-only or deferrals (`review.rs`, `types.ts`, `note`/`defer`, with a shared `answerInWords` in `src/calls.ts`):
+  - Option answers still go through firstmate's intake.
+  - Words and deferrals go in the review message for the first mate to record.
+  - An unrecorded answer unlocks while the call is still asked, and a call firstmate asks again reopens.
+  - Staged answers show again when the review is reopened, and are taken back once the call is answered.
+  - The most recent earlier answer is kept.
+- `pnpm artifacts` (`scripts/artifact-review.mjs`), `scripts/calls.test.mjs` and the mock now cover answering by option, in words, and with "Not now" until a day, and AGENTS.md describes this.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Risk Assessment
+
+⚠️ Medium: The change meets the intent: one DecisionCard with words and a dated Not now for argued calls, and the same fields in the review rail. But it widens the review log contract (worded answers, `earlier`, reopening after send), and it has a real rail bug where staged words don't show when a page opens with its review still loading.
+
+## Testing
+
+I ran the React UI under Vite with the app's mock host, and ran the existing `pnpm artifacts` Playwright check against it. That check covers every new scenario: argued calls in Bearings, the page's rail in words and with a dated Not now, reopening after visiting another page, a call still asked after its day comes, words taken back once answered in chat, and a call with no recorded options. All 305 checks passed, with screenshots in both themes. I also checked the argued Bearings card by hand in chrome-devtools-axi in light and dark, and sent an answer in words from it. The review.rs unit tests and `pnpm test` passed. I did not run the native Tauri app or the token-spending live test (`review_e2e_live_decision`), so the real firstmate intake was covered only by unit tests.
+
+- Live validation: ✅ go - 8 of 9 scenarios driven live against the product
+
+| Scenario | Result | Live | Evidence |
+| --- | --- | --- | --- |
+| In Bearings, Answer now on a call argued by a page opens its options, Not now and an &#39;Or answer in words&#39; field, like a call nothing argues | ✅ pass | live | pnpm artifacts (&#39;an argued call opens to its options, Not now and words&#39;); manual-bearings-argued-words-{light,dark}.png |
+| In Bearings, a dated Not now on an argued call waits for its day, then sends the date and any added words to the first mate | ✅ pass | live | pnpm artifacts (&#39;Not now sends nothing until it has a day&#39;, &#39;the dated Not now reaches the first mate&#39;); shots/25-argued-not-now-*.png |
+| In Bearings, words alone on an argued call are sent to the first mate, not recorded | ✅ pass | live | pnpm artifacts (&#39;an argued call answered in words reaches the first mate&#39;); manual chrome-devtools-axi send, which showed &#39;Answered · the first mate read it&#39; |
+| On the artifact page, the rail offers the options, a dated Not now and words, staged into one review; words stay staged for the first mate to record and an option is recorded with what was added | ✅ pass | live | pnpm artifacts rail block; shots/26-rail-in-words-*.png, shots/27-rail-words-sent-*.png |
+| Existing rail indicators are kept: options updated since rev 1, options not recorded (answered in words instead), and staged, sent and recorded | ✅ pass | live | pnpm artifacts (&#39;Options updated since rev 1&#39;, &#39;the page says the options are not recorded&#39;, &#39;words sent are never shown as recorded&#39;); shots/28-rail-no-options-*.png |
+| Adversarial (review-1): a staged note, option or Not now date shows again after leaving the page or visiting another page, and is not wiped by a later click | ✅ pass | live | pnpm artifacts (&#39;staged words are there after another page&#39;, &#39;a staged Not now keeps its day after another page&#39;, &#39;choosing on one call leaves the words staged on another&#39;) |
+| Adversarial: an answer the intake recorded cannot be changed, while a call still asked after words or a Not now went can be answered again, with the single most recent earlier answer shown | ✅ pass | live | pnpm artifacts (?day-comes block, &#39;an answer the intake recorded cannot be changed in the page&#39;); shots/29-rail-day-come-*.png; cargo test review:: (earlier keeps one answer per decision) |
+| Adversarial: words staged in the page are taken back once the call is answered in chat, so they never go twice | ✅ pass | live | pnpm artifacts (?records-chat: &#39;the page takes back the words it had staged&#39;) |
+| A review sent from the native app records its answers through firstmate&#39;s real intake (bin/fm-captain-hold.sh) | ⏸️ untested | no | Needs the token-spending `cargo test review_e2e_live_decision -- --ignored` against a scratch firstmate home with a live first mate. That was not run here. To cover it, run it with FM_E2E_HOME set to… |
+
+<details>
+<summary>Evidence: pnpm artifacts run log (305 ok, all passed)</summary>
+
+```text
+
+> firstmate-desktop-mvp@0.0.1 artifacts ~/.no-mistakes/worktrees/d75daa889db3/01M3CZ3YQ99HHFJHNAS5JADCS8
+> node scripts/artifact-review.mjs
+
+ok: Captain's Call counts the four open calls, and a report that argues one is not counted again
+ok: the sidebar counts the same four
+ok: a finished scout whose report argues an open call is not offered twice
+ok: the call names the scout's report as its argument
+ok: a finished scout leaves Underway once its report is offered
+ok: Underway says how long a task has been going (started 1 h 35 min ago)
+ok: Decided for you lists the calls the first mate made
+ok: a decision says what was decided
+ok: a decision says why
+ok: a decision names its task by title
+ok: a decision links what it points at
+ok: a pull request link reads as its number
+ok: a decision's task opens that task
+ok: Push back puts the decision in the composer
+ok: Push back leaves the caret in the composer
+ok: Push back sends nothing by itself
+ok: a decision can be dismissed
+ok: a dismissed decision stays dismissed after a reload
+ok: the dismissed decision is the one that was dismissed
+ok: Recently Landed shows what landed and the call the captain answered
+ok: an answered and closed call shows as done
+ok: the answered call says what the captain chose, and what it was based on
+ok: what the answer was based on is a link to it
+ok: a call answered on a bare date reads as that day (Sep 23)
+ok: a landed PR links the PR
+ok: a landed task with a page offers it
+ok: a landed scout says it reported
+ok: a report without a page is asked for in chat
+ok: bearings: the window does not scroll sideways (0px)
+ok: the drawer is titled by the task's title
+ok: the task id sits beside the title
+ok: the drawer never says harness busy
+ok: the drawer says what the worker is doing in plain words
+ok: the drawer does not call a status note the instructions
+ok: the drawer shows the worker's latest note, labelled as such
+ok: what was asked comes before the worker's note (What was asked, Latest from the worker)
+ok: the body keeps the filer's list
+ok: the drawer says how long the task has been going
+ok: a scout's drawer has no PR section
+ok: the worker's screen starts folded
+ok: the worker's screen opens on request
+ok: Escape closes the drawer
+ok: a click outside the drawer closes it
+ok: a click on the sidebar while the drawer is open is not swallowed
+ok: Read the argument opens the scout's report
+ok: a finished scout's report that argues an open call starts on Request changes
+ok: the hint says the call waits on the page, not that nothing does
+ok: answering every call the page argues turns the review to Approve
+ok: the Approve hint says the answer goes with it
+ok: a verdict the captain picks stays theirs, and still carries the answer
+ok: back from the report returns to Bearings
+ok: the list shows the pages still in play
+ok: the newest page comes first
+ok: a task page names its project, task and revision
+ok: a page nobody has opened says so
+ok: a clean page carries no flag
+ok: only the groups with pages in them show
+ok: pages waiting on the captain come first
+ok: every unread page needs the captain
+ok: a page whose task landed is settled
+ok: the settled group says how many it holds
+ok: settled pages stay folded away
+ok: the settled group opens on its own
+ok: a chat page whose calls are all closed is settled, read or not
+ok: the landed page is the one that landed
+ok: a landed page says nothing is waiting on it
+ok: a landed page that argues no call starts the review on Comment
+ok: the hint says why nothing waits on a landed page
+ok: Request changes never claims a landed task is waiting
+ok: the settled group folds again
+ok: list: the window does not scroll sideways (0px)
+ok: the review screen is titled by the page
+ok: the subtitle names the owner and revision
+ok: the latest revision opens by default
+ok: the revision says what changed
+ok: the frame is sandboxed without same-origin or top navigation (allow-scripts allow-forms allow-downloads)
+ok: the page cannot reach into the app
+ok: the loading note clears once the page loads
+ok: a live scout's page that argues no call starts on Comment
+ok: review: the window does not scroll sideways (0px)
+ok: a revision presented with findings carries the flag
+ok: the flag opens the findings the presenter accepted
+ok: the flag closes the findings again
+ok: narrow shows the page at the check's narrow width (500px)
+ok: picking Rev 1 shows Rev 1
+ok: the subtitle follows the picked revision
+ok: a revision with a clean check has no flag
+ok: a newer revision is announced, not swapped in
+ok: opening the newest revision clears the announcement
+ok: back returns to the list
+ok: chat shows each revision presented in the last day (4)
+ok: the first revision reads as a shared page
+ok: a later revision reads as a revision
+ok: a first mate page says who shared it
+ok: chat: the window does not scroll sideways (0px)
+ok: a chat card opens the revision it announced
+ok: back returns to chat
+ok: the task drawer lists the task's pages
+ok: opening a page closes the drawer
+ok: back returns to Bearings
+ok: a page with no review says so
+ok: comment mode says what to do
+ok: turning comment mode on leaves the page where it was
+ok: the composer quotes what was clicked
+ok: picking a place leaves comment mode
+ok: the comment joins the review
+ok: a new comment is a draft, not a message
+ok: the send button counts the draft
+ok: the page highlights where the comment sits
+ok: a second comment joins the same review
+ok: a draft comment can be taken back
+ok: the count follows what is left
+ok: leaving the page and coming back keeps the draft
+ok: a comment says which revision it was written on
+ok: a sent comment says so
+ok: the review records its verdict
+ok: the draft count clears once it is sent
+ok: a sent comment cannot be taken back
+ok: the first mate is told the verdict
+ok: the review's comments reach the first mate
+ok: a comment taken back is never sent
+ok: a sent review is not shown as a bubble of its own text
+ok: the card names the page and the verdict
+ok: the card shows each comment in the captain's words
+ok: a review a later revision answered reads as answered
+ok: the card says which revision answered each comment
+ok: the card opens the revision that answered it
+ok: the revision's own card says which comments it answers
+ok: chat with a review card: the window does not scroll sideways (0px)
+ok: a comment a later revision answered is not counted as waiting
+ok: a page whose author answered every comment needs the captain
+ok: the rail shows the revision that answered the comment
+ok: a sent comment is not a draft
+ok: a settled comment leaves the waiting list
+ok: settled comments are kept, out of the way
+ok: a settled comment says so
+ok: settling can be undone
+ok: a review whose comments are all settled shrinks to one line
+ok: the line says what was settled and across which revisions (Review of AI titles for snips settled · 1 comment · rev 2 → rev 3
+Open)
+ok: a page with nothing waiting carries no chip
+ok: a read page with live work moves to its author
+ok: the list says a comment is still unsent
+ok: a call with a page to argue it says so
+ok: its options wait behind Answer now
+ok: the call names the page that argues it
+ok: the call says how many options and which is recommended
+ok: a question the title already asks is not said twice
+ok: a page that argues two calls offers both
+ok: the page offers the call's own question
+ok: options unchanged since the page say nothing
+ok: options changed after the page was presented say so
+ok: a page arguing an open call starts on Request changes
+ok: the hint says what Request changes does to an open call
+ok: every recorded option is offered, and Not now
+ok: the recommendation is marked
+ok: an answer is staged, not sent
+ok: the answer counts towards the review
+ok: the answer and the comment travel together
+ok: the answer says firstmate recorded it
+ok: the card shows the answer recorded with the review
+ok: the first mate is told the answer is already recorded
+ok: the answer names the call and the option key, as recorded
+ok: the first mate is never asked to do the recording
+ok: the comment goes in the same message
+ok: a recorded c
+
+... [80 bytes truncated] ...
+
+r lands as what the captain chose
+ok: the rail says who answered and how, once the call is answered
+ok: an answered call offers no live buttons
+ok: a call raised before its page existed is argued by the page its origin presented
+ok: reading the argument is the primary action
+ok: answering before opening the argument is noted, quietly
+ok: a keyed choice says it is recorded
+ok: the card says the answer is recorded
+ok: the card keeps the note that the argument was not opened
+ok: the first mate is told the answer is already recorded
+ok: the call leaves once firstmate has it closed
+ok: the answer lands based on the page that argued it
+ok: what an answer was based on opens from Recently Landed
+ok: a page with a diagram offers to open it
+ok: the editor opens the page's own diagram
+ok: the scene draws on a canvas
+ok: an unchanged diagram is not filed as a change
+ok: proposing closes the editor
+ok: the proposal reads as a thread on that diagram
+ok: the thread says what changed, in the diagram's own terms
+ok: a proposal is a draft like any comment
+ok: the rail shows what was proposed
+ok: the message names the diagram
+ok: the message points at the scene the author can take up
+ok: a page cannot open the composer on its own
+ok: a page cannot open a file of its choosing as a diagram
+ok: a forged anchor keeps its words
+ok: a forged anchor brings no picture into the app
+ok: review in a narrow window: the window does not scroll sideways (0px)
+ok: a step group keeps the fact that a step failed (2 steps
+1 came back with an error
+ran bin/fm-fleet-snapshot.sh --json · ran test -f data/res-ai-titles/report.md)
+ok: a step group does not sound the alarm over a failed probe
+ok: a failed step is not painted in the alarm colour
+ok: pages from before this window stay under Earlier (earlier,page,page,page,page)
+ok: no page renders below the resumed conversation's last exchange, which is newer than all of them
+ok: a page stays above the review sent on it, and pages keep their order
+ok: a page presented after a review the history holds follows that review
+ok: the review's card keeps its message's place in the resumed conversation
+ok: nothing after the resumed conversation, so no Today
+ok: a call nothing argues offers its options inline
+ok: its options, and Not now
+ok: a keyed option is recorded, and the button says so
+ok: a skipped answer is shown as not recorded
+ok: with the intake's reason
+ok: nothing about a skipped answer reaches the first mate
+ok: the rail shows a skipped answer as not recorded
+ok: a skipped answer can be chosen again
+ok: the review never claims a skipped answer
+ok: a call answered in chat says so in the rail
+ok: and offers no buttons
+ok: Bearings with Answer now open in a narrow window: the window does not scroll sideways (0px)
+ok: every option's words stay inside its chip in a narrow window ()
+ok: an older home counts Bearings' calls
+ok: its call is answered in words
+ok: with no options but Not now
+ok: and no evidence
+ok: no Decided for you without calls[]
+ok: no answers read back from prose
+ok: no call cards in the rail without calls[]
+ok: a call nothing argues offers Not now and words ({"choices":["Keep merging once checks pass\nRECOMMENDED","Hold every PR for me","Not now"],"words":["Or answer in words"]})
+ok: an argued call keeps its answer folded under Answer now
+ok: an argued call opens to its options, Not now and words ({"choices":["Pause, and carry on when Wi-Fi is back\nRECOMMENDED","Finish on cellular if under 20 MB are left","Not now"],"words":["Or answer in words"]})
+ok: Not now sends nothing until it has a day
+ok: and says what it is waiting for
+ok: words go with Not now rather than instead of it
+ok: the dated Not now says what it sends, words and all
+ok: the card keeps what was sent
+ok: words are sent, not recorded
+ok: the dated Not now reaches the first mate
+ok: an argued call answered in words reaches the first mate
+ok: the page offers the call's options and Not now (Wi-Fi only, with visible progress
+RECOMMENDED / Ask on the first snip that needs it / Keep downloading eagerly / Not now)
+ok: the page offers words
+ok: words beside it, the page still says its options changed
+ok: Not now in the page waits for its day
+ok: and stages nothing until it has one
+ok: a dated Not now goes with the review
+ok: an option replaces Not now
+ok: words with an option are added to it
+ok: words alone go with the review too
+ok: words are staged for the first mate to record, not the intake
+ok: staged words are there on coming back
+ok: a staged option keeps what was added to it
+ok: staged words are there after another page
+ok: a staged option keeps what was added to it after another page
+ok: a staged Not now keeps its day after another page
+ok: choosing on one call leaves the words staged on another
+ok: the page shows the words that went as what was said then
+ok: words sent are never shown as recorded
+ok: the option is recorded
+ok: with what was added to it
+ok: an answer the intake recorded cannot be changed in the page
+ok: a call still asked after words went offers every way to answer it again
+ok: the recorded option carries what was added
+ok: the first mate is asked to record words, since nothing else can
+ok: the words go as the captain wrote them, the last of them too
+ok: the chat card shows words as sent, not recorded
+ok: Bearings offers a call still asked after words went in the page
+ok: Bearings offers no answer to a call the intake recorded from the page
+ok: what was said then stays beside the new words
+ok: the next review carries the new words alone
+ok: the review that carried the first words still says what they were
+ok: held until its day, the page shows the Not now that went and asks nothing
+ok: held until its day, the call leaves Captain's call while the others stay
+ok: its day come, Bearings offers the call's answer again
+ok: its day come, the page keeps the Not now as what was said then
+ok: and offers its words again, empty
+ok: and every choice again
+ok: and no longer says the answer went or is staged
+ok: what was said then stays beside the new answer
+ok: the new answer is recorded, and the page asks nothing more
+ok: the next review carries the new answer
+ok: the review that carried the Not now still says what it was
+ok: words staged in the page wait to go with the review
+ok: once the call is answered elsewhere, the page takes back the words it had staged
+ok: the answer given in chat went
+ok: an argued call with no options is answered in words in Bearings
+ok: the page says the options are not recorded
+ok: and offers words instead of sending the captain to chat
+ok: Captain's Call counts a finished report beside the three open calls
+ok: a finished scout's report is offered where the captain looks first
+ok: the report card names the task by its title
+ok: the report card says what the scout found
+ok: a finished scout's report that argues nothing starts the review on Comment
+ok: the hint says why nothing waits on it
+ok: a comment settled from its card in chat is settled
+ok: a settled review card, dark: the window does not scroll sideways (0px)
+ok: a settled review card, light: the window does not scroll sideways (0px)
+ok: t2: a place words cannot pin down starts with its picture on
+ok: t2: the comment box says why (Picture
+These words are in more than one place · It's inside something you opened. Drawing the page…)
+ok: t2: the page draws itself around the place from inside its sandbox
+ok: t2: the draft keeps its picture
+ok: t2: the card marks the comment that went with a picture
+ok: t2: the card says the author is at work on it
+ok: t2: the author is told "t1 on \"under pace: lasts past the reset\": what does underpace mean?"
+ok: t2: the author is told "of them on screen"
+ok: t2: the author is told "near     Usage › Plan limits › Claude › 5h"
+ok: t2: the author is told "element  div#pop.pop > div.pop-body > div.sect > div.prov.open[data-prov=claude] > div.detail > dl > dd"
+ok: t2: the author is told "/artifacts/usage-panel/review-files/t1-r1.jpg"
+ok: t2: the author is told "not a screenshot of the captain's screen"
+ok: t2: which of the two cells on screen
+ok: t2: the positional path stays in the log
+
+all artifact review checks passed
+```
+</details>
+![Bearings: argued call with a dated Not now and words (light)](https://github.com/user-attachments/assets/5ccef719-0ff4-44b3-b7e3-e5deae9e9b8b)
+![Bearings: argued call with a dated Not now and words (dark)](https://github.com/user-attachments/assets/c1d29d17-fd13-4b9c-a8cb-fe75c283d6f6)
+![Artifact page rail: option with added words, plus words alone, staged (dark)](https://github.com/user-attachments/assets/ad770b3a-6d6a-426f-bc80-77dca1987acc)
+![Artifact page rail: words sent, option recorded (light)](https://github.com/user-attachments/assets/02b4cda7-3d1e-4f47-b24e-6ce8fa2cb51f)
+![Artifact page rail: call with no recorded options answered in words (light)](https://github.com/user-attachments/assets/340728e3-799d-4ac5-868b-8448dab24a08)
+![Artifact page rail: day come, earlier Not now kept, answerable again (light)](https://github.com/user-attachments/assets/f5b6d507-508f-472c-93ed-4c6f7c63be72)
+![Manual chrome-devtools-axi: argued Bearings card answered in words (light)](https://github.com/user-attachments/assets/9422da8b-98d6-4201-89b6-a34604867a21)
+![Manual chrome-devtools-axi: argued Bearings card answered in words (dark)](https://github.com/user-attachments/assets/18c6c802-b3e0-4e81-945d-ec22a20b25ae)
+![Manual chrome-devtools-axi: after sending words (dark)](https://github.com/user-attachments/assets/58a13652-c7fa-414a-a927-fb28861e5c75)
+- Evidence: All pnpm artifacts screenshots, both themes (local file: <code>~/.no-mistakes/evidence/01M3CZ3YQ99HHFJHNAS5JADCS8/shots</code>)
+
+## Pipeline
+
+Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+
+<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"fc5e5342c6b1534bcebce2160338c7278d86af08","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"pending"}],"live_validation":{"verdict":"go","live":8,"total":9}} -->
+
+<details>
+<summary>✅ **intent** - passed</summary>
+
+✅ No issues found.
+</details>
+
+<details>
+<summary>✅ **Rebase** - passed</summary>
+
+✅ No issues found.
+</details>
+
+<details>
+<summary>⚠️ **Review** - 1 info</summary>
+
+- ⚠️ `src/App.tsx:2663` - RailCall sets up its local fields from `current` only once, when it mounts (`useState(Boolean(current?.defer))`, `useState(current?.defer ?? &#34;&#34;)`, `useState(current?.note ?? &#34;&#34;)`). But ArtifactReview mounts while `review` is still null: App.tsx:252 runs `setReview(null)` and then an async `reviewGet` whenever the page ref changes. So when a page with a staged answer in words is opened after a relaunch, or after visiting another page, `chosen` is undefined at mount. The textarea stays empty and Not now stays unselected, while the status line says &#34;Goes with your review, for the first mate to record&#34;. Worse, `stage()` merges `latest.current`, which holds the empty note. If the captain then clicks an option or Not now, the staged words are silently replaced with an empty note. Sending instead sends words the rail never showed. The mjs check only covers going back to the same page, where `openArtifact` is never cleared and the review stays loaded, so it misses this. Fix: render the rail calls only once `review` has loaded, or key RailCall on the review being loaded, or re-seed deferring/deferDate/note when `current` first arrives. This also applies to the staged option&#39;s added note (`current?.note`).
+- ⚠️ `src-tauri/src/review.rs:218` - Simplification: the change adds an `earlier` list to ReviewView (review.rs view(), summary() lookup at :1127, mock, types.ts `earlier`) and a &#34;You said in your review, &lt;when&gt;: ...&#34; blockquote in RailCall (`before`/`then`/`saidThen`, App.tsx answer-earlier). No intent requirement asks for this history of past worded answers. The intent asks for free text and a dated Not now on argued calls in both surfaces, and for keeping the existing staged/sent/recorded indicators. Letting a call be answered again while firstmate still asks it (`anew`) is arguably needed so a dated Not now can be answered once its day comes. The kept history and its display go beyond that, and they grow the log/view contract. Recommend removing `earlier` and the answer-earlier blockquote unless James wants that history.
+- ℹ️ `src-tauri/src/review.rs:1081` - `summary().answered` and the rail now count only intake-recorded answers as final. An option handed to the first mate by a review sent before the app called the intake used to lock, and was shown in Bearings as &#34;Answered in your review&#34;. It now reopens as answerable in both places. That is consistent with the stated design, and the related double-answer gap is filed as qd-pending-answer-1. It is noted here only because it changes how existing review logs behave.
+
+🔧 Fix applied.
+1 info still open:
+
+- ℹ️ `src-tauri/src/review.rs:1081` - `summary().answered` and the rail now count only intake-recorded answers as final. An option handed to the first mate by a review sent before the app called the intake used to lock, and was shown in Bearings as &#34;Answered in your review&#34;. It now reopens as answerable in both places. That is consistent with the stated design, and the related double-answer gap is filed as qd-pending-answer-1. It is noted here only because it changes how existing review logs behave.
+</details>
+
+<details>
+<summary>✅ **Test** - passed</summary>
+
+✅ No issues found.
+- Live validation: ✅ go - 8 of 9 scenarios driven live against the product
+
+| Scenario | Result | Live | Evidence |
+| --- | --- | --- | --- |
+| In Bearings, Answer now on a call argued by a page opens its options, Not now and an &#39;Or answer in words&#39; field, like a call nothing argues | ✅ pass | live | pnpm artifacts (&#39;an argued call opens to its options, Not now and words&#39;); manual-bearings-argued-words-{light,dark}.png |
+| In Bearings, a dated Not now on an argued call waits for its day, then sends the date and any added words to the first mate | ✅ pass | live | pnpm artifacts (&#39;Not now sends nothing until it has a day&#39;, &#39;the dated Not now reaches the first mate&#39;); shots/25-argued-not-now-*.png |
+| In Bearings, words alone on an argued call are sent to the first mate, not recorded | ✅ pass | live | pnpm artifacts (&#39;an argued call answered in words reaches the first mate&#39;); manual chrome-devtools-axi send, which showed &#39;Answered · the first mate read it&#39; |
+| On the artifact page, the rail offers the options, a dated Not now and words, staged into one review; words stay staged for the first mate to record and an option is recorded with what was added | ✅ pass | live | pnpm artifacts rail block; shots/26-rail-in-words-*.png, shots/27-rail-words-sent-*.png |
+| Existing rail indicators are kept: options updated since rev 1, options not recorded (answered in words instead), and staged, sent and recorded | ✅ pass | live | pnpm artifacts (&#39;Options updated since rev 1&#39;, &#39;the page says the options are not recorded&#39;, &#39;words sent are never shown as recorded&#39;); shots/28-rail-no-options-*.png |
+| Adversarial (review-1): a staged note, option or Not now date shows again after leaving the page or visiting another page, and is not wiped by a later click | ✅ pass | live | pnpm artifacts (&#39;staged words are there after another page&#39;, &#39;a staged Not now keeps its day after another page&#39;, &#39;choosing on one call leaves the words staged on another&#39;) |
+| Adversarial: an answer the intake recorded cannot be changed, while a call still asked after words or a Not now went can be answered again, with the single most recent earlier answer shown | ✅ pass | live | pnpm artifacts (?day-comes block, &#39;an answer the intake recorded cannot be changed in the page&#39;); shots/29-rail-day-come-*.png; cargo test review:: (earlier keeps one answer per decision) |
+| Adversarial: words staged in the page are taken back once the call is answered in chat, so they never go twice | ✅ pass | live | pnpm artifacts (?records-chat: &#39;the page takes back the words it had staged&#39;) |
+| A review sent from the native app records its answers through firstmate&#39;s real intake (bin/fm-captain-hold.sh) | ⏸️ untested | no | Needs the token-spending `cargo test review_e2e_live_decision -- --ignored` against a scratch firstmate home with a live first mate. That was not run here. To cover it, run it with FM_E2E_HOME set to… |
+
+- <code>`pnpm dev --port 4197 --strictPort` then `ARTIFACT_SHOTS=&lt;evidence&gt;/shots FIRSTMATE_URL=http://127.0.0.1:4197 pnpm artifacts` (305 checks passed, screenshots in both themes)</code>
+- <code>`pnpm test` (calls.ts and other pure-module tests, 89 passed)</code>
+- <code>`cd src-tauri &amp;&amp; cargo test review::` (23 review.rs tests passed, including the one proving `earlier` keeps only the latest superseded answer for each decision)</code>
+- <code>Manual chrome-devtools-axi pass on `?artifacts`: opened Answer now on an argued Bearings call, saw its options, Not now and &#39;Or answer in words&#39;, typed words, saw &#39;→ sends: ...&#39;, switched to dark theme, sent it, and saw &#39;Answered · the first mate read it&#39;</code>
+</details>
+
+<details>
+<summary>✅ **Document** - passed</summary>
+
+✅ No issues found.
+</details>
+
+<details>
+<summary>✅ **Lint** - passed</summary>
+
+✅ No issues found.
+</details>
+
+<details>
+<summary>✅ **Push** - passed</summary>
+
+✅ No issues found.
+</details>
+
