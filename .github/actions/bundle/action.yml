@@ -1,0 +1,117 @@
+name: Bundle the app
+description: >-
+  Builds the macOS app as a release ships it: signed with a code-signing
+  identity, with the updater's archive and its signature,
+  and checks both before anything is done with them. Shared by the release
+  (release.yml) and by its dry run on every branch (app.yml), so the path a
+  release takes is exercised long before a release takes it.
+
+inputs:
+  version:
+    description: The version to stamp into the app, such as 0.1.42.
+    required: true
+  signing:
+    description: >-
+      import (the identity in p12) or throwaway (a self-signed one made for a
+      dry run).
+    required: true
+  p12:
+    description: Base64 of the .p12 holding the code-signing identity, for signing import.
+    required: false
+    default: ""
+  p12-password:
+    description: The .p12's password.
+    required: false
+    default: ""
+  updater-key:
+    description: The updater's minisign private key, its contents or a path to it.
+    required: true
+  updater-pubkey:
+    description: >-
+      A public key to build in instead of the one in tauri.conf.json, for a dry
+      run signed with a throwaway key. A release leaves it empty.
+    required: false
+    default: ""
+
+outputs:
+  tarball:
+    description: The updater's archive, renamed for upload; its signature is beside it as .sig.
+    value: ${{ steps.collect.outputs.tarball }}
+
+runs:
+  using: composite
+  steps:
+    - name: Code-signing identity
+      id: identity
+      shell: bash
+      env:
+        SIGNING: ${{ inputs.signing }}
+        QUARTERDECK_SIGNING_P12: ${{ inputs.p12 }}
+        QUARTERDECK_SIGNING_P12_PASSWORD: ${{ inputs.p12-password }}
+      run: |
+        set -euo pipefail
+        case "$SIGNING" in
+          import|throwaway) name=$(scripts/release-signing.sh "$SIGNING") ;;
+          *) echo "::error::signing must be import or throwaway, not $SIGNING"; exit 1 ;;
+        esac
+        echo "name=$name" >>"$GITHUB_OUTPUT"
+
+    - name: Build
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        IDENTITY: ${{ steps.identity.outputs.name }}
+        PUBKEY: ${{ inputs.updater-pubkey }}
+        TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.updater-key }}
+        # The key is made without a password; the bundler still reads this.
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+      run: |
+        set -euo pipefail
+        # Only here, not in tauri.conf.json: building the updater's archive
+        # needs the private key, which a build on a laptop does not have.
+        config=$(node -e '
+          const [version, pubkey] = process.argv.slice(1);
+          const config = { version, bundle: { createUpdaterArtifacts: true } };
+          if (pubkey) config.plugins = { updater: { pubkey } };
+          console.log(JSON.stringify(config));
+        ' "$VERSION" "$PUBKEY")
+        APPLE_SIGNING_IDENTITY="$IDENTITY" pnpm tauri build --bundles app --config "$config"
+
+    - name: Check the signature is the stable identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        app="src-tauri/target/release/bundle/macos/firstmate desktop.app"
+        plutil -extract NSDocumentsFolderUsageDescription raw "$app/Contents/Info.plist" >/dev/null
+        codesign --verify --deep --strict "$app"
+        requirement=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
+        echo "designated requirement: $requirement"
+        # What macOS keys a permission to: this identifier and this
+        # certificate, never the hash of one build.
+        case "$requirement" in
+          *cdhash*) echo "::error::the requirement names this build's hash, so no permission would survive an update"; exit 1 ;;
+          'identifier "dev.firstmate.desktop" and '*certificate*) ;;
+          *) echo "::error::unexpected designated requirement: $requirement"; exit 1 ;;
+        esac
+
+    - name: Check the update is signed by the key the app trusts
+      id: collect
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        PUBKEY: ${{ inputs.updater-pubkey }}
+      run: |
+        set -euo pipefail
+        built="src-tauri/target/release/bundle/macos/firstmate desktop.app.tar.gz"
+        node scripts/release.mjs verify --tarball "$built" ${PUBKEY:+--pubkey "$PUBKEY"}
+        # GitHub turns spaces in an asset's name into dots, so it gets one without.
+        mkdir -p "$RUNNER_TEMP/release"
+        tarball="$RUNNER_TEMP/release/quarterdeck_${VERSION}_aarch64.app.tar.gz"
+        cp "$built" "$tarball"
+        cp "$built.sig" "$tarball.sig"
+        echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+
+    - name: Remove the signing keychain
+      if: always()
+      shell: bash
+      run: scripts/release-signing.sh cleanup

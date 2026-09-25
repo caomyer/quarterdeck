@@ -111,6 +111,12 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Check every state, including needs-authorization, stale and empty, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm usage`.
   `cd src-tauri && cargo test quota_live_reads_this_mac -- --ignored --nocapture` reads this Mac's quota-axi through the app's path, spending nothing.
   Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test compact_e2e_live_scratch_home -- --ignored --nocapture` compacts a real first mate while it is idle and while a turn runs.
+- Every push to `main` publishes a release that running apps install (`.github/workflows/release.yml`, `src-tauri/src/update.rs`); `docs/releasing.md` says how, and what only James can do.
+  Without the signing certificate the Release job fails and publishes nothing, on purpose: an unsigned release would reset the app's macOS permissions.
+  `app.yml`'s Bundle job dry-runs that build on every branch, publishing nothing.
+  Never publish a release to try something.
+  A release build you launch must run with `QUARTERDECK_UPDATES=off`, or quitting it installs the latest release over it.
+  Check the sidebar's update notice, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm updates`.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.
@@ -124,7 +130,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Standard hosted runners are free and unmetered for public repositories, macOS included, so self-hosting would buy nothing.
   Two self-hosted runners were tried on 2026-09-20 while the repository was private and Actions minutes had run out; they were removed the same day when it went public.
 - Where a job runs is decided by what the job needs, and the default is `ubuntu-latest`.
-  Only three jobs name `macos-latest`: both App jobs, because the app ships for macOS, and the engine's stock-Bash job, because it asserts `/bin/bash` is exactly 3.2.57.
+  Only five jobs name `macos-latest`: the three App jobs and the Release job, because the app ships for macOS and is built and signed there, and the engine's stock-Bash job, because it asserts `/bin/bash` is exactly 3.2.57.
 - The engine's four behaviour lanes must stay on Linux, and moving them to macOS is not an optimisation to retry.
   They identify a harness by reading another process's environment, and macOS System Integrity Protection forbids that for platform binaries.
   On a Mac `fm-harness-precedence`, `fm-kimi-harness`, `fm-muse-harness`, `fm-cursor-harness` and `fm-remote-herdr-guard` all resolve an empty harness name and fail; `fm-remote-herdr-guard` names the reason itself.

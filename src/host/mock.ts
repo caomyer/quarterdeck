@@ -4,9 +4,11 @@ import type { CopyResult, PickResult } from "../attachments";
 import recordedStream from "./mock-event-stream.json";
 // The example firstmate ships, read from the engine itself, so turning routing on here starts from the same rules.
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
+import { MockUpdates } from "./mock-update";
 import { mockUsage } from "./mock-usage";
 import { artifactPath } from "./types";
 import type {
+  AppUpdate,
   Artifact,
   ArtifactRef,
   BacklogRecord,
@@ -466,6 +468,8 @@ export class MockHostAdapter implements HostAdapter {
   private readonly snapshot = MockHostAdapter.fixtureSnapshot();
   private routing = MockHostAdapter.initialRouting();
   private routingRevision = 1;
+  /** `?update=<state>`: the app's own update (src/host/mock-update.ts). */
+  private readonly updates = new MockUpdates(() => this.state, (ms, run) => this.later(ms, run));
 
   /**
    * `?routing=on` starts with the example rules, `?routing=invalid` with rules the first mate cannot use,
@@ -805,6 +809,26 @@ export class MockHostAdapter implements HostAdapter {
     if (!this.usage.context) return;
     this.context = this.usage.context;
     this.emit({ type: "usage", payload: { at_ms: Date.now(), update: { used: this.context.used ?? undefined, size: this.context.size ?? undefined }, context: this.context, rate_limit: this.usage.rateLimit } });
+  }
+
+  updateStatus() {
+    return this.updates.status();
+  }
+
+  updateRestart() {
+    return this.updates.restart();
+  }
+
+  updateCancel() {
+    return this.updates.cancel();
+  }
+
+  updateSeen() {
+    return this.updates.seen();
+  }
+
+  onUpdate(listener: (update: AppUpdate) => void) {
+    return this.updates.listen(listener);
   }
 
   async readQuota(): Promise<QuotaRead> {

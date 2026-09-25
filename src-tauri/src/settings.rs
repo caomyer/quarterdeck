@@ -128,7 +128,7 @@ pub(crate) fn note_running<R: tauri::Runtime>(app: &AppHandle<R>, home: &Path, r
     }
 }
 
-fn settings_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+pub(crate) fn settings_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("QUARTERDECK_SETTINGS_DIR").filter(|dir| !dir.is_empty()) {
         return Ok(PathBuf::from(dir));
     }

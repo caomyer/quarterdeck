@@ -1,0 +1,118 @@
+name: Release
+
+# Every change that lands on main ships: a GitHub Release, numbered
+# 0.1.<run number>, holding the updater's signed archive and the latest.json
+# the app reads from releases/latest (src-tauri/src/update.rs). A running app
+# finds it within a few hours, downloads it on its own, and installs it when
+# the captain restarts or quits. docs/releasing.md says what the captain sets up
+# once, and why.
+#
+# The build is the one app.yml's Bundle job dry-runs on every branch
+# (.github/actions/bundle), so a change that breaks it is red before it lands.
+#
+# Every release is signed with the captain's code-signing certificate, so the
+# permissions macOS granted the app survive installing it. Without the
+# certificate nothing is published: the job fails before it builds.
+#
+# The release stays an unpublished draft until every asset is on it: the app
+# follows releases/latest, which never names a draft, so it can never be
+# offered a version whose archive is missing.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Releases go out one at a time and in order. A push that arrives while one
+# builds waits; a later one supersedes it, and ships its changes too.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    # A fork has neither the keys nor any business publishing.
+    if: github.repository == 'caomyer/quarterdeck'
+    # Where the app runs. Hosted, never self-hosted: see app.yml.
+    runs-on: macos-latest
+    # Hang tripwire: a cold release build measures around fifteen minutes.
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The notes read every change since the last release's tag.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: bundle
+
+      - name: Version and notes
+        id: release
+        run: |
+          set -euo pipefail
+          version=$(node scripts/release.mjs version --run "$GITHUB_RUN_NUMBER")
+          previous=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            node scripts/release.mjs notes --since "$previous" >"$RUNNER_TEMP/notes.md"
+          else
+            echo "- The first release the app can update itself from" >"$RUNNER_TEMP/notes.md"
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          { echo "## Quarterdeck $version"; cat "$RUNNER_TEMP/notes.md"; } >>"$GITHUB_STEP_SUMMARY"
+
+      # Both are required: without the updater key no installed app accepts
+      # the release, and without the signing certificate installing it resets
+      # every permission macOS granted the app.
+      - name: Keys
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          P12: ${{ secrets.QUARTERDECK_SIGNING_P12 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$UPDATER_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set, so no installed app would accept this release. See docs/releasing.md."
+            exit 1
+          fi
+          if [ -z "$P12" ]; then
+            echo "::error::No release was published: QUARTERDECK_SIGNING_P12, the code-signing certificate, is not set. A release built without it would reset every permission macOS granted the app when the app installs it. Create the certificate as docs/releasing.md says, including setting Code Signing to Always Trust, or codesign refuses it."
+            exit 1
+          fi
+
+      - name: Bundle
+        id: bundle
+        uses: ./.github/actions/bundle
+        with:
+          version: ${{ steps.release.outputs.version }}
+          signing: import
+          p12: ${{ secrets.QUARTERDECK_SIGNING_P12 }}
+          p12-password: ${{ secrets.QUARTERDECK_SIGNING_P12_PASSWORD }}
+          updater-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          TARBALL: ${{ steps.bundle.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$(basename "$TARBALL")"
+          node scripts/release.mjs manifest --version "$VERSION" --tarball "$TARBALL" --url "$url" --notes-file "$RUNNER_TEMP/notes.md" >"$RUNNER_TEMP/latest.json"
+          body="$RUNNER_TEMP/body.md"
+          cp "$RUNNER_TEMP/notes.md" "$body"
+          printf '\nBuilt from %s.\n' "$GITHUB_SHA" >>"$body"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Quarterdeck $VERSION" --notes-file "$body" --draft \
+            "$TARBALL" "$TARBALL.sig" "$RUNNER_TEMP/latest.json"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
