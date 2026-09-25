@@ -31,6 +31,8 @@ export type ChatMessage = {
   status?: string;
   /** From a resumed session's history: no time, and never part of a live turn. */
   past?: boolean;
+  /** For a resumed message, which has no time of its own: when its history was read, so it was said before then. */
+  before?: string;
   /** The session this belongs to, so a resumed session's history replaces only its own conversation. */
   session?: string | null;
 };
@@ -103,7 +105,8 @@ function readableError(error: string) {
  * Notices stay: they mark where an earlier conversation ended, before this session's history.
  */
 function mergeHistory(current: ChatMessage[], items: HistoryItem[], session: string | null, onScreen: Set<string>, statuses: Map<string, OutboxStatus>) {
-  const past: ChatMessage[] = items.map((item, index) => ({ id: `history-${session ?? "none"}-${index}`, who: item.who, text: item.text, createdAt: "", past: true, session }));
+  const before = new Date().toISOString();
+  const past: ChatMessage[] = items.map((item, index) => ({ id: `history-${session ?? "none"}-${index}`, who: item.who, text: item.text, createdAt: "", past: true, before, session }));
   const kept = (message: ChatMessage) => statuses.get(message.id) !== "picked_up";
   const earlier = (message: ChatMessage) => onScreen.has(message.id);
   const replaced = (message: ChatMessage) => earlier(message) && message.who !== "notice"
