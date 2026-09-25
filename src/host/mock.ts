@@ -1151,8 +1151,9 @@ export class MockHostAdapter implements HostAdapter {
    * later; `light` does the same under direct-PR, noting why in the row; `decline` answers in chat instead; `refused-mode`,
    * `refused-blanks`, `refused-empty` and `refused-unknown` meet fm-spawn.sh's refusals, in its words; `hold` puts a
    * question to the captain on the row; `no-agent` registers a worker whose agent never started; `unconfirmed` one on
-   * a backend with no classifier; `orphan` moves the row with no worker registered; `failed` errors before reading it;
-   * and `slow` is still reading it.
+   * a backend with no classifier; `finish` one on such a backend that then speaks for itself, a status line first and
+   * a PR later, its row moving to done; `orphan` moves the row with no worker registered; `failed` errors before
+   * reading it; and `slow` is still reading it.
    */
   private startTurn(id: string, text: string) {
     const task = text.match(/^Start work on (\S+) /)?.[1] ?? "";
@@ -1213,6 +1214,10 @@ export class MockHostAdapter implements HostAdapter {
       end();
       // Its agent comes up a moment after the spawn, and the snapshot sees it the next time it reads.
       if (outcome === "launch" || outcome === "light") this.later(2500, () => this.seeAgent(task, "alive"));
+      if (outcome === "finish") {
+        this.later(2500, () => this.workerWrites(task, "working", "Reading how the waveform is drawn."));
+        this.later(9000, () => this.workerWrites(task, "done", "Opened PR #31: the waveform takes each speaker's colour.", "https://github.com/caomyer/Resonance/pull/31"));
+      }
     });
   }
 
@@ -1231,10 +1236,11 @@ export class MockHostAdapter implements HostAdapter {
     worker.mode = kind === "scout" ? "scout" : mode;
     worker.paths.status_log = { present: false, last_event: { state: "", note: "", raw: "" } };
     // Right after a spawn the pane holds only a shell, so the probe reads no agent yet; a backend with no classifier reads unknown.
-    worker.endpoint = outcome === "unconfirmed"
+    const unclassified = outcome === "unconfirmed" || outcome === "finish";
+    worker.endpoint = unclassified
       ? { ...worker.endpoint, agent_alive: "unknown", status: "unknown" }
       : { ...worker.endpoint, agent_alive: "dead", status: "dead" };
-    if (outcome === "unconfirmed") worker.backend = "zellij";
+    if (unclassified) worker.backend = "zellij";
     // qd-spawn-race-1 as it was recorded: the pane's busy signature read busy while the pane held only a shell.
     if (outcome === "no-agent" || outcome === "unconfirmed") worker.current_state = { ...worker.current_state, state: "working", source: "pane", detail: "harness busy (fm-spawn)", raw: "state: working · source: pane · harness busy (fm-spawn)" };
     const orphan = outcome === "orphan";
@@ -1256,6 +1262,29 @@ export class MockHostAdapter implements HostAdapter {
         ...worker,
         current_state: { ...worker.current_state, state: "working", source: "pane", detail: "harness busy (claude-hook)", observed_at: now },
         endpoint: { ...worker.endpoint, agent_alive: status, status, observed_at: now },
+      }),
+    };
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+  }
+
+  /**
+   * The worker's own status line, as the snapshot next reads it: the probe still cannot classify its backend, and a
+   * `done` line carries the PR and the row moves to done.
+   */
+  private workerWrites(task: string, state: "working" | "done", note: string, pr?: string) {
+    const now = new Date().toISOString();
+    const fleet = this.snapshot.fleet;
+    const raw = `${state}: ${note}`;
+    this.snapshot.fleet = {
+      ...fleet, generated: now,
+      backlog: state !== "done" ? fleet.backlog : { ...fleet.backlog, records: (fleet.backlog?.records ?? []).map((record) => record.id !== task ? record : { ...record, state: "done", current_role: "done", completion: { verb: "done", date: localDate(0) } }) },
+      tasks: fleet.tasks.map((worker) => worker.id !== task ? worker : {
+        ...worker,
+        paths: { ...worker.paths, status_log: { present: true, last_event: { state, note, raw } } },
+        current_state: { state, source: "status-log", detail: note, raw, observed_at: now, freshness: "fresh" },
+        endpoint: { ...worker.endpoint, observed_at: now },
+        pr: pr ? { url: pr, source: "status_event" } : worker.pr,
+        hints: { ...worker.hints, last_event_text: raw },
       }),
     };
     this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });

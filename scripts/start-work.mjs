@@ -52,8 +52,8 @@ async function follow(drawer, until, limit = 12_000) {
   const seen = [];
   const deadline = Date.now() + limit;
   while (Date.now() < deadline) {
-    const phase = await phaseOf(drawer);
-    const status = await statusOf(drawer);
+    // One read of both, so a phase is never paired with the status of the render after it.
+    const { phase, status } = await drawer.evaluate((element) => ({ phase: element.getAttribute("data-phase"), status: element.querySelector("[data-testid='start-status'] strong")?.innerText ?? "" })).catch(() => ({ phase: null, status: "" }));
     if (phase && (seen.at(-1)?.phase !== phase || seen.at(-1)?.status !== status)) seen.push({ phase, status });
     if (phase === until) break;
     await drawer.page().waitForTimeout(100);
@@ -316,6 +316,31 @@ for (const [outcome, words] of Object.entries(REFUSALS)) {
   await shot(page, "c4-unconfirmed");
   await drawer.getByRole("button", { name: "Show the screen" }).click();
   check(await drawer.locator("[data-testid='worker-screen'] pre").isVisible(), "Show the screen opens the worker's screen");
+  await page.close();
+}
+
+// Underway, then Finished: a worker on a backend with no classifier speaks for itself with a status line, and from
+// there the drawer is today's live task drawer, until the worker is done and its row with it.
+{
+  const { page, drawer } = await openQueued("start=finish", SHIP);
+  await handOver(drawer);
+  const seen = await follow(drawer, "underway");
+  console.log(`   ${seen.map((item) => `${item.phase} (${item.status})`).join(" > ")}`);
+  check(seen.some((item) => item.phase === "starting") && await phaseOf(drawer) === "underway", "a worker that writes a status line hands the drawer over as underway");
+  const label = () => drawer.locator("[data-testid='start-status'] strong").evaluate((element) => element.textContent ?? "").catch(() => "");
+  check(await label() === "working", "underway, the status card is the worker's own state, as the live drawer labels it");
+  await tone(page, drawer, "--blue", "lucide-circle-dot", "an underway worker");
+  check(await drawer.locator("[data-testid='how-it-ships']").count() === 0, "underway, the drawer shows no How it ships");
+  check(!/\b(Starting|Working)\b|not confirmed|Waiting to see it running/.test(await drawer.locator("[data-testid='start-status']").evaluate((element) => element.textContent ?? "")), "underway, the status card carries no launch copy");
+  check(!seen.some((item) => item.phase === "working"), "a worker whose agent was never seen alive never read Working");
+  await shot(page, "d1-underway");
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline && await label() !== "done") await page.waitForTimeout(100);
+  check(await label() === "done" && await phaseOf(drawer) === "underway", "a finished worker's drawer shows its own done state");
+  await tone(page, drawer, "--green", "lucide-circle-check", "Finished");
+  check(await drawer.locator(".pr-block a[href='https://github.com/caomyer/Resonance/pull/31']").count() === 1, "and the PR it opened");
+  check(await page.locator(`[data-testid='project-queue'] .task-row[data-id='${SHIP}']`).count() === 0, "the finished row has left the queue");
+  await shot(page, "d2-finished");
   await page.close();
 }
 
