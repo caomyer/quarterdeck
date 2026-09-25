@@ -5,7 +5,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "../src/calls.ts";
+import { answerInWords, answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "../src/calls.ts";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -131,4 +131,11 @@ test("a link is named by what it is", () => {
   assert.equal(linkLabel("https://github.com/caomyer/foreman/pull/24"), "PR #24");
   assert.equal(linkLabel("https://www.example.com/doc"), "example.com");
   assert.equal(linkLabel("not a url"), "not a url");
+});
+
+test("an answer in words is not now until a day, what the captain wrote, or both", () => {
+  assert.equal(answerInWords(null, "  Pause, but say why.  "), "Pause, but say why.");
+  assert.equal(answerInWords("2026-10-03", ""), "Not now. Ask me again on Oct 3.");
+  assert.equal(answerInWords("2026-10-03", "After the launch."), "Not now. Ask me again on Oct 3. After the launch.");
+  assert.equal(answerInWords(undefined, "   "), "");
 });

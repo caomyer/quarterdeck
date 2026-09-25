@@ -5,7 +5,10 @@
 // iterating: what the author answers, settling a comment, what the list says is new, and
 // deciding: a call answered inside the page that argues it, in one review with the comments,
 // recorded through firstmate's intake, or straight from Bearings, a skip never shown as recorded,
-// and a home that predates calls[], and a diagram the page owns: opening it, proposing changes, and how they reach the author.
+// every way to answer a call (an option, not now until a day, and words) kept by a call a page argues,
+// in Bearings and in the page itself, a call still asked after it was answered in words or not now being
+// answerable again in both while an answer the intake recorded is not, and a home that predates calls[], and a diagram the page owns:
+// opening it, proposing changes, and how they reach the author.
 //
 //   pnpm dev --port 4191 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4191 pnpm artifacts
@@ -428,7 +431,7 @@ check((await cellular.locator("[data-testid='options-updated']").innerText()) ==
 check((await page.locator(".verdict-picker select").inputValue()) === "changes", "a page arguing an open call starts on Request changes");
 check((await page.locator(".review-send small").innerText()) === "The first mate revises the case before you decide.", "the hint says what Request changes does to an open call");
 const choices = answer.locator(".decision-choices button");
-check(await choices.count() === 3, "every recorded option is offered");
+check(await choices.count() === 4 && (await choices.last().innerText()) === "Not now", "every recorded option is offered, and Not now");
 check((await choices.first().textContent()).includes("Recommended"), "the recommendation is marked");
 await choices.first().click();
 check((await answer.innerText()).includes("Goes with your review"), "an answer is staged, not sent");
@@ -468,19 +471,20 @@ check((await answer.locator("[data-testid='call-answered']").innerText()) === "A
 check(await answer.locator(".decision-choices button").count() === 0, "an answered call offers no live buttons");
 await page.locator(".back-button").click();
 
-// Answering from Bearings: Answer now opens the options, a choice is recorded at once, and the card says so.
+// Answering from Bearings: Answer now opens the same answer a call nothing argues offers, and a recorded choice says so.
 await page.locator(".nav-item", { hasText: "Bearings" }).click();
 const quick = page.locator(".decision-card[data-call-id='res-transcripts-source']");
 await quick.waitFor();
 check((await quick.locator("[data-testid='argued-by']").innerText()) === "Argued by Which episodes already carry a transcript?", "a call raised before its page existed is argued by the page its origin presented");
 check((await quick.locator(".decision-actions button").last().innerText()).includes("Read the argument"), "reading the argument is the primary action");
 await quick.locator("button", { hasText: "Answer now" }).click();
-const panel = quick.locator("[data-testid='answer-now']");
+const panel = quick.locator("[data-testid='answer-fields']");
 await panel.waitFor();
-check((await panel.innerText()).includes("records it as your answer right away"), "Answer now says a choice is recorded at once");
-check((await panel.locator("[data-testid='unread-argument']").innerText()).includes("You haven't opened"), "answering before opening the argument is noted, quietly");
+check((await quick.locator("[data-testid='unread-argument']").innerText()).includes("You haven't opened"), "answering before opening the argument is noted, quietly");
 await shot(page, "19-answer-now");
 await panel.locator(".suggestion-chips button", { hasText: "Use the publisher" }).click();
+check((await quick.locator(".decision-actions > span").innerText()).startsWith("→ records: Use the publisher"), "a keyed choice says it is recorded");
+await quick.locator(".decision-actions button", { hasText: "Record answer" }).click();
 const recordedCard = page.locator(".decision-card[data-call-id='res-transcripts-source'][data-recorded='true']");
 await recordedCard.waitFor();
 check((await recordedCard.innerText()).includes("Recorded: Use the publisher's transcript when there is one, else transcribe"), "the card says the answer is recorded");
@@ -680,7 +684,7 @@ await resumed.close();
   await skipping.locator(".send-review").click();
   await railCellular.locator(".decision-refused").waitFor();
   check((await railCellular.innerText()).includes("Not recorded: the hold changed"), "the rail shows a skipped answer as not recorded");
-  check(await railCellular.locator(".decision-choices button:not(:disabled)").count() === 2, "a skipped answer can be chosen again");
+  check(await railCellular.locator(".decision-choices button:not(:disabled)").count() === 3, "a skipped answer can be chosen again");
   await shot(skipping, "20b-rail-not-recorded");
   await skipping.locator(".nav-item", { hasText: "Chat" }).click();
   const skippedReview = await sentText(skipping.locator("[data-testid='review-card']").last());
@@ -703,6 +707,8 @@ await resumed.close();
   const narrowCall = skipping.locator(".decision-card[data-call-id='res-transcripts-source']");
   await narrowCall.locator("button", { hasText: "Answer now" }).click();
   await noSidewaysScroll(skipping, "Bearings with Answer now open in a narrow window");
+  const spilling = await narrowCall.evaluate((card) => [...card.querySelectorAll(".suggestion-chips button")].filter((chip) => [...chip.children].some((part) => part.scrollWidth > part.clientWidth + 1)).map((chip) => chip.innerText));
+  check(spilling.length === 0, `every option's words stay inside its chip in a narrow window (${spilling.join(" / ")})`);
   await narrowCall.scrollIntoViewIfNeeded();
   await shot(skipping, "22-bearings-narrow");
   await skipping.close();
@@ -729,6 +735,262 @@ await resumed.close();
   await legacy.waitForTimeout(300);
   check(await legacy.locator("[data-testid='decision-answer']").count() === 0, "no call cards in the rail without calls[]");
   await legacy.close();
+}
+
+// A call a page argues keeps every way to answer it that a call nothing argues has: its options, not now until a
+// day, and words. Linking a call to its page took the last two away once, in Bearings and in the page alike.
+{
+  const argued = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  argued.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await argued.goto(`${baseUrl}/?artifacts`);
+  await argued.waitForFunction(() => !document.querySelector(".app-loading"));
+  /** What a card or the rail offers to answer with: every choice, whether it has a day field, and what its words are called. */
+  const offers = async (where) => ({
+    choices: await where.locator("[data-testid='answer-fields'] :is(.suggestion-chips, .decision-choices) button").allInnerTexts(),
+    words: await where.locator("[data-testid='answer-fields'] .reply-field span").allInnerTexts(),
+  });
+  const unargued = argued.locator(".decision-card[data-call-id='foreman-auto-merge']");
+  const cellularCard = argued.locator(".decision-card[data-call-id='res-model-cellular']");
+  await cellularCard.waitFor();
+  const plain = await offers(unargued);
+  check(plain.choices.at(-1) === "Not now" && plain.words[0] === "Or answer in words", `a call nothing argues offers Not now and words (${JSON.stringify(plain)})`);
+  check(await cellularCard.getAttribute("data-argued") === "true" && await cellularCard.locator("[data-testid='answer-fields']").count() === 0, "an argued call keeps its answer folded under Answer now");
+  await cellularCard.locator("button", { hasText: "Answer now" }).click();
+  const opened = await offers(cellularCard);
+  check(JSON.stringify(opened) === JSON.stringify({ choices: ["Pause, and carry on when Wi-Fi is back\nRECOMMENDED", "Finish on cellular if under 20 MB are left", "Not now"], words: ["Or answer in words"] }), `an argued call opens to its options, Not now and words (${JSON.stringify(opened)})`);
+
+  // Not now waits for its day, then goes to the first mate as words with anything added.
+  await cellularCard.locator(".suggestion-chips button", { hasText: "Not now" }).click();
+  check(await cellularCard.locator(".decision-actions button", { hasText: "Send" }).isDisabled(), "Not now sends nothing until it has a day");
+  check((await cellularCard.locator(".decision-actions > span").innerText()) === "Pick the day to be asked again", "and says what it is waiting for");
+  await cellularCard.locator(".date-field input").fill("2026-10-03");
+  await cellularCard.locator(".reply-field textarea").fill("After the launch, once we see real traffic.");
+  check((await cellularCard.locator(".reply-field span").innerText()) === "Anything to add for the first mate?", "words go with Not now rather than instead of it");
+  check((await cellularCard.locator(".decision-actions > span").innerText()) === "→ sends: On the res model cellular: Not now. Ask me again on Oct 3. After the launch, once we see real traffic.", "the dated Not now says what it sends, words and all");
+  await shot(argued, "25-argued-not-now");
+  await cellularCard.locator(".decision-actions button", { hasText: "Send" }).click();
+  await cellularCard.locator(".call-state").waitFor();
+  check((await cellularCard.innerText()).includes("Not now. Ask me again on Oct 3."), "the card keeps what was sent");
+
+  // Words alone, on a call argued by a scout's report.
+  const transcripts = argued.locator(".decision-card[data-call-id='res-transcripts-source']");
+  await transcripts.locator("button", { hasText: "Answer now" }).click();
+  await transcripts.locator(".reply-field textarea").fill("Publisher first, but log every episode we had to transcribe.");
+  check((await transcripts.locator(".decision-actions button").last().innerText()) === "Send", "words are sent, not recorded");
+  await transcripts.locator(".decision-actions button", { hasText: "Send" }).click();
+  await transcripts.locator(".call-state").waitFor();
+  await argued.locator(".nav-item", { hasText: "Chat" }).click();
+  const told = await argued.locator(".captain-message").allInnerTexts();
+  check(told.some((text) => text.includes("On the res model cellular: Not now. Ask me again on Oct 3. After the launch")), "the dated Not now reaches the first mate");
+  check(told.some((text) => text.includes("On the res transcripts source: Publisher first, but log every episode")), "an argued call answered in words reaches the first mate");
+  await argued.close();
+}
+
+// In the page that argues it: an option with words added, not now until a day, and words alone, all in one review.
+{
+  const rail = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  rail.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await rail.goto(`${baseUrl}/?artifacts`);
+  await rail.waitForFunction(() => !document.querySelector(".app-loading"));
+  const openPage = async () => {
+    await rail.locator(".nav-item", { hasText: "Artifacts" }).click();
+    await rail.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+    await rail.locator("[data-testid='decision-answer']").first().waitFor();
+  };
+  await openPage();
+  const download = rail.locator("[data-testid='decision-answer'][data-call-id='res-model-download']");
+  const cellular = rail.locator("[data-testid='decision-answer'][data-call-id='res-model-cellular']");
+  const choices = await download.locator("[data-testid='answer-fields'] .decision-choices button").allInnerTexts();
+  check(choices.at(-1) === "Not now" && choices.length === 4, `the page offers the call's options and Not now (${choices.join(" / ")})`);
+  check((await download.locator(".reply-field span").innerText()) === "Or answer in words", "the page offers words");
+  check((await cellular.locator("[data-testid='options-updated']").innerText()) === "Options updated since rev 1", "words beside it, the page still says its options changed");
+
+  await download.locator(".decision-choices button", { hasText: "Not now" }).click();
+  check((await download.locator(".decision-staged").innerText()) === "Pick the day to be asked again", "Not now in the page waits for its day");
+  check((await rail.locator(".send-review").innerText()) === "Send review", "and stages nothing until it has one");
+  await download.locator(".date-field input").fill("2026-10-03");
+  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  check((await rail.locator(".send-review").innerText()) === "Send review · 1", "a dated Not now goes with the review");
+  // Choosing an option instead takes the day back.
+  await download.locator(".decision-choices button", { hasText: "Wi-Fi only" }).click();
+  await download.locator(".decision-staged", { hasText: "recorded as it is sent" }).waitFor();
+  check(await download.locator(".date-field").count() === 0, "an option replaces Not now");
+  await download.locator(".reply-field textarea").fill("Say so in Settings too.");
+  check((await download.locator(".reply-field span").innerText()) === "Anything to add for the first mate?", "words with an option are added to it");
+  await cellular.locator(".reply-field textarea").fill("Pause, and tell the user why it stopped.");
+  await rail.waitForTimeout(900);
+  check((await rail.locator(".send-review").innerText()) === "Send review · 2", "words alone go with the review too");
+  check((await cellular.locator(".decision-staged").innerText()) === "Goes with your review, for the first mate to record", "words are staged for the first mate to record, not the intake");
+  await shot(rail, "26-rail-in-words");
+
+  // What was staged is kept: leaving the page and coming back finds it as it was left.
+  await rail.locator(".back-button").click();
+  await openPage();
+  check((await cellular.locator(".reply-field textarea").inputValue()) === "Pause, and tell the user why it stopped.", "staged words are there on coming back");
+  check((await download.locator(".decision-choices button.selected").innerText()).includes("Wi-Fi only") && (await download.locator(".reply-field textarea").inputValue()) === "Say so in Settings too.", "a staged option keeps what was added to it");
+  // Coming back from another page, the review is read again, and what was staged shows once it has been.
+  const visitElsewhere = async () => {
+    await rail.locator(".nav-item", { hasText: "Artifacts" }).click();
+    await rail.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" }).click();
+    await rail.locator(".artifact-review .review-rail").waitFor();
+    await openPage();
+  };
+  await visitElsewhere();
+  check((await cellular.locator(".reply-field textarea").inputValue()) === "Pause, and tell the user why it stopped.", "staged words are there after another page");
+  check((await download.locator(".decision-choices button.selected").innerText()).includes("Wi-Fi only") && (await download.locator(".reply-field textarea").inputValue()) === "Say so in Settings too.", "a staged option keeps what was added to it after another page");
+  await download.locator(".decision-choices button", { hasText: "Not now" }).click();
+  await download.locator(".date-field input").fill("2026-10-03");
+  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  await visitElsewhere();
+  check((await download.locator(".decision-choices button", { hasText: "Not now" }).getAttribute("aria-pressed")) === "true" && (await download.locator(".date-field input").inputValue()) === "2026-10-03", "a staged Not now keeps its day after another page");
+  await download.locator(".decision-choices button", { hasText: "Wi-Fi only" }).click();
+  await download.locator(".decision-staged", { hasText: "recorded as it is sent" }).waitFor();
+  await download.locator(".reply-field textarea").fill("Say so in Settings too.");
+  await rail.waitForTimeout(900);
+  check((await cellular.locator(".reply-field textarea").inputValue()) === "Pause, and tell the user why it stopped.", "choosing on one call leaves the words staged on another");
+
+  // Words still being typed as the review goes are not left behind.
+  await cellular.locator(".reply-field textarea").fill("Pause, and tell the user why it stopped. Keep what was downloaded.");
+  await rail.locator(".send-review").click();
+  await rail.locator(".review-last").waitFor();
+  check((await cellular.locator("[data-testid='answer-earlier']").innerText()).startsWith("You said in your review, ") && (await cellular.locator("[data-testid='answer-earlier']").innerText()).endsWith(": Pause, and tell the user why it stopped. Keep what was downloaded."), "the page shows the words that went as what was said then");
+  check(await cellular.locator(".decision-sent").count() === 0 && await download.locator(".decision-sent").count() === 1, "words sent are never shown as recorded");
+  check((await download.locator(".decision-sent").innerText()).startsWith("Recorded"), "the option is recorded");
+  check((await download.locator("[data-testid='answer-words']").innerText()) === "You added: Say so in Settings too.", "with what was added to it");
+  check(await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "an answer the intake recorded cannot be changed in the page");
+  check(await cellular.locator(".reply-field textarea").isEditable() && (await cellular.locator(".reply-field textarea").inputValue()) === "" && await cellular.locator(".decision-choices button:disabled").count() === 0, "a call still asked after words went offers every way to answer it again");
+  await shot(rail, "27-rail-words-sent");
+  await rail.locator(".nav-item", { hasText: "Chat" }).click();
+  const card = rail.locator("[data-testid='review-card']").last();
+  const text = await sentText(card);
+  check(text.includes("Recorded: res-model-download = wifi-only (\"Wi-Fi only, with visible progress\")\n  The captain added: Say so in Settings too."), "the recorded option carries what was added");
+  check(text.includes("Answered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh"), "the first mate is asked to record words, since nothing else can");
+  check(text.includes("\nres-model-cellular: Pause, and tell the user why it stopped. Keep what was downloaded."), "the words go as the captain wrote them, the last of them too");
+  check((await card.locator(".review-card-answers li").allInnerTexts()).some((chip) => chip.includes("Pause, and tell the user why") && chip.includes("sent")), "the chat card shows words as sent, not recorded");
+  await rail.locator(".nav-item", { hasText: "Bearings" }).click();
+  const stillAsked = rail.locator(".decision-card[data-call-id='res-model-cellular']");
+  await stillAsked.waitFor();
+  check(await stillAsked.getAttribute("data-answered-in-review") === null && await stillAsked.locator("button", { hasText: "Answer now" }).count() === 1, "Bearings offers a call still asked after words went in the page");
+  check(await rail.locator(".decision-card[data-call-id='res-model-download'] button", { hasText: "Answer now" }).count() === 0, "Bearings offers no answer to a call the intake recorded from the page");
+
+  // A new answer in words follows the one that went, which stays as what was said then.
+  await openPage();
+  await cellular.locator(".reply-field textarea").fill("Finish on cellular after all.");
+  await cellular.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  check((await cellular.locator("[data-testid='answer-earlier']").innerText()).endsWith(": Pause, and tell the user why it stopped. Keep what was downloaded."), "what was said then stays beside the new words");
+  await rail.locator(".send-review").click();
+  await cellular.locator(".decision-staged").waitFor({ state: "detached" });
+  await rail.locator(".nav-item", { hasText: "Chat" }).click();
+  const texts = await Promise.all((await rail.locator("[data-testid='review-card']").all()).map((item) => sentText(item)));
+  check(texts.at(-1).includes("\nres-model-cellular: Finish on cellular after all.") && !texts.at(-1).includes("Pause, and tell the user"), "the next review carries the new words alone");
+  check(texts.at(-2).includes("\nres-model-cellular: Pause, and tell the user why it stopped. Keep what was downloaded."), "the review that carried the first words still says what they were");
+  await rail.close();
+}
+
+// `?day-comes`: a dated Not now went with a review, so the first mate held the call until that day and it left
+// Captain's call; then the day came and firstmate asked again, its content and `updated_at` untouched. It is
+// answerable again in Bearings and in the page, which keeps what was said then, and takes a new answer.
+{
+  const again = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  again.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await again.goto(`${baseUrl}/?artifacts&day-comes`);
+  await again.waitForFunction(() => !document.querySelector(".app-loading"));
+  const openPage = async () => {
+    await again.locator(".nav-item", { hasText: "Artifacts" }).click();
+    await again.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+    await again.locator("[data-testid='decision-answer']").first().waitFor();
+  };
+  await openPage();
+  const download = again.locator("[data-testid='decision-answer'][data-call-id='res-model-download']");
+  await download.locator(".decision-choices button", { hasText: "Not now" }).click();
+  await download.locator(".date-field input").fill("2026-10-03");
+  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  await again.locator(".send-review").click();
+  await download.locator(".decision-sent").waitFor();
+  check((await download.locator(".decision-sent").innerText()).endsWith("for the first mate to record") && await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "held until its day, the page shows the Not now that went and asks nothing");
+
+  await again.locator(".nav-item", { hasText: "Bearings" }).click();
+  const card = again.locator(".decision-card[data-call-id='res-model-download']");
+  await card.waitFor({ state: "detached" });
+  check(await card.count() === 0 && await again.locator(".decision-card[data-call-id='res-model-cellular']").count() === 1, "held until its day, the call leaves Captain's call while the others stay");
+  await card.waitFor();
+  check(await card.getAttribute("data-answered-in-review") === null && await card.locator("button", { hasText: "Answer now" }).count() === 1, "its day come, Bearings offers the call's answer again");
+
+  await openPage();
+  await download.locator("[data-testid='answer-earlier']").waitFor();
+  check((await download.locator("[data-testid='answer-earlier']").innerText()).endsWith(": Not now. Ask me again on Oct 3."), "its day come, the page keeps the Not now as what was said then");
+  check(await download.locator(".reply-field textarea").isEditable() && (await download.locator(".reply-field textarea").inputValue()) === "", "and offers its words again, empty");
+  check(await download.locator(".decision-choices button:disabled").count() === 0 && await download.locator(".decision-choices button").count() === 4, "and every choice again");
+  check(await download.locator(".decision-sent, .decision-staged").count() === 0, "and no longer says the answer went or is staged");
+  await download.scrollIntoViewIfNeeded();
+  await shot(again, "29-rail-day-come");
+
+  await download.locator(".decision-choices button", { hasText: "Wi-Fi only" }).click();
+  await download.locator(".decision-staged", { hasText: "recorded as it is sent" }).waitFor();
+  check((await download.locator("[data-testid='answer-earlier']").innerText()).endsWith(": Not now. Ask me again on Oct 3."), "what was said then stays beside the new answer");
+  await again.locator(".send-review").click();
+  await download.locator("[data-testid='call-answered']").waitFor();
+  check((await download.locator("[data-testid='call-answered']").innerText()).includes("Wi-Fi only, with visible progress") && await download.locator("textarea, .decision-choices button").count() === 0, "the new answer is recorded, and the page asks nothing more");
+  await again.locator(".nav-item", { hasText: "Chat" }).click();
+  const texts = await Promise.all((await again.locator("[data-testid='review-card']").all()).map((item) => sentText(item)));
+  check(texts.at(-1).includes("Recorded: res-model-download = wifi-only"), "the next review carries the new answer");
+  check(texts.at(-2).includes("\nres-model-download: Not now. Ask me again on 2026-10-03."), "the review that carried the Not now still says what it was");
+  await again.close();
+}
+
+// `?records-chat`: words staged in the page for a call the captain then answers in chat, which the first mate
+// records, never go with a later review: the call is answered, so the page takes them back.
+{
+  const elsewhere = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  elsewhere.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await elsewhere.goto(`${baseUrl}/?artifacts&records-chat`);
+  await elsewhere.waitForFunction(() => !document.querySelector(".app-loading"));
+  const openPage = async () => {
+    await elsewhere.locator(".nav-item", { hasText: "Artifacts" }).click();
+    await elsewhere.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+    await elsewhere.locator("[data-testid='decision-answer']").first().waitFor();
+  };
+  await openPage();
+  const cellular = elsewhere.locator("[data-testid='decision-answer'][data-call-id='res-model-cellular']");
+  await cellular.locator(".reply-field textarea").fill("Pause, and tell the user why it stopped.");
+  await cellular.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  check((await elsewhere.locator(".send-review").innerText()) === "Send review · 1", "words staged in the page wait to go with the review");
+
+  await elsewhere.locator(".nav-item", { hasText: "Bearings" }).click();
+  const card = elsewhere.locator(".decision-card[data-call-id='res-model-cellular']");
+  await card.locator("button", { hasText: "Answer now" }).click();
+  await card.locator(".reply-field textarea").fill("Finish on cellular after all.");
+  await card.locator(".decision-actions button", { hasText: "Send" }).click();
+  await card.waitFor({ state: "detached" });
+
+  await openPage();
+  await cellular.locator("[data-testid='call-answered']").waitFor();
+  await elsewhere.locator(".send-review", { hasText: /^Send review$/ }).waitFor({ timeout: 5000 }).catch(() => undefined);
+  check((await elsewhere.locator(".send-review").innerText()) === "Send review", "once the call is answered elsewhere, the page takes back the words it had staged");
+  await elsewhere.locator(".nav-item", { hasText: "Chat" }).click();
+  const told = await elsewhere.locator(".captain-message").allInnerTexts();
+  check(told.some((text) => text.includes("On the res model cellular: Finish on cellular after all.")), "the answer given in chat went");
+  await elsewhere.close();
+}
+
+// A call whose options are not recorded is answered in words, in Bearings and in the page.
+{
+  const bare = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  bare.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await bare.goto(`${baseUrl}/?artifacts&options-missing`);
+  await bare.waitForFunction(() => !document.querySelector(".app-loading"));
+  const card = bare.locator(".decision-card[data-call-id='res-model-cellular']");
+  await card.locator("button", { hasText: "Answer now" }).click();
+  check(JSON.stringify(await card.locator(".suggestion-chips button").allInnerTexts()) === JSON.stringify(["Not now"]) && (await card.locator(".reply-field span").innerText()) === "Answer in words", "an argued call with no options is answered in words in Bearings");
+  await bare.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await bare.locator(".artifact-list .artifact-row", { hasText: "When may the app download the speech model?" }).click();
+  const railCall = bare.locator("[data-testid='decision-answer'][data-call-id='res-model-cellular']");
+  await railCall.waitFor();
+  check((await railCall.locator("[data-testid='options-missing']").innerText()).includes("options are not recorded"), "the page says the options are not recorded");
+  check((await railCall.locator(".reply-field span").innerText()) === "Answer in words", "and offers words instead of sending the captain to chat");
+  await railCall.scrollIntoViewIfNeeded();
+  await shot(bare, "28-rail-no-options");
+  await bare.close();
 }
 
 // `?plain-report`: a finished scout whose report argues no call is offered on a card of its own.

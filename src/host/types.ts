@@ -213,19 +213,25 @@ export type ReviewComment = { body: string; at: number };
 export type ReviewThreadState = "draft" | "open" | "resolved";
 export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | SceneAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[]; picture?: ThreadPicture | null; picture_skipped?: string | null; /** Only the browser mock, which has no home to serve the picture from. */ picture_preview?: string };
 export type ReviewVerdict = "approve" | "changes" | "comment";
-export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[]; /** The message's first line; absent in reviews sent before it was kept. */ header?: string | null; answers?: string[] | { decision: string; option: string; label: string }[] };
+export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[]; /** The message's first line; absent in reviews sent before it was kept. */ header?: string | null; answers?: string[] | SentAnswer[] };
 /** A sent comment as the chat shows it. */
 export type SentThread = { id: string; rev: number; state: ReviewThreadState; quote: string; said: string; picture: boolean };
-/** A review as the chat shows it: what went, and the answers recorded with it. */
-export type SentReview = { at: number; verdict: ReviewVerdict; rev: number; message: string; header?: string | null; threads: string[]; answers: { decision: string; option: string; label: string }[] };
+/** An answer a review carried: an option the intake recorded, or, with no option, the captain's words for the first mate to record. */
+export type SentAnswer = { decision: string; option: string | null; label: string | null; note?: string | null; defer?: string | null };
+/** A review as the chat shows it: what went, and the answers it carried. */
+export type SentReview = { at: number; verdict: ReviewVerdict; rev: number; message: string; header?: string | null; threads: string[]; answers: SentAnswer[] };
 /** What firstmate's intake did with an answer: `closed` is recorded; anything else is not. */
 export type IntakeResult = "closed" | "skipped" | "not_recorded";
 export type IntakeOutcome = { call: string; result: IntakeResult; detail: string };
 /**
- * The captain's choice on a call the page argues. Staged until the review is sent, when firstmate's intake records
- * it (`recorded`); `sent_at` is when the first mate was told.
+ * The captain's answer to a call the page argues. Staged until the review is sent. An option goes through
+ * firstmate's intake (`recorded`), with anything the captain added in `note`; with no option, `note` is the answer
+ * in words, or `defer` the date to be asked again on, and the first mate records it. `sent_at` is when the first
+ * mate was told.
  */
-export type ReviewAnswer = { decision: string; option: string; label: string; on_answer?: string | null; at: number; sent_at: number | null; recorded?: { result: IntakeResult; detail: string; at: number } | null };
+export type ReviewAnswer = { decision: string; option: string | null; label: string | null; on_answer?: string | null; note?: string | null; defer?: string | null; at: number; sent_at: number | null; recorded?: { result: IntakeResult; detail: string; at: number } | null };
+/** What the captain said in words with an answer: anything added to an option, or, with none, the answer itself, or a date. */
+export type AnswerWords = { note?: string; defer?: string };
 /** What sending a review did: the message (null if it could not go), and what the intake did with each answer. */
 export type ReviewSubmitted = { message: string | null; text: string; review: ReviewView; outcomes?: IntakeOutcome[]; warning?: string };
 /** What answering a call from Bearings did. `message` is null when nothing was told to the first mate. */
@@ -235,6 +241,7 @@ export type ReviewSummary = Record<string, {
   seen_rev: number | null;
   draft_count: number;
   open_count: number;
+  /** Calls whose answer the intake recorded: on the record for good. */
   answered: string[];
   /** Each sent comment the captain has not settled, with the revision it was written on, so a later revision can answer it. */
   open_threads?: { id: string; rev: number }[];
@@ -244,7 +251,7 @@ export type ReviewSummary = Record<string, {
 }>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */
-export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
+export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; /** For each decision, the single most recent answer that went for the first mate to record and was followed by a new one: what the captain said then. */ earlier: ReviewAnswer[]; draft_count: number; staged_answers: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
 /** One answer given from Bearings: the call, the option, what the call declares, and the page that argues it. */
 export type CallAnswerRequest = { call: string; option: string; label: string; onAnswer: string; page: ArtifactRef | null; note?: string };
 /** Which page a review belongs to. */
@@ -559,8 +566,11 @@ export interface HostAdapter {
   reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict): Promise<ReviewSubmitted>;
   /** Files a proposed diagram beside the review and opens a thread for it. */
   reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string): Promise<ReviewView>;
-  /** Stages the captain's choice on a call, or takes it back with no option. `onAnswer` is what the call declares. */
-  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null): Promise<ReviewView>;
+  /**
+   * Stages the captain's answer to a call: an option, with any words added, or words alone, or not now until a date.
+   * Nothing at all takes it back. `onAnswer` is what the call declares.
+   */
+  reviewAnswer(ref: ArtifactRef, decision: string, option?: string, label?: string, onAnswer?: string | null, words?: AnswerWords): Promise<ReviewView>;
   /**
    * Answers one call now, from Bearings: firstmate's intake records it (noted in the review of `page`, the page that
    * argues it, when there is one), and only a recorded answer is told to the first mate.
