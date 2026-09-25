@@ -3,8 +3,6 @@
 // src-tauri/src/artifact.rs appends this to every HTML document it serves. The
 // page itself is never changed on disk, and this script does nothing until the
 // review screen talks to it, so the file still opens the same way anywhere else.
-// The one exception is a page drawn dark with no color-scheme of its own, which it
-// names dark so the browser's defaults match (matchScheme, at the end).
 //
 // It talks to the review screen through postMessage only, because the page runs
 // in a sandboxed frame with no same-origin access:
@@ -196,12 +194,9 @@
     return { r: 255, g: 255, b: 255, a: 1 };
   }
 
-  function isLight(background) {
-    return (0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b) / 255 > 0.5;
-  }
-
   function view(node) {
-    var light = isLight(backdrop(node));
+    var behind = backdrop(node);
+    var light = (0.2126 * behind.r + 0.7152 * behind.g + 0.0722 * behind.b) / 255 > 0.5;
     return { w: window.innerWidth, h: window.innerHeight, scroll_y: Math.round(window.scrollY), scheme: light ? "light" : "dark" };
   }
 
@@ -676,27 +671,6 @@
   window.addEventListener("resize", redraw);
   window.addEventListener("scroll", redraw, true);
   if (window.ResizeObserver) new ResizeObserver(redraw).observe(document.documentElement);
-
-  // In the app, prefers-color-scheme follows the app's theme rather than the Mac's (src/theme.ts).
-  // A page that draws itself dark from that query but never names a color-scheme keeps the
-  // browser's light defaults for what it did not style: #00e links, scrollbars, form controls.
-  // So when the page reads dark and named no scheme, name dark for it. A page that stayed light
-  // is left alone, since forcing it would put its own dark text on a dark ground, and so is a
-  // page that chose its own scheme.
-  var darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-  var namedDark = false;
-  function matchScheme() {
-    var root = document.documentElement;
-    if (namedDark) root.style.removeProperty("color-scheme");
-    namedDark = false;
-    if (!darkQuery || !darkQuery.matches || !document.body) return;
-    if (document.querySelector('meta[name="color-scheme"]') || getComputedStyle(root).colorScheme !== "normal") return;
-    if (isLight(backdrop(document.body))) return;
-    root.style.setProperty("color-scheme", "dark");
-    namedDark = true;
-  }
-  matchScheme();
-  if (darkQuery) darkQuery.addEventListener("change", matchScheme);
 
   post("qd:ready", {});
 })();
