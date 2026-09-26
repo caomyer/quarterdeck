@@ -1,0 +1,16 @@
+import { chromium } from "@playwright/test";
+const [,, query = "", out = "/tmp/qd-ccb/chat.png", theme = "light", width = "1440"] = process.argv;
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: Number(width), height: 1000 } });
+page.on("pageerror", (e) => console.log("PAGEERROR", e.message));
+await page.goto(`http://127.0.0.1:5847/?artifacts${query}`);
+await page.waitForTimeout(1500);
+await page.evaluate((dark) => document.documentElement.classList.toggle("dark", dark), theme === "dark");
+await page.locator(".nav-item", { hasText: "Chat" }).click();
+await page.waitForTimeout(1500);
+const list = page.locator("[data-testid='chat-messages']");
+console.log(await list.evaluate((el) => [...el.children].map((c) => `${c.className.split(" ")[0]} ${c.getAttribute("data-call-id") ?? ""} | ${c.innerText.replace(/\s+/g, " ").slice(0, 110)}`).join("\n")));
+await list.evaluate((el) => { el.style.overflow = "visible"; el.style.height = "auto"; el.style.flex = "none"; });
+await page.evaluate(() => { document.querySelector(".chat-view").style.height = "auto"; document.querySelector(".main-surface").style.height = "auto"; document.querySelector(".app-shell").style.height = "auto"; });
+await list.screenshot({ path: out });
+await browser.close();
