@@ -1878,6 +1878,7 @@ FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CAPTAI
 SOURCES_JSON_FILE="$JSON_TRANSPORT_DIR/sources.json"
 # A source that cannot be read must not blank the fleet: it reads as an error.
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+  FM_SOURCES_BACKLOG_INPUT="$JSON_TRANSPORT_DIR/contribution-input.json" \
   "$SCRIPT_DIR/fm-sources.sh" snapshot > "$SOURCES_JSON_FILE" 2> "$JSON_TRANSPORT_DIR/sources.err" \
   || jq -n --rawfile err "$JSON_TRANSPORT_DIR/sources.err" '{error:($err | gsub("\n+$"; ""))}' > "$SOURCES_JSON_FILE"
 main_inventory_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" > "$MAIN_INVENTORY_JSON_FILE" \

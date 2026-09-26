@@ -140,6 +140,10 @@
 # refusal (reason on stderr), 2 on a usage error.
 # FM_HOME selects the home; FM_CONFIG_OVERRIDE, FM_DATA_OVERRIDE and
 # FM_STATE_OVERRIDE its directories; FM_SOURCES_NOW an ISO UTC clock for tests.
+# FM_SOURCES_BACKLOG_INPUT names a `fm-fleet-snapshot.sh --contribution-input`
+# reading already taken, which bin/fm-fleet-snapshot.sh passes to `snapshot` so
+# the sources describe the same backlog as the rest of the fleet snapshot; run
+# standalone, the backlog is read here.
 # jq, not the shell, expands the $ names inside these single-quoted programs.
 # shellcheck disable=SC2016
 set -u
@@ -326,6 +330,12 @@ answer_reason() { local detail; detail=$(answer_detail); printf '%s' "${detail:-
 # The backlog and registered PRs, read locally through the fleet snapshot.
 backlog_input() {
   [ -s "$TMP/input.json" ] && return 0
+  if [ -n "${FM_SOURCES_BACKLOG_INPUT:-}" ]; then
+    jq -e 'type == "object" and (.backlog | type == "object")' "$FM_SOURCES_BACKLOG_INPUT" > /dev/null 2>&1 \
+      || fail "cannot read the backlog from $FM_SOURCES_BACKLOG_INPUT"
+    cp "$FM_SOURCES_BACKLOG_INPUT" "$TMP/input.json" || fail "cannot read the backlog from $FM_SOURCES_BACKLOG_INPUT"
+    return 0
+  fi
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
     "$SCRIPT_DIR/fm-fleet-snapshot.sh" --contribution-input > "$TMP/input.json" 2> "$TMP/input.err" \
     || fail "cannot read the backlog: $(head -c 300 "$TMP/input.err")"

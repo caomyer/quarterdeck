@@ -404,6 +404,14 @@ test_closed_without_delivery_posts_nothing() {
   axi "$home" start qd-ud-4
   axi "$home" "done" qd-ud-4 --pr https://example.invalid/o/r/pull/14
   source_of "$home" fixture:ud | jq -e '.landed == ["qd-ud-4"]' >/dev/null || fail 'the snapshot does not name the task that landed'
+  # Inside the fleet snapshot, the sources read the backlog the fleet snapshot already read, not a second one.
+  PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" FM_SOURCE_FIXTURE_DIR="$WORLDS" \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json | jq -e '.sources.sources[0].landed == ["qd-ud-4"]' >/dev/null \
+    || fail 'the fleet snapshot does not name the task that landed'
+  jq -n '{backlog:{records:[]},tasks:[]}' > "$home/empty-input.json"
+  FM_SOURCES_BACKLOG_INPUT="$home/empty-input.json" src "$home" 10:12 status | jq -e '.sources[0].landed == []' >/dev/null \
+    || fail 'the snapshot read the backlog again instead of the reading it was handed'
   pass 'a task closed without a delivery never says it landed, by firstmate'"'"'s own delivery rule'
 }
 
