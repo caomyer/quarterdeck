@@ -880,7 +880,8 @@ export class MockHostAdapter implements HostAdapter {
   /**
    * firstmate's `reply`, exactly as `bin/fm-captain-hold.sh` does it: it keeps the captain's words on an open call and
    * refuses, with its one-line reason, a call that is closed or already answered; an exact retry changes nothing, and
-   * the same words named with a message fill it in. It never closes or answers the call, never touches the hold
+   * the same words named with a message fill it in, while any other reply the call carries is newer than words named
+   * with a message, so it stands unchanged. It never closes or answers the call, never touches the hold
    * (`bucket`, `captain_actionable`), and never moves `updated_at`. The reply it replaces is kept as `previous`.
    * A `?legacy` home's firstmate predates it, as it predates calls[]. `?reply-refused=<call>`: that call was closed a
    * moment ago, somewhere else, so firstmate refuses it the way it refuses any closed call.
@@ -894,7 +895,9 @@ export class MockHostAdapter implements HostAdapter {
     if (call.state === "answered") return `call ${id} already has a recorded answer`;
     const current = call.reply ?? null;
     if (current && current.words === words && current.via === via && current.message === message) return null;
-    const reply = current && message && current.words === words && current.via === via && current.message === null
+    const fills = current && message && current.words === words && current.via === via && current.message === null;
+    if (current && message && !fills) return null;
+    const reply = fills
       ? { ...current, message }
       : { words, via, at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), message, previous: current ? { words: current.words, via: current.via, at: current.at, message: current.message } : null };
     this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, reply } : item) };
