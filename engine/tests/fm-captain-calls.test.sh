@@ -640,9 +640,15 @@ test_reply_keeps_the_captains_words_beside_an_open_call() {
     --question 'Which route?' --option fast='Fast' --option safe='Safe' >/dev/null || fail "hold failed"
   record="$home/state/calls/sample-reply.json"
   printf 'it does not make sense that screenshots cannot be attached, right?\nthey could last week.\n' > "$home/words.txt"
+  assert_equals "unchanged: sample-reply" \
+    "$(run_captain "$home" reply sample-reply --words-file "$home/words.txt" --via quarterdeck --message m1)" \
+    "naming a message on a call carrying no reply changes nothing"
+  assert_equals null "$(jq -c .reply "$record")" "naming a message never writes a reply"
   out=$(CALL_NOW=2026-09-18T12:05:00Z run_captain "$home" reply sample-reply --words-file "$home/words.txt" \
-    --via quarterdeck --message m1790375413720-25) || fail "reply failed: $out"
+    --via quarterdeck) || fail "reply failed: $out"
   assert_equals "replied: sample-reply" "$out" "reply names the call"
+  CALL_NOW=2026-09-18T12:05:30Z run_captain "$home" reply sample-reply --words-file "$home/words.txt" \
+    --via quarterdeck --message m1790375413720-25 >/dev/null || fail "naming the message failed"
   assert_equals 'quarterdeck|2026-09-18T12:05:00Z|m1790375413720-25|null|2026-09-18T12:00:00Z' \
     "$(jq -r '[.reply.via, .reply.at, .reply.message, (.reply.previous|tostring), .updated_at] | join("|")' "$record")" \
     "the record carries how, when, and in which message, and a reply never moves updated_at"
@@ -795,6 +801,10 @@ test_only_the_first_mate_acting_clears_a_reply() {
     || fail "offer failed"
   assert_equals 'null|2026-09-18T13:00:00Z' "$(jq -r '[(.reply|tostring), .updated_at] | join("|")' "$record")" \
     "offer is the first mate asking again: it clears the reply and moves updated_at as it always does"
+  assert_equals "unchanged: sample-clear" \
+    "$(run_captain "$home" reply sample-clear --words-file "$words" --via quarterdeck --message m1)" \
+    "naming the message after offer cleared the reply changes nothing"
+  assert_equals null "$(jq -c .reply "$record")" "the reply the first mate acted on stays cleared"
 
   run_captain "$home" reply sample-clear --words-file "$words" --via quarterdeck >/dev/null || fail "reply failed"
   CALL_NOW=2026-09-18T14:00:00Z run_captain "$home" hold sample-clear --reason 'deferred' --until 2026-10-03 >/dev/null \

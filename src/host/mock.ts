@@ -897,10 +897,10 @@ export class MockHostAdapter implements HostAdapter {
     const current = call.reply ?? null;
     if (current && current.words === words && current.via === via && current.message === message) return null;
     const fills = current && message && current.words === words && current.via === via && current.message === null;
-    if (current && message && !fills) return null;
+    if (message && !fills) return null;
     const reply = fills
       ? { ...current, message }
-      : { words, via, at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), message, previous: current ? { words: current.words, via: current.via, at: current.at, message: current.message } : null };
+      : { words, via, at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), message: null, previous: current ? { words: current.words, via: current.via, at: current.at, message: current.message } : null };
     this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, reply } : item) };
     this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
     return null;

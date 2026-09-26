@@ -110,13 +110,13 @@
 # `updated_at`; a call with no record gets one whose `updated_at` is its
 # raised_at. It refuses, with a one-line reason, a call that is absent, closed,
 # not held for the captain, or already carrying a recorded answer in this hold
-# lifecycle. An exact retry (same words, via, and message) prints `unchanged:`,
-# and the same words and via with --message on a reply that names no message
-# fill that message in, keeping its `at` and `previous`, for a surface that
-# keeps the words before it sends the message that carries them. With
-# --message, any other reply the call carries is newer than those words, so it
-# stands and the command prints `unchanged:`; a fresh reply is written only
-# when the call carries none.
+# lifecycle. An exact retry (same words and via, no --message) prints
+# `unchanged:`. --message never writes a reply: a surface keeps the words
+# first, sends the message that carries them, and then names it. It fills that
+# message in on a reply with the same words and via that names none, keeping
+# its `at` and `previous`; on any other call, one carrying a newer reply or
+# none because the first mate has since acted, it prints `unchanged:` and
+# writes nothing.
 # Only the first mate acting clears it: `answer` (and so `answers` and
 # `decide`) once the answer is recorded, `offer`, and every `hold` once the
 # hold is applied, because each records, re-asks, or defers the call.
@@ -1848,14 +1848,12 @@ command_reply() {
     printf 'replied: %s\n' "$id"
     return 0
   fi
-  if [ -n "$message" ] && printf '%s' "$record" | jq -e '.reply != null' >/dev/null; then
+  if [ -n "$message" ]; then
     printf 'unchanged: %s\n' "$id"
     return 0
   fi
-  record=$(printf '%s' "$record" | jq -c --arg words "$words" --arg via "$via" --arg at "$now" \
-    --arg message "$message" '
-    .reply = {words:$words, via:$via, at:$at,
-              message:(if $message == "" then null else $message end),
+  record=$(printf '%s' "$record" | jq -c --arg words "$words" --arg via "$via" --arg at "$now" '
+    .reply = {words:$words, via:$via, at:$at, message:null,
               previous:(if .reply == null then null else (.reply | del(.previous)) end)}') \
     || fail "cannot compose the call content for $id"
   call_record_store "$id" "$record"
