@@ -881,8 +881,8 @@ export class MockHostAdapter implements HostAdapter {
   /**
    * firstmate's `reply`, exactly as `bin/fm-captain-hold.sh` does it: it keeps the captain's words on an open call and
    * refuses, with its one-line reason, a call that is closed or already answered; an exact retry changes nothing, and
-   * the same words named with a message fill it in, while any other reply the call carries is newer than words named
-   * with a message, so it stands unchanged. It never closes or answers the call, never touches the hold
+   * and a message never writes a reply: it only fills itself in on a reply with the same words that names none, and a
+   * call carrying a newer reply, or none because the first mate has since acted, stands unchanged. It never closes or answers the call, never touches the hold
    * (`bucket`, `captain_actionable`), and never moves `updated_at`. The reply it replaces is kept as `previous`.
    * A `?legacy` home's firstmate predates it, as it predates calls[]. `?reply-refused=<call>`: that call was closed a
    * moment ago, somewhere else, so firstmate refuses it the way it refuses any closed call.

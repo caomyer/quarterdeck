@@ -250,7 +250,8 @@ impl Drop for WordsFile {
 ///
 /// Kept only when it says `replied:` or `unchanged:`; anything else is firstmate
 /// refusing or failing, and the reason is its own one line, without its name.
-/// Naming the message later, with the same words, fills it in on the reply.
+/// Naming the message later, with the same words, fills it in on the reply; it
+/// never writes one, so a reply the first mate has since cleared stays cleared.
 pub async fn reply(home: &Path, call: &str, words: &str, via: &str, message: Option<&str>) -> Result<(), String> {
     if !crate::artifact::valid_task_id(call) {
         return Err("that is not a call".to_string());
