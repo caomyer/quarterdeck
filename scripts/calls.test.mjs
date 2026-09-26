@@ -204,6 +204,9 @@ test("the app's own answer messages read back as the answers they are", () => {
   for (const sent of fixture.answered) {
     assert.deepEqual(answerOfMessage(sent.text), { kind: "recorded", call: sent.call, key: sent.key, label: sent.label, note: sent.note });
   }
+  for (const sent of fixture.replied) {
+    assert.deepEqual(answerOfMessage(sent.text), { kind: "replied", call: sent.call, words: sent.words });
+  }
 });
 
 test("only the app's own lines are answers", () => {
