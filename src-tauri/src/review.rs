@@ -983,6 +983,7 @@ pub async fn review_submit(
     let log = dir.join("review.jsonl");
     let outcomes = record_staged(&home, &log, None).await?;
     let replied = reply_worded(&home, &log).await?;
+    let sent_with = |message: &str| name_replies(&home, &replied, message.to_string());
     let (text, threads, answers) = {
         let (dir, verdict) = (dir.clone(), verdict.clone());
         blocking(move || draft(&dir, rev, &verdict)).await?
@@ -999,12 +1000,7 @@ pub async fn review_submit(
         }
         Err(problem) => return Err(problem),
     };
-    // The message has gone, so each reply it carries now names it.
-    for (call, words) in &replied {
-        if let Err(problem) = calls::reply(&home, call, words, "review", Some(&message)).await {
-            log::warn!("the reply on {call} could not name review {message}: {problem}");
-        }
-    }
+    sent_with(&message).await;
     let recorded = {
         let (log, message) = (log.clone(), message.clone());
         let text = text.clone();
@@ -1024,7 +1020,7 @@ pub async fn review_submit(
 /// the captain's reply, and notes in the review whether firstmate kept each.
 /// Returns the calls it kept, with the words, so the message can be named on
 /// them once it has gone.
-async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String, String)>, String> {
+pub(crate) async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String, String)>, String> {
     let worded: Vec<Value> = {
         let log = log.to_path_buf();
         blocking(move || Ok(answers_where(&log, |answer| is_staged(answer) && !is_keyed(answer)))).await?
@@ -1047,6 +1043,15 @@ async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String, String)>, 
     Ok(kept)
 }
 
+/// The review's message has gone, so each reply it carries now names it.
+pub(crate) async fn name_replies(home: &Path, replied: &[(String, String)], message: String) {
+    for (call, words) in replied {
+        if let Err(problem) = calls::reply(home, call, words, "review", Some(&message)).await {
+            log::warn!("the reply on {call} could not name review {message}: {problem}");
+        }
+    }
+}
+
 /// Keeps the captain's words on a call from Bearings through firstmate's
 /// `reply`, and only then tells the first mate, naming the call. A reply
 /// firstmate would not keep sends nothing: the card says why and keeps the
@@ -1054,7 +1059,13 @@ async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String, String)>, 
 #[tauri::command]
 pub async fn call_reply(app: AppHandle, host: TauriState<'_, HostHandle>, call: String, words: String) -> Result<Value, String> {
     let home = home_for(&app)?;
-    let words = words.trim().to_string();
+    reply_and_tell(&home, &host, &call, &words).await
+}
+
+/// What `call_reply` does, for the command and for the live test that drives it.
+pub(crate) async fn reply_and_tell(home: &Path, host: &HostHandle, call: &str, words: &str) -> Result<Value, String> {
+    let (call, words) = (call.to_string(), words.trim().to_string());
+    let home = home.to_path_buf();
     if let Err(problem) = calls::reply(&home, &call, &words, "quarterdeck", None).await {
         return Ok(json!({"kept": false, "problem": problem, "message": Value::Null, "text": Value::Null}));
     }
