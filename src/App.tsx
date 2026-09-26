@@ -448,6 +448,8 @@ export function App() {
   /**
    * Replies to a call from Bearings in the captain's words: firstmate keeps them on the call, and only then is the
    * first mate told. The card draws what happened from the snapshot, read again at once, never from this answer.
+   * Any surface that answers a call - a card, the chat - replies through here and records through `answerNow`, with
+   * `CallAnswerFields` as its form, so there is one answer path and never bare chat.
    */
   async function replyToCall(call: Call, words: string): Promise<CallReplied> {
     let result: CallReplied;
