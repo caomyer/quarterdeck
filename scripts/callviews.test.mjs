@@ -113,6 +113,18 @@ test("E: words the call still carries are amber, never green, however far the me
   assert.deepEqual([answerView(replied, call({ captain_actionable: false })).tone, answerView(replied, call({ captain_actionable: false })).status], ["amber", "Held: not now"]);
 });
 
+test("E: words kept with a line break or past the message's limit are still the call's reply", () => {
+  const broken = { words: "Pause it.\nTell the user why.", at: ago(10) };
+  const said = answerOfMessage(`The captain replied to call foreman-auto-merge from Bearings, in words; it is kept on the call as the captain's reply, and nothing has recorded it.\nRecord it.\nThe captain said: Pause it. Tell the user why.`);
+  const shown = answerView(said, call(), { reply: broken });
+  assert.deepEqual([shown.tone, shown.status], ["amber", "With the first mate · not recorded yet"]);
+  const long = { words: `${"word ".repeat(300)}end`, at: ago(10) };
+  const cut = { kind: "replied", call: "foreman-auto-merge", words: `${"word ".repeat(240).slice(0, 1200).trimEnd()}…` };
+  const kept = answerView(cut, call(), { reply: long });
+  assert.deepEqual([kept.tone, kept.status], ["amber", "With the first mate · not recorded yet"]);
+  assert.equal(answerView(cut, call(), { reply: { words: "Hold them.", at: ago(1) } }).status, "Not recorded · the first mate asked again");
+});
+
 test("H: a call held again after the answer points down to where it was asked anew, and keeps its own choice", () => {
   const reasked = call({ raised_at: ago(3), updated_at: ago(3) });
   const shown = answerView(recorded, reasked, { delivery: "read by the first mate 12:49 PM" });

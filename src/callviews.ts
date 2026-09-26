@@ -116,6 +116,17 @@ export type AnswerCardView = {
   askedAgain: boolean;
 };
 
+/**
+ * Whether the words a message says the captain replied are the reply the call carries. The message holds them as
+ * review.rs `shorten()` wrote them: whitespace squeezed to single spaces and, past its limit, cut with an ellipsis.
+ */
+function sameWords(kept: string, said: string): boolean {
+  const squeeze = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
+  const k = squeeze(kept);
+  const s = squeeze(said);
+  return s.endsWith("…") ? k.startsWith(s.slice(0, -1)) : k === s;
+}
+
 export function answerCardView(answer: MessageAnswer, call: Call | undefined, { reply, said, past, delivery, from }: {
   /** The reply the call carries now, if any. */
   reply: ReplyWords | null;
@@ -140,7 +151,7 @@ export function answerCardView(answer: MessageAnswer, call: Call | undefined, { 
     ? ["muted", "The call has closed"]
     : call.state !== "open"
       ? call.answer?.by === "captain" ? ["green", `Recorded: ${call.answer.label}`] : ["muted", "The call has closed"]
-      : reply?.words === answer.words
+      : reply && sameWords(reply.words, answer.words)
         ? ["amber", "With the first mate · not recorded yet"]
         : call.captain_actionable === false
           ? ["amber", "Held: not now"]
