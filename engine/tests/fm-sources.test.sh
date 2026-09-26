@@ -58,7 +58,8 @@ src() {  # <home> <clock-minute> <args...>
 axi() {  # <home> <args...>
   local home=$1
   shift
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-tasks-axi.sh" "$@" >/dev/null
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-tasks-axi.sh" "$@" >/dev/null \
+    || fail "tasks-axi $* failed"
 }
 status_of() { src "$1" 23:59 status; }
 # The source's slice of the status, as compact JSON.
@@ -73,7 +74,7 @@ connect() {  # <home> <world> [outbound]
 in_flight_with_pr() {  # <home> <world> <item> <task> [pr-number]
   src "$1" 10:01 file "fixture:$2" "$3" "$4" "work on $3" --kind ship --repo demo >/dev/null || fail "could not file $4"
   axi "$1" start "$4"
-  printf 'kind=ship\npr=https://example.invalid/o/r/pull/%s\n' "${5:-1}" > "$1/state/$4.meta"
+  printf 'kind=ship\npr=https://github.com/o/r/pull/%s\n' "${5:-1}" > "$1/state/$4.meta"
 }
 comment_count() {  # <world> <item-id>
   jq --arg id "$2" '[.items[] | select(.id == $id) | .comments[]] | length' "$WORLDS/$1.json"
@@ -165,7 +166,7 @@ test_advance_is_transition_only() {
   # Delivered on an item that is already done: already, and the comment still posted once.
   src "$home" 10:07 file fixture:adv ADV-4 qd-adv-4 'already done' >/dev/null || fail 'file failed'
   axi "$home" start qd-adv-4
-  axi "$home" "done" qd-adv-4 --pr https://example.invalid/o/r/pull/4
+  axi "$home" "done" qd-adv-4 --pr https://github.com/o/r/pull/4
   src "$home" 10:08 poll >/dev/null || fail 'poll failed'
   src "$home" 10:09 poll >/dev/null || fail 'second poll failed'
   source_of "$home" fixture:adv | jq -e '[.sent[] | select(.task == "qd-adv-4")] | length == 1 and .[0].advance.result == "already"
@@ -182,7 +183,7 @@ test_markdown_round_trips() {
   src "$home" 10:01 file fixture:md MD-1 qd-md-1 'markdown' >/dev/null || fail 'file failed'
   axi "$home" start qd-md-1
   printf 'Fixed the **export** limit; see `limits.rs`.\n' | src "$home" 10:02 summary qd-md-1 >/dev/null || fail 'summary failed'
-  axi "$home" "done" qd-md-1 --pr https://example.invalid/o/r/pull/5
+  axi "$home" "done" qd-md-1 --pr https://github.com/o/r/pull/5
   src "$home" 10:03 poll >/dev/null || fail 'poll failed'
   jq -r '.items[0].comments[0].body' "$WORLDS/md.json" | grep -qF 'Fixed the *export* limit; see {{limits.rs}}.' \
     || fail 'the comment was not converted to the provider format'
@@ -320,11 +321,11 @@ test_silent_until_pr_and_forward_only() {
   # Dropping work nothing upstream heard about says nothing.
   printf 'Superseded by another fix.\n' | src "$home" 10:03 stop qd-si-1 | jq -e '.queued == 0' >/dev/null \
     || fail 'stopping silent work queued a comment'
-  printf 'kind=ship\npr=https://example.invalid/o/r/pull/8\n' > "$home/state/qd-si-1.meta"
+  printf 'kind=ship\npr=https://github.com/o/r/pull/8\n' > "$home/state/qd-si-1.meta"
   src "$home" 10:04 poll >/dev/null || fail 'poll failed'
   [ "$(comment_count si s1)" = 1 ] || fail 'the PR milestone was not posted once'
   jq -r '.items[0].comments[0].body' "$WORLDS/si.json" | grep -qF 'pull/8' || fail 'the first comment does not point at the PR'
-  axi "$home" "done" qd-si-1 --pr https://example.invalid/o/r/pull/8
+  axi "$home" "done" qd-si-1 --pr https://github.com/o/r/pull/8
   src "$home" 10:05 poll >/dev/null || fail 'poll failed'
   [ "$(comment_count si s1)" = 2 ] || fail 'delivery was not posted'
   # Reopened and back in flight: nothing below delivered is written again.
@@ -336,11 +337,11 @@ test_silent_until_pr_and_forward_only() {
   # core, not the adapter's write id, keeps the lower milestone from posting.
   src "$home" 10:06 file fixture:si SI-3 qd-si-3 'straight to done' >/dev/null || fail 'file failed'
   axi "$home" start qd-si-3
-  axi "$home" "done" qd-si-3 --pr https://example.invalid/o/r/pull/10
+  axi "$home" "done" qd-si-3 --pr https://github.com/o/r/pull/10
   src "$home" 10:06 poll >/dev/null || fail 'poll failed'
   axi "$home" reopen qd-si-3
   axi "$home" start qd-si-3
-  printf 'kind=ship\npr=https://example.invalid/o/r/pull/10\n' > "$home/state/qd-si-3.meta"
+  printf 'kind=ship\npr=https://github.com/o/r/pull/10\n' > "$home/state/qd-si-3.meta"
   src "$home" 10:06 poll >/dev/null || fail 'poll failed'
   [ "$(comment_count si s3)" = 1 ] || fail "a PR comment was posted after delivery ($(comment_count si s3) comments)"
   printf 'The captain chose another approach.\n' | src "$home" 10:07 stop qd-si-1 | jq -e '.queued == 1' >/dev/null \
@@ -380,7 +381,7 @@ test_closed_without_delivery_posts_nothing() {
   # Closed without delivery before anything was said: nothing is said at all.
   src "$home" 10:06 file fixture:ud UD-2 qd-ud-2 'superseded' --kind ship >/dev/null || fail 'file failed'
   axi "$home" start qd-ud-2
-  printf 'kind=ship\npr=https://example.invalid/o/r/pull/12\n' > "$home/state/qd-ud-2.meta"
+  printf 'kind=ship\npr=https://github.com/o/r/pull/12\n' > "$home/state/qd-ud-2.meta"
   axi "$home" "done" qd-ud-2
   src "$home" 10:07 poll >/dev/null || fail 'poll failed'
   [ "$(comment_count ud u2)" = 0 ] || fail 'a task closed without delivery posted upstream'
@@ -402,7 +403,7 @@ test_closed_without_delivery_posts_nothing() {
   # A task that did land is named in the snapshot, so the drawer can say its comment is coming.
   src "$home" 10:11 file fixture:ud UD-1 qd-ud-4 'landed' --also >/dev/null || fail 'file failed'
   axi "$home" start qd-ud-4
-  axi "$home" "done" qd-ud-4 --pr https://example.invalid/o/r/pull/14
+  axi "$home" "done" qd-ud-4 --pr https://github.com/o/r/pull/14
   source_of "$home" fixture:ud | jq -e '.landed == ["qd-ud-4"]' >/dev/null || fail 'the snapshot does not name the task that landed'
   # Inside the fleet snapshot, the sources read the backlog the fleet snapshot already read, not a second one.
   PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
@@ -478,7 +479,7 @@ test_handoff_to_a_home_without_the_source() {
     || fail 'tasks-axi mv failed'
   grep -q '^  source-link: fixture:ho h1 fulfills$' "$second/data/backlog.md" || fail 'the link did not travel with the row'
   axi "$second" start qd-ho-1
-  printf 'kind=ship\npr=https://example.invalid/o/r/pull/6\n' > "$second/state/qd-ho-1.meta"
+  printf 'kind=ship\npr=https://github.com/o/r/pull/6\n' > "$second/state/qd-ho-1.meta"
   src "$second" 10:02 poll >/dev/null || fail 'poll in the second home failed'
   src "$primary" 10:02 poll >/dev/null || fail 'poll in the primary failed'
   [ "$(comment_count ho h1)" = 0 ] || fail 'a home without the source, or one that no longer owns the work, posted'
