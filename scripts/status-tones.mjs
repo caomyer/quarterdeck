@@ -118,36 +118,29 @@ async function wears(locator, icon) {
   await page.close();
 }
 
-// A Captain's Call answer: read, waiting and failed are three facts, with three looks.
+// A Captain's Call reply: kept on the call and not recorded, and refused, are two facts with two looks, and neither is
+// the green of an answer firstmate recorded. `pnpm replies` walks every state; this pins the tones.
 {
-  const page = await open("");
-  // The fixture home predates calls[], so its call has no options and is answered in the captain's own words.
-  const card = page.locator(".decision-card").first();
-  await card.locator(".reply-field textarea").fill("Wi-Fi only with visible progress");
-  await card.locator(".decision-actions button").click();
-  await card.getByText("Answered", { exact: false }).waitFor();
+  const page = await open("?artifacts&replied=foreman-auto-merge");
+  const card = page.locator(".decision-card[data-call-id='foreman-auto-merge']");
+  await card.locator("[data-testid='call-replied']").waitFor();
+  check(!(await wears(card.locator("[data-testid='call-replied']"), "lucide-check")), "a reply nothing has recorded does not wear the check mark");
   await inBothThemes(page, async (theme) => {
-    check(await colourOf(card.locator(".call-state")) === await tokenColour(page, "--green"), `${theme}: an answer the first mate read is painted --green`);
-    check(await colourOf(card, "borderTopColor") === await tokenColour(page, "--border"), `${theme}: an answered call drops its urgent outline`);
+    check(await colourOf(card.locator("[data-testid='call-replied']")) === await tokenColour(page, "--amber"), `${theme}: a reply nothing has recorded is painted --amber`);
+    check(await colourOf(card, "borderTopColor") === await tokenColour(page, "--border"), `${theme}: a replied call drops its urgent outline`);
   });
   await page.close();
 }
 {
-  const page = await open("?relaunch&call-answered");
-  await page.locator(".sidebar-footer .runtime-button").click();
+  // The fixture home predates calls[], and so predates replies: firstmate cannot keep the words, so nothing goes.
+  const page = await open("");
   const card = page.locator(".decision-card").first();
-  await card.getByText("Queued").waitFor();
-  check(!(await wears(card.locator(".call-state"), "lucide-check")), "a queued answer does not wear the check mark");
-  await page.close();
-}
-{
-  const page = await open("?relaunch&failed&call-answered");
-  await page.locator(".sidebar-footer .runtime-button").click();
-  const card = page.locator(".decision-card").first();
-  await card.getByText("Your answer didn't go through.").waitFor();
-  check(!(await wears(card.locator(".call-state"), "lucide-check")), "a failed answer does not wear the check mark");
+  await card.locator(".reply-field textarea").fill("Wi-Fi only with visible progress");
+  await card.locator(".decision-actions button").click();
+  await card.locator("[data-testid='reply-refused']").waitFor();
+  check(!(await wears(card.locator("[data-testid='reply-refused']"), "lucide-check")), "a refused reply does not wear the check mark");
   await inBothThemes(page, async (theme) => {
-    check(await colourOf(card.locator(".call-state")) === await tokenColour(page, "--coral"), `${theme}: a failed answer is painted --coral`);
+    check(await colourOf(card.locator("[data-testid='reply-refused']")) === await tokenColour(page, "--coral"), `${theme}: a refused reply is painted --coral`);
   });
   await page.close();
 }

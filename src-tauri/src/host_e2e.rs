@@ -1144,6 +1144,244 @@ async fn review_e2e_live_decision() {
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
 
+// --------------------------------------------------------------- reply ---
+
+/// A call as the snapshot's `calls[]` carries it right now, or null.
+fn call_now(home: &Path, id: &str) -> Value {
+    snapshot_json(home)["calls"]
+        .as_array()
+        .and_then(|calls| calls.iter().find(|call| call["id"] == id).cloned())
+        .unwrap_or(Value::Null)
+}
+
+/// Open calls waiting on the captain, with options and a `done` close, that no reply sits on yet: the ones
+/// argued by a presented page, and the ones nothing argues, as qd-start-work-1's was.
+fn calls_to_reply_to(home: &Path) -> (Vec<String>, Vec<String>) {
+    let snapshot = snapshot_json(home);
+    let pages: Vec<String> = snapshot["artifacts"].as_array().map(|pages| pages.iter().map(page_ref).collect()).unwrap_or_default();
+    let mut argued = Vec::new();
+    let mut plain = Vec::new();
+    for call in snapshot["calls"].as_array().cloned().unwrap_or_default() {
+        let open = call["state"] == "open" && call["captain_actionable"] == Value::Bool(true) && call["reply"].is_null();
+        // A reply never releases anything, but the first mate recording one might, so only question-shaped calls.
+        if !open || call["on_answer"] != "done" || call["options"].as_array().is_none_or(Vec::is_empty) {
+            continue;
+        }
+        let id = call["id"].as_str().unwrap_or_default().to_string();
+        let on_page = call["evidence"].as_array().is_some_and(|refs| refs.iter().any(|item| item.as_str().is_some_and(|r| pages.iter().any(|p| p == r))));
+        if on_page { argued.push(id) } else { plain.push(id) }
+    }
+    (argued, plain)
+}
+
+/// What the first mate did with a reply, once it did something: what the call says now.
+fn acted_on(call: &Value) -> Option<String> {
+    if call.is_null() {
+        return Some("the call left the listing".into());
+    }
+    if !call["reply"].is_null() {
+        return None;
+    }
+    Some(if call["state"] != "open" {
+        format!("recorded: state={} answer={}", call["state"], call["answer"])
+    } else if call["captain_actionable"] == Value::Bool(false) {
+        format!("held until a day: bucket={}", call["bucket"])
+    } else {
+        format!("asked again: updated_at={} question={}", call["updated_at"], call["question"])
+    })
+}
+
+/// Waits for the first mate to act on the reply on `id`, and says what it did.
+async fn first_mate_acts(home: &Path, id: &str, limit: Duration) -> Option<String> {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if let Some(what) = acted_on(&call_now(home, id)) {
+            return Some(what);
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+    None
+}
+
+const ASK_FOR_CALLS: &str = "Captain here. This is an automated host test in a scratch home, so keep it to this one thing: do not dispatch work, change any project, or contact anyone. I need decisions from you. Pick three small, real questions about how this home is set up that genuinely need my call, and put each to me the way you would any call, with its question, options and a recommendation. Present a page that argues the third one so I can decide it from the page; put the first two to me plainly, with no page.";
+
+/// Words that question a call's premise rather than pick an option, as the captain's did on qd-start-work-1.
+const DISPUTING: &str = "Hold on, why is this even a question? I thought we settled this already. Tell me what changed before I pick anything.";
+
+/// A live run of the captain's reply on a call, through the same host functions the app's card and review use:
+/// words on a call nothing argues, kept on it with `reply` and told to the first mate naming the call, surviving a
+/// relaunch; a dated Not now the same way; and words sent in a page's review. Each time, the first mate must then
+/// record an answer or ask again, which is what clears the reply.
+///
+/// ```sh
+/// cd src-tauri && FM_E2E_HOME=<scratch home> \
+///   cargo test reply_e2e_live_scratch_home -- --ignored --nocapture
+/// ```
+///
+/// The calls are the first mate's own: the ones the home carries, or ones it is asked to put up.
+#[tokio::test]
+#[ignore = "live: runs the real claude-agent-acp against a firstmate scratch home"]
+async fn reply_e2e_live_scratch_home() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
+    let run = now_ms();
+    let data_dir = out.join(format!("appdata-reply-{run}"));
+    std::fs::create_dir_all(&data_dir).expect("create the app data folder");
+    let recording = out.join(format!("reply-{run}.jsonl"));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).expect("create the recording")),
+        data_dir,
+        tx,
+    });
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
+    let mut events = Events { rx, seen: Vec::new() };
+    let mut steps = Vec::new();
+    let act_wait = Duration::from_secs(600);
+
+    // 1. The first mate is up, and holding calls to reply to.
+    recorder.mark("1", "host_start");
+    let from = events.now();
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let ready = events.find(from, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await;
+    let running = started.is_ok() && ready.is_some();
+    record(&mut steps, "start: the first mate is running", running, format!("start={started:?}"));
+    assert!(running, "the first mate did not start");
+    let (mut argued, mut plain) = calls_to_reply_to(&home);
+    if plain.len() < 2 || argued.is_empty() {
+        recorder.mark("1b", "ask the first mate for calls");
+        let asked = send(&host, ASK_FOR_CALLS.to_string()).await;
+        let deadline = Instant::now() + Duration::from_secs(900);
+        while Instant::now() < deadline && (plain.len() < 2 || argued.is_empty()) {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            (argued, plain) = calls_to_reply_to(&home);
+        }
+        record(&mut steps, "the first mate puts calls up", plain.len() >= 2 && !argued.is_empty(), format!("ask={asked:?}; plain={plain:?}; argued={argued:?}"));
+    }
+    // Wait for the turn that raised them to finish, so the reply lands on an idle first mate.
+    let settle = events.now();
+    let _ = events.find(settle, Duration::from_secs(120), host_state(&["idle"])).await;
+
+    // 2. Words on a call nothing argues, kept while the app is closed, told when it comes back.
+    if let Some(call) = plain.first().cloned() {
+        recorder.mark("2", "words on a call nothing argues, across a relaunch");
+        let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+        let replied = review::reply_and_tell(&home, &host, &call, DISPUTING).await;
+        println!("reply on {call}: {replied:?}");
+        let body = replied.clone().unwrap_or(Value::Null);
+        let record_file: Value = std::fs::read_to_string(home.join("state/calls").join(format!("{call}.json")))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(Value::Null);
+        let text = body["text"].as_str().unwrap_or_default();
+        record(
+            &mut steps,
+            "words: firstmate keeps them on the call, and the message names the call",
+            body["kept"] == Value::Bool(true) && record_file["reply"]["words"] == DISPUTING && record_file["reply"]["via"] == "quarterdeck"
+                && text.contains(&format!("replied to call {call} ")) && text.contains("nothing has recorded it") && !text.contains("On the "),
+            format!("kept={}; message={}; record reply={}; answer={}", body["kept"], body["message"], record_file["reply"], record_file.get("answer").cloned().unwrap_or(Value::Null)),
+        );
+        let before = call_now(&home, &call);
+        record(&mut steps, "words: calls[] carries the reply while the app is closed", before["reply"]["words"] == DISPUTING && before["state"] == "open", format!("reply={}", before["reply"]));
+        let from = events.now();
+        let restarted = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+        let _ = events.find(from, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await;
+        let after = call_now(&home, &call);
+        record(
+            &mut steps,
+            "words: after the relaunch the call still carries the reply, and the waiting message goes",
+            restarted.is_ok() && (after["reply"]["words"] == DISPUTING || acted_on(&after).is_some()),
+            format!("start={restarted:?}; reply={}", after["reply"]),
+        );
+        let acted = first_mate_acts(&home, &call, act_wait).await;
+        let now = call_now(&home, &call);
+        record(
+            &mut steps,
+            "words: the first mate records the reply or asks again, which clears it",
+            acted.is_some(),
+            format!("{acted:?}; answer={}", now["answer"]),
+        );
+        // Words that dispute the premise decide nothing, so recording one of the options from them alone is inferring.
+        if now["answer"]["key"].is_string() {
+            println!("   NOTE the first mate recorded option {} from words that picked none", now["answer"]["key"]);
+        }
+    } else {
+        not_exercised(&mut steps, "words: firstmate keeps them on the call, and the message names the call", "no plain call".into());
+    }
+
+    // 3. A dated Not now on another call nothing argues, the same way.
+    if let Some(call) = plain.get(1).cloned() {
+        recorder.mark("3", "a dated not now");
+        let day = {
+            let out = std::process::Command::new("/bin/date").args(["-v+7d", "+%b %-d"]).output().expect("date");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let words = format!("Not now. Ask me again on {day}.");
+        let replied = review::reply_and_tell(&home, &host, &call, &words).await.unwrap_or(Value::Null);
+        let now = call_now(&home, &call);
+        let message = replied["message"].as_str().unwrap_or_default().to_string();
+        record(
+            &mut steps,
+            "not now: kept on the call like words, and told naming the call",
+            replied["kept"] == Value::Bool(true) && (now["reply"]["words"] == words.as_str() || acted_on(&now).is_some())
+                && replied["text"].as_str().is_some_and(|text| text.contains(&format!("replied to call {call} "))),
+            format!("kept={}; message={message}; reply={}", replied["kept"], now["reply"]),
+        );
+        let acted = first_mate_acts(&home, &call, act_wait).await;
+        record(&mut steps, "not now: the first mate holds it until the day, records it, or asks again", acted.is_some(), format!("{acted:?}"));
+    } else {
+        not_exercised(&mut steps, "not now: kept on the call like words, and told naming the call", "no second plain call".into());
+    }
+
+    // 4. Words sent in the review of the page that argues a call.
+    let page_call = argued.first().cloned();
+    let page = page_call.as_ref().and_then(|call| {
+        let snapshot = snapshot_json(&home);
+        let refs = snapshot["calls"].as_array()?.iter().find(|item| item["id"] == call.as_str())?["evidence"].clone();
+        snapshot["artifacts"].as_array()?.iter().find(|page| refs.as_array().is_some_and(|refs| refs.iter().any(|r| r.as_str() == Some(page_ref(page).as_str())))).cloned()
+    });
+    if let (Some(call), Some(page)) = (page_call, page) {
+        recorder.mark("4", "words in a page's review");
+        let dir = review::artifact_dir(&home.join("data"), page["scope"].as_str().unwrap_or_default(), page["task"].as_str(), page["name"].as_str().unwrap_or_default()).expect("the page's folder");
+        let log = dir.join("review.jsonl");
+        let rev = page["latest"]["rev"].as_u64().unwrap_or(1);
+        let words = "I read the page, but I want the cost of each option spelled out before I choose.";
+        review::stage_answer(&log, &call, None, None, Some("done"), &review::Words { note: Some(words.into()), defer: None }).expect("stage the words");
+        let replied = review::reply_worded(&home, &log).await.expect("keep the words on the call");
+        let (text, threads, answers) = review::draft(&dir, rev, "comment").expect("compose the review");
+        let id = send(&host, text.clone()).await.unwrap_or_default();
+        review::name_replies(&home, &replied, id.clone()).await;
+        review::record_sent(&log, "comment", rev, &threads, &answers, &id, &text).expect("record that it went");
+        let now = call_now(&home, &call);
+        record(
+            &mut steps,
+            "review: the words are kept on the call as a reply via review, naming the review's message",
+            replied.len() == 1 && ((now["reply"]["via"] == "review" && now["reply"]["message"] == id.as_str()) || acted_on(&now).is_some())
+                && text.contains("kept on each call as the captain's reply"),
+            format!("reply={}; message={id}", now["reply"]),
+        );
+        let acted = first_mate_acts(&home, &call, act_wait).await;
+        record(&mut steps, "review: the first mate records the reply or asks again", acted.is_some(), format!("{acted:?}"));
+    } else {
+        not_exercised(&mut steps, "review: the words are kept on the call as a reply via review, naming the review's message", "no call argued by a page".into());
+    }
+
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    println!("\nrecording: {}", recording.display());
+    let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+    assert!(failed.is_empty(), "failed: {failed:?}");
+}
+
 // -------------------------------------------------------------- attach ---
 
 /// The message the UI sends with `files`, written by `src/attachments.ts` itself

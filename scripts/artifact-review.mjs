@@ -759,7 +759,7 @@ await resumed.close();
   const opened = await offers(cellularCard);
   check(JSON.stringify(opened) === JSON.stringify({ choices: ["Pause, and carry on when Wi-Fi is back\nRECOMMENDED", "Finish on cellular if under 20 MB are left", "Not now"], words: ["Or answer in words"] }), `an argued call opens to its options, Not now and words (${JSON.stringify(opened)})`);
 
-  // Not now waits for its day, then goes to the first mate as words with anything added.
+  // Not now waits for its day, then is kept on the call as the captain's reply, with anything added.
   await cellularCard.locator(".suggestion-chips button", { hasText: "Not now" }).click();
   check(await cellularCard.locator(".decision-actions button", { hasText: "Send" }).isDisabled(), "Not now sends nothing until it has a day");
   check((await cellularCard.locator(".decision-actions > span").innerText()) === "Pick the day to be asked again", "and says what it is waiting for");
@@ -770,11 +770,11 @@ await resumed.close();
   await cellularCard.locator(".date-field input").fill("2026-10-03");
   await cellularCard.locator(".reply-field textarea").fill("After the launch, once we see real traffic.");
   check((await cellularCard.locator(".reply-field span").innerText()) === "Anything to add for the first mate?", "words go with Not now rather than instead of it");
-  check((await cellularCard.locator(".decision-actions > span").innerText()) === "→ sends: On the res model cellular: Not now. Ask me again on Oct 3. After the launch, once we see real traffic.", "the dated Not now says what it sends, words and all");
+  check((await cellularCard.locator(".decision-actions > span").innerText()) === "→ keeps your words on the call for the first mate: Not now. Ask me again on Oct 3. After the launch, once we see real traffic.", "the dated Not now says what it keeps, words and all");
   await shot(argued, "25-argued-not-now");
   await cellularCard.locator(".decision-actions button", { hasText: "Send" }).click();
-  await cellularCard.locator(".call-state").waitFor();
-  check((await cellularCard.innerText()).includes("Not now. Ask me again on Oct 3."), "the card keeps what was sent");
+  await cellularCard.locator("[data-testid='call-replied']").waitFor();
+  check((await cellularCard.locator("[data-testid='call-said']").innerText()).includes("Not now. Ask me again on Oct 3."), "the card shows the Not now kept on the call");
 
   // Words alone, on a call argued by a scout's report.
   const transcripts = argued.locator(".decision-card[data-call-id='res-transcripts-source']");
@@ -782,11 +782,11 @@ await resumed.close();
   await transcripts.locator(".reply-field textarea").fill("Publisher first, but log every episode we had to transcribe.");
   check((await transcripts.locator(".decision-actions button").last().innerText()) === "Send", "words are sent, not recorded");
   await transcripts.locator(".decision-actions button", { hasText: "Send" }).click();
-  await transcripts.locator(".call-state").waitFor();
+  await transcripts.locator("[data-testid='call-replied']").waitFor();
   await argued.locator(".nav-item", { hasText: "Chat" }).click();
   const told = await argued.locator(".captain-message").allInnerTexts();
-  check(told.some((text) => text.includes("On the res model cellular: Not now. Ask me again on Oct 3. After the launch")), "the dated Not now reaches the first mate");
-  check(told.some((text) => text.includes("On the res transcripts source: Publisher first, but log every episode")), "an argued call answered in words reaches the first mate");
+  check(told.some((text) => text.includes("The captain replied to call res-model-cellular from Bearings") && text.includes("Not now. Ask me again on Oct 3. After the launch")), "the dated Not now reaches the first mate, naming the call");
+  check(told.some((text) => text.includes("The captain replied to call res-transcripts-source from Bearings") && text.includes("Publisher first, but log every episode")), "an argued call answered in words reaches the first mate, naming the call");
   await argued.close();
 }
 
@@ -868,13 +868,14 @@ await resumed.close();
   const card = rail.locator("[data-testid='review-card']").last();
   const text = await sentText(card);
   check(text.includes("Recorded: res-model-download = wifi-only (\"Wi-Fi only, with visible progress\")\n  The captain added: Say so in Settings too."), "the recorded option carries what was added");
-  check(text.includes("Answered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh"), "the first mate is asked to record words, since nothing else can");
+  check(text.includes("Answered in words, kept on each call as the captain's reply; nothing has recorded them. Record one with bin/fm-captain-hold.sh answer only if"), "the first mate is told the words are kept on the call and nothing has recorded them");
   check(text.includes("\nres-model-cellular: Pause, and tell the user why it stopped. Keep what was downloaded."), "the words go as the captain wrote them, the last of them too");
   check((await card.locator(".review-card-answers li").allInnerTexts()).some((chip) => chip.includes("Pause, and tell the user why") && chip.includes("sent")), "the chat card shows words as sent, not recorded");
   await rail.locator(".nav-item", { hasText: "Bearings" }).click();
   const stillAsked = rail.locator(".decision-card[data-call-id='res-model-cellular']");
   await stillAsked.waitFor();
   check(await stillAsked.getAttribute("data-answered-in-review") === null && await stillAsked.locator("button", { hasText: "Answer now" }).count() === 1, "Bearings offers a call still asked after words went in the page");
+  check((await stillAsked.locator("[data-testid='call-said']").innerText()).endsWith(": Pause, and tell the user why it stopped. Keep what was downloaded."), "and shows the words that went in the page, kept on the call");
   check(await rail.locator(".decision-card[data-call-id='res-model-download'] button", { hasText: "Answer now" }).count() === 0, "Bearings offers no answer to a call the intake recorded from the page");
 
   // A new answer in words follows the one that went, which stays as what was said then.
@@ -942,12 +943,12 @@ await resumed.close();
   await again.close();
 }
 
-// `?records-chat`: words staged in the page for a call the captain then answers in chat, which the first mate
-// records, never go with a later review: the call is answered, so the page takes them back.
+// `?records-reply`: words staged in the page for a call the captain then replies to from Bearings, which the first
+// mate records, never go with a later review: the call is answered, so the page takes them back.
 {
   const elsewhere = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   elsewhere.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
-  await elsewhere.goto(`${baseUrl}/?artifacts&records-chat`);
+  await elsewhere.goto(`${baseUrl}/?artifacts&records-reply`);
   await elsewhere.waitForFunction(() => !document.querySelector(".app-loading"));
   const openPage = async () => {
     await elsewhere.locator(".nav-item", { hasText: "Artifacts" }).click();
@@ -973,7 +974,7 @@ await resumed.close();
   check((await elsewhere.locator(".send-review").innerText()) === "Send review", "once the call is answered elsewhere, the page takes back the words it had staged");
   await elsewhere.locator(".nav-item", { hasText: "Chat" }).click();
   const told = await elsewhere.locator(".captain-message").allInnerTexts();
-  check(told.some((text) => text.includes("On the res model cellular: Finish on cellular after all.")), "the answer given in chat went");
+  check(told.some((text) => text.includes("The captain replied to call res-model-cellular from Bearings") && text.includes("Finish on cellular after all.")), "the reply given in Bearings went, naming the call");
   await elsewhere.close();
 }
 

@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskFile, TaskNotes, TaskSource } from "./types";
+import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CallReplied, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskFile, TaskNotes, TaskSource } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -77,6 +77,10 @@ export class TauriHostAdapter implements HostAdapter {
 
   callAnswer({ call, option, label, onAnswer, page, note }: CallAnswerRequest) {
     return invoke<CallAnswered>("call_answer", { page, call, option, label, onAnswer, note: note ?? null });
+  }
+
+  callReply(call: string, words: string) {
+    return invoke<CallReplied>("call_reply", { call, words });
   }
 
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {

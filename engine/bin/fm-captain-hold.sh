@@ -27,6 +27,8 @@
 #   fm-captain-hold.sh offer <task-id> [--question <text>] [--option <key>=<label>]... \
 #     [--recommend <key>] [--on-answer done|release]
 #   fm-captain-hold.sh evidence <task-id> (add | remove) <ref>
+#   fm-captain-hold.sh reply <task-id> --words-file <path> --via quarterdeck|review|chat [--message <id>]
+#   fm-captain-hold.sh replies [--older-than <minutes>]
 #   fm-captain-hold.sh decide --about <task-id> --title <title> --what <one line> --why <one line> \
 #     [--kind review-finding|merge|new-task|scope|other] [--link <url>] [--option <key>=<label>]...
 #   fm-captain-hold.sh list [--json] [--since <days>]
@@ -68,7 +70,8 @@
 # same per-task control lock every mutation here takes:
 #   {schema, task, question, options:[{key,label,recommended}],
 #    on_answer ("done"|"release"|null), origin, about, evidence:[<ref>],
-#    raised_by, raised_at, updated_at, decided (null or {what,why,kind,link})}
+#    raised_by, raised_at, updated_at, decided (null or {what,why,kind,link}),
+#    reply (null or {words,via,at,message,previous}; see `reply` below)}
 # `hold` writes it whenever it is given --question, --option, --recommend,
 # --on-answer, --evidence, --about, or --origin (given, or defaulted as below),
 # and a hold without any of them behaves exactly as it always did (an existing
@@ -95,6 +98,32 @@
 # moves only when the offered content (question, options, recommendation, or
 # on_answer) is written by `hold` or `offer`, so a surface can tell a page
 # revision older than the choice it argues; attaching evidence never moves it.
+# `reply` keeps the captain's own words on an open call without deciding it:
+# the captain replied on the call (in words, a dated "not now", or an option
+# the call cannot record by key), and nothing has recorded what that means yet.
+# It writes {words, via, at, message, previous} as the record's `reply`, where
+# `via` is quarterdeck (a call card), review (a page review), or chat, `message`
+# is the id of the message that carried the words (null without --message), and
+# `previous` is the reply this one replaced (without its own `previous`), so a
+# surface can say what the captain said before. The words file holds 1 to 8192
+# bytes. It never closes, releases, answers, or re-holds, and never moves
+# `updated_at`; a call with no record gets one whose `updated_at` is its
+# raised_at. It refuses, with a one-line reason, a call that is absent, closed,
+# not held for the captain, or already carrying a recorded answer in this hold
+# lifecycle. An exact retry (same words and via, no --message) prints
+# `unchanged:`. --message never writes a reply: a surface keeps the words
+# first, sends the message that carries them, and then names it. It fills that
+# message in on a reply with the same words and via that names none, keeping
+# its `at` and `previous`; on any other call, one carrying a newer reply or
+# none because the first mate has since acted, it prints `unchanged:` and
+# writes nothing.
+# Only the first mate acting clears it: `answer` (and so `answers` and
+# `decide`) once the answer is recorded, `offer`, and every `hold` once the
+# hold is applied, because each records, re-asks, or defers the call.
+# `replies` is the read-only report of replies still waiting on the first mate:
+# one `<task-id>\t<at>\t<via>\t<first line of the words>` line per open call
+# whose reply is at least --older-than minutes old (default 0), silent when
+# there are none. bin/fm-wake-drain.sh prints it as UNHANDLED REPLIES.
 # `evidence` attaches or detaches one ref on any call, open or closed. Refs:
 #   page:task/<task-id>/<name> or page:chat/<name>  a presented page (must exist)
 #   report:<task-id>   data/<task-id>/report.md (must exist)
@@ -112,7 +141,8 @@
 # options and evidence. `--json` prints {schema:"fm-call-list.v1", calls:[...],
 # damaged:[{task,file}]}, each call being {id, title, question, options,
 # on_answer, state ("open"|"answered"|"closed"), bucket, captain_actionable,
-# origin, about, evidence, raised_by, raised_at, updated_at, answer, decided}.
+# origin, about, evidence, raised_by, raised_at, updated_at, answer, decided,
+# reply}, where `reply` is the record's reply while the call is open, else null.
 # `bucket` and `captain_actionable` are the fleet snapshot's hold projection,
 # unchanged: `list` reads the snapshot's own backlog parser
 # (`fm-fleet-snapshot.sh --backlog-json`), and the snapshot hands its already
@@ -353,8 +383,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-backlog-parse-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-parse-lib.sh"
-# `list` only reads, and the fleet snapshot runs it on homes that have no state yet.
-[ "${1:-}" != list ] || FM_WAKE_READ_ONLY=1
+# `list` and `replies` only read, and the fleet snapshot runs `list` on homes that have no state yet.
+case "${1:-}" in list|replies) FM_WAKE_READ_ONLY=1 ;; esac
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -1001,7 +1031,9 @@ CALL_VALID_JQ='
     and (.evidence | type) == "array" and all(.evidence[]; type == "string")
     and (.raised_by == null or (.raised_by | type) == "string")
     and (.raised_at | type) == "string" and (.updated_at | type) == "string"
-    and (.decided == null or (.decided | type) == "object");'
+    and (.decided == null or (.decided | type) == "object")
+    and (.reply == null or ((.reply | type) == "object"
+        and (.reply.words | type) == "string" and (.reply.at | type) == "string"));'
 
 require_jq() {
   command -v jq >/dev/null 2>&1 || fail "jq is required to read or record a call's content"
@@ -1147,6 +1179,35 @@ call_record_store() {  # <task-id> <json>
     rm -f -- "$tmp"
     fail "cannot record the call content for $id"
   fi
+}
+
+# The first mate has acted on the call (recorded, re-asked, or deferred it), so
+# the captain's reply is no longer waiting: clear it. A record this cannot read
+# is left as it is with a warning, because the act that clears it has already
+# succeeded and must not be reported as failed.
+call_reply_clear() {  # <task-id>
+  local id=$1 record
+  command -v jq >/dev/null 2>&1 || return 0
+  if ! call_record_try_load "$id"; then
+    printf 'fm-captain-hold: warning: call record %s is damaged; its reply was left as it is\n' \
+      "$(call_record_path "$id")" >&2
+    return 0
+  fi
+  [ -n "$CALL_RECORD" ] || return 0
+  printf '%s' "$CALL_RECORD" | jq -e '.reply != null' >/dev/null || return 0
+  record=$(printf '%s' "$CALL_RECORD" | jq -c '.reply = null') \
+    || fail "cannot compose the call content for $id"
+  call_record_store "$id" "$record"
+}
+
+# The newest resolution block's `Answered at:` in a decoded body, or nothing.
+newest_answered_at() {  # <decoded-task-body>
+  printf '%s\n' "$1" | awk '
+    /^Resolution recorded by fm-(captain|decision)-hold\.$/ { if (seen) exit; seen = 1; next }
+    !seen { next }
+    /^Answered at: / { sub(/^Answered at: /, ""); print; exit }
+    !/^(Decision digest|Resolution mode|Answer key|Answer label|Answered by|Answered via): / { exit }
+  '
 }
 
 # --- the content flags hold, offer, and decide share -----------------------
@@ -1458,6 +1519,7 @@ command_hold() {
   show=$TASK_SHOW_OUTPUT
   hold_kind=$(show_field_value "$show" hold_kind)
   [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
+  call_reply_clear "$id"
   occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
   [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
     || fail "task $id lost its hold-set stamp while being held"
@@ -1600,6 +1662,7 @@ command_answer() {
       [ "$release" = 0 ] \
         || fail "task $id records this answer with mode ${recorded_mode:-unknown}; --release cannot reopen a closed task"
       remove_interrupted_answer_stamp "$id"
+      call_reply_clear "$id"
       if [ "$recorded_mode" = repaired ]; then
         publish_parent_resolution_then_retire "$id" $((occurrence - 1)) "answered (repaired)"
       else
@@ -1621,6 +1684,7 @@ command_answer() {
     [ "$(show_field "$show" state)" = "done" ] || fail "recording the answer reopened closed task $id"
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
+    call_reply_clear "$id"
     publish_parent_resolution_then_retire "$id" "$occurrence" "answered (repaired)"
     printf 'repaired: %s\n' "$id"
     return 0
@@ -1645,11 +1709,13 @@ command_answer() {
         fail "could not close answered captain-held task $id"
       fi
       remove_interrupted_answer_stamp "$id"
+      call_reply_clear "$id"
       publish_parent_resolution_then_retire "$id" $((occurrence - 1)) "$outcome"
       printf '%s: %s\n' "$outcome" "$id"
       return 0
     fi
     write_resolution_record "$id" "$outcome" "$body"
+    call_reply_clear "$id"
     if ! close_answered "$id" "$release"; then
       fail "could not close answered captain-held task $id"
     fi
@@ -1658,6 +1724,7 @@ command_answer() {
     show=$TASK_SHOW_OUTPUT
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
+    call_reply_clear "$id"
     publish_parent_resolution_then_retire "$id" "$occurrence" "$outcome"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
@@ -1671,6 +1738,7 @@ command_answer() {
     [ "$recorded_mode" = released ] && [ "$release" = 1 ] \
       || fail "task $id records this answer with mode ${recorded_mode:-unknown}; replay requires matching --release"
     remove_interrupted_answer_stamp "$id"
+    call_reply_clear "$id"
     publish_parent_resolution_then_retire "$id" $((occurrence - 1)) released
     printf 'released: %s\n' "$id"
     return 0
@@ -1711,8 +1779,125 @@ command_offer() {
   else
     record=$(call_record_compose "$id" "$now" '' '' '') || exit 1
   fi
+  # Offering is the first mate asking again, so a reply waiting on it is answered.
+  record=$(printf '%s' "$record" | jq -c '.reply = null') || fail "cannot compose the call content for $id"
   call_record_store "$id" "$record"
   printf 'offered: %s\n' "$id"
+}
+
+REPLY_VIA_TOKENS='quarterdeck, review, chat'
+command_reply() {
+  local id=${1:-} words_file='' via='' message='' words now show state body hold_set answered_at raised_at record
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+    case "$1" in
+      --words-file) words_file=$2 ;;
+      --via) via=$2 ;;
+      --message) message=$2 ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift 2
+  done
+  validate_slug task-id "$id"
+  [ -n "$words_file" ] || fail "reply needs --words-file <path>: the captain's words"
+  [ -f "$words_file" ] || fail "words file does not exist: $words_file"
+  words=$(cat "$words_file")
+  [ -n "$(printf '%s' "$words" | tr -d '[:space:]')" ] || fail "the reply has no words"
+  [ "$(printf '%s' "$words" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
+    || fail "the reply is longer than 8192 bytes"
+  case "$via" in
+    quarterdeck|review|chat) : ;;
+    *) fail "--via must be one of $REPLY_VIA_TOKENS: $via" ;;
+  esac
+  [ -z "$message" ] || validate_slug message "$message"
+  require_jq
+  now=$(call_now)
+  acquire_task_control_lock "$id"
+  require_tasks_axi
+  task_show_or_fail "$id" "call $id is not in this home's backlog"
+  state=$(show_field "$show" state)
+  [ "$state" != "done" ] || fail "call $id is already closed"
+  [ "$(show_field_value "$show" hold_kind)" = captain ] || fail "call $id is not waiting on the captain"
+  body=$(decode_shown_value "$(show_field "$show" body)") || fail "could not read call $id"
+  hold_set=$(body_hold_set_timestamp "$body")
+  answered_at=$(newest_answered_at "$body")
+  if [ -n "$answered_at" ] && { [ -z "$hold_set" ] || ! [[ "$answered_at" < "$hold_set" ]]; }; then
+    fail "call $id already has a recorded answer"
+  fi
+  call_record_load "$id"
+  if [ -z "$CALL_RECORD" ]; then
+    # A reply never moves updated_at, so a record it creates dates from the call.
+    raised_at=$(shown_call_raised_at "$show" "$now")
+    record=$(call_record_compose "$id" "$raised_at" "$raised_at" '' '') || exit 1
+  else
+    record=$CALL_RECORD
+  fi
+  if printf '%s' "$record" | jq -e --arg words "$words" --arg via "$via" --arg message "$message" '
+      .reply != null and .reply.words == $words and .reply.via == $via
+      and .reply.message == (if $message == "" then null else $message end)' >/dev/null; then
+    printf 'unchanged: %s\n' "$id"
+    return 0
+  fi
+  if [ -n "$message" ] && printf '%s' "$record" | jq -e --arg words "$words" --arg via "$via" '
+      .reply != null and .reply.words == $words and .reply.via == $via and .reply.message == null' >/dev/null; then
+    record=$(printf '%s' "$record" | jq -c --arg message "$message" '.reply.message = $message') \
+      || fail "cannot compose the call content for $id"
+    call_record_store "$id" "$record"
+    printf 'replied: %s\n' "$id"
+    return 0
+  fi
+  if [ -n "$message" ]; then
+    printf 'unchanged: %s\n' "$id"
+    return 0
+  fi
+  record=$(printf '%s' "$record" | jq -c --arg words "$words" --arg via "$via" --arg at "$now" '
+    .reply = {words:$words, via:$via, at:$at, message:null,
+              previous:(if .reply == null then null else (.reply | del(.previous)) end)}') \
+    || fail "cannot compose the call content for $id"
+  call_record_store "$id" "$record"
+  printf 'replied: %s\n' "$id"
+}
+
+# Replies still waiting on the first mate (see the header). Read-only and
+# silent when nothing waits, because the wake drain runs it on every turn.
+command_replies() {
+  local older=0 now cutoff path id show
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --older-than)
+        shift
+        older=${1:-}
+        case "$older" in ''|*[!0-9]*) fail "--older-than takes a whole number of minutes (got '$older')" ;; esac
+        ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  [ -d "$CALLS_DIR" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  command -v tasks-axi >/dev/null 2>&1 || return 0
+  now=$(call_now)
+  cutoff=$(jq -nr --arg now "$now" --argjson older "$older" '($now | fromdateiso8601) - $older * 60') || return 0
+  for path in "$CALLS_DIR"/*.json; do
+    [ -f "$path" ] && [ ! -L "$path" ] || continue
+    id=${path##*/}; id=${id%.json}
+    task_id_path_safe "$id" || continue
+    call_record_try_load "$id" || continue
+    [ -n "$CALL_RECORD" ] || continue
+    printf '%s' "$CALL_RECORD" | jq -e --argjson cutoff "$cutoff" '
+      .reply != null and ((try (.reply.at | fromdateiso8601) catch null) // $cutoff) <= $cutoff' >/dev/null \
+      || continue
+    task_show "$id" || continue
+    show=$TASK_SHOW_OUTPUT
+    [ "$(show_field "$show" state)" != "done" ] || continue
+    [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
+    printf '%s' "$CALL_RECORD" | jq -r --arg id "$id" '
+      def clean: gsub("[[:cntrl:]]"; " ") | .[:200];
+      [$id, (.reply.at | clean), ((.reply.via // "") | clean),
+       ((.reply.words | split("\n") | map(select(test("[^[:space:]]"))) | .[0] // "") | clean)] | join("\t")'
+  done
 }
 
 command_evidence() {
@@ -2008,7 +2193,8 @@ EOF_ORIGINS
            raised_at:($rec.raised_at // $row.hold_set // $row.since),
            updated_at:($rec.updated_at // null),
            answer:$answer,
-           decided:($rec.decided // null)}
+           decided:($rec.decided // null),
+           reply:(if $state == "open" then ($rec.reply // null) else null end)}
       ] as $calls
     | {schema:"fm-call-list.v1", calls:$calls,
        damaged:($records[0] | map(select(.ok | not) | {task, file}))}' > "$work/list.json" \
@@ -2022,7 +2208,8 @@ EOF_ORIGINS
       "\(.id)  \(.state)\(if .bucket then "  " + .bucket else "" end)  \(.question // .title)",
       (.options[] | "  \(.key)  \(.label)\(if .recommended then "  (recommended)" else "" end)"),
       (.evidence[] | "  evidence: \(.)"),
-      (if .answer then "  answer: \(.answer.key // "-")  \(.answer.label // "")  (by \(.answer.by) via \(.answer.via // "-"))" else empty end)),
+      (if .answer then "  answer: \(.answer.key // "-")  \(.answer.label // "")  (by \(.answer.by) via \(.answer.via // "-"))" else empty end),
+      (if .reply then "  reply: \(.reply.at) via \(.reply.via)  \(.reply.words | split("\n") | .[0])" else empty end)),
     (.damaged[] | "damaged: \(.task) \(.file)"),
     "calls: \(.calls | length)"' "$work/list.json"
 }
@@ -3105,6 +3292,8 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
 case "${1:-}" in
   hold) shift; command_hold "$@" ;;
   offer) shift; command_offer "$@" ;;
+  reply) shift; command_reply "$@" ;;
+  replies) shift; command_replies "$@" ;;
   evidence) shift; command_evidence "$@" ;;
   decide) shift; command_decide "$@" ;;
   list) shift; command_list "$@" ;;
