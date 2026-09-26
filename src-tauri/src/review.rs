@@ -1724,12 +1724,15 @@ mod tests {
 
     /// The chat reads these messages back as answer cards (`answerOfMessage` in `src/calls.ts`), from the same file.
     #[test]
-    fn a_bearings_answer_is_written_as_the_chat_reads_it() {
+    fn a_bearings_answer_or_reply_is_written_as_the_chat_reads_it() {
         let fixture: Value = serde_json::from_str(include_str!("../../src/fixtures/call-messages.json")).unwrap();
         for case in fixture["answered"].as_array().unwrap() {
             let field = |name: &str| case[name].as_str().unwrap();
             let text = answer_message(field("call"), field("key"), field("label"), case["note"].as_str());
             assert_eq!(text, field("text"));
+        }
+        for case in fixture["replied"].as_array().unwrap() {
+            assert_eq!(reply_message(case["call"].as_str().unwrap(), case["words"].as_str().unwrap()), case["text"].as_str().unwrap());
         }
     }
 

@@ -1,6 +1,6 @@
 /**
  * A call's two cards in the chat: the call card, where the first mate raised it, and the answer card, where the
- * captain answered it. What each says is worked out in src/callcards.ts; these only draw it.
+ * captain answered it. What each says is worked out in src/callviews.ts; these only draw it.
  *
  * The call card takes its answer form as parts the answering surface hands in (`form`), so it answers through the one
  * form and the one path Bearings uses, and never through a copy of its own.
@@ -8,7 +8,7 @@
 import { Check, CircleAlert, CircleCheck, CirclePause, CircleSlash, Ellipsis, Info } from "lucide-react";
 import { useState } from "react";
 
-import { type AnswerCardView, type CallCardView, type CallLine } from "./callcards";
+import { type AnswerCardView, type CallCardView, type CallLine } from "./callviews";
 import type { Call } from "./host/types";
 
 /** The answer form a call card shows, handed in by the surface that answers the call. */
@@ -57,9 +57,11 @@ export function CallLineCard({ call, heading, line, form, onOpenPage, onDraft }:
  * his that nothing has recorded folds the form under Answer differently. `notices` are the surface's own states
  * (not recorded, the reply itself, a reply refused), drawn the way Bearings draws them.
  */
-export function CallOpenCard({ call, heading, view, form, argued, unread, summary, notices, onReadArgument }: {
+export function CallOpenCard({ call, heading, question, view, form, argued, unread, summary, notices, onReadArgument }: {
   call: Call;
   heading: string;
+  /** The question, when it says more than the heading. */
+  question: string | null;
   view: CallCardView;
   form: CallForm;
   argued: string | null;
@@ -74,7 +76,7 @@ export function CallOpenCard({ call, heading, view, form, argued, unread, summar
   return <article className={`call-chat-card${view.replied ? " replied" : ""}`} data-testid="call-card" data-call-id={call.id} data-standing={view.replied ? "replied" : "open"}>
     <div className="call-chat-kicker">Captain's call{view.kicker.length > 0 && <span>{view.kicker.join(" · ")}</span>}</div>
     <h4>{heading}</h4>
-    {call.question && call.question !== heading && <p className="call-chat-question">{call.question}</p>}
+    {question && <p className="call-chat-question">{question}</p>}
     {argued && <p className="call-argued" data-testid="argued-by">Argued by <strong>{argued}</strong></p>}
     {argued && unread && !folded && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argued}” yet.</p>}
     {(view.optionsChanged || view.withdrawn) && <div className="call-chat-note warn" data-testid="options-changed"><CircleAlert size={15} /><span>

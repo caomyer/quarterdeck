@@ -1,4 +1,4 @@
-// Unit tests for src/callcards.ts, which works out what a call's two cards in the chat say.
+// Unit tests for src/callviews.ts, which works out what a call's two cards in the chat say.
 //
 //   pnpm test
 //
@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { answerOfMessage, callStanding } from "../src/calls.ts";
-import { answerCardView, callCardView, callLine, notNowDay } from "../src/callcards.ts";
+import { answerCardView, callCardView, callLine, notNowDay } from "../src/callviews.ts";
 
 const NOW = Date.parse("2026-09-25T13:00:00Z");
 const ago = (minutes) => new Date(NOW - minutes * 60_000).toISOString();
