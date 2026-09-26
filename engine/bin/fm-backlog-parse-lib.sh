@@ -66,6 +66,15 @@ FM_BACKLOG_PARSE_JQ='
     def url_pattern: "https?://[^[:space:])\"<>]+";
     def wrapped_url_pattern: "<?" + url_pattern + ">?";
     def links($rest): [$rest | scan(url_pattern)];
+    # A task linked to an item in an external task system carries one body
+    # line per edge, written only by bin/fm-sources.sh, which owns the format:
+    # `source-link: <source> <item-id> <fulfills|contributes>`. It lives in the
+    # body because tasks-axi keeps a body verbatim and `tasks-axi mv` carries it
+    # to a secondmate with the row. Named apart from `links`, the URL scan.
+    def source_links($lines):
+      [ $lines[]
+        | capture("^source-link:[[:space:]]+(?<source>[a-z][a-z0-9-]*:[^[:space:]]+)[[:space:]]+(?<item>[^[:space:]]+)[[:space:]]+(?<role>fulfills|contributes)$")? ]
+      | unique_by([.source, .item]);
     def strip_trailing_metadata:
       reduce range(0; 20) as $_ (.;
         sub("[[:space:]]*\\([[:space:]]*(?:(?:repo|kind|priority|hold|hold-kind|hold-until):[[:space:]]*[^)]*|(?:since|merged|reported|done)[[:space:]]+[^)]*)[[:space:]]*\\)[[:space:]]*$"; ""));
@@ -144,7 +153,8 @@ FM_BACKLOG_PARSE_JQ='
              local_note:local_note($rest),
              raw:$line,
              body_lines:[],
-             body_excerpt:null}
+             body_excerpt:null,
+             source_links:[]}
         end;
     reduce inputs as $line
       ({path:$path,present:true,records:[],section:null,order:0};
@@ -173,6 +183,7 @@ FM_BACKLOG_PARSE_JQ='
                   else cap(.body_lines[-1]; "^(?<v>local main)$")
                   end))
           | .body_excerpt = ((.body_lines | join(" "))[:240])
+          | .source_links = source_links(.body_lines)
         else . end)
     | .records as $records
     | (reduce ($records[] | select(.structured)) as $record ({};

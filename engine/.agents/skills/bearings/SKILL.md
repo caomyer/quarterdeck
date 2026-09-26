@@ -201,6 +201,7 @@ The classifier does not infer a captain decision from comment prose, and a recor
 A merge-ready classification grants no merge authority and the ordinary exact-PR checks still govern any later approval.
 
 When filing work corresponding to an upstream ticket, put its canonical issue URL on the structured backlog row and run the observer's `arm` operation.
+When the ticket lives in a connected task source (`bin/fm-sources.sh status`), file it through `task-sources` instead, which links it without a URL.
 That explicit task link, rather than repository membership or a text similarity guess, makes a ready-for-pr transition owned planning input.
 After a signal's disposition is durable as filed work, a captain hold, or a recorded no-action decision in the task, acknowledge that exact event token through `ack`.
 Do not acknowledge merely because the signal was read.

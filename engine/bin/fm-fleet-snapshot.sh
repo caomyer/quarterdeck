@@ -118,6 +118,11 @@
 #     Which closed rows a home contributes is bin/fm-landed-lib.sh's rule, shared
 #     with the bearings projection so one Recently Landed section has one owner.
 #   contributions: cached owned-contribution coverage; fm-contributions.sh owns it.
+#   sources: the external task sources connected in this home, exactly as
+#     `bin/fm-sources.sh snapshot` reports them (that script owns the shape), or
+#     {error} when they cannot be read. A backlog record's source_links name
+#     the items its task is linked to; a link whose source is absent here is a
+#     source not connected in this home.
 #   secondmate_guidance: return-channel action note for renderers and bearings.
 #
 # --contribution-input prints only the canonical backlog/tasks ownership pair,
@@ -1870,6 +1875,11 @@ esac
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CAPTAIN_HOLD_NOW="$CALLS_NOW" \
   "$SCRIPT_DIR/fm-captain-hold.sh" list --json --backlog-json "$BACKLOG_JSON_FILE" > "$CALLS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: call listing failed" >&2; exit 1; }
+SOURCES_JSON_FILE="$JSON_TRANSPORT_DIR/sources.json"
+# A source that cannot be read must not blank the fleet: it reads as an error.
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+  "$SCRIPT_DIR/fm-sources.sh" snapshot > "$SOURCES_JSON_FILE" 2> "$JSON_TRANSPORT_DIR/sources.err" \
+  || jq -n --rawfile err "$JSON_TRANSPORT_DIR/sources.err" '{error:($err | gsub("\n+$"; ""))}' > "$SOURCES_JSON_FILE"
 main_inventory_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" > "$MAIN_INVENTORY_JSON_FILE" \
   || { echo "fm-fleet-snapshot: main inventory summary failed" >&2; exit 1; }
 secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
@@ -1892,6 +1902,7 @@ jq -n \
   --slurpfile scout_reports "$SCOUT_REPORTS_JSON_FILE" \
   --slurpfile artifacts "$ARTIFACTS_JSON_FILE" \
   --slurpfile calls "$CALLS_JSON_FILE" \
+  --slurpfile sources "$SOURCES_JSON_FILE" \
   --slurpfile secondmate_current "$SECONDMATE_CURRENT_JSON_FILE" \
   --slurpfile secondmate_landed "$SECONDMATE_LANDED_JSON_FILE" \
   '($backlog[0]) as $backlog
@@ -1915,6 +1926,7 @@ jq -n \
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      artifacts:$artifacts[0].artifacts,
      calls:$calls[0].calls,
+     sources:$sources[0],
      secondmate_current:$secondmate_current,
      secondmate_landed:$secondmate_landed,
      secondmate_guidance:{

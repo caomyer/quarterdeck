@@ -1259,3 +1259,74 @@ a { color: var(--sea); }
 .decision-answer blockquote.decision-words + .call-answer-fields, .decision-answer blockquote.decision-words + .decision-missing { margin-top: 10px; }
 .decision-staged.pending { color: var(--muted); }
 .needs-banner li > .needs-tool { justify-self: start; }
+
+/* Task sources: Settings, the project page's intake, and a linked task's chip and Upstream sections. */
+.sources-settings .source-list { display: flex; width: 100%; flex-direction: column; gap: 10px; }
+.source-row { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
+.source-row-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.source-row-head > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.source-row-head strong { overflow: hidden; color: var(--ink); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.settings-body .source-row-head small { color: var(--faint); font: 12px var(--mono); }
+.source-mark { padding: 3px 8px; border-radius: 7px; color: var(--ink-3); background: var(--surface-3); font: 600 11.5px/1.5 var(--mono); }
+.source-form { display: flex; width: 100%; flex-direction: column; gap: 12px; }
+.source-field { display: flex; width: 100%; flex-direction: column; gap: 6px; }
+.source-field > span { color: var(--ink-2); font-size: 13px; font-weight: 600; }
+.source-field input, .source-field select, .link-field input { height: 36px; padding: 0 11px; border: 1px solid var(--control); border-radius: 8px; outline: 0; color: var(--ink); background: var(--surface-2); font: 13px var(--mono); }
+.source-field select { font-family: inherit; }
+.source-field input:focus, .source-field select:focus, .link-field input:focus { border-color: var(--sea); }
+.source-field input::placeholder, .link-field input::placeholder { color: var(--fainter); }
+.settings-body .source-field small, .settings-body .source-form > small, .settings-body .source-later { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.settings-body p.source-can { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 13px; }
+.source-remove { color: var(--coral); }
+.source-add-row { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px dashed var(--control); border-radius: 11px; }
+.source-add-row > div { display: flex; flex-direction: column; gap: 3px; }
+.source-add-row strong { color: var(--ink); font-size: 13.5px; font-weight: 600; }
+.source-add-row .btn-base { height: 32px; padding: 0 14px; font-size: 12.5px; }
+.source-note { display: grid; grid-template-columns: 15px 1fr; gap: 9px; width: 100%; margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); background: var(--surface); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.source-note svg { margin-top: 2px; }
+.source-note span { color: var(--ink-3); }
+.source-note strong { color: var(--ink); font-weight: 600; }
+.source-note.warn { border-color: var(--brand-edge); color: var(--amber); background: var(--brand-wash); }
+.source-row .source-note { margin: 0; }
+
+.intake .source-note { margin-top: 10px; }
+.intake-row { border-bottom: 1px solid var(--rule); }
+.intake-row .intake-head { grid-template-columns: 18px minmax(0, 1fr) auto; border-bottom: 0; }
+.intake-actions { display: inline-flex; align-items: center; gap: 8px; }
+.intake-actions .btn-base { height: 30px; padding: 0 12px; font-size: 12.5px; }
+.intake-actions .task-chip { font-size: 12px; }
+.intake-actions .intake-link { width: 30px; height: 30px; }
+.intake-row .intake-panel { margin: 0 8px 14px 42px; }
+.intake-row > .start-problem { margin: -6px 8px 12px 42px; }
+
+.source-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.drawer-header .source-chip, .source-chip { display: inline-flex; max-width: 100%; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.4; letter-spacing: 0; text-decoration: none; text-transform: none; }
+.drawer-header .source-chip.tone-blue, .source-chip.tone-blue { color: var(--blue); }
+.drawer-header .source-chip.tone-green, .source-chip.tone-green { color: var(--green); }
+.drawer-header .source-chip.tone-muted, .source-chip.tone-muted { color: var(--muted); }
+a.source-chip:hover { border-color: var(--control-hover); }
+
+.as-filed { display: flex; flex-direction: column; gap: 8px; }
+.as-filed blockquote { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 10px 12px; border-left: 2px solid var(--control); border-radius: 0 8px 8px 0; background: var(--surface); }
+.as-filed blockquote.changed { border-left-color: var(--amber); background: var(--brand-wash); }
+.as-filed blockquote strong { color: var(--ink); font-size: 13.5px; font-weight: 600; }
+.as-filed blockquote p { max-height: 180px; margin: 0; overflow: auto; color: var(--ink-3); font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.as-filed-label { color: var(--amber); font: 600 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.as-filed small { color: var(--faint); font-size: 12px; line-height: 1.5; }
+.upstream-lines .timeline-icon.tone-green { color: var(--green); }
+.upstream-lines .timeline-icon.tone-amber { color: var(--amber); }
+.upstream-lines .timeline-icon.tone-coral { color: var(--coral); }
+.upstream-lines .timeline-icon.tone-muted { color: var(--muted); }
+.upstream-lines small { overflow-wrap: anywhere; }
+
+.link-field { display: flex; gap: 8px; }
+.link-field input { min-width: 0; flex: 1; }
+.link-field .btn-base { height: 36px; padding: 0 14px; font-size: 12.5px; }
+.drawer-section .link-hint { display: block; margin-top: 8px; color: var(--faint); font-size: 12px; line-height: 1.5; }
+.drawer-section .start-problem { margin-top: 8px; }
+
+@media (max-width: 760px) {
+  .intake-row .intake-head { grid-template-columns: 18px minmax(0, 1fr); }
+  .intake-actions { grid-column: 2; flex-wrap: wrap; }
+  .intake-row .intake-panel, .intake-row > .start-problem { margin-left: 8px; }
+}

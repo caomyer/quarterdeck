@@ -6,6 +6,7 @@ import recordedStream from "./mock-event-stream.json";
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
 import { MockUpdates } from "./mock-update";
 import { mockUsage } from "./mock-usage";
+import { addRefusal, linkedBody, linkFixtureRow, mockIssues, mockSources } from "./mock-sources";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
 import type {
@@ -48,8 +49,12 @@ import type {
   Routing,
   RoutingStart,
   SnapshotEvent,
+  SourcesRead,
   StartAsk,
   StartRequest,
+  TakeOnAsk,
+  TakeOnRequest,
+  TaskSource,
 } from "./types";
 
 type RecordedEvent = { t_ms: number; type: HostEvent["type"]; payload: Record<string, unknown> };
@@ -623,6 +628,28 @@ export class MockHostAdapter implements HostAdapter {
   private readonly openedAt = Date.now();
 
   private static fixtureSnapshot() {
+    const base = MockHostAdapter.artifactSnapshot();
+    if (!reviewFlag("sources")) return base;
+    // `?sources`: GitHub connected as resonance's task source (src/host/mock-sources.ts).
+    const variant = reviewValue("sources") || null;
+    const home = base.fleet.fm_home;
+    const sources = mockSources(variant, {
+      row: backlogRow,
+      worker: (id, kind, state, minutesAgo) => mockTask(home, id, kind, state, minutesAgo, { detail: "harness busy (claude-hook)", note: "Wiring the share extension to the snip store.", report: false, observedAt: new Date().toISOString() }),
+    });
+    const records = (base.fleet.backlog?.records ?? []).map((record) => linkFixtureRow(record, variant));
+    return {
+      bearings: base.bearings,
+      fleet: {
+        ...base.fleet,
+        tasks: [...base.fleet.tasks, ...sources.tasks],
+        backlog: { ...base.fleet.backlog, records: [...records, ...sources.records] },
+        ...(sources.read ? { sources: sources.read } : {}),
+      },
+    };
+  }
+
+  private static artifactSnapshot() {
     const bearings = bearingsFixture as unknown as BearingsSnapshot;
     const fleet = fleetFixture as unknown as FleetSnapshot;
     if (!reviewFlag("artifacts")) return { bearings, fleet };
@@ -1091,7 +1118,7 @@ export class MockHostAdapter implements HostAdapter {
       return id;
     }
     if (reviewFlag("records-chat")) this.recordToldInChat(text);
-    const run = () => text.startsWith("Start work on ") ? this.startTurn(id, text) : this.deliver(id, text);
+    const run = () => text.startsWith("Start work on ") ? this.startTurn(id, text) : text.startsWith("Take on ") ? this.takeOnTurn(id, text) : this.deliver(id, text);
     if (this.state === "starting") this.deferred.push(run);
     else run();
     return id;
@@ -1143,6 +1170,176 @@ export class MockHostAdapter implements HostAdapter {
 
   async startAsks() {
     return Object.fromEntries(this.asks);
+  }
+
+  /** The take-on asks start.rs records beside the start asks, keyed by item. */
+  private readonly takeOns = new Map<string, TakeOnAsk>();
+  private takeOnRefused = false;
+
+  /**
+   * Hands an item to the first mate to file, as `take_on` does: start.rs's words, which name only the source and the
+   * key. `?take=unsent`: the host does not take the first ask.
+   */
+  async takeOn({ source, item, key, project, title, note }: TakeOnRequest): Promise<TakeOnAsk> {
+    if (!/^[a-z][a-z0-9-]*:\S+$/.test(source)) throw new Error(`'${source}' is not a task source`);
+    if (!/^[A-Za-z0-9#._/:=-]{1,60}$/.test(key) || !/^[A-Za-z0-9#._/:=-]{1,200}$/.test(item)) throw new Error("that item cannot be named in a message");
+    const words = note?.trim() || null;
+    const text = [`Take on ${source} ${key} (${project})`, `Item: ${source} ${item}`, ...(words ? [`From me: ${words}`] : [])].join("\n");
+    const refuse = reviewValue("take") === "unsent" && !this.takeOnRefused;
+    this.takeOnRefused ||= refuse;
+    const message = refuse ? null : await this.send(text);
+    const ask: TakeOnAsk = { at: Date.now(), kind: "take-on", task: null, item: { source, id: item, key }, project, title, note: words, message, error: refuse ? "The first mate isn't running in this folder." : null, header: text.split("\n")[0], text };
+    this.takeOns.set(`${source} ${item}`, ask);
+    return ask;
+  }
+
+  async takeOnAsks() {
+    return Object.fromEntries(this.takeOns);
+  }
+
+  /**
+   * The first mate's turn on a take-on ask, by `?take=<outcome>`: `file` (the default) reads the item through
+   * fm-sources.sh and files it as a queued task, linked in the same step, as `fm-sources.sh file` does; `decline`
+   * answers in chat instead; `failed` errors before reading it; `slow` is still reading it.
+   */
+  private takeOnTurn(id: string, text: string) {
+    const [, source, item] = text.match(/\nItem: (\S+) (\S+)/) ?? [];
+    const outcome = reviewValue("take") || "file";
+    const say = (words: string) => this.emit({ type: "text", payload: { chunk: words, origin: "prompt" } });
+    const end = () => {
+      this.outstanding.delete(id);
+      this.emit({ type: "outbox", payload: { id, status: "picked_up" } });
+      this.emit({ type: "state", payload: { state: "idle" } });
+    };
+    this.emit({ type: "outbox", payload: { id, status: "sent" } });
+    this.emit({ type: "state", payload: { state: "prompt_turn" } });
+    if (outcome === "slow") return;
+    if (outcome === "failed") {
+      this.later(300, () => {
+        this.outstanding.delete(id);
+        this.emit({ type: "outbox", payload: { id, status: "failed", error: "The first mate's turn ended with an error before it read this." } });
+        this.emit({ type: "state", payload: { state: "idle" } });
+      });
+      return;
+    }
+    this.later(250, () => {
+      this.emit({ type: "outbox", payload: { id, status: "likely_started" } });
+      this.emit({ type: "tool_call", payload: { id: `take-1-${id}`, title: `bin/fm-sources.sh show ${source} ${item}`, kind: "execute", status: "completed" } });
+    });
+    this.later(600, () => {
+      const found = this.sourceItem(source, item);
+      if (outcome === "decline" || !found) {
+        say(found ? `I haven't filed ${found.key}: it reads like the drawer work already queued. Say the word and I'll file it anyway.` : `I couldn't read ${item} on ${source}.`);
+        return end();
+      }
+      const task = `res-${found.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").split("-").filter(Boolean).slice(0, 3).join("-")}`;
+      this.emit({ type: "tool_call", payload: { id: `take-2-${id}`, title: `bin/fm-sources.sh file ${source} ${item} ${task} "..." --kind ship --repo resonance`, kind: "execute", status: "completed" } });
+      this.fileLinked(task, `Resonance: ${found.title.charAt(0).toLowerCase()}${found.title.slice(1)}`, source, item, []);
+      say(`Filed ${found.key} as ${task}, queued. Start it from its drawer when you want it worked on.`);
+      end();
+    });
+  }
+
+  private sourcesRead() {
+    const read = this.snapshot.fleet.sources;
+    return read && !("error" in read) ? read : undefined;
+  }
+
+  private sourceItem(source: string, item: string) {
+    return this.sourcesRead()?.sources.find((candidate) => candidate.id === source)?.items[item];
+  }
+
+  /** A change to the sources, written the way the engine writes it, reaching the window with the next snapshot. */
+  private writeSources(sources: TaskSource[], records?: BacklogRecord[]) {
+    const read = this.sourcesRead() ?? { schema: "fm-sources-snapshot.v1", first_milestone: "in-review", sources: [] };
+    const now = new Date().toISOString();
+    this.snapshot.fleet = {
+      ...this.snapshot.fleet, generated: now,
+      sources: { ...read, read_at: now, sources },
+      ...(records ? { backlog: { ...this.snapshot.fleet.backlog, records } } : {}),
+    };
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    return this.snapshot.fleet.sources as SourcesRead;
+  }
+
+  /** `fm-sources.sh file` or `link`: the edge written into the row's body, and the item's as-filed copy kept. */
+  private fileLinked(task: string, title: string, source: string, item: string, lines: string[]) {
+    const read = this.sourcesRead();
+    const found = read?.sources.find((candidate) => candidate.id === source);
+    const known = found?.items[item] ?? mockIssues().find((issue) => issue.id === item);
+    if (!read || !found || !known) throw new Error(`could not resolve '${item}'`);
+    const filed = { item: known.id, key: known.key, url: known.url, title: known.title, body: known.body, state: known.state, state_name: known.state_name, assignee: known.assignee, updated_at: known.updated_at, filed_at: new Date().toISOString(), task };
+    const links = [{ source, item, role: "fulfills" as const }];
+    const records = this.snapshot.fleet.backlog?.records ?? [];
+    const existing = records.find((record) => record.id === task);
+    const next = existing
+      ? records.map((record) => record.id !== task ? record : { ...record, ...linkedBody(record.body_lines ?? [], [...(record.source_links ?? []), ...links]) })
+      : [...records, backlogRow(task, title, { state: "queued", current_role: "queued", since: localDate(0), ...linkedBody(lines, links) })];
+    const sources = read.sources.map((candidate) => candidate.id !== source ? candidate : {
+      ...candidate, items: { ...candidate.items, [item]: { ...known, filed } }, filed: { ...candidate.filed, [item]: filed },
+    });
+    return this.writeSources(sources, next);
+  }
+
+  async sourcesGet(): Promise<SourcesRead> {
+    const read = this.snapshot.fleet.sources;
+    if (!read) return { sources: [], unsupported: true, problem: "This home's firstmate cannot take on work from other task systems yet." };
+    return "error" in read ? { sources: [], problem: read.error } : read;
+  }
+
+  async sourcesAdd(provider: string, locator: string, project: string, filter: string, outbound: TaskSource["outbound"]): Promise<SourcesRead> {
+    const existing = this.sourcesRead()?.sources ?? [];
+    const refusal = addRefusal(provider, locator, filter, existing);
+    if (refusal) throw new Error(refusal);
+    const now = new Date().toISOString();
+    return this.writeSources([...existing, {
+      id: `${provider}:${locator}`, provider, locator, project, filter, outbound, review_state: null, added: now, identity: "caomyer",
+      can: { read: true, comment: true, advance: true }, reach: [locator], last_read: now, reading_more: false, stale: false, failure: null,
+      items: {}, filed: {}, offers: [], outbox: [], sent: [], events: [],
+    }]);
+  }
+
+  async sourcesEdit(source: string, change: { filter?: string; outbound?: TaskSource["outbound"] }): Promise<SourcesRead> {
+    const existing = this.sourcesRead()?.sources ?? [];
+    const found = existing.find((candidate) => candidate.id === source);
+    if (!found) throw new Error(`no source '${source}' is connected in this home`);
+    if (change.filter !== undefined) {
+      const refusal = addRefusal(found.provider, found.locator, change.filter, existing.filter((candidate) => candidate.id !== source));
+      if (refusal) throw new Error(refusal);
+    }
+    return this.writeSources(existing.map((candidate) => candidate.id !== source ? candidate : { ...candidate, ...change }));
+  }
+
+  async sourcesRemove(source: string): Promise<SourcesRead> {
+    const existing = this.sourcesRead()?.sources ?? [];
+    if (!existing.some((candidate) => candidate.id === source)) throw new Error(`no source '${source}' is connected in this home`);
+    return this.writeSources(existing.filter((candidate) => candidate.id !== source));
+  }
+
+  /** `fm-sources.sh dismiss`: the item leaves the offers until it changes upstream. */
+  async sourcesDismiss(source: string, item: string): Promise<SourcesRead> {
+    const existing = this.sourcesRead()?.sources ?? [];
+    if (!existing.some((candidate) => candidate.id === source)) throw new Error(`no source '${source}' is connected in this home`);
+    return this.writeSources(existing.map((candidate) => candidate.id !== source ? candidate : { ...candidate, offers: candidate.offers.filter((id) => id !== item) }));
+  }
+
+  /** `fm-sources.sh link`: resolves a pasted link or key against the connected source, in its words when it cannot. */
+  async sourcesLink(task: string, reference: string): Promise<unknown> {
+    const read = this.sourcesRead();
+    const source = read?.sources[0];
+    if (!source) throw new Error("no source is connected in this home");
+    const ref = reference.trim();
+    const number = ref.match(/^(?:https:\/\/github\.com\/caomyer\/resonance\/issues\/|#)?(\d+)$/)?.[1];
+    const other = ref.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\//)?.[1];
+    if (other && other.toLowerCase() !== source.locator.toLowerCase()) throw new Error(`could not resolve '${ref}' on ${source.id}: that issue is in ${other}, not ${source.locator}`);
+    if (!number) throw new Error(`could not resolve '${ref}' on ${source.id}: '${ref}' is not an issue link or number`);
+    const item = [...Object.values(source.items), ...mockIssues()].find((candidate) => candidate.key === `#${number}`);
+    if (!item) throw new Error(`could not resolve '${ref}' on ${source.id}: no issue #${number} in ${source.locator}`);
+    const record = this.snapshot.fleet.backlog?.records.find((candidate) => candidate.id === task);
+    if (!record) throw new Error(`no task ${task} in this home's backlog`);
+    if ((record.source_links ?? []).some((link) => link.source === source.id && link.item === item.id)) throw new Error(`${task} is already linked to ${item.key}`);
+    this.fileLinked(task, record.title, source.id, item.id, []);
+    return { ok: true, task, link: { source: source.id, item: item.id, role: "fulfills" }, key: item.key, url: item.url };
   }
 
   /**
@@ -1503,8 +1700,9 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   async refreshSnapshot() {
-    // `?start`: a fresh reading is stamped with when it was taken, as firstmate stamps its own, since the drawer judges by it.
-    if (reviewFlag("start")) this.snapshot.fleet = { ...this.snapshot.fleet, generated: new Date().toISOString() };
+    // `?start` and `?sources`: a fresh reading is stamped with when it was taken, as firstmate stamps its own, since the
+    // drawer and the intake judge an ask by it.
+    if (reviewFlag("start") || reviewFlag("sources")) this.snapshot.fleet = { ...this.snapshot.fleet, generated: new Date().toISOString() };
     this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
   }
 

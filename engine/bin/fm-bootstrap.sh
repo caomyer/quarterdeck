@@ -1591,6 +1591,12 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
     "$SCRIPT_DIR/fm-contributions.sh" arm --if-owned >/dev/null \
       || echo "MISSING: contribution observation could not be armed; coverage is unconfirmed"
   fi
+  # Keep the task sources' poll registered while any source is connected; this
+  # writes and binds a local check only, and reads no provider.
+  if local_phase && command -v jq >/dev/null 2>&1 && [ -x "$SCRIPT_DIR/fm-sources.sh" ]; then
+    "$SCRIPT_DIR/fm-sources.sh" arm --if-configured >/dev/null \
+      || echo "MISSING: task sources could not be armed; their issues are not being read"
+  fi
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true
     cat "$fleet_sync_out"

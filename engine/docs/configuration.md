@@ -624,6 +624,27 @@ The sweep must finish inside `FM_CHECK_TIMEOUT` (default 30), because a run the 
 So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
 A budget that is not a whole number from 1 to 120 is still refused outright.
 
+## Task sources (config/sources.json)
+
+A task source is an external task system the fleet can take work on from and report back to; GitHub Issues is the only one offered.
+`config/sources.json` is local and gitignored, and is written only by [`bin/fm-sources.sh`](../bin/fm-sources.sh), whose header owns its schema, the link format, the provider adapter contract, and the files it keeps under `data/sources/` and `state/sources/`.
+Quarterdeck's Settings connects a repository through that script; by hand it is `bin/fm-sources.sh add github <owner>/<name> --project <project> --filter 'label:quarterdeck is:open'`.
+A source needs an intake filter, and a GitHub filter needs a label, so a stranger on a public repository cannot queue work for the fleet.
+
+The captain chooses every item the fleet takes on: an offered issue is only listed on its project's page until the captain takes it on, which asks the first mate to file it as a queued task, linked in the same step.
+The link is a `source-link:` line in the task's backlog body, so it travels with the row when a task is handed to a secondmate.
+The item keeps its own workflow and the backlog keeps the work: nothing upstream ever changes the backlog, and a change upstream only wakes the first mate.
+
+Once connected, the source is read by a registered watcher check every `FM_CHECK_INTERVAL` (300 seconds by default), one changed-since query per source within `FM_SOURCES_BUDGET` seconds (default 20).
+A read that times out is not counted as a failure; a typed failure wakes the first mate once it has lasted three reads or thirty minutes.
+Upstream, the fleet writes a few milestones forward-only, each once: nothing until the task has a PR, a comment with the PR once there is one, and a comment with the PR and a short summary when the work lands.
+`FIRST_MILESTONE` in that script is the one place the first milestone is chosen; `none` in a source's outbound policy writes nothing back at all.
+
+GitHub reuses the first mate's existing `gh` sign-in, so connecting it stores no credential.
+That sign-in's scopes are whatever `gh` was granted, and any process running as the captain's user can already use it.
+What the design guarantees is narrower than secrecy from such processes: no token appears in a brief, a prompt, a command line, a log, the snapshot, an error or the app window, and only `bin/fm-sources.sh` and its adapter read a provider.
+Sources are not inherited by secondmate homes; a handed-off link waits in the receiving home until the same source is connected there.
+
 ## Mail plane (.env)
 
 The mail plane (bin/fm-mail.sh) reads unseen IMAP messages and sends one SMTP message.
