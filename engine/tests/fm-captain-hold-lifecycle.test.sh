@@ -1105,6 +1105,36 @@ CASES
   pass "a dated deferral is due from the start of the captain's named day, west and east of UTC"
 }
 
+# The snapshot and tasks-axi are two readings of one hold: tasks-axi's `held`
+# is judged on the host's local date by its own clock, so the snapshot's dated
+# bucket must agree with it at the same instant. The zones are chosen so the
+# local date and the UTC date differ right now, whenever this runs: behind UTC
+# while the UTC hour is before noon, ahead of it after.
+test_snapshot_agrees_with_tasks_axi_held() {
+  local home zone now today tomorrow until id held bucket n=0
+  home=$(make_home captain-day-agrees)
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ "$((10#$(date -u +%H)))" -lt 11 ]; then zone=Etc/GMT+12; else zone=Etc/GMT-14; fi
+  today=$(TZ=$zone date +%Y-%m-%d)
+  [ "$today" != "${now%%T*}" ] || fail "fixture zone $zone did not split the local and UTC dates at $now"
+  tomorrow=$(TZ=$zone date -v+1d +%Y-%m-%d 2>/dev/null || TZ=$zone date -d tomorrow +%Y-%m-%d)
+  for until in "$today" "$tomorrow"; do
+    n=$((n + 1))
+    id="agree-call-$n"
+    tasks_in "$home" add "$id" "Agreement call $n" >/dev/null || fail "could not add $id"
+    (cd "$home" && TZ=$zone tasks-axi hold "$id" --reason "captain choice" --kind captain --until "$until") >/dev/null \
+      || fail "could not hold $id until $until"
+    held=$(cd "$home" && TZ=$zone tasks-axi show "$id" --full | awk '$1 == "held:" { print $2 }')
+    bucket=$(captain_day_bucket "$home" "$zone" "$now" "$id") || fail "snapshot failed in $zone at $now"
+    bucket=${bucket%% *}
+    case "$held:$bucket" in
+      yes:dated|no:live) : ;;
+      *) fail "$id until $until in $zone at $now: tasks-axi held=$held but the snapshot says $bucket" ;;
+    esac
+  done
+  pass "the snapshot's dated bucket agrees with tasks-axi's held on either side of the UTC date"
+}
+
 # An undated hold with only a date to age from (a legacy row's `since`, which
 # tasks-axi writes as the local date) ages in whole captain's days, so it turns
 # over at the captain's midnight too; a stamped hold ages by elapsed time,
@@ -4094,6 +4124,7 @@ test_hold_stamp_precedes_hold_visibility
 test_interrupted_answer_preserves_hold_age
 test_deferral_leaves_captains_call_until_due
 test_deferral_follows_the_captains_day
+test_snapshot_agrees_with_tasks_axi_held
 test_undated_aging_follows_the_captains_day
 test_out_of_band_close_is_recordable
 test_visual_review_uses_shared_completion_owner
