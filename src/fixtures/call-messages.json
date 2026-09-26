@@ -1,0 +1,13 @@
+{
+  "about": "What the app writes to the first mate when the captain answers a call, as src-tauri/src/review.rs writes it. Its tests build each message and compare it with this file, and scripts/calls.test.mjs reads each back with answerOfMessage, so the two ends cannot drift apart.",
+  "answered": [
+    {
+      "call": "foreman-auto-merge", "key": "keep", "label": "Keep merging once checks pass", "note": null,
+      "text": "The captain answered a call from Bearings.\nAnswers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:\nRecorded: foreman-auto-merge = keep (\"Keep merging once checks pass\")"
+    },
+    {
+      "call": "res-model-download", "key": "wifi-only", "label": "Wi-Fi only, with \"visible\" progress", "note": "Revisit when I'm back on Monday.",
+      "text": "The captain answered a call from Bearings.\nAnswers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:\nRecorded: res-model-download = wifi-only (\"Wi-Fi only, with \"visible\" progress\")\nThe captain added: Revisit when I'm back on Monday."
+    }
+  ]
+}

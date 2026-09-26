@@ -1610,6 +1610,17 @@ mod tests {
         assert!(!answer_message("a", "x", "X", Some("  ")).contains("added"));
     }
 
+    /// The chat reads these messages back as answer cards (`answerOfMessage` in `src/calls.ts`), from the same file.
+    #[test]
+    fn a_bearings_answer_is_written_as_the_chat_reads_it() {
+        let fixture: Value = serde_json::from_str(include_str!("../../src/fixtures/call-messages.json")).unwrap();
+        for case in fixture["answered"].as_array().unwrap() {
+            let field = |name: &str| case[name].as_str().unwrap();
+            let text = answer_message(field("call"), field("key"), field("label"), case["note"].as_str());
+            assert_eq!(text, field("text"));
+        }
+    }
+
     /// A home with a pretend `fm-captain-hold.sh answers` that keeps what it was fed and prints `says`.
     fn home_with_intake(name: &str, says: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
