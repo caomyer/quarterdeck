@@ -966,8 +966,8 @@ pub async fn record_staged(home: &Path, log: &Path, only: Option<&str>) -> Resul
 /// Once the host has taken the message it has gone, so a failure to note that
 /// is reported alongside the sent message rather than as a failed send: a send
 /// shown as failed invites sending the same review twice. An answer the intake
-/// recorded stays recorded if the message then cannot go, and is told with the
-/// next review.
+/// recorded stays recorded, and words kept on a call stay kept, if the message
+/// then cannot go, and are told with the next review.
 #[tauri::command]
 pub async fn review_submit(
     app: AppHandle,
@@ -980,22 +980,27 @@ pub async fn review_submit(
     let _one_writer = writes.0.lock().await;
     let home = home_for(&app)?;
     let dir = blocking(move || dir_for(&app, &page)).await?;
+    submit(&home, &host, &dir, rev, verdict).await
+}
+
+pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64, verdict: String) -> Result<Value, String> {
+    let dir = dir.to_path_buf();
     let log = dir.join("review.jsonl");
-    let outcomes = record_staged(&home, &log, None).await?;
-    let replied = reply_worded(&home, &log).await?;
-    let sent_with = |message: &str| name_replies(&home, &replied, message.to_string());
+    let outcomes = record_staged(home, &log, None).await?;
+    let replied = reply_worded(home, &log).await?;
+    let sent_with = |message: &str| name_replies(home, &replied, message.to_string());
     let (text, threads, answers) = {
         let (dir, verdict) = (dir.clone(), verdict.clone());
         blocking(move || draft(&dir, rev, &verdict)).await?
     };
     let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
-        Err(problem) if !outcomes.is_empty() => {
-            // The intake has run, so the screen has to show what it recorded even though nothing went.
+        Err(problem) if !outcomes.is_empty() || !replied.is_empty() => {
+            // The intake has run or words were kept, so the screen has to show them even though nothing went.
             let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
             return Ok(json!({
                 "message": Value::Null, "text": text, "review": review, "outcomes": outcomes,
-                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded; send the review again to tell the first mate."),
+                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded, and words shown as kept are kept on their call, where the first mate sees them when it starts; send the review again to tell the first mate."),
             }));
         }
         Err(problem) => return Err(problem),
@@ -1733,6 +1738,28 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         home
+    }
+
+    #[tokio::test]
+    async fn a_review_the_host_cannot_carry_still_shows_the_words_it_kept() {
+        let home = home_with_intake("review-host-stopped", "");
+        let dir = home.join("data/.artifacts/board");
+        revision_on_disk(&dir);
+        let log = dir.join("review.jsonl");
+        stage_answer(&log, "res-model-cellular", None, None, Some("done"), &Words { note: Some("Pause, but tell the user why.".into()), defer: None }).unwrap();
+        let sent = submit(&home, &HostHandle::stopped(), &dir, 1, "approve".into()).await.unwrap();
+        assert_eq!(sent["message"], Value::Null, "{sent}");
+        assert_eq!(sent["outcomes"], json!([]));
+        let warning = sent["warning"].as_str().unwrap();
+        assert!(warning.starts_with("The review did not reach the first mate: the first mate host is not running."), "{warning}");
+        assert_eq!(sent["review"]["answers"][0]["reply"], json!({"result": "kept", "detail": ""}), "{sent}");
+        assert_eq!(std::fs::read_to_string(home.join("replied")).unwrap(), "res-model-cellular review |Pause, but tell the user why.\n");
+
+        // With nothing kept or recorded, a review that did not go is only a failed send.
+        let bare = home.join("data/.artifacts/bare");
+        revision_on_disk(&bare);
+        assert!(submit(&home, &HostHandle::stopped(), &bare, 1, "approve".into()).await.is_err());
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[tokio::test]
