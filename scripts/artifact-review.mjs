@@ -27,6 +27,14 @@ const browser = await chromium.launch();
 const failures = [];
 const check = (ok, what) => { if (ok) console.log(`ok: ${what}`); else { failures.push(what); console.log(`FAIL: ${what}`); } };
 
+/**
+ * What each of the captain's messages told the first mate: a bubble's words, or, for an answer to a call, which the chat
+ * draws as a card, the text behind its "What the first mate was sent".
+ */
+function sentTexts(page) {
+  return page.locator(".captain-message, [data-testid='answer-card']").evaluateAll((items) => items.map((item) => item.querySelector("details pre")?.textContent ?? item.textContent ?? ""));
+}
+
 async function shot(page, name) {
   if (!shots) return;
   for (const theme of ["light", "dark"]) {
@@ -491,7 +499,7 @@ check((await recordedCard.innerText()).includes("Recorded: Use the publisher's t
 check((await recordedCard.innerText()).includes("You answered without opening the argument."), "the card keeps the note that the argument was not opened");
 await shot(page, "19b-answer-recorded");
 await page.locator(".nav-item", { hasText: "Chat" }).click();
-const quickMessage = await page.locator(".captain-message").last().innerText();
+const quickMessage = (await sentTexts(page)).at(-1) ?? "";
 check(quickMessage.includes("Recorded: res-transcripts-source = publisher-first"), "the first mate is told the answer is already recorded");
 await page.locator(".nav-item", { hasText: "Bearings" }).click();
 await quick.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
@@ -633,6 +641,7 @@ await resumed.close();
     if (element.matches(".day-label")) return `label:${element.textContent.trim().toLowerCase()}`;
     if (element.matches("[data-testid='artifact-card']")) return `page:${element.querySelector("strong")?.textContent.trim()}|${/Rev (\d+)/.exec(element.textContent)?.[1] ?? "1"}`;
     if (element.matches("[data-testid='review-card']")) return "review";
+    if (element.matches("[data-testid='call-card']")) return `call:${element.getAttribute("data-call-id")}`;
     return `said:${element.textContent.replace(/\s+/g, " ").trim()}`;
   }));
   const at = (test) => stream.findIndex(test);
@@ -644,6 +653,8 @@ await resumed.close();
   const review = at((item) => item === "review");
   const checkDay = (ok, what) => check(ok, ok ? what : what + shown);
   checkDay(lastExchange > 0 && pages.length === 7 && pages.every((index) => index < lastExchange), "no page renders below the resumed conversation's last exchange, which is newer than all of them");
+  const raised = stream.flatMap((item, index) => item.startsWith("call:") ? [index] : []);
+  checkDay(raised.length > 0 && raised.every((index) => index < lastExchange), "no call the day raised renders below the last exchange either: calls are placed by the same rule");
   checkDay(flow > 0 && panel(1) > flow && review > panel(1), "a page stays above the review sent on it, and pages keep their order");
   checkDay(panel(2) > review && panel(2) < at((item) => item.includes("Revision 2 says what it means")), "a page presented after a review the history holds follows that review");
   const said = stream.filter((item) => item.startsWith("said:") || item === "review");
@@ -784,7 +795,7 @@ await resumed.close();
   await transcripts.locator(".decision-actions button", { hasText: "Send" }).click();
   await transcripts.locator("[data-testid='call-replied']").waitFor();
   await argued.locator(".nav-item", { hasText: "Chat" }).click();
-  const told = await argued.locator(".captain-message").allInnerTexts();
+  const told = await sentTexts(argued);
   check(told.some((text) => text.includes("The captain replied to call res-model-cellular from Bearings") && text.includes("Not now. Ask me again on Oct 3. After the launch")), "the dated Not now reaches the first mate, naming the call");
   check(told.some((text) => text.includes("The captain replied to call res-transcripts-source from Bearings") && text.includes("Publisher first, but log every episode")), "an argued call answered in words reaches the first mate, naming the call");
   await argued.close();
@@ -973,7 +984,7 @@ await resumed.close();
   await elsewhere.locator(".send-review", { hasText: /^Send review$/ }).waitFor({ timeout: 5000 }).catch(() => undefined);
   check((await elsewhere.locator(".send-review").innerText()) === "Send review", "once the call is answered elsewhere, the page takes back the words it had staged");
   await elsewhere.locator(".nav-item", { hasText: "Chat" }).click();
-  const told = await elsewhere.locator(".captain-message").allInnerTexts();
+  const told = await sentTexts(elsewhere);
   check(told.some((text) => text.includes("The captain replied to call res-model-cellular from Bearings") && text.includes("Finish on cellular after all.")), "the reply given in Bearings went, naming the call");
   await elsewhere.close();
 }
