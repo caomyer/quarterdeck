@@ -99,7 +99,7 @@ async function ask(page, words) {
   await composer.press("Enter");
   await chat(page).locator(".mate-message").last().filter({ hasNotText: "…" }).waitFor();
   await page.waitForFunction(() => document.querySelector(".chat-status")?.textContent?.includes("Ready") ?? true);
-  await page.waitForTimeout(2600);
+  await page.waitForTimeout(3600);
 }
 
 /**
@@ -330,6 +330,22 @@ async function order(page) {
   await inBothThemes(page, "j-not-recorded", async (theme) => {
     check(await paintedWith(card.locator("[data-testid='not-recorded']"), "--coral"), `${theme}: not recorded is --coral`);
   });
+  await page.close();
+}
+
+// J from Bearings: what the intake said of an answer given there lives only in this session, never in the snapshot, so
+// the chat card can show it only by reading the same standing Bearings does.
+{
+  const page = await open(`&skip=${RAISED}`);
+  await toChat(page);
+  await ask(page, "What needs me?");
+  await toBearings(page);
+  const bearingsCard = page.locator(`.decision-card[data-call-id='${RAISED}']`);
+  await bearingsCard.locator(".suggestion-chips button", { hasText: "Upload on any network" }).click();
+  await bearingsCard.locator(".decision-actions button", { hasText: "Record answer" }).click();
+  await bearingsCard.locator("[data-testid='not-recorded']").waitFor();
+  await toChat(page);
+  check((await callCard(page).locator("[data-testid='not-recorded'] strong").innerText().catch(() => "")) === "Not recorded: Upload on any network", "J: refused in Bearings, the chat card says the same, from the one standing");
   await page.close();
 }
 

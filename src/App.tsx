@@ -567,6 +567,14 @@ export function App() {
     return { argument, answeredIn, seen, standing, onOpenPage, project: callProject(call, records) };
   }
 
+  /** A call's title in the chat, without the project its card already names, as its Bearings card says it. */
+  function chatCallTitle(id: string) {
+    const call = chatCalls.find((item) => item.id === id);
+    if (!call) return undefined;
+    const project = callProject(call, records);
+    return project ? withinProject(call.title, project) : call.title;
+  }
+
   /**
    * A call in the chat, where it was raised, answered the ways Bearings answers it and through the same two paths.
    * What the captain said on it earlier in this chat is read from the app's own answer lines, never from the first mate.
@@ -751,7 +759,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -2110,20 +2118,21 @@ function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; ho
  * One of the captain's answers to a call where he gave it, as src/CallCards.tsx draws it: how far it has got is the
  * call record's to say, and the delivery line the chat already shows for any message.
  */
-function ChatAnswer({ message, answer, call, outbox, running, from }: { message: ChatMessage; answer: MessageAnswer; call?: Call; outbox?: OutboxView; running: boolean; from: AnsweredFrom | null }) {
+function ChatAnswer({ message, answer, call, title, outbox, running, from }: { message: ChatMessage; answer: MessageAnswer; call?: Call; title?: string; outbox?: OutboxView; running: boolean; from: AnsweredFrom | null }) {
   const { status } = delivery(message, outbox, running);
   const reply = call ? replyOf(call) : null;
   const view = answerCardView(answer, call, {
     reply,
     said: latestTime(message),
     past: message.past === true,
-    delivery: status?.startsWith("Read by") ? `read by the first mate ${status.slice("Read by ".length)}` : status,
+    // Said the way the review card says it: "Reading" is the first mate having it, not the captain reading.
+    delivery: status === "Reading" ? "with the first mate" : status?.startsWith("Read by") ? `read by the first mate ${status.slice("Read by ".length)}` : status,
     from,
   });
-  return <AnswerCard callId={answer.call} view={view} time={!status && !message.past ? formatTime(message.createdAt) : null} sent={message.text} />;
+  return <AnswerCard callId={answer.call} view={title ? { ...view, title } : view} time={!status && !message.past ? formatTime(message.createdAt) : null} sent={message.text} />;
 }
 
-function ChatView({ messages, artifacts, reviews, calls, renderCall, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
+function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
@@ -2164,7 +2173,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, answeredFro
     : item.type === "call"
       ? <Fragment key={item.id}>{renderCall(item.call)}</Fragment>
     : item.type === "answer"
-      ? <ChatAnswer key={item.message.id} message={item.message} answer={item.answer} call={calls.find((call) => call.id === item.answer.call)} outbox={outbox[item.message.id]} running={running} from={answeredFrom[item.message.id] ?? null} />
+      ? <ChatAnswer key={item.message.id} message={item.message} answer={item.answer} call={calls.find((call) => call.id === item.answer.call)} title={callTitle(item.answer.call)} outbox={outbox[item.message.id]} running={running} from={answeredFrom[item.message.id] ?? null} />
     : item.type === "steps"
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"

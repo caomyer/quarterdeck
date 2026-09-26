@@ -1320,16 +1320,17 @@ export class MockHostAdapter implements HostAdapter {
    *   new hold's stamp, with `updated_at` beside it since the hold sets the options again.
    * - `answer --via lavish`: the captain answered it somewhere else, and it closes; nothing moves but the answer.
    * - The day a Not now named comes: the call is live again. Nothing moves.
+   * The first mate reads the message and decides before it runs anything, a second or more, as a real turn does, so the
+   * whole-second stamp never falls before the message that asked for it. Within the second the script runs, the stamp
+   * can fall before the step that ran it, and the call's card sits above that step: too early, never too late.
    */
   private chatCallsTurn(id: string, text: string, turn: ChatCallTurn) {
     this.transcript.push({ who: "captain", text });
     this.emit({ type: "outbox", payload: { id, status: "sent" } });
     this.emit({ type: "state", payload: { state: "prompt_turn" } });
-    this.later(250, () => {
-      this.emit({ type: "outbox", payload: { id, status: "likely_started" } });
-      this.emit({ type: "tool_call", payload: { id: `hold-${id}`, title: turn.step, kind: "execute", status: "in_progress" } });
-    });
-    this.later(700, () => {
+    this.later(250, () => this.emit({ type: "outbox", payload: { id, status: "likely_started" } }));
+    this.later(1300, () => this.emit({ type: "tool_call", payload: { id: `hold-${id}`, title: turn.step, kind: "execute", status: "in_progress" } }));
+    this.later(1600, () => {
       const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
       const calls = this.snapshot.fleet.calls ?? [];
       const exists = calls.some((call) => call.id === turn.call);
@@ -1341,7 +1342,7 @@ export class MockHostAdapter implements HostAdapter {
       this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
     });
     // The first mate explains after the script has run, seconds later, as it does.
-    this.later(2200, () => {
+    this.later(3200, () => {
       this.emit({ type: "text", payload: { chunk: turn.says, origin: "prompt" } });
       this.transcript.push({ who: "mate", text: turn.says });
       this.outstanding.delete(id);

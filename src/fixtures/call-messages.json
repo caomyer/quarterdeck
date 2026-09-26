@@ -1,5 +1,5 @@
 {
-  "about": "What the app writes to the first mate when the captain answers a call, as src-tauri/src/review.rs writes it. Its tests build each message and compare it with this file, and scripts/calls.test.mjs reads each back with answerOfMessage, so the two ends cannot drift apart.",
+  "about": "What the app writes to the first mate when the captain answers a call (answer_message) or replies to one (reply_message), as src-tauri/src/review.rs writes it. Its tests build each message and compare it with this file, and scripts/calls.test.mjs reads each back with answerOfMessage, so the two ends cannot drift apart.",
   "answered": [
     {
       "call": "foreman-auto-merge",
