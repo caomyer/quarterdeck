@@ -2,7 +2,8 @@
 # The one backlog-row parser: markdown backlog text in, the fleet snapshot's
 # backlog object out.
 # Usage: . bin/fm-backlog-parse-lib.sh
-#        fm_backlog_parse_json <path> <today> <now> <undated-hold-age-days> < <backlog-text>
+#        fm_backlog_parse_json <path> <now> <undated-hold-age-days> < <backlog-text>
+#        fm_captain_day <now>
 #
 # ONE OWNER for how a backlog row reads. bin/fm-fleet-snapshot.sh emits this
 # object as its `backlog` field (and alone under --backlog-json), and
@@ -13,17 +14,37 @@
 # The text arrives on stdin rather than as a file, so a caller can hand in text
 # it assembled without writing it anywhere. <path> is only echoed back as the
 # object's `path`; `present` is always true, because a caller with no backlog to
-# read decides for itself what an absent one means. <today> (YYYY-MM-DD) and
-# <now> (a UTC timestamp) date the captain-hold projection: hold_until against
-# <today>, hold_age_days against <now>, and an undated hold is "aged" once it is
+# read decides for itself what an absent one means. <now> (a UTC timestamp)
+# dates the captain-hold projection: hold_until against the captain's day at
+# <now>, hold_age_days against <now>, and an undated hold is "aged" once it is
 # at least <undated-hold-age-days> old.
+#
+# ONE OWNER for the captain's day. A deferral is a promise about a day on the
+# captain's own calendar: "ask me again on Sep 26" is due from the first moment
+# of Sep 26 where the captain is, not when UTC reaches it. The captain's day is
+# the local date of <now> in this host's timezone (TZ, else the system zone),
+# which is the clock tasks-axi already judges `held` and writes `since` by. The
+# host zone rather than a zone configured in the home, because the host is the
+# captain's Mac, whose clock follows the captain when they travel, where a
+# written zone would go stale. FM_CAPTAIN_DAY_JQ's captain_day is that date,
+# and every consumer reads it from here: the parser below for hold_bucket and
+# hold_age_days, and fm_captain_day for a shell caller such as
+# bin/fm-captain-hold.sh refusing an --until that is already due. A date-only
+# value (hold_until, `since`, a date-only hold stamp) is already a captain's
+# day and is never shifted.
 #
 # Sections: rows under `## In flight`, `## Queued`, and `## Done` are read;
 # every other heading starts a section whose lines are skipped until the next
 # recognized heading. Rows are returned in the order written.
 
 # shellcheck disable=SC2016 # jq, not the shell, expands these variables.
-FM_BACKLOG_PARSE_JQ='
+FM_CAPTAIN_DAY_JQ='
+    def captain_day($ts):
+      if ($ts | test("T")) then ($ts | fromdateiso8601 | strflocaltime("%Y-%m-%d"))
+      else $ts end;
+'
+# shellcheck disable=SC2016 # jq, not the shell, expands these variables.
+FM_BACKLOG_PARSE_JQ="$FM_CAPTAIN_DAY_JQ"'
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def timestamp_epoch($d):
       if ($d | type) != "string" then null
@@ -174,6 +195,7 @@ FM_BACKLOG_PARSE_JQ='
                   end))
           | .body_excerpt = ((.body_lines | join(" "))[:240])
         else . end)
+    | captain_day($now) as $today
     | .records as $records
     | (reduce ($records[] | select(.structured)) as $record ({};
          .[$record.id] = ((.[$record.id] // true) and ($record.state == "done")))) as $resolved_ids
@@ -192,7 +214,11 @@ FM_BACKLOG_PARSE_JQ='
                elif .state == "queued" then "queued"
                else "done" end)
           | .requires_child_metadata = (.current_role == "worker")
-          | .hold_age_days = days_between((.hold_set // .since); $now)
+          # A stamped hold ages by elapsed time, which no timezone moves; a
+          # date-only start counts whole captain days up to today.
+          | (.hold_set // .since) as $start
+          | .hold_age_days = days_between($start;
+              if ($start | type) == "string" and ($start | test("T") | not) then $today else $now end)
           | .hold_bucket =
               (if .hold_kind != "captain" or .hold_reason == null or .state == "done" then null
                elif (.unresolved_blocker_ids | length) > 0 then "blocked"
@@ -205,6 +231,10 @@ FM_BACKLOG_PARSE_JQ='
     | del(.section,.order)
 '
 
-fm_backlog_parse_json() {  # <path> <today> <now> <undated-hold-age-days>  (backlog text on stdin)
-  jq -Rn --arg path "$1" --arg today "$2" --arg now "$3" --argjson age_days "$4" "$FM_BACKLOG_PARSE_JQ"
+fm_backlog_parse_json() {  # <path> <now> <undated-hold-age-days>  (backlog text on stdin)
+  jq -Rn --arg path "$1" --arg now "$2" --argjson age_days "$3" "$FM_BACKLOG_PARSE_JQ"
+}
+
+fm_captain_day() {  # <now>: the captain's YYYY-MM-DD at that UTC timestamp
+  jq -rn --arg now "$1" "$FM_CAPTAIN_DAY_JQ"'captain_day($now)'
 }

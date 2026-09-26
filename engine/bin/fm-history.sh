@@ -164,7 +164,6 @@ case "$NOW" in
   [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
   *) usage_fail "FM_HISTORY_NOW must be a UTC timestamp like 2026-09-18T12:00:00Z (got '$NOW')" ;;
 esac
-TODAY=${NOW%%T*}
 AGE_DAYS=${FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS:-14}
 case "$AGE_DAYS" in
   ''|*[!0-9]*) usage_fail "FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS must be a non-negative integer" ;;
@@ -220,12 +219,12 @@ if [ -e "$ARCHIVE" ] || [ -L "$ARCHIVE" ]; then
   fi
 fi
 
-backlog_json=$(printf '%s\n' "$backlog_text" | fm_backlog_parse_json "$BACKLOG" "$TODAY" "$NOW" "$AGE_DAYS") \
+backlog_json=$(printf '%s\n' "$backlog_text" | fm_backlog_parse_json "$BACKLOG" "$NOW" "$AGE_DAYS") \
   || fail "cannot parse the backlog at $BACKLOG"
 combined_json='{"records":[]}'
 if [ -n "$archive_text" ]; then
   combined_json=$(printf '%s\n\n%s\n' "$backlog_text" "$archive_text" \
-    | fm_backlog_parse_json "$ARCHIVE" "$TODAY" "$NOW" "$AGE_DAYS") \
+    | fm_backlog_parse_json "$ARCHIVE" "$NOW" "$AGE_DAYS") \
     || fail "cannot parse the done archive at $ARCHIVE"
 fi
 

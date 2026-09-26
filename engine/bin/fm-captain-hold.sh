@@ -54,7 +54,10 @@
 # existing timestamp, while re-holding released work starts a new lifecycle.
 # A task already closed is refused rather than reopened. `--until` records the
 # captain's own deferral date through `tasks-axi hold --until`, so a "revisit
-# later" answer is stored as a date instead of a live card.
+# later" answer is stored as a date instead of a live card. The call is due
+# again from the start of that day on the captain's calendar, so an `--until`
+# on or before the captain's day (bin/fm-backlog-parse-lib.sh owns it) is
+# refused: it would be live at once and read as never deferred.
 #
 # ONE SOURCE OF TRUTH FOR A CALL'S CONTENT.
 # The backlog row stays the spine: whether a call exists, and whether it is
@@ -347,6 +350,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# shellcheck source=bin/fm-backlog-parse-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-backlog-parse-lib.sh"
 # `list` only reads, and the fleet snapshot runs it on homes that have no state yet.
 [ "${1:-}" != list ] || FM_WAKE_READ_ONLY=1
 # shellcheck source=bin/fm-wake-lib.sh
@@ -1314,7 +1320,7 @@ answer_machine_lines() {  # <task-id> <key> <label> <by> <via>
 }
 
 command_hold() {
-  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
+  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence captain_today
   local existing_hold_kind='' existing_held='' preserve_hold_set=0 created=0 existing_kind='' default_on_answer
   local stamp raised_at record
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -1353,6 +1359,12 @@ command_hold() {
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
     *) fail "FM_CAPTAIN_HOLD_NOW must be a UTC YYYY-MM-DDTHH:MM:SSZ timestamp" ;;
   esac
+  if [ -n "$until" ]; then
+    captain_today=$(fm_captain_day "$hold_set") || fail "could not read the captain's day at $hold_set"
+    if [[ ! "$until" > "$captain_today" ]]; then
+      fail "--until $until is not after the captain's today ($captain_today): the call would be live at once; name a later day, or hold without --until"
+    fi
+  fi
   acquire_task_control_lock "$id"
   require_tasks_axi
   if task_show "$id"; then
