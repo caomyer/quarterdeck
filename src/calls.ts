@@ -10,7 +10,7 @@
  *
  * Pure functions only: no React, no host.
  */
-import type { Artifact, BacklogRecord, BearingsSnapshot, Call, CallAnswer, FleetSnapshot, IntakeResult } from "./host/types";
+import type { Artifact, BacklogRecord, BearingsSnapshot, Call, CallAnswer, CallReply, FleetSnapshot, IntakeResult } from "./host/types";
 
 /** Which page an evidence ref names: `page:task/<id>/<name>` or `page:chat/<name>`. */
 export function pageRef(page: { scope: "task" | "chat"; task: string | null; name: string }) {
@@ -30,6 +30,19 @@ export function isOpen(call: Call) {
 
 export function openCalls(calls: Call[]) {
   return calls.filter(isOpen);
+}
+
+/**
+ * The captain's reply on a call while it is open: words he said on it that nothing has recorded yet. It is shown
+ * amber everywhere until the first mate records an answer or asks again, both of which clear it in firstmate.
+ */
+export function replyOf(call: Call): CallReply | null {
+  return call.state === "open" ? call.reply ?? null : null;
+}
+
+/** Waiting on the captain's word: open, and not replied to. Once he has replied, the next move is the first mate's. */
+export function awaitsCaptain(call: Call) {
+  return isOpen(call) && replyOf(call) === null;
 }
 
 /** One piece of what argues a call, resolved to something the captain can open. */

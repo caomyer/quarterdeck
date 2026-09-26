@@ -156,6 +156,13 @@ impl HostHandle {
         self.started_home.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
     }
 
+    /// A handle whose host has already gone, as when the app lost it.
+    #[cfg(test)]
+    pub(crate) fn stopped() -> Self {
+        let (tx, _) = mpsc::unbounded_channel();
+        HostHandle { tx, groups: Groups::default(), started_home: std::sync::Mutex::new(None) }
+    }
+
     /// Process groups of the adapters running now.
     #[cfg(test)]
     pub(crate) fn live_groups(&self) -> Vec<u32> {

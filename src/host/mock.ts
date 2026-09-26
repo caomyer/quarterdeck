@@ -130,6 +130,9 @@ function reviewValue(name: string) {
  * the captain answered in chat, and the calls the first mate made for the captain.
  *
  * `?legacy` drops calls[], as a home whose firstmate predates it. `?skip=<call>[,<call>]` has the intake skip those calls.
+ * A reply the captain makes on a call goes through firstmate's `reply` as the engine does it (`keepReply`):
+ * `?reply-refused=<call>` has firstmate refuse it as a call closed a moment ago, `?reply-not-told` keeps it without
+ * telling the first mate, and the first mate then acts on it with `?records-reply` (records it) or `?reasks` (asks again).
  * `?usage-t2` adds the captain's own usage-panel mock as its scout presented it, the page his t2 comment was written on:
  * its "under pace" words sit twice in the Claude row, which is shut when the page opens.
  */
@@ -320,6 +323,16 @@ function mockArtifacts(home: string): MockHome {
     evidence: [], raised_by: "firstmate", raised_at: at(30), updated_at: at(30), answer: null, decided: null, ...fields,
   });
   const option = (key: string, label: string, recommended = false) => ({ key, label, recommended });
+  /**
+   * `?replied=<call>`: the home already carries a reply the captain made on that call ten minutes ago, as a relaunch
+   * or a reload finds it in firstmate's record, with the message that told the first mate. `?replied-untold=<call>`:
+   * the same reply, which no message carried.
+   */
+  const repliedBefore = (item: Call): Call => {
+    const told = reviewValue("replied") === item.id;
+    if (!told && reviewValue("replied-untold") !== item.id) return item;
+    return { ...item, reply: { words: "Why can't it merge on its own? It did last week.", via: "quarterdeck", at: at(10).replace(/\.\d{3}Z$/, "Z"), message: told ? "m-before" : null, previous: null } };
+  };
   // A call the first mate settled for the captain, raised and answered in one act by `decide`.
   const decidedCall = (id: string, minutesAgo: number, about: string | null, decided: Call["decided"] & object): Call => call(id, decided.what, {
     state: "closed", bucket: null, captain_actionable: false, about, raised_at: at(minutesAgo), updated_at: at(minutesAgo),
@@ -381,7 +394,7 @@ function mockArtifacts(home: string): MockHome {
     artifacts,
     tasks: reviewFlag("usage-t2") ? [planTask, reportTask, usageTask] : [planTask, reportTask],
     // `?plain-report`: the transcripts scout's report argues no call, so it is offered on its own card.
-    calls: reviewFlag("plain-report") ? calls.filter((call) => call.origin !== REPORT_TASK) : calls,
+    calls: (reviewFlag("plain-report") ? calls.filter((call) => call.origin !== REPORT_TASK) : calls).map(repliedBefore),
     inFlight: [
       { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: planTask.project, name: "AI titles for snips", doing: "Revising the titles plan." },
       { id: REPORT_TASK, kind: "scout", state: "done", repo: reportTask.project, name: "Resonance: which episodes already carry a transcript?", doing: "" },
@@ -446,13 +459,30 @@ function recordedLines(answers: { decision: string; option: string | null; label
   ];
 }
 
-/** The lines the app's composer writes for answers in words, which only the first mate can record. */
+/** What the first mate does with a reply, in the words `REPLY_ACTION` in `src-tauri/src/review.rs` uses. */
+const REPLY_ACTION = "Record one with bin/fm-captain-hold.sh answer only if the captain's words decide the call (with --key when they name one of its options, and --via quarterdeck); otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with --until when the words put it off to a date. Never infer an answer from the words alone.";
+
+/** An answer in words as a review carries it, the way `answer_words` in `src-tauri/src/review.rs` says it. */
+function reviewWords(answer: ReviewView["answers"][number]) {
+  return [answer.defer ? `Not now. Ask me again on ${answer.defer}.` : "", answer.note?.trim() ?? ""].filter(Boolean).join(" ");
+}
+
+/** The lines the app's composer writes for answers in words, each kept on its call as the captain's reply. */
 function wordedLines(answers: ReviewView["answers"]) {
   if (!answers.length) return [];
   return [
-    "Answered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh as the captain said it (a date to be asked again on is a hold until then), then do the follow-up:",
-    ...answers.map((answer) => `${answer.decision}: ${[answer.defer ? `Not now. Ask me again on ${answer.defer}.` : "", answer.note ?? ""].filter(Boolean).join(" ")}`),
+    `Answered in words, kept on each call as the captain's reply; nothing has recorded them. ${REPLY_ACTION}`,
+    ...answers.map((answer) => `${answer.decision}: ${reviewWords(answer)}${answer.reply?.result === "not_kept" ? ` (not kept on the call: ${answer.reply.detail})` : ""}`),
   ];
+}
+
+/** What the first mate is told when the captain replies to a call from Bearings, as `reply_message` in `src-tauri/src/review.rs` words it. */
+function replyMessage(call: string, words: string) {
+  return [
+    `The captain replied to call ${call} from Bearings, in words; it is kept on the call as the captain's reply, and nothing has recorded it.`,
+    REPLY_ACTION,
+    `The captain said: ${words.trim()}`,
+  ].join("\n");
 }
 
 /** Why the author should look at a picture first, in the words `src-tauri/src/review.rs` uses. */
@@ -562,9 +592,6 @@ const MARKDOWN_SAMPLE: HistoryItem[] = [
 
 /** `?relaunch`: the message the first mate was answering when the app went away. It is the last thing said, so the crash cut its reply off. */
 const CUT_OFF_MESSAGE = "Ship the titles branch when CI is green.";
-
-/** `?call-answered`: the captain's answer to the fixture's open call, worded the way the card writes it. */
-const CALL_ANSWER = "On the res model download: Wi-Fi only with visible progress.";
 
 const SESSION_LIMIT_ERROR = JSON.stringify({ code: -32603, data: { errorKind: "rate_limit" }, message: "Internal error: You've hit your session limit · resets 1:50pm (America/Los_Angeles)" });
 
@@ -688,7 +715,8 @@ export class MockHostAdapter implements HostAdapter {
       const at = new Date().toISOString();
       const calls = this.snapshot.fleet.calls.map((call) => {
         const answer = closed.find((item) => item.call === call.id);
-        return answer ? { ...call, state: "closed" as const, captain_actionable: false, answer: { key: answer.key, label: answer.label, by: "captain" as const, via: "quarterdeck", at } } : call;
+        // As firstmate's `answer` does: recording the answer clears the captain's reply.
+        return answer ? { ...call, state: "closed" as const, captain_actionable: false, reply: null, answer: { key: answer.key, label: answer.label, by: "captain" as const, via: "quarterdeck", at } } : call;
       });
       this.later(1200, () => {
         this.snapshot.fleet = { ...this.snapshot.fleet, calls };
@@ -700,13 +728,14 @@ export class MockHostAdapter implements HostAdapter {
 
   /**
    * What the first mate does with a dated Not now a review carried: holds the call until that day, so firstmate stops
-   * asking the captain and the call leaves Captain's call. A hold writes no content, so `updated_at` stays as it was.
+   * asking the captain and the call leaves Captain's call. A hold writes no content, so `updated_at` stays as it was,
+   * and like every hold it clears the captain's reply, since the first mate has acted on it.
    * `?day-comes`: the day comes a few seconds later, and the call asks the captain again.
    */
   private holdUntilTheDay(decisions: string[]) {
     if (!decisions.length || !this.snapshot.fleet.calls) return;
     const asking = (actionable: boolean) => {
-      this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((call) => decisions.includes(call.id) ? { ...call, captain_actionable: actionable } : call) };
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((call) => decisions.includes(call.id) ? { ...call, captain_actionable: actionable, reply: null } : call) };
       this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
     };
     this.later(1200, () => asking(false));
@@ -849,6 +878,48 @@ export class MockHostAdapter implements HostAdapter {
     return { outcome, message, text, review: page ? this.review(page) : null };
   }
 
+  /**
+   * firstmate's `reply`, exactly as `bin/fm-captain-hold.sh` does it: it keeps the captain's words on an open call and
+   * refuses, with its one-line reason, a call that is closed or already answered; an exact retry changes nothing, and
+   * and a message never writes a reply: it only fills itself in on a reply with the same words that names none, and a
+   * call carrying a newer reply, or none because the first mate has since acted, stands unchanged. It never closes or answers the call, never touches the hold
+   * (`bucket`, `captain_actionable`), and never moves `updated_at`. The reply it replaces is kept as `previous`.
+   * A `?legacy` home's firstmate predates it, as it predates calls[]. `?reply-refused=<call>`: that call was closed a
+   * moment ago, somewhere else, so firstmate refuses it the way it refuses any closed call.
+   */
+  private keepReply(id: string, words: string, via: string, message: string | null = null): string | null {
+    const calls = this.snapshot.fleet.calls;
+    if (!calls) return "this home's firstmate is older than replies on a call; update firstmate, or answer in chat";
+    const call = calls.find((item) => item.id === id);
+    if (!call) return `call ${id} is not in this home's backlog`;
+    if (call.state === "closed" || (reviewValue("reply-refused") ?? "").split(",").includes(id)) return `call ${id} is already closed`;
+    if (call.state === "answered") return `call ${id} already has a recorded answer`;
+    const current = call.reply ?? null;
+    if (current && current.words === words && current.via === via && current.message === message) return null;
+    const fills = current && message && current.words === words && current.via === via && current.message === null;
+    if (message && !fills) return null;
+    const reply = fills
+      ? { ...current, message }
+      : { words, via, at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), message: null, previous: current ? { words: current.words, via: current.via, at: current.at, message: current.message } : null };
+    this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, reply } : item) };
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    return null;
+  }
+
+  async callReply(call: string, words: string) {
+    const said = words.trim();
+    const problem = this.keepReply(call, said, "quarterdeck");
+    if (problem) return { kept: false, problem, message: null, text: null };
+    const text = replyMessage(call, said);
+    // `?reply-not-told`: kept on the call, but the message cannot go, as when this home's first mate was never started.
+    if (reviewFlag("reply-not-told")) {
+      return { kept: true, message: null, text, warning: "Kept on the call, but the first mate was not told: no firstmate home has been started. The first mate sees it on the call when it starts." };
+    }
+    const message = await this.send(text);
+    this.keepReply(call, said, "quarterdeck", message);
+    return { kept: true, message, text };
+  }
+
   async reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
     const current = this.review(ref);
     return this.settle(ref, current.threads.map((item) => item.id === thread && item.sent_at !== null
@@ -903,8 +974,11 @@ export class MockHostAdapter implements HostAdapter {
     const current = this.review(ref);
     const draft = current.threads.filter((thread) => thread.sent_at === null);
     const told = current.answers.filter((answer) => answer.sent_at === null && answer.recorded?.result === "closed");
-    // Answers in words go with every review until one carries them; the first mate records them.
-    const worded = current.answers.filter((answer) => answer.option === null && answer.sent_at === null && !answer.recorded);
+    // Answers in words go with every review until one carries them, each kept on its call as the captain's reply first.
+    const worded = current.answers.filter((answer) => answer.option === null && answer.sent_at === null && !answer.recorded).map((answer) => {
+      const problem = this.keepReply(answer.decision, reviewWords(answer), "review");
+      return { ...answer, reply: problem ? { result: "not_kept" as const, detail: problem } : { result: "kept" as const, detail: "" } };
+    });
     const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
     const text = [
       `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
@@ -922,9 +996,11 @@ export class MockHostAdapter implements HostAdapter {
       }),
     ].join("\n");
     const message = await this.send(text);
+    for (const answer of worded) if (answer.reply.result === "kept") this.keepReply(answer.decision, reviewWords(answer), "review", message);
     const at = Date.now();
     const carried = [...told, ...worded];
-    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => carried.includes(answer) ? { ...answer, sent_at: at } : answer) });
+    const went = (answer: ReviewView["answers"][number]) => carried.some((item) => item.decision === answer.decision && item.at === answer.at);
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => went(answer) ? { ...answer, sent_at: at, reply: worded.find((item) => item.decision === answer.decision)?.reply ?? answer.reply } : answer) });
     this.holdUntilTheDay(worded.filter((answer) => answer.defer).map((answer) => answer.decision));
     const review = this.settle(
       ref,
@@ -977,8 +1053,6 @@ export class MockHostAdapter implements HostAdapter {
         // Oldest first, as the durable outbox holds them: the cut-off message was handed over before, the other never was.
         this.emit({ type: "outbox", payload: { id: "m-1", status: "requeued", resent_after_restart: true, text: CUT_OFF_MESSAGE } });
         this.emit({ type: "outbox", payload: { id: "m-2", status: "queued", text: "Also merge the foreman PR." } });
-        // `?call-answered`: one of the messages still waiting is the captain's answer to the open Captain's Call.
-        if (reviewFlag("call-answered")) this.emit({ type: "outbox", payload: { id: "m-3", status: "queued", text: CALL_ANSWER } });
         this.emit({ type: "session", payload: { mode: lost ? "new" : "loaded", session_id: "79f27945-68cf-4639-899d-49576d4668e4", previous_session_lost: lost } });
         if (!lost) this.emit({ type: "history", payload: { items: [...EARLIER_CONVERSATION, { who: "captain", text: CUT_OFF_MESSAGE }] } });
         this.emit({ type: "state", payload: { state: "idle" } });
@@ -1118,7 +1192,7 @@ export class MockHostAdapter implements HostAdapter {
       this.compact(id);
       return id;
     }
-    if (reviewFlag("records-chat")) this.recordToldInChat(text);
+    if (reviewFlag("records-reply") || reviewFlag("reasks")) this.actOnReplies(id);
     const run = () => text.startsWith("Start work on ") ? this.startTurn(id, text) : text.startsWith("Take on ") ? this.takeOnTurn(id, text) : this.deliver(id, text);
     if (this.state === "starting") this.deferred.push(run);
     else run();
@@ -1126,16 +1200,23 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   /**
-   * `?records-chat`: the first mate records a call the captain answered in words in chat, the way Bearings words it,
-   * and the call closes a moment later.
+   * The first mate acting on the replies a message carried, a moment after it reads it, the only ways firstmate lets it:
+   * `?records-reply` records the words as the captain's answer with `answer`, which closes the call and clears the
+   * reply; `?reasks` answers the captain and asks again with `offer`, which rewrites the question, moves `updated_at`
+   * and clears the reply, leaving the call open and waiting on the captain.
    */
-  private recordToldInChat(text: string) {
-    const call = this.snapshot.fleet.calls?.find((item) => item.state === "open" && text.startsWith(`On the ${item.id.replace(/-/g, " ")}: `));
-    if (!call) return;
-    const label = text.slice(`On the ${call.id.replace(/-/g, " ")}: `.length);
-    this.later(1200, () => {
-      const at = new Date().toISOString();
-      this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((item) => item.id === call.id ? { ...item, state: "closed" as const, captain_actionable: false, answer: { key: null, label, by: "captain" as const, via: "chat", at } } : item) };
+  private actOnReplies(message: string) {
+    this.later(2500, () => {
+      const calls = this.snapshot.fleet.calls;
+      const carried = calls?.filter((call) => call.state === "open" && call.reply?.message === message) ?? [];
+      if (!carried.length) return;
+      const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls!.map((call) => {
+        if (!carried.includes(call)) return call;
+        return reviewFlag("records-reply")
+          ? { ...call, state: "closed" as const, captain_actionable: false, reply: null, answer: { key: null, label: call.reply!.words.split("\n")[0].slice(0, 200), by: "captain" as const, via: "quarterdeck", at } }
+          : { ...call, reply: null, updated_at: at, question: `${call.question ?? call.title} (asked again after your reply)` };
+      }) };
       this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
     });
   }

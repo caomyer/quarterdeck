@@ -23,6 +23,9 @@
 //!                                                 with no option, words alone or a date to be
 //!                                                 asked again on
 //!   {at, kind: "recorded", decision, result, detail}  what firstmate's intake did with it
+//!   {at, kind: "replied", decision, result, detail}   whether firstmate kept an answer in words
+//!                                                 on its call as the captain's reply
+//!                                                 (`kept` or `not_kept`)
 //!   {at, kind: "told", answers[], message}        recorded answers told to the first mate outside a review
 //!   {at, kind: "resolved" | "reopened", id}       the captain settles a thread
 //!   {at, kind: "seen", rev}                       the captain looked at a revision
@@ -41,8 +44,10 @@
 //! first mate which answers are already recorded, so it does the follow-up
 //! rather than the recording. The app never closes a call itself, and an
 //! answer the intake skipped is shown as not recorded, never as sent. An answer
-//! in words has no option for the intake to take, so it goes in the review's
-//! message for the first mate to record, and is shown as sent once it has.
+//! in words has no option for the intake to take, so sending first keeps it on
+//! its call through firstmate's `reply`, where every surface reads it as the
+//! captain's reply until the first mate records or re-asks it, and then it goes
+//! in the review's message for the first mate to act on.
 //! Only the intake's record is final: while firstmate still asks the captain,
 //! an answer that went for the first mate to record can be followed by a new
 //! one, and the last one it follows is kept in `earlier` as what the captain said then.
@@ -65,7 +70,7 @@
 //!
 //! Commands: `review_get`, `review_comment`, `review_discard`, `review_submit`,
 //! `review_settle`, `review_seen`, `review_summary`, `review_answer`,
-//! `review_scene`, `call_answer`.
+//! `review_scene`, `call_answer`, `call_reply`.
 
 use crate::artifact;
 use crate::calls::{self, Keyed, Outcome};
@@ -233,6 +238,7 @@ pub fn view(path: &Path) -> Value {
                         "at": event.get("at").cloned().unwrap_or(Value::Null),
                         "sent_at": Value::Null,
                         "recorded": Value::Null,
+                        "reply": Value::Null,
                     }));
                 }
             }
@@ -243,6 +249,15 @@ pub fn view(path: &Path) -> Value {
                         "result": event.get("result").cloned().unwrap_or(Value::Null),
                         "detail": event.get("detail").cloned().unwrap_or(Value::Null),
                         "at": event.get("at").cloned().unwrap_or(Value::Null),
+                    });
+                }
+            }
+            "replied" => {
+                let decision = event.get("decision").and_then(Value::as_str).unwrap_or_default();
+                if let Some(answer) = answers.iter_mut().find(|answer| answer["decision"] == decision && answer["sent_at"].is_null()) {
+                    answer["reply"] = json!({
+                        "result": event.get("result").cloned().unwrap_or(Value::Null),
+                        "detail": event.get("detail").cloned().unwrap_or(Value::Null),
                     });
                 }
             }
@@ -534,17 +549,37 @@ fn recorded_lines(answers: &[Value]) -> Vec<String> {
 }
 
 /// The answers the captain gave in words. Nothing has recorded them, since the
-/// intake takes only an option's key, so the first mate records each as said.
+/// intake takes only an option's key: each is kept on its call as the captain's
+/// reply, and the first mate records it or asks again. A reply firstmate would
+/// not keep is said so, with its reason.
 fn worded_lines(answers: &[Value]) -> Vec<String> {
     if answers.is_empty() {
         return Vec::new();
     }
-    let mut lines = vec!["Answered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh as the captain said it (a date to be asked again on is a hold until then), then do the follow-up:".to_string()];
+    let mut lines = vec![format!("Answered in words, kept on each call as the captain's reply; nothing has recorded them. {REPLY_ACTION}")];
     for answer in answers {
         let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
-        lines.push(format!("{decision}: {}", shorten(&answer_words(answer), 1200)));
+        let not_kept = match (answer["reply"]["result"].as_str(), answer["reply"]["detail"].as_str()) {
+            (Some("not_kept"), detail) => format!(" (not kept on the call: {})", detail.unwrap_or("no reason given")),
+            _ => String::new(),
+        };
+        lines.push(format!("{decision}: {}{not_kept}", shorten(&answer_words(answer), 1200)));
     }
     lines
+}
+
+/// What the first mate does with a reply, said the same way wherever one comes from.
+const REPLY_ACTION: &str = "Record one with bin/fm-captain-hold.sh answer only if the captain's words decide the call (with --key when they name one of its options, and --via quarterdeck); otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with --until when the words put it off to a date. Never infer an answer from the words alone.";
+
+/// What the first mate is told when the captain replies to a call from Bearings
+/// in words, a dated not now, or an option the call cannot record by key.
+pub fn reply_message(call: &str, words: &str) -> String {
+    [
+        format!("The captain replied to call {call} from Bearings, in words; it is kept on the call as the captain's reply, and nothing has recorded it."),
+        REPLY_ACTION.to_string(),
+        format!("The captain said: {}", shorten(words.trim(), 1200)),
+    ]
+    .join("\n")
 }
 
 /// An answer in words as the captain gave it: not now, until a date, and whatever they wrote.
@@ -931,8 +966,8 @@ pub async fn record_staged(home: &Path, log: &Path, only: Option<&str>) -> Resul
 /// Once the host has taken the message it has gone, so a failure to note that
 /// is reported alongside the sent message rather than as a failed send: a send
 /// shown as failed invites sending the same review twice. An answer the intake
-/// recorded stays recorded if the message then cannot go, and is told with the
-/// next review.
+/// recorded stays recorded, and words kept on a call stay kept, if the message
+/// then cannot go, and are told with the next review.
 #[tauri::command]
 pub async fn review_submit(
     app: AppHandle,
@@ -945,24 +980,32 @@ pub async fn review_submit(
     let _one_writer = writes.0.lock().await;
     let home = home_for(&app)?;
     let dir = blocking(move || dir_for(&app, &page)).await?;
+    submit(&home, &host, &dir, rev, verdict).await
+}
+
+pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64, verdict: String) -> Result<Value, String> {
+    let dir = dir.to_path_buf();
     let log = dir.join("review.jsonl");
-    let outcomes = record_staged(&home, &log, None).await?;
+    let outcomes = record_staged(home, &log, None).await?;
+    let replied = reply_worded(home, &log).await?;
+    let sent_with = |message: &str| name_replies(home, &replied, message.to_string());
     let (text, threads, answers) = {
         let (dir, verdict) = (dir.clone(), verdict.clone());
         blocking(move || draft(&dir, rev, &verdict)).await?
     };
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await? {
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
-        Err(problem) if !outcomes.is_empty() => {
-            // The intake has run, so the screen has to show what it recorded even though nothing went.
+        Err(problem) if !outcomes.is_empty() || !replied.is_empty() => {
+            // The intake has run or words were kept, so the screen has to show them even though nothing went.
             let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
             return Ok(json!({
                 "message": Value::Null, "text": text, "review": review, "outcomes": outcomes,
-                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded; send the review again to tell the first mate."),
+                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded, and words shown as kept are kept on their call, where the first mate sees them when it starts; send the review again to tell the first mate."),
             }));
         }
         Err(problem) => return Err(problem),
     };
+    sent_with(&message).await;
     let recorded = {
         let (log, message) = (log.clone(), message.clone());
         let text = text.clone();
@@ -976,6 +1019,75 @@ pub async fn review_submit(
             Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes, "warning": format!("Sent, but the app could not note that it went: {problem}")}))
         }
     }
+}
+
+/// Keeps every answer in words this review is about to carry on its call, as
+/// the captain's reply, and notes in the review whether firstmate kept each.
+/// Returns the calls it kept, with the words, so the message can be named on
+/// them once it has gone.
+pub(crate) async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String, String)>, String> {
+    let worded: Vec<Value> = {
+        let log = log.to_path_buf();
+        blocking(move || Ok(answers_where(&log, |answer| is_staged(answer) && !is_keyed(answer)))).await?
+    };
+    let mut kept = Vec::new();
+    for answer in worded {
+        let call = answer["decision"].as_str().unwrap_or_default().to_string();
+        let words = answer_words(&answer);
+        let result = calls::reply(home, &call, &words, "review", None).await;
+        let event = match &result {
+            Ok(()) => json!({"at": now_ms(), "kind": "replied", "decision": call, "result": "kept", "detail": ""}),
+            Err(problem) => json!({"at": now_ms(), "kind": "replied", "decision": call, "result": "not_kept", "detail": problem}),
+        };
+        let at = log.to_path_buf();
+        blocking(move || append(&at, &event)).await?;
+        if result.is_ok() {
+            kept.push((call, words));
+        }
+    }
+    Ok(kept)
+}
+
+/// The review's message has gone, so each reply it carries now names it.
+pub(crate) async fn name_replies(home: &Path, replied: &[(String, String)], message: String) {
+    for (call, words) in replied {
+        if let Err(problem) = calls::reply(home, call, words, "review", Some(&message)).await {
+            log::warn!("the reply on {call} could not name review {message}: {problem}");
+        }
+    }
+}
+
+/// Keeps the captain's words on a call from Bearings through firstmate's
+/// `reply`, and only then tells the first mate, naming the call. A reply
+/// firstmate would not keep sends nothing: the card says why and keeps the
+/// words. Kept but not told is still kept: the first mate sees it on the call.
+#[tauri::command]
+pub async fn call_reply(app: AppHandle, host: TauriState<'_, HostHandle>, call: String, words: String) -> Result<Value, String> {
+    let home = home_for(&app)?;
+    reply_and_tell(&home, &host, &call, &words).await
+}
+
+/// What `call_reply` does, for the command and for the live test that drives it.
+pub(crate) async fn reply_and_tell(home: &Path, host: &HostHandle, call: &str, words: &str) -> Result<Value, String> {
+    let (call, words) = (call.to_string(), words.trim().to_string());
+    let home = home.to_path_buf();
+    if let Err(problem) = calls::reply(&home, &call, &words, "quarterdeck", None).await {
+        return Ok(json!({"kept": false, "problem": problem, "message": Value::Null, "text": Value::Null}));
+    }
+    let text = reply_message(&call, &words);
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
+        Ok(message) => message,
+        Err(problem) => {
+            return Ok(json!({
+                "kept": true, "message": Value::Null, "text": text,
+                "warning": format!("Kept on the call, but the first mate was not told: {problem}. The first mate sees it on the call when it starts."),
+            }));
+        }
+    };
+    if let Err(problem) = calls::reply(&home, &call, &words, "quarterdeck", Some(&message)).await {
+        log::warn!("the reply on {call} could not name message {message}: {problem}");
+    }
+    Ok(json!({"kept": true, "message": message, "text": text}))
 }
 
 /// What the first mate is told when the captain answers a call from Bearings:
@@ -1043,7 +1155,7 @@ pub async fn call_answer(
         return Ok(json!({"outcome": outcome, "message": Value::Null, "text": Value::Null, "review": review}));
     }
     let text = answer_message(&call, &option, &label, note.as_deref());
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await? {
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
         Err(problem) => {
             return Ok(json!({
@@ -1627,9 +1739,54 @@ mod tests {
         let home = scratch(name);
         std::fs::create_dir_all(home.join("bin")).unwrap();
         let script = home.join("bin/fm-captain-hold.sh");
-        std::fs::write(&script, format!("#!/bin/sh\ncat >> \"$FM_HOME/fed\"\ncat <<'EOF'\n{says}\nEOF\n")).unwrap();
+        // `reply` keeps each call's words in `replied`, and refuses `res-refused` the way firstmate refuses a closed call.
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = reply ]; then\n  [ \"$2\" = res-refused ] && {{ echo 'fm-captain-hold: call res-refused is already closed' >&2; exit 1; }}\n  printf '%s %s %s|%s\\n' \"$2\" \"$6\" \"${{8:-}}\" \"$(cat \"$4\")\" >> \"$FM_HOME/replied\"\n  echo \"replied: $2\"\n  exit 0\nfi\ncat >> \"$FM_HOME/fed\"\ncat <<'EOF'\n{says}\nEOF\n"
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         home
+    }
+
+    #[tokio::test]
+    async fn a_review_the_host_cannot_carry_still_shows_the_words_it_kept() {
+        let home = home_with_intake("review-host-stopped", "");
+        let dir = home.join("data/.artifacts/board");
+        revision_on_disk(&dir);
+        let log = dir.join("review.jsonl");
+        stage_answer(&log, "res-model-cellular", None, None, Some("done"), &Words { note: Some("Pause, but tell the user why.".into()), defer: None }).unwrap();
+        let sent = submit(&home, &HostHandle::stopped(), &dir, 1, "approve".into()).await.unwrap();
+        assert_eq!(sent["message"], Value::Null, "{sent}");
+        assert_eq!(sent["outcomes"], json!([]));
+        let warning = sent["warning"].as_str().unwrap();
+        assert!(warning.starts_with("The review did not reach the first mate: the first mate host is not running."), "{warning}");
+        assert_eq!(sent["review"]["answers"][0]["reply"], json!({"result": "kept", "detail": ""}), "{sent}");
+        assert_eq!(std::fs::read_to_string(home.join("replied")).unwrap(), "res-model-cellular review |Pause, but tell the user why.\n");
+
+        // With nothing kept or recorded, a review that did not go is only a failed send.
+        let bare = home.join("data/.artifacts/bare");
+        revision_on_disk(&bare);
+        assert!(submit(&home, &HostHandle::stopped(), &bare, 1, "approve".into()).await.is_err());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn a_kept_reply_the_host_cannot_carry_is_still_kept() {
+        let home = home_with_intake("reply-host-stopped", "");
+        let answer = reply_and_tell(&home, &HostHandle::stopped(), "res-model-download", " Not now. Ask me again on Oct 3. ").await.unwrap();
+        assert_eq!(answer["kept"], true, "{answer}");
+        assert_eq!(answer["message"], Value::Null);
+        assert_eq!(answer["text"], reply_message("res-model-download", "Not now. Ask me again on Oct 3."));
+        let warning = answer["warning"].as_str().unwrap();
+        assert!(warning.starts_with("Kept on the call, but the first mate was not told: the first mate host is not running."), "{warning}");
+        assert_eq!(
+            std::fs::read_to_string(home.join("replied")).unwrap(),
+            "res-model-download quarterdeck |Not now. Ask me again on Oct 3.\n"
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     fn revision_on_disk(dir: &Path) {
@@ -1683,6 +1840,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    #[test]
+    fn a_reply_from_bearings_names_its_call_and_says_nothing_recorded_it() {
+        let text = reply_message("qd-start-work-1", "  it doesn't make sense that screenshots cannot be attached, right?\n");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "The captain replied to call qd-start-work-1 from Bearings, in words; it is kept on the call as the captain's reply, and nothing has recorded it.");
+        assert!(lines[1].starts_with("Record one with bin/fm-captain-hold.sh answer only if the captain's words decide the call"), "{text}");
+        assert!(lines[1].contains("ask again with bin/fm-captain-hold.sh offer") && lines[1].ends_with("Never infer an answer from the words alone."), "{text}");
+        assert_eq!(lines[2], "The captain said: it doesn't make sense that screenshots cannot be attached, right?");
+        assert!(!text.contains("On the "), "the old prefix no script could find is gone");
+    }
+
     #[tokio::test]
     async fn an_answer_in_words_goes_with_the_review_for_the_first_mate_to_record() {
         let home = home_with_intake("intake-words", "closed: res-model-download recorded; closed");
@@ -1694,27 +1862,41 @@ mod tests {
         stage_answer(&log, "res-model-download", Some("wifi-only"), Some("Wi-Fi only"), Some("done"), &words(Some(" Say so in Settings. "), None)).unwrap();
         stage_answer(&log, "res-model-cellular", None, None, Some("done"), &words(Some("Pause, but tell the user why."), None)).unwrap();
         stage_answer(&log, "res-transcripts-source", None, None, Some("release"), &words(None, Some("2026-10-03"))).unwrap();
+        stage_answer(&log, "res-refused", None, None, Some("done"), &words(Some("Too late for this one."), None)).unwrap();
         let current = view(&log);
-        assert_eq!(current["staged_answers"], 3);
+        assert_eq!(current["staged_answers"], 4);
         assert_eq!(current["answers"][0]["note"], "Say so in Settings.");
         assert_eq!(current["answers"][2]["defer"], "2026-10-03");
         // Not now is its own answer, a date is a date, and nothing said is nothing staged.
         assert!(stage_answer(&log, "res-other", Some("x"), Some("X"), None, &words(None, Some("2026-10-03"))).is_err());
         assert!(stage_answer(&log, "res-other", None, None, None, &words(None, Some("next week"))).is_err());
         stage_answer(&log, "res-other", None, None, None, &words(Some("   "), None)).unwrap();
-        assert_eq!(view(&log)["staged_answers"], 3);
+        assert_eq!(view(&log)["staged_answers"], 4);
 
         // Only the option goes to the intake: it takes keys, and words have none.
         assert_eq!(staged(&log).iter().map(|answer| answer.call.as_str()).collect::<Vec<_>>(), ["res-model-download"]);
         record_staged(&home, &log, None).await.unwrap();
         assert_eq!(std::fs::read_to_string(home.join("fed")).unwrap(), "res-model-download\twifi-only\tWi-Fi only\tdone\n");
 
+        // Every answer in words is kept on its call as the captain's reply before anything goes, and one firstmate
+        // would not keep is noted with its reason; the option went to the intake and is not a reply.
+        let kept = reply_worded(&home, &log).await.unwrap();
+        assert_eq!(kept.iter().map(|(call, _)| call.as_str()).collect::<Vec<_>>(), ["res-model-cellular", "res-transcripts-source"]);
+        assert_eq!(
+            std::fs::read_to_string(home.join("replied")).unwrap(),
+            "res-model-cellular review |Pause, but tell the user why.\nres-transcripts-source review |Not now. Ask me again on 2026-10-03.\n"
+        );
+        let refused = view(&log)["answers"].as_array().unwrap().iter().find(|a| a["decision"] == "res-refused").unwrap()["reply"].clone();
+        assert_eq!(refused, json!({"result": "not_kept", "detail": "call res-refused is already closed"}));
+
         let (text, threads, carried) = draft(&dir, 1, "approve").unwrap();
         assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only\")\n  The captain added: Say so in Settings."), "{text}");
-        assert!(text.contains("\nAnswered in words, which nothing has recorded yet; record each with bin/fm-captain-hold.sh"), "{text}");
-        assert!(text.contains("\nres-model-cellular: Pause, but tell the user why."), "{text}");
-        assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-10-03."), "{text}");
-        assert_eq!(carried.len(), 3);
+        assert!(text.contains("\nAnswered in words, kept on each call as the captain's reply; nothing has recorded them. Record one with bin/fm-captain-hold.sh answer only if"), "{text}");
+        assert!(text.contains("Never infer an answer from the words alone."), "{text}");
+        assert!(text.contains("\nres-model-cellular: Pause, but tell the user why.\n"), "{text}");
+        assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-10-03.\n"), "{text}");
+        assert!(text.contains("\nres-refused: Too late for this one. (not kept on the call: call res-refused is already closed)"), "{text}");
+        assert_eq!(carried.len(), 4);
         record_sent(&log, "approve", 1, &threads, &carried, "out-1", &text).unwrap();
 
         // Sent, an answer in words went to the first mate, but only the intake's record is final: the page's
