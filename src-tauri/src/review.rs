@@ -988,7 +988,7 @@ pub async fn review_submit(
         let (dir, verdict) = (dir.clone(), verdict.clone());
         blocking(move || draft(&dir, rev, &verdict)).await?
     };
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await? {
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
         Err(problem) if !outcomes.is_empty() => {
             // The intake has run, so the screen has to show what it recorded even though nothing went.
@@ -1070,7 +1070,7 @@ pub(crate) async fn reply_and_tell(home: &Path, host: &HostHandle, call: &str, w
         return Ok(json!({"kept": false, "problem": problem, "message": Value::Null, "text": Value::Null}));
     }
     let text = reply_message(&call, &words);
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await? {
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
         Err(problem) => {
             return Ok(json!({
@@ -1150,7 +1150,7 @@ pub async fn call_answer(
         return Ok(json!({"outcome": outcome, "message": Value::Null, "text": Value::Null, "review": review}));
     }
     let text = answer_message(&call, &option, &label, note.as_deref());
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await? {
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
         Err(problem) => {
             return Ok(json!({
@@ -1733,6 +1733,22 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         home
+    }
+
+    #[tokio::test]
+    async fn a_kept_reply_the_host_cannot_carry_is_still_kept() {
+        let home = home_with_intake("reply-host-stopped", "");
+        let answer = reply_and_tell(&home, &HostHandle::stopped(), "res-model-download", " Not now. Ask me again on Oct 3. ").await.unwrap();
+        assert_eq!(answer["kept"], true, "{answer}");
+        assert_eq!(answer["message"], Value::Null);
+        assert_eq!(answer["text"], reply_message("res-model-download", "Not now. Ask me again on Oct 3."));
+        let warning = answer["warning"].as_str().unwrap();
+        assert!(warning.starts_with("Kept on the call, but the first mate was not told: the first mate host is not running."), "{warning}");
+        assert_eq!(
+            std::fs::read_to_string(home.join("replied")).unwrap(),
+            "res-model-download quarterdeck |Not now. Ask me again on Oct 3.\n"
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     fn revision_on_disk(dir: &Path) {
