@@ -113,7 +113,10 @@ export function recommended(call: Call) {
  * with no options and no evidence, answered through the first mate.
  */
 export function homeCalls(fleet: FleetSnapshot | null | undefined, bearings: BearingsSnapshot | null | undefined, records: Map<string, BacklogRecord>): { calls: Call[]; legacy: boolean } {
-  if (fleet?.calls) return { calls: fleet.calls, legacy: false };
+  if (fleet?.calls) {
+    const from = fleet.captain_day ? dayAfter(fleet.captain_day) : null;
+    return { calls: from ? fleet.calls.map((call) => ({ ...call, ask_again_from: from })) : fleet.calls, legacy: false };
+  }
   const calls = (bearings?.decisions_open ?? []).map((decision): Call => ({
     id: decision.id,
     title: records.get(decision.id)?.title ?? decision.key,
@@ -138,6 +141,18 @@ export function linkLabel(href: string) {
   } catch {
     return href;
   }
+}
+
+/**
+ * The calendar day after a `yyyy-mm-dd` day, or null for anything else. A call deferred to a day comes back at the
+ * start of it, so the captain's own today is already too late to defer to; the earliest day is the one after.
+ */
+export function dayAfter(day: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const next = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(next.getTime())) return null;
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString().slice(0, 10);
 }
 
 /** A day to be asked again on, as the captain says it: Oct 3. It is the calendar day picked, wherever the Mac is. */

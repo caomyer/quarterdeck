@@ -651,7 +651,8 @@ export class MockHostAdapter implements HostAdapter {
 
   private static artifactSnapshot() {
     const bearings = bearingsFixture as unknown as BearingsSnapshot;
-    const fleet = fleetFixture as unknown as FleetSnapshot;
+    // The recording predates `captain_day`: it was taken at 12:32 PDT on its day.
+    const fleet = { ...(fleetFixture as unknown as FleetSnapshot), captain_day: "2026-09-15" };
     if (!reviewFlag("artifacts")) return { bearings, fleet };
     const mock = mockArtifacts(fleet.fm_home);
     return {

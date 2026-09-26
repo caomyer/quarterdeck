@@ -763,6 +763,10 @@ await resumed.close();
   await cellularCard.locator(".suggestion-chips button", { hasText: "Not now" }).click();
   check(await cellularCard.locator(".decision-actions button", { hasText: "Send" }).isDisabled(), "Not now sends nothing until it has a day");
   check((await cellularCard.locator(".decision-actions > span").innerText()) === "Pick the day to be asked again", "and says what it is waiting for");
+  // The mock's captain's day is 2026-09-15: a call deferred to it would be live at once, so the earliest day is the next.
+  check(await cellularCard.locator(".date-field input").getAttribute("min") === "2026-09-16", "Not now offers no day before the one after the captain's");
+  await cellularCard.locator(".date-field input").fill("2026-09-15");
+  check(await cellularCard.locator(".date-field input").inputValue() === "" && await cellularCard.locator(".decision-actions button", { hasText: "Send" }).isDisabled(), "the captain's own today is not a day to be asked again");
   await cellularCard.locator(".date-field input").fill("2026-10-03");
   await cellularCard.locator(".reply-field textarea").fill("After the launch, once we see real traffic.");
   check((await cellularCard.locator(".reply-field span").innerText()) === "Anything to add for the first mate?", "words go with Not now rather than instead of it");

@@ -1250,7 +1250,7 @@ function CallAnswerFields({ call, layout, picked, deferring, deferDate, note, ad
       {call.options.map((option) => <button key={option.key} className={picked === option.key ? "selected" : ""} aria-pressed={picked === option.key} disabled={disabled} onClick={() => onPick(option)}><span>{option.label}</span>{option.recommended && <small>Recommended</small>}</button>)}
       <button className={deferring ? "selected" : ""} aria-pressed={deferring} disabled={disabled} onClick={onDefer}><span>Not now</span></button>
     </div>
-    {deferring && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} min={localDay(new Date().toISOString()) ?? undefined} disabled={disabled} onChange={(event) => onDate(event.target.value)} /></label>}
+    {deferring && <label className="date-field"><span>Ask me again</span><input type="date" value={deferDate} min={call.ask_again_from} disabled={disabled} onChange={(event) => onDate(call.ask_again_from && event.target.value && event.target.value < call.ask_again_from ? "" : event.target.value)} /></label>}
     <label className="reply-field"><span>{adding ? "Anything to add for the first mate?" : call.options.length ? "Or answer in words" : "Answer in words"}</span><textarea value={note} disabled={disabled} onChange={(event) => onNote(event.target.value)} /></label>
   </div>;
 }

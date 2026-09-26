@@ -1037,6 +1037,144 @@ EOF
   pass "an interrupted answer preserves its hold age until close retry"
 }
 
+# A deferral names a day on the captain's calendar, so it is judged by the
+# captain's day, never the UTC one. West of UTC the UTC date turns over in the
+# captain's evening: a call deferred to tomorrow must not come back tonight,
+# and must be back from the first minute of that day. East of UTC the UTC date
+# lags, and the call must not stay away past the captain's midnight.
+captain_day_bucket() {  # <home> <TZ> <now> <id>
+  local home=$1 zone=$2 now=$3 id=$4
+  PATH="$home/fakebin:$PATH" TZ="$zone" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW="$now" \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --backlog-json \
+    | jq -r --arg id "$id" '.records[] | select(.id == $id) | "\(.hold_bucket) \(.hold_age_days)"'
+}
+
+captain_day_bearings() {  # <home> <TZ> <now>
+  local home=$1 zone=$2 now=$3
+  PATH="$home/fakebin:$PATH" TZ="$zone" FM_HOME="$home" FM_BEARINGS_NOW="$now" "$BEARINGS" --json
+}
+
+test_deferral_follows_the_captains_day() {
+  local home json zone now id want got
+  home=$(make_home captain-day)
+  # 17:11 PDT on Sep 25 is 00:11 UTC on Sep 26: the moment this was found.
+  TZ=America/Los_Angeles FM_CAPTAIN_HOLD_NOW=2026-09-26T00:11:00Z run_captain "$home" hold west-call \
+    --title "Decide the west route" --reason "captain: not now, ask me again on Sep 26" \
+    --repo sample --until 2026-09-26 >/dev/null || fail "could not defer a call to tomorrow in PDT"
+  TZ=Europe/Berlin FM_CAPTAIN_HOLD_NOW=2026-09-25T15:11:00Z run_captain "$home" hold east-call \
+    --title "Decide the east route" --reason "captain: not now, ask me again on Sep 26" \
+    --repo sample --until 2026-09-26 >/dev/null || fail "could not defer a call to tomorrow in CEST"
+  while read -r zone now id want; do
+    got=$(captain_day_bucket "$home" "$zone" "$now" "$id") || fail "snapshot failed in $zone at $now"
+    [ "${got%% *}" = "$want" ] || fail "$id in $zone at $now is ${got%% *}, want $want"
+  done <<'CASES'
+America/Los_Angeles 2026-09-26T00:11:00Z west-call dated
+America/Los_Angeles 2026-09-26T06:59:00Z west-call dated
+America/Los_Angeles 2026-09-26T07:01:00Z west-call live
+Europe/Berlin 2026-09-25T21:59:00Z east-call dated
+Europe/Berlin 2026-09-25T22:01:00Z east-call live
+CASES
+
+  # The app offers Not now no day earlier than the one after the day published here.
+  got=$(PATH="$home/fakebin:$PATH" TZ=America/Los_Angeles FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-09-26T00:11:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json | jq -r '.captain_day') || fail "snapshot failed in the captain's evening"
+  [ "$got" = 2026-09-25 ] || fail "the snapshot published captain_day $got at 17:11 PDT on Sep 25"
+
+  json=$(captain_day_bearings "$home" America/Los_Angeles 2026-09-26T00:11:00Z) \
+    || fail "Bearings failed in the captain's evening"
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.id == "west-call") | not)
+      and (.gates | any(.id == "west-call" and (.reason | startswith("until 2026-09-26"))))
+  ' >/dev/null || fail "a call deferred to tomorrow reached Captain's Call the evening before: $json"
+  json=$(captain_day_bearings "$home" America/Los_Angeles 2026-09-26T07:01:00Z) \
+    || fail "Bearings failed on the captain's due day"
+  printf '%s' "$json" | jq -e '(.decisions_open | any(.id == "west-call"))' >/dev/null \
+    || fail "a call deferred to Sep 26 was not back in Captain's Call at 00:01 on Sep 26: $json"
+
+  # A hold dated on or before the captain's day would be live at once, so it is
+  # refused rather than recorded as a deferral that never was.
+  if TZ=America/Los_Angeles FM_CAPTAIN_HOLD_NOW=2026-09-26T00:11:00Z run_captain "$home" hold late-call \
+    --title "Late call" --reason "captain choice" --repo sample --until 2026-09-25 \
+    > "$home/late.out" 2> "$home/late.err"; then
+    fail "hold accepted an --until that is already the captain's today"
+  fi
+  assert_contains "$(cat "$home/late.err")" "not after the captain's today (2026-09-25)" \
+    "a due --until was refused without naming the captain's day"
+  if TZ=Europe/Berlin FM_CAPTAIN_HOLD_NOW=2026-09-25T22:01:00Z run_captain "$home" hold late-call \
+    --title "Late call" --reason "captain choice" --repo sample --until 2026-09-26 \
+    > "$home/late.out" 2> "$home/late.err"; then
+    fail "hold accepted an --until that is already the captain's today in CEST"
+  fi
+  pass "a dated deferral is due from the start of the captain's named day, west and east of UTC"
+}
+
+# The snapshot and tasks-axi are two readings of one hold: tasks-axi's `held`
+# is judged on the host's local date by its own clock, so the snapshot's dated
+# bucket must agree with it at the same instant. The zones are chosen so the
+# local date and the UTC date differ right now, whenever this runs: behind UTC
+# while the UTC hour is before noon, ahead of it after.
+test_snapshot_agrees_with_tasks_axi_held() {
+  local home zone now today tomorrow until id held bucket n=0
+  home=$(make_home captain-day-agrees)
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ "$((10#$(date -u +%H)))" -lt 11 ]; then zone=Etc/GMT+12; else zone=Etc/GMT-14; fi
+  today=$(TZ=$zone date +%Y-%m-%d)
+  [ "$today" != "${now%%T*}" ] || fail "fixture zone $zone did not split the local and UTC dates at $now"
+  tomorrow=$(TZ=$zone date -v+1d +%Y-%m-%d 2>/dev/null || TZ=$zone date -d tomorrow +%Y-%m-%d)
+  for until in "$today" "$tomorrow"; do
+    n=$((n + 1))
+    id="agree-call-$n"
+    tasks_in "$home" add "$id" "Agreement call $n" >/dev/null || fail "could not add $id"
+    (cd "$home" && TZ=$zone tasks-axi hold "$id" --reason "captain choice" --kind captain --until "$until") >/dev/null \
+      || fail "could not hold $id until $until"
+    held=$(cd "$home" && TZ=$zone tasks-axi show "$id" --full | awk '$1 == "held:" { print $2 }')
+    bucket=$(captain_day_bucket "$home" "$zone" "$now" "$id") || fail "snapshot failed in $zone at $now"
+    bucket=${bucket%% *}
+    case "$held:$bucket" in
+      yes:dated|no:live) : ;;
+      *) fail "$id until $until in $zone at $now: tasks-axi held=$held but the snapshot says $bucket" ;;
+    esac
+  done
+  pass "the snapshot's dated bucket agrees with tasks-axi's held on either side of the UTC date"
+}
+
+# An undated hold with only a date to age from (a legacy row's `since`, which
+# tasks-axi writes as the local date) ages in whole captain's days, so it turns
+# over at the captain's midnight too; a stamped hold ages by elapsed time,
+# which no timezone moves.
+test_undated_aging_follows_the_captains_day() {
+  local home zone now id want got
+  home=$(make_home captain-day-aging)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] legacy-call - Legacy undated call (repo: sample) (kind: captain) (since 2026-09-11) (hold: choose a route) (hold-kind: captain)
+- [ ] stamped-call - Stamped undated call (repo: sample) (kind: captain) (since 2026-09-11) (hold: choose a route) (hold-kind: captain)
+  Captain hold set: 2026-09-11T12:00:00Z
+
+## Done
+EOF
+  while read -r zone now id want; do
+    got=$(captain_day_bucket "$home" "$zone" "$now" "$id") || fail "snapshot failed in $zone at $now"
+    [ "$got" = "${want/_/ }" ] || fail "$id in $zone at $now is '$got', want '${want/_/ }'"
+  done <<'CASES'
+America/Los_Angeles 2026-09-25T00:11:00Z legacy-call live_13
+America/Los_Angeles 2026-09-25T07:01:00Z legacy-call aged_14
+Europe/Berlin 2026-09-24T21:59:00Z legacy-call live_13
+Europe/Berlin 2026-09-24T22:01:00Z legacy-call aged_14
+America/Los_Angeles 2026-09-25T11:59:00Z stamped-call live_13
+Europe/Berlin 2026-09-25T11:59:00Z stamped-call live_13
+America/Los_Angeles 2026-09-25T12:00:00Z stamped-call aged_14
+Europe/Berlin 2026-09-25T12:00:00Z stamped-call aged_14
+CASES
+  pass "undated aging counts the captain's days from a date and elapsed time from a stamp"
+}
+
 # Deferral is a date, not a live card: hold --until keeps the task out of
 # captain_actionable until due, tasks-axi's own date-gate expiry keeps the task
 # answerable, and Bearings renders the wait as a dated gate.
@@ -1062,7 +1200,8 @@ EOF
   FM_CAPTAIN_HOLD_NOW=2026-07-20T12:00:00Z run_captain "$home" hold sample-existing-call \
     --reason "captain choice on existing work" >/dev/null \
     || fail "could not repeat the existing task hold"
-  run_captain "$home" hold sample-later-call --title "Revisit the sample plan" \
+  FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-later-call \
+    --title "Revisit the sample plan" \
     --reason "captain deferred revisit later" --repo sample --until 2026-08-01 >/dev/null \
     || fail "could not register the deferred captain call"
   run_captain "$home" hold sample-now-call --title "Decide the sample cut" \
@@ -3991,6 +4130,9 @@ test_release_frees_held_work
 test_hold_stamp_precedes_hold_visibility
 test_interrupted_answer_preserves_hold_age
 test_deferral_leaves_captains_call_until_due
+test_deferral_follows_the_captains_day
+test_snapshot_agrees_with_tasks_axi_held
+test_undated_aging_follows_the_captains_day
 test_out_of_band_close_is_recordable
 test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds

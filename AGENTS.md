@@ -61,6 +61,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Style with the tokens, never a literal colour: `pnpm tones` compares what it sees against them.
 - How every screen reads captain calls (`src/calls.ts`), how a project's logbook reads closed work (`src/logbook.ts`), how a task's body keeps the lines its filer wrote (`src/taskbody.ts`) and where the chat places a page among messages that may carry no time (`src/chatorder.ts`, whose invariant is that a page never sits below a newer message): `pnpm test`, which needs no server.
   Calls come only from the snapshot's `calls[]`, which `bin/fm-captain-hold.sh` owns; the app answers them through its `answers` intake (`src-tauri/src/calls.rs`) and never closes one itself.
+  The captain's day comes only from the snapshot's `captain_day`, which `bin/fm-backlog-parse-lib.sh` owns, so the app never keeps a second "today" for a deferral.
   Closed work beyond the snapshot's few recent rows comes only from `bin/fm-history.sh`, read when a project page opens; the app never parses the backlog or its archive itself.
 - Live test of a project's history, which spends no tokens and changes nothing in the home:
   `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test history_e2e_live_scratch_home -- --ignored --nocapture`.
