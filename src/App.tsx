@@ -19,6 +19,7 @@ import {
   FolderGit2,
   FolderOpen,
   Gauge,
+  Info,
   GitBranch,
   GitMerge,
   ListPlus,
@@ -52,7 +53,7 @@ import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, type CallStanding, callStanding, callsInChat, type IntakeNote, type MessageAnswer, stillOffered, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import { askedHow, askWantsReading, BUSY, judgeDetail, launchedAt, lighterReason, MODE_CHOICES, modeLine, postureHint, type StartInputs, type StartPhase, startPhase, wantsFreshReading, wantsReadingAfterTurn } from "./start";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
@@ -180,8 +181,10 @@ export function App() {
 
   const records = useMemo(() => new Map((fleet?.backlog?.records ?? []).map((record) => [record.id, record])), [fleet]);
   // Every call the home carries, from its one source: firstmate's calls[], or Bearings' bare list on an older home.
-  const { calls } = useMemo(() => homeCalls(fleet, bearings, records), [fleet, bearings, records]);
+  const { calls, legacy: legacyCalls } = useMemo(() => homeCalls(fleet, bearings, records), [fleet, bearings, records]);
   const waiting = useMemo(() => openCalls(calls), [calls]);
+  // The chat draws calls only from firstmate's calls[]: an older home's bare list has no options or times to draw.
+  const chatCalls = legacyCalls ? [] : calls;
 
   // Which message answered which call. The link this session made is authoritative; after a relaunch
   // the app has none, so a message still in the host's outbox is matched by the call it names.
@@ -209,6 +212,7 @@ export function App() {
   const artifacts = useMemo(() => fleet?.artifacts ?? [], [fleet]);
   // Which pages have been looked at, and what is still waiting, for the list. Re-read whenever a review changes.
   const [answered, setAnswered] = useState<Record<string, AnswerNote>>({});
+  const [answeredFrom, setAnsweredFrom] = useState<Record<string, AnsweredFrom>>({});
   useEffect(() => {
     void host.reviewSummary().then(setReviews).catch(() => setReviews({}));
   }, [artifacts, review, answered]);
@@ -533,20 +537,68 @@ export function App() {
    * Answers a call from Bearings with one of its options: firstmate's intake records it, noted in the review of
    * the page that argues it, and the card says what the intake did. Only a recorded answer reaches the first mate.
    */
-  async function answerNow(call: Call, option: { key: string; label: string }, note?: string) {
+  async function answerNow(call: Call, option: { key: string; label: string }, note?: string, from: AnsweredFrom = "bearings") {
     const argument = argumentOf(evidenceOf(call));
     const argued = argument?.kind === "page" ? argument.artifact : null;
     const page = argued ? { scope: argued.scope, task: argued.task, name: argued.name } : null;
     const unread = argued ? (reviews[artifactKey(argued)]?.seen_rev ?? null) === null : false;
+    // The lifecycle it answers: a hold that asks again starts a new one, which this answer does not answer.
+    const raised = call.raised_at ?? null;
     let outcome: AnswerNote;
     try {
       const result = await host.callAnswer({ call: call.id, option: option.key, label: option.label, onAnswer: call.on_answer ?? "", page, note });
       if (result.message && result.text) bridge.noteSent(result.message, result.text);
-      outcome = { label: option.label, result: result.outcome.result, detail: result.outcome.detail, told: Boolean(result.message), warning: result.warning, unread };
+      if (result.message) setAnsweredFrom((current) => ({ ...current, [result.message!]: from }));
+      outcome = { label: option.label, result: result.outcome.result, detail: result.outcome.detail, told: Boolean(result.message), warning: result.warning, unread, raised };
     } catch (error) {
-      outcome = { label: option.label, result: "not_recorded", detail: String(error), told: false, unread };
+      outcome = { label: option.label, result: "not_recorded", detail: String(error), told: false, unread, raised };
     }
     setAnswered((current) => ({ ...current, [call.id]: outcome }));
+    return outcome.result === "closed";
+  }
+
+  /**
+   * What every surface that shows a call knows about it beyond its record: what argues it, whether that has been read,
+   * the review that answered it, and so where it stands, from the one `callStanding` they all read.
+   */
+  function callContext(call: Call) {
+    const evidence = evidenceOf(call);
+    const argument = argumentOf(evidence);
+    const pages = evidence.flatMap((item) => item.kind === "page" ? [item.artifact] : []);
+    // A review that already recorded an answer for it; the call leaves once the snapshot catches up.
+    const answeredIn = pages.find((artifact) => (reviews[artifactKey(artifact)]?.answered ?? []).includes(call.id));
+    const seen = argument?.kind === "page" ? (reviews[artifactKey(argument.artifact)]?.seen_rev ?? null) !== null : null;
+    const standing = callStanding(call, { answered: answered[call.id], answeredIn: answeredIn?.title });
+    const onOpenPage = answeredIn ? () => showArtifact(answeredIn) : argument?.kind === "page" ? () => showArtifact(argument.artifact) : undefined;
+    return { argument, answeredIn, seen, standing, onOpenPage, project: callProject(call, records) };
+  }
+
+  /**
+   * A call in the chat, where it was raised, answered the ways Bearings answers it and through the same two paths.
+   * What the captain said on it earlier in this chat is read from the app's own answer lines, never from the first mate.
+   */
+  function chatCall(call: Call) {
+    const context = callContext(call);
+    const raised = Date.parse(call.raised_at ?? "");
+    const said = messages.flatMap((message) => {
+      const answer = message.who === "captain" ? answerOfMessage(message.text, calls) : null;
+      return answer?.call === call.id ? [{ message, answer, at: latestTime(message) }] : [];
+    });
+    const words = said.filter(({ answer, at }) => answer.kind === "replied" && at >= raised).at(-1);
+    return <CallChatCard
+      call={call}
+      project={context.project}
+      standing={context.standing}
+      argument={context.argument}
+      seenArgument={context.seen}
+      earlier={words && words.answer.kind === "replied" ? { words: words.answer.words, at: words.message.past ? null : words.message.createdAt } : null}
+      askedBefore={said.some(({ at }) => at < raised)}
+      onAnswer={(option, note) => answerNow(call, option, note, "chat")}
+      onReply={(words) => replyToCall(call, words, "chat")}
+      onReadArgument={context.argument ? () => openEvidence(context.argument!) : undefined}
+      onOpenPage={context.onOpenPage}
+      onDraft={draftInChat}
+    />;
   }
 
   async function chooseHomeAndStart() {
@@ -713,7 +765,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -1186,7 +1238,10 @@ function answersCall(text: string, call: Call) {
 }
 
 /** What firstmate's intake did with an answer given from Bearings, kept on the card until the call leaves the list. */
-type AnswerNote = { label: string; result: IntakeResult; detail: string; told: boolean; warning?: string; unread: boolean };
+type AnswerNote = IntakeNote & { told: boolean; warning?: string; unread: boolean };
+
+/** Where the captain answered a call, as far as this session knows, by the message that told the first mate. */
+type AnsweredFrom = "chat" | "bearings";
 
 type OptionChoice = { key: string; label: string };
 
@@ -1816,7 +1871,7 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, upstre
   </aside></div>;
 }
 
-type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision } | { type: "review"; message: ChatMessage; sent: SentPage };
+type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision } | { type: "review"; message: ChatMessage; sent: SentPage } | { type: "call"; id: string; call: Call } | { type: "answer"; message: ChatMessage; answer: MessageAnswer };
 
 /** A review the captain sent, with the page it is about, as the chat draws it. */
 type SentPage = { key: string; ref: ArtifactRef; artifact?: Artifact; review: SentReview; threads: SentThread[] };
@@ -1874,23 +1929,33 @@ function reviewsOf(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
  */
 const CHAT_PAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary = {}) {
+/** Something with a time of its own that the chat places among its messages: a page presented, or a call raised. */
+type Timed = { at: number; item: ChatItem };
+
+/**
+ * The chat's items, in order. A page and a call each have a fixed time, when the page was presented and when the
+ * call was raised, and both are placed by it through the one rule the chat has (`pagePlaces`). A captain's message
+ * that is a review, or one of the app's own answers to a call, is drawn as the card it is.
+ */
+function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: ReviewSummary = {}, calls: Call[] = []) {
   const sent = reviewsOf(messages, artifacts, reviews);
   const lastPast = messages.reduce((found, message, index) => message.past ? index : found, -1);
   const items: ChatItem[] = [{ type: "label", id: "label-top", text: lastPast >= 0 ? "Earlier" : "Today" }];
-  const since = Date.now() - CHAT_PAGE_WINDOW_MS;
-  const shown = artifacts
-    .flatMap((artifact) => artifact.revisions.map((revision) => ({ artifact, revision, at: Date.parse(revision.presented_at) })))
-    .filter(({ at }) => at >= since)
-    .sort((a, b) => a.at - b.at);
-  // A page never renders below a message newer than it: pagePlaces (src/chatorder.ts) holds that, from the bounds.
+  const now = Date.now();
+  const since = now - CHAT_PAGE_WINDOW_MS;
+  const shown: Timed[] = [
+    ...artifacts
+      .flatMap((artifact) => artifact.revisions.map((revision) => ({ artifact, revision, at: Date.parse(revision.presented_at) })))
+      .filter(({ at }) => at >= since)
+      .map(({ artifact, revision, at }): Timed => ({ at, item: { type: "artifact", id: `artifact-${artifact.scope}-${artifact.task}-${artifact.name}-${revision.rev}`, artifact, revision } })),
+    // A new lifecycle is a new card, so nothing from an earlier ask of the same call carries into it.
+    ...callsInChat(calls, now).map(({ call, at }): Timed => ({ at, item: { type: "call", id: `call-${call.id}-${call.raised_at}`, call } })),
+  ].sort((a, b) => a.at - b.at);
+  // Nothing ever renders below a message newer than it: pagePlaces (src/chatorder.ts) holds that, from the bounds.
   const places = pagePlaces(messages.map((message) => latestTime(message, sent.get(message.id)?.review.at)), shown.map(({ at }) => at));
   const pages = shown.map((page, index) => ({ ...page, place: places[index] }));
   const pushPages = (place: number) => {
-    while (pages.length && pages[0].place <= place) {
-      const { artifact, revision } = pages.shift()!;
-      items.push({ type: "artifact", id: `artifact-${artifact.scope}-${artifact.task}-${artifact.name}-${revision.rev}`, artifact, revision });
-    }
+    while (pages.length && pages[0].place <= place) items.push(pages.shift()!.item);
   };
   messages.forEach((message, index) => {
     pushPages(index);
@@ -1898,7 +1963,10 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
     const last = items.at(-1);
     // A review the captain sent is a card, not the text written for the first mate.
     const review = sent.get(message.id);
+    // So is an answer to a call the app wrote for him; a review that carries answers is already a card.
+    const answer = !review && message.who === "captain" ? answerOfMessage(message.text, calls) : null;
     if (review) items.push({ type: "review", message, sent: review });
+    else if (answer) items.push({ type: "answer", message, answer });
     else if (message.who !== "step") items.push({ type: "message", message });
     else if (last?.type === "steps" && last.past === past) last.steps.push(message);
     else items.push({ type: "steps", id: `steps-${message.id}`, steps: [message], past });
@@ -1961,11 +2029,11 @@ function ApprovalCard({ request, home, onAnswer }: { request: PermissionView; ho
   return <section className="approval-card" aria-label="The first mate is asking for your OK"><div className="approval-copy"><strong>The first mate wants to run</strong><code>{stripHome(request.title, home)}</code><span>It's waiting for your answer before it goes on.</span>{request.error && <small role="alert">That answer didn't go through: {request.error}</small>}</div><div className="approval-actions">{request.options.map((option) => <button key={option.option_id} className={option.kind === "allow_once" ? "allow" : option.kind.startsWith("reject") ? "reject" : ""} disabled={request.answering} onClick={() => onAnswer(option.option_id)}>{APPROVAL_LABELS[option.kind] ?? option.name}</button>)}</div></section>;
 }
 
-function ChatView({ messages, artifacts, reviews, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
+function ChatView({ messages, artifacts, reviews, calls, renderCall, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
-  const items = chatItems(messages, artifacts, reviews);
+  const items = chatItems(messages, artifacts, reviews, calls);
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   // Arriving with words already written (Push back, asking for a report) puts the caret after them, ready to go on.
@@ -1980,7 +2048,7 @@ function ChatView({ messages, artifacts, reviews, onSettle, tasks, onOpenArtifac
   useLayoutEffect(() => {
     const element = scroller.current;
     if (element && following.current) element.scrollTop = element.scrollHeight;
-  }, [messages, outbox, approvals, artifacts]);
+  }, [messages, outbox, approvals, artifacts, calls]);
   // A banner or approval card appearing shrinks the list without a scroll event, so stay pinned through resizes too.
   useEffect(() => {
     const element = scroller.current;
@@ -1999,6 +2067,10 @@ function ChatView({ messages, artifacts, reviews, onSettle, tasks, onOpenArtifac
       ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} reviews={reviews} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
     : item.type === "review"
       ? <ReviewChatCard key={item.message.id} message={item.message} sent={item.sent} outbox={outbox[item.message.id]} running={running} tasks={tasks} onOpen={(rev) => item.sent.artifact && onOpenArtifact(item.sent.artifact, rev)} onSettle={(threads) => onSettle(item.sent.ref, threads)} />
+    : item.type === "call"
+      ? <Fragment key={item.id}>{renderCall(item.call)}</Fragment>
+    : item.type === "answer"
+      ? <AnswerChatCard key={item.message.id} message={item.message} answer={item.answer} call={calls.find((call) => call.id === item.answer.call)} outbox={outbox[item.message.id]} running={running} from={answeredFrom[item.message.id] ?? (item.message.past ? null : "bearings")} />
     : item.type === "steps"
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
@@ -2478,6 +2550,237 @@ function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettl
     </div>}
     {problem && <p className="review-card-problem" role="alert">{problem}</p>}
     <details className="review-card-text"><summary>What the first mate was sent</summary><pre>{message.text}</pre></details>
+  </article>;
+}
+
+/**
+ * The captain's answer to one call as he writes it, and the one way it goes, shared by every surface that answers a
+ * call on its own (a card in Bearings, a call in the chat) so Record answer and Send can never drift apart. An option
+ * with a key is recorded through firstmate's intake; anything else is his reply, which firstmate keeps on the call.
+ * A pick the call no longer offers as he saw it is dropped and named, never recorded: the call's options are read
+ * afresh on every render, never copied.
+ */
+function useCallAnswer(call: Call, onAnswer: (option: OptionChoice, note?: string) => Promise<boolean>, onReply: (words: string) => Promise<CallReplied>) {
+  const [selection, setSelection] = useState<OptionChoice | null>(null);
+  const [note, setNote] = useState("");
+  const [dateOpen, setDateOpen] = useState(false);
+  const [deferDate, setDeferDate] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [replying, setReplying] = useState(false);
+  /** Why firstmate would not keep the last reply; the words stay in the field, and nothing was sent. */
+  const [refused, setRefused] = useState<string | null>(null);
+  // Options with a key go through the intake; that needs the call to say how an answer closes it.
+  const keyed = call.options.length > 0 && Boolean(call.on_answer);
+  const picked = selection && stillOffered(call, selection) ? selection : null;
+  const withdrawn = selection && !picked ? selection.label : null;
+  // Not now says nothing until it has a day to be asked again on.
+  const words = dateOpen
+    ? deferDate ? answerInWords(deferDate, note) : ""
+    : [picked && !keyed ? picked.label : "", note.trim()].filter(Boolean).join(". ");
+  const recordPick = keyed && picked && !dateOpen ? picked : null;
+  const said = words && !recordPick ? words : "";
+  const busy = recording || replying;
+  /** What he has written that has not gone, in his words, kept for him if the call is answered elsewhere first. */
+  const draft = recordPick ? [recordPick.label, note.trim()].filter(Boolean).join(". ") : said || note.trim();
+
+  function clear() {
+    setRefused(null);
+    setSelection(null);
+    setNote("");
+    setDateOpen(false);
+    setDeferDate("");
+  }
+
+  async function submit() {
+    if (recordPick) {
+      setRecording(true);
+      try {
+        // A recorded answer starts the fields again; one the intake did not take keeps them, to try again.
+        if (await onAnswer(recordPick, note.trim() || undefined)) clear();
+      } finally {
+        setRecording(false);
+      }
+      return;
+    }
+    if (!said) return;
+    setReplying(true);
+    try {
+      const result = await onReply(said);
+      if (!result.kept) return setRefused(result.problem ?? "firstmate gave no reason");
+      // Kept: the snapshot shows it now, so the fields start empty for whatever comes next.
+      clear();
+    } finally {
+      setReplying(false);
+    }
+  }
+
+  const hint = recordPick
+    ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}`
+    : said ? `→ keeps your words on the call for the first mate: ${said}` : dateOpen ? "Pick the day to be asked again" : "";
+  const button = <button disabled={busy || (!recordPick && !said)} onClick={() => void submit()}>{recordPick ? (recording ? "Recording…" : "Record answer") : replying ? "Sending…" : "Send"}</button>;
+  const fields = (layout: "chips" | "list") => <CallAnswerFields
+    call={call}
+    layout={layout}
+    picked={picked?.key ?? null}
+    deferring={dateOpen}
+    deferDate={deferDate}
+    note={note}
+    adding={recordPick !== null || dateOpen}
+    disabled={busy}
+    onPick={(option) => { setSelection(option); setDateOpen(false); setDeferDate(""); }}
+    onDefer={() => { setDateOpen(true); setSelection(null); }}
+    onDate={setDeferDate}
+    onNote={setNote}
+  />;
+  return { fields, button, hint, draft, withdrawn, refused, busy, clear };
+}
+
+/** A refusal to keep a reply on its call: nothing was sent, and the words are still in the field. */
+function ReplyRefused({ problem }: { problem: string }) {
+  return <div className="call-state tone-coral call-not-kept" role="alert" data-testid="reply-refused"><CircleAlert size={16} /><span><strong>Not sent: your reply could not be kept on the call</strong><small>{problem}</small></span></div>;
+}
+
+/** A dated Not now, read back from the words the app wrote for it (`answerInWords`): the day, as said. */
+function notNowDay(words: string) {
+  return words.match(/^Not now\. Ask me again on ([^.]+)\./)?.[1] ?? null;
+}
+
+/** What the captain last said on a call in this chat, in his words and when, for a call that asks him again. */
+type EarlierWords = { words: string; at: string | null };
+
+/**
+ * A call as the chat shows it, where the first mate raised it: the whole call with every way to answer it while it
+ * waits on the captain, answered through the same intake and reply as Bearings, and one line once it is not his to
+ * answer, with the question and every option one click away. It never moves: it changes where it is, and reads where
+ * the call stands from the same `callStanding` Bearings reads, so the two change together.
+ */
+function CallChatCard({ call, project, standing, argument, seenArgument, earlier, askedBefore, onAnswer, onReply, onReadArgument, onOpenPage, onDraft }: {
+  call: Call;
+  project: string | null;
+  standing: CallStanding;
+  argument?: Evidence;
+  seenArgument: boolean | null;
+  earlier: EarlierWords | null;
+  askedBefore: boolean;
+  onAnswer: (option: OptionChoice, note?: string) => Promise<boolean>;
+  onReply: (words: string) => Promise<CallReplied>;
+  onReadArgument?: () => void;
+  onOpenPage?: () => void;
+  onDraft: (text: string) => void;
+}) {
+  const form = useCallAnswer(call, onAnswer, onReply);
+  // A reply with the first mate folds the form under Answer differently, so a second answer is never given by accident.
+  const [answering, setAnswering] = useState(false);
+  const reply = replyOf(call);
+  const heading = project ? withinProject(call.title, project) : call.title;
+  const raised = call.raised_at ? formatWhen(call.raised_at) : null;
+  // Something written here that never went, when the call is answered somewhere else: kept, and never sent from here.
+  const unsent = standing.kind !== "open" && form.draft
+    ? <div className="call-chat-note" data-testid="call-unsent"><Info size={15} /><span><strong>What you were writing here was not sent</strong>“{form.draft}”</span><button onClick={() => { onDraft(form.draft); form.clear(); }}>Put it in the composer</button></div>
+    : null;
+
+  if (standing.kind !== "open") {
+    const pick = standing.kind === "recorded" ? call.options.find((option) => option.label === standing.label)?.key ?? call.answer?.key ?? null : null;
+    const day = standing.kind === "held" && earlier ? notNowDay(earlier.words) : null;
+    const line = standing.kind === "recorded"
+      ? <><CircleCheck size={15} className="tone-green" /><span className="grow"><strong>{heading}</strong> · you chose <strong>{standing.label}</strong></span><span className="call-pill tone-green">recorded</span></>
+      : standing.kind === "in-review"
+        ? <><CircleCheck size={15} className="tone-green" /><span className="grow"><strong>{heading}</strong> · answered in your review of <strong>{standing.page}</strong></span>{onOpenPage && <button onClick={onOpenPage}>Open the page</button>}</>
+        : standing.kind === "held"
+          ? <><CirclePause size={15} className="tone-amber" /><span className="grow"><strong>{heading}</strong> · not now{day ? `, ask again ${day}` : ", held"}</span><span className="call-pill tone-amber">held</span></>
+          : <><CircleSlash size={15} className="tone-muted" /><span className="grow"><strong>{heading}</strong> · closed without an answer from you</span><span className="call-pill">closed</span></>;
+    return <article className={`call-chat-card done standing-${standing.kind}`} data-testid="call-card" data-call-id={call.id} data-standing={standing.kind}>
+      <div className="call-chat-line">{line}</div>
+      {call.options.length > 0 && <details className="call-chat-options">
+        <summary>The question and all {countWord(call.options.length, "option")}</summary>
+        {call.question && <p>{call.question}</p>}
+        <ul>{call.options.map((option) => <li key={option.key} className={option.key === pick ? "picked" : ""}>{option.key === pick && <Check size={13} />}{option.label}</li>)}</ul>
+      </details>}
+      {unsent}
+    </article>;
+  }
+
+  const argued = argument && onReadArgument ? argument : null;
+  const folded = reply !== null && !answering;
+  const updated = optionsUpdatedSince(call, call.raised_at ?? "");
+  const kicker = [project, raised && `raised ${raised}`, askedBefore && "asked before", earlier && !reply && notNowDay(earlier.words) && "your day has come"].filter(Boolean).join(" · ");
+  return <article className={`call-chat-card${reply ? " replied" : ""}`} data-testid="call-card" data-call-id={call.id} data-standing={reply ? "replied" : "open"}>
+    <div className="call-chat-kicker">Captain's call{kicker && <span>{kicker}</span>}</div>
+    <h4>{heading}</h4>
+    {questionBeyondTitle(call) && <p className="call-chat-question">{call.question}</p>}
+    {argued && <p className="call-argued" data-testid="argued-by">Argued by <strong>{argued.title}</strong></p>}
+    {argued && seenArgument === false && !folded && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argued.title}” yet.</p>}
+    {(updated || form.withdrawn) && <div className="call-chat-note warn" data-testid="options-changed"><CircleAlert size={15} /><span>
+      {updated && <strong>The options changed{call.updated_at ? ` at ${formatWhen(call.updated_at)}` : ""}, after the first mate wrote about this above.</strong>}
+      {updated && "These are the current ones. "}{form.withdrawn && <>“{form.withdrawn}”, which you had picked, is no longer offered. Pick again.</>}
+    </span></div>}
+    {earlier && !reply && <div className="call-chat-note" data-testid="said-before"><Info size={15} /><span>{earlier.at ? `On ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(earlier.at))} you said` : "You said"}: {earlier.words}</span></div>}
+    {standing.failed && <NotRecorded note={{ ...standing.failed, told: false, unread: false }} />}
+    {reply && <ReplyState reply={reply} page={argued?.kind === "page" ? argued.title : undefined} />}
+    {form.refused && <ReplyRefused problem={form.refused} />}
+    {!folded && form.fields("chips")}
+    <div className="call-chat-actions">
+      <span data-testid="call-hint">{folded ? optionSummary(call) : form.hint}</span>
+      <div>
+        {argued && <button className="quiet" onClick={onReadArgument}>Read the argument</button>}
+        {folded ? <button onClick={() => setAnswering(true)}>Answer differently</button> : form.button}
+      </div>
+    </div>
+  </article>;
+}
+
+/**
+ * One of the captain's answers to a call, drawn where he gave it instead of the text written for the first mate: the
+ * call, what he chose and anything he added, or his words, and how far it has got, which only the call record can
+ * say. A reply nothing has recorded is never shown as settled. The text the first mate got stays one click away.
+ */
+function AnswerChatCard({ message, answer, call, outbox, running, from }: {
+  message: ChatMessage;
+  answer: MessageAnswer;
+  /** The call as the snapshot holds it now; absent once it has left the snapshot. */
+  call?: Call;
+  outbox?: OutboxView;
+  running: boolean;
+  /** Where he answered, when this session knows. */
+  from: "chat" | "bearings" | null;
+}) {
+  const title = call?.title ?? answer.call;
+  const { status } = delivery(message, outbox, running);
+  const read = status?.startsWith("Read by") ? `read by the first mate ${status.slice("Read by ".length)}` : status;
+  const sent = <details className="review-card-text"><summary>What the first mate was sent</summary><pre>{message.text}</pre></details>;
+  // Asked again since: a closed call is never reopened, so an answered call open again is a new lifecycle.
+  // A resumed message has no time of its own, but an answer on the record that finds its call open again was asked anew.
+  const askedAgain = call !== undefined && (Date.parse(call.raised_at ?? "") > latestTime(message) || (message.past === true && answer.kind === "recorded" && call.state === "open"));
+  if (answer.kind === "recorded" && !call) {
+    // Gone from the snapshot, so all that is known is the app's own line, which is enough for one.
+    return <article className="answer-chat-card line" data-testid="answer-card" data-kind="recorded" data-call-id={answer.call}>
+      <CircleCheck size={15} className="tone-green" /><span className="grow">Your call · <strong>{answer.call}</strong> · {answer.label}</span><span className="call-pill">closed</span>
+    </article>;
+  }
+  // A reply stands while the call still carries it; only a record, or the first mate asking again, moves it on.
+  const standing = answer.kind === "recorded"
+    ? { tone: "green", text: askedAgain ? "Recorded" : `Recorded${read ? ` · ${read}` : ""}` }
+    : !call
+      ? { tone: "muted", text: "The call has closed" }
+      : call.state !== "open"
+        ? call.answer?.by === "captain" ? { tone: "green", text: `Recorded: ${call.answer.label}` } : { tone: "muted", text: "The call has closed" }
+        : replyOf(call)?.words === answer.words
+          ? { tone: "amber", text: "With the first mate · not recorded yet" }
+          : call.captain_actionable === false
+            ? { tone: "amber", text: "Held: not now" }
+            : { tone: "muted", text: "Not recorded · the first mate asked again" };
+  const kicker = answer.kind === "recorded" ? `Your answer${from === "chat" ? " · in chat" : from === "bearings" ? " · from Bearings" : ""}` : "Your answer · in words";
+  return <article className={`answer-chat-card tone-${standing.tone}`} data-testid="answer-card" data-kind={answer.kind} data-call-id={answer.call} data-standing={standing.tone}>
+    <span className="answer-chat-kicker">{kicker}</span>
+    <strong className="answer-chat-title">{title}</strong>
+    <div className="answer-chat-said">{answer.kind === "recorded" ? <Check size={14} /> : <Ellipsis size={14} />}<span>{answer.kind === "recorded" ? answer.label : answer.words}</span></div>
+    {answer.kind === "recorded" && answer.note && <p className="answer-chat-added">{answer.note}</p>}
+    <footer className="message-state">
+      <time className={`tone-${standing.tone}`}>{standing.text}</time>
+      {!status && !message.past && <time>{formatTime(message.createdAt)}</time>}
+      {askedAgain && <span className="answer-chat-again" data-testid="asked-again">Asked again ↓</span>}
+    </footer>
+    {sent}
   </article>;
 }
 
