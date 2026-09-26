@@ -47,12 +47,12 @@ import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, argumentOf, awaitsCaptain, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, replyOf, resolveEvidence } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import { askedHow, askWantsReading, BUSY, judgeDetail, launchedAt, lighterReason, MODE_CHOICES, modeLine, postureHint, type StartInputs, type StartPhase, startPhase, wantsFreshReading, wantsReadingAfterTurn } from "./start";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
@@ -71,7 +71,6 @@ import { Usage } from "./UsagePanel";
 type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
 /** Which page the review screen shows: the artifact, and the revision picked (the latest when none is). */
 type OpenArtifact = ArtifactRef & { rev?: number };
-type CallState = OutboxView | undefined;
 
 const host = createHostAdapter();
 
@@ -144,7 +143,6 @@ export function App() {
   // Read it back rather than keeping a second default here, which could disagree with the markup.
   const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   const [ahoyVisible, setAhoyVisible] = useState(true);
-  const [callMessageIds, setCallMessageIds] = useState<Record<string, string>>({});
   const [chatDraft, setChatDraft] = useState("");
   /** Files picked for the message being written, copied into the home only as it is sent, and what could not be attached, in the host's words. */
   const [chatFiles, setChatFiles] = useState<PickedFile[]>([]);
@@ -183,28 +181,8 @@ export function App() {
   const { calls } = useMemo(() => homeCalls(fleet, bearings, records), [fleet, bearings, records]);
   const waiting = useMemo(() => openCalls(calls), [calls]);
 
-  // Which message answered which call. The link this session made is authoritative; after a relaunch
-  // the app has none, so a message still in the host's outbox is matched by the call it names.
-  const callAnswers = useMemo(() => {
-    const found: Record<string, string> = {};
-    for (const message of messages) {
-      // Only an answer still on its way is matched. A read one is already the first mate's business, so a
-      // launch that finds nothing waiting asks rather than showing an answer that has been dealt with.
-      if (message.who !== "captain" || !outbox[message.id] || outbox[message.id].status === "picked_up") continue;
-      const call = waiting.find((item) => answersCall(message.text, item));
-      if (call) found[call.id] = message.id;
-    }
-    return { ...found, ...callMessageIds };
-  }, [messages, outbox, waiting, callMessageIds]);
-
-  // A match made here is kept for the rest of the session. Without this the card would drop the answer the
-  // moment the first mate read it and ask its question again, in front of the captain who had just answered.
-  useEffect(() => {
-    setCallMessageIds((current) => {
-      const matched = Object.entries(callAnswers).filter(([call, message]) => current[call] !== message);
-      return matched.length ? { ...current, ...Object.fromEntries(matched) } : current;
-    });
-  }, [callAnswers]);
+  // Waiting on the captain's word: an open call he has not replied to. A reply is the first mate's move.
+  const awaiting = useMemo(() => waiting.filter(awaitsCaptain), [waiting]);
 
   const artifacts = useMemo(() => fleet?.artifacts ?? [], [fleet]);
   // Which pages have been looked at, and what is still waiting, for the list. Re-read whenever a review changes.
@@ -303,6 +281,7 @@ export function App() {
     return { chips: <SourceChips views={views} now={now} />, sections: <UpstreamSections record={record} views={views} now={now} firstMilestone={sourcesRead.firstMilestone} /> };
   }
   const waitingIn = (name: string) => waiting.filter((call) => callProject(call, records) === name);
+  const awaitingIn = (name: string) => awaiting.filter((call) => callProject(call, records) === name);
   // What a project has underway, the same wherever it is counted: a finished scout waiting to be read is not.
   const underwayIn = (project: ProjectSummary) => project.tasks.filter((task) => !readyIds.has(task.id) && records.get(task.id)?.state !== "done");
   // A call opened from a project page is shown on its card on Bearings, where it is answered.
@@ -342,8 +321,8 @@ export function App() {
     : view === "artifacts" ? "Artifacts"
     : view === "artifact" ? shownRevision?.title ?? "Artifact"
     : selectedProject ?? "Project";
-  // Everything waiting on the captain: open calls, and finished reports nobody has closed.
-  const openCallCount = waiting.length + readyReports.length;
+  // Everything waiting on the captain: open calls he has not replied to, and finished reports nobody has closed.
+  const openCallCount = awaiting.length + readyReports.length;
   const shownCalls = shownArtifact ? callsArguedBy(calls, shownArtifact).filter(isOpen) : [];
   const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture
     : view === "chat" ? "You and the first mate"
@@ -523,10 +502,20 @@ export function App() {
     void bridge.send("/ahoy");
   }
 
-  async function answerCall(id: string, text: string) {
-    const previous = callAnswers[id];
-    const messageId = previous ? await bridge.resend(previous, text) : await bridge.send(text);
-    setCallMessageIds((current) => ({ ...current, [id]: messageId }));
+  /**
+   * Replies to a call from Bearings in the captain's words: firstmate keeps them on the call, and only then is the
+   * first mate told. The card draws what happened from the snapshot, read again at once, never from this answer.
+   */
+  async function replyToCall(call: Call, words: string): Promise<CallReplied> {
+    let result: CallReplied;
+    try {
+      result = await host.callReply(call.id, words);
+    } catch (error) {
+      result = { kept: false, problem: String(error), message: null, text: null };
+    }
+    if (result.message && result.text) bridge.noteSent(result.message, result.text);
+    if (result.kept) void bridge.refreshSnapshot();
+    return result;
   }
 
   /**
@@ -591,7 +580,7 @@ export function App() {
         {projects.length > 0 && <div className="sidebar-label">Projects</div>}
         <div className="project-shortcuts">
           {projects.map((project) => {
-            const waitingHere = waitingIn(project.name).length;
+            const waitingHere = awaitingIn(project.name).length;
             const underwayHere = underwayIn(project).length;
             return <button key={project.name} className={view === "project" && selectedProject === project.name ? "selected" : ""} onClick={() => openProject(project.name)}>
               <span className="project-sigil">{project.name.slice(0, 2).toUpperCase()}</span>
@@ -656,12 +645,8 @@ export function App() {
                   seenArgument={seen}
                   answered={answered[call.id]}
                   answeredIn={answeredIn?.title}
-                  state={outbox[callAnswers[call.id]]}
-                  answerText={messages.find((message) => message.id === callAnswers[call.id])?.text}
-                  runtime={runtime.state}
-                  onSend={(text) => answerCall(call.id, text)}
+                  onReply={(words) => replyToCall(call, words)}
                   onAnswer={(option, note) => answerNow(call, option, note)}
-                  onStart={() => void bridge.start()}
                   onReadArgument={argument ? () => openEvidence(argument) : undefined}
                   onOpenPage={answeredIn ? () => showArtifact(answeredIn) : argument?.kind === "page" ? () => showArtifact(argument.artifact) : undefined}
                 />;
@@ -669,7 +654,7 @@ export function App() {
               {readyReports.map(({ task, page, report }) => (
                 <ReportCard key={task.id} title={taskTitle(task.id)} project={projectName(task.project)} id={task.id} finished={finishedLine(task)} page={page} report={report} onOpen={page ? () => showArtifact(page) : undefined} onAsk={() => draftInChat(askAboutReport(taskTitle(task.id)))} onDetails={() => setActiveTask(task)} />
               ))}
-              {openCallCount === 0 && <EmptyState label="Nothing needs your action right now." />}
+              {waiting.length + readyReports.length === 0 && <EmptyState label="Nothing needs your action right now." />}
             </DashboardSection>
 
             <DashboardSection title="Underway" tone="blue" count={underway.length} countLabel={underway.length === 1 ? "worker" : "workers"}>
@@ -714,7 +699,7 @@ export function App() {
         )}
 
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
-        {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => waitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
+        {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
           now={now}
@@ -1175,16 +1160,6 @@ function LandedRow({ row, onOpenPage, onAsk, onBasis }: { row: LandedItem; onOpe
   </div>;
 }
 
-/** How an answer names its call, which is what lets a waiting answer find its card again after a relaunch. */
-function callName(call: Call) {
-  return call.id.replaceAll("-", " ");
-}
-
-/** Whether a message the captain sent is an answer to this call: the app wrote it itself. */
-function answersCall(text: string, call: Call) {
-  return text.trim().toLowerCase().startsWith(`on the ${callName(call).toLowerCase()}:`);
-}
-
 /** What firstmate's intake did with an answer given from Bearings, kept on the card until the call leaves the list. */
 type AnswerNote = { label: string; result: IntakeResult; detail: string; told: boolean; warning?: string; unread: boolean };
 
@@ -1255,13 +1230,37 @@ function CallAnswerFields({ call, layout, picked, deferring, deferDate, note, ad
   </div>;
 }
 
+/** What the captain said on a call, and when: a reply kept on it, said the same way on every surface. */
+function replyWhen(reply: Pick<CallReply, "at">) {
+  const at = Date.parse(reply.at);
+  return Number.isNaN(at) ? reply.at : formatWhen(reply.at);
+}
+
+/**
+ * A reply of the captain's on a call that nothing has recorded yet, read from the snapshot: amber, with his words and
+ * when, until the first mate records an answer or asks again. "Read" is never "answered": only a record is.
+ */
+function ReplyState({ reply, page }: { reply: CallReply; page?: string }) {
+  const where = reply.via === "review" ? (page ? ` in your review of “${page}”` : " in a review") : "";
+  const told = reply.message
+    ? "Kept on the call. The first mate records your answer, or asks you again."
+    : "Kept on the call. The first mate was not told, and sees it on the call when it starts.";
+  return <>
+    <div className="call-state tone-amber" data-testid="call-replied" data-told={reply.message ? "true" : "false"}><Clock3 size={16} /><span><strong>With the first mate · not recorded yet</strong><small>{told}</small></span></div>
+    <blockquote className="call-said" data-testid="call-said">You said{where}, {replyWhen(reply)}: {reply.words}</blockquote>
+    {reply.previous && <blockquote className="call-said earlier" data-testid="call-said-before">Before that, {replyWhen(reply.previous)}: {reply.previous.words}</blockquote>}
+  </>;
+}
+
 /**
  * One call waiting on the captain, as one card whether or not something argues it, answered the same ways either
  * way. A call something argues leads with reading that argument and keeps its answer folded under Answer now; a call
  * nothing argues has only the answer to offer, so it is open. An answer with a key goes through firstmate's intake
- * and the card says what it did; anything else is words to the first mate, tracked like any message.
+ * and the card says what it did. Anything else - words, a dated not now, an option the call cannot take by key - is
+ * the captain's reply: firstmate keeps it on the call, and the card shows it amber, from the snapshot, until the
+ * first mate records it or asks again. A replied card still takes an answer, so nothing he said locks the call.
  */
-function DecisionCard({ call, project, now, argument, seenArgument, answered, answeredIn, state, answerText, runtime, onSend, onAnswer, onStart, onReadArgument, onOpenPage }: {
+function DecisionCard({ call, project, now, argument, seenArgument, answered, answeredIn, onReply, onAnswer, onReadArgument, onOpenPage }: {
   call: Call;
   project: string | null;
   now: number;
@@ -1270,12 +1269,8 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
   seenArgument: boolean | null;
   answered?: AnswerNote;
   answeredIn?: string;
-  state: CallState;
-  answerText?: string;
-  runtime: HostRuntimeState;
-  onSend: (text: string) => void;
+  onReply: (words: string) => Promise<CallReplied>;
   onAnswer: (option: OptionChoice, note?: string) => Promise<void>;
-  onStart: () => void;
   onReadArgument?: () => void;
   onOpenPage?: () => void;
 }) {
@@ -1286,10 +1281,13 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
   // Only an argued call folds its answer away, so the argument is read first.
   const [answering, setAnswering] = useState(false);
   const [recording, setRecording] = useState<string | null>(null);
+  const [replying, setReplying] = useState(false);
+  /** Why firstmate would not keep the last reply; the words stay in the field, and nothing was sent. */
+  const [refused, setRefused] = useState<string | null>(null);
   // Options with a key go through the intake; that needs the call to say how an answer closes it.
   const keyed = call.options.length > 0 && Boolean(call.on_answer);
-  const name = callName(call);
   const failed = answered && answered.result !== "closed" ? answered : undefined;
+  const reply = replyOf(call);
   const meta = <CallMeta call={call} project={project} now={now} />;
   // The meta line already names the project, so the title does not say it again.
   const heading = project ? withinProject(call.title, project) : call.title;
@@ -1303,39 +1301,33 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
     }
   }
 
+  async function send(words: string) {
+    setReplying(true);
+    try {
+      const result = await onReply(words);
+      if (!result.kept) {
+        setRefused(result.problem ?? "firstmate gave no reason");
+        return;
+      }
+      // Kept: the snapshot shows it now, so the fields start empty for whatever comes next.
+      setRefused(null);
+      setSelection(null);
+      setNote("");
+      setDateOpen(false);
+      setDeferDate("");
+      setAnswering(false);
+    } finally {
+      setReplying(false);
+    }
+  }
+
   // Not now says nothing until it has a day to be asked again on.
   const words = dateOpen
     ? deferDate ? answerInWords(deferDate, note) : ""
     : [selection && !keyed ? selection.label : "", note.trim()].filter(Boolean).join(". ");
   const recordPick = keyed && selection && !dateOpen ? selection : null;
-  const preview = words && !recordPick ? `On the ${name}: ${words.replace(/[.]*$/, ".")}` : "…";
+  const said = words && !recordPick ? words : "";
 
-  if (state) {
-    const read = state.status === "picked_up";
-    const reSent = state.resentAfterRestart;
-    const title = state.errorKind === "not_sent"
-      ? "Not sent"
-      : state.errorKind === "failed"
-        ? "Your answer didn't go through."
-      : read
-        ? `Answered · the first mate read it by ${formatTime(state.readAt ?? new Date().toISOString())}`
-        : reSent
-          ? "Re-sent after a restart"
-          : "Queued";
-    const detail = reSent && !read
-      ? "The first mate may see this answer twice"
-      : runtime === "dead"
-        ? "The first mate will read this when it starts"
-        : runtime === "locked_by_other"
-          ? "This goes when the first mate runs in this app"
-          : "The first mate will read this when it finishes what it's doing";
-    // Read, still on its way, and didn't go through are three different facts, so they never share a look.
-    const tone: Tone = state.error ? "coral" : read ? "green" : "amber";
-    const icon = state.error ? <CircleAlert size={16} /> : read ? <Check size={16} /> : <Clock3 size={16} />;
-    // After a relaunch the card is fresh, so what the captain chose lives in the message, not in this card's state.
-    const resendText = preview === "…" ? answerText : preview;
-    return <article className={`decision-card ${read ? "read" : "queued"} call-tone-${tone}`} data-call-id={call.id}><div className="decision-body">{meta}<h3>{heading}</h3>{answerText && <p className="call-answer" title={answerText}>{answerText}</p>}<div className={`call-state tone-${tone}`}>{icon}<span><strong>{title}</strong>{state.error ? <small>{state.error}</small> : !read && <small>{detail}</small>}</span>{state.error && !state.resent && resendText ? <button onClick={() => onSend(resendText)}>Send again</button> : !read && !state.error && runtime === "dead" ? <button onClick={onStart}>Start the first mate</button> : null}</div></div></article>;
-  }
   if (answered?.result === "closed") {
     // Recorded by firstmate itself; the card goes once the snapshot has the call closed.
     const told = answered.told ? "The first mate has been told, and does the follow-up." : answered.warning ?? "The first mate was not told. Tell it in chat so it does the follow-up.";
@@ -1347,16 +1339,21 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
   }
   const argued = argument && onReadArgument ? argument : null;
   const folded = argued !== null && !answering;
-  const buttonLabel = recordPick ? (recording ? "Recording…" : "Record answer") : "Send";
-  const hint = recordPick ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}` : preview !== "…" ? `→ sends: ${preview}` : dateOpen ? "Pick the day to be asked again" : "";
-  const submit = <button disabled={recording !== null || (!recordPick && preview === "…")} onClick={() => recordPick ? void record(recordPick, note.trim() || undefined) : onSend(preview)}>{buttonLabel}</button>;
-  return <article className="decision-card" data-call-id={call.id} data-argued={argued ? "true" : undefined} data-inline={argued ? undefined : "true"}>
+  const busy = recording !== null || replying;
+  const buttonLabel = recordPick ? (recording ? "Recording…" : "Record answer") : replying ? "Sending…" : "Send";
+  const hint = recordPick
+    ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}`
+    : said ? `→ keeps your words on the call for the first mate: ${said}` : dateOpen ? "Pick the day to be asked again" : "";
+  const submit = <button disabled={busy || (!recordPick && !said)} onClick={() => recordPick ? void record(recordPick, note.trim() || undefined) : void send(said)}>{buttonLabel}</button>;
+  return <article className={`decision-card${reply ? " replied call-tone-amber" : ""}`} data-call-id={call.id} data-argued={argued ? "true" : undefined} data-inline={argued ? undefined : "true"} data-replied={reply ? "true" : undefined}>
     <div className="decision-body">
       {meta}
       <h3 data-testid="decision-title">{heading}</h3>
       {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
       {argued && <p className="call-argued" data-testid="argued-by">Argued by <strong>{argued.title}</strong></p>}
+      {reply && <ReplyState reply={reply} page={argued?.kind === "page" ? argued.title : undefined} />}
       {failed && <NotRecorded note={failed} />}
+      {refused && <div className="call-state tone-coral call-not-kept" role="alert" data-testid="reply-refused"><CircleAlert size={16} /><span><strong>Not sent: your reply could not be kept on the call</strong><small>{refused}</small></span></div>}
       {!folded && <>
         {argued && seenArgument === false && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argued.title}” yet.</p>}
         <CallAnswerFields
@@ -1367,7 +1364,7 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
           deferDate={deferDate}
           note={note}
           adding={recordPick !== null || dateOpen}
-          disabled={recording !== null}
+          disabled={busy}
           onPick={(option) => { setSelection(option); setDateOpen(false); setDeferDate(""); }}
           onDefer={() => { setDateOpen(true); setSelection(null); }}
           onDate={setDeferDate}
@@ -1376,7 +1373,7 @@ function DecisionCard({ call, project, now, argument, seenArgument, answered, an
       </>}
     </div>
     <div className="decision-actions">
-      <span>{folded ? optionSummary(call) : hint}</span>
+      <span>{folded ? (reply ? "Your reply is with the first mate" : optionSummary(call)) : hint}</span>
       {argued
         ? <div className="report-actions">
             <button className="quiet" aria-expanded={answering} onClick={() => setAnswering((open) => !open)}>Answer now</button>
@@ -1512,7 +1509,8 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
   onOpenEntry: (entry: LogEntry) => void;
   onOpenQueued: (record: BacklogRecord) => void;
 }) {
-  const needs = waiting.length + reports.length;
+  // A call the captain has replied to is listed, amber, but it is the first mate's move, so it is not counted.
+  const needs = waiting.filter(awaitsCaptain).length + reports.length;
   const title = (text: string) => withinProject(text, project.name);
   // The snapshot's calls are the newer read of a call the history also lists.
   const allCalls = useMemo(() => {
@@ -1533,11 +1531,13 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
       <div className="project-stat" data-testid="stat-landed" title="Shipped work and reports that closed in the last 30 days"><span>Landed, 30d</span><strong className={landed.count ? "tone-green" : ""}>{landed.count}{landed.floor ? "+" : ""}</strong></div>
     </section>
 
-    {needs > 0 && <DashboardSection title="Needs you" tone="coral" count={needs}>
+    {waiting.length + reports.length > 0 && <DashboardSection title="Needs you" tone="coral" count={needs}>
       <div className="task-list needs-list" data-testid="project-needs">
         {waiting.map((call) => {
           const pick = recommended(call);
           const raised = call.raised_at ? Date.parse(call.raised_at) : NaN;
+          const reply = replyOf(call);
+          if (reply) return <button className="task-row wide" key={call.id} data-call={call.id} data-replied="true" onClick={() => onOpenCall(call.id)}><span className="task-state tone-amber"><Clock3 size={16} /></span><span className="task-copy"><strong>{title(call.title)}</strong><small>You replied {replyWhen(reply)} · not recorded yet</small></span><span className="task-chip tone-amber">With the first mate</span></button>;
           return <button className="task-row wide" key={call.id} data-call={call.id} onClick={() => onOpenCall(call.id)}><span className="task-state tone-coral"><ShieldQuestion size={16} /></span><span className="task-copy"><strong>{title(call.title)}</strong><small>{[pick ? `Recommended: ${pick.label}` : call.question ?? "The first mate needs your answer.", !Number.isNaN(raised) && `held ${heldFor(now - raised)}`].filter(Boolean).join(" · ")}</small></span><span className="task-chip answer-chip">Answer</span></button>;
         })}
         {reports.map((item) => <button className="task-row wide" key={item.task.id} onClick={() => onOpenReport(item)}><span className="task-state tone-blue"><FileText size={16} /></span><span className="task-copy"><strong>{title(taskTitle(item.task.id))}</strong><small>{item.page ? "The report is ready to read." : "The report is written, without a page."}</small></span><span className="task-chip answer-chip">Read</span></button>)}
@@ -2313,7 +2313,7 @@ export function artifactStanding(artifact: Artifact, review: ReviewSummary[strin
   if (review && review.draft_count > 0) return "needs-you";
   const comments = openComments(artifact, review);
   const argued = callsArguedBy(calls, artifact);
-  // A call this page argues: yours until you answer it, then firstmate's until its records catch up.
+  // A call this page argues: yours until you answer or reply to it, then firstmate's until it records or asks again.
   const waiting = argued.filter(isOpen);
   // A chat page that argued calls exists for them, so once every one is closed it has done its work,
   // read or not, unless a comment on it is still going back and forth.
@@ -2321,7 +2321,8 @@ export function artifactStanding(artifact: Artifact, review: ReviewSummary[strin
   const seen = review?.seen_rev ?? null;
   if (seen === null || artifact.latest.rev > seen) return "needs-you";
   const answered = review?.answered ?? [];
-  if (waiting.some((call) => !answered.includes(call.id))) return "needs-you";
+  // A call the captain has replied to waits on the first mate, like one his review recorded an answer for.
+  if (waiting.some((call) => awaitsCaptain(call) && !answered.includes(call.id))) return "needs-you";
   // The author answered a comment: settling it or replying is the captain's move.
   if (comments.answered.length > 0) return "needs-you";
   if (waiting.length > 0) return "discussion";
@@ -2983,7 +2984,12 @@ function RailCall({ call, revision, chosen, before, onAnswer, onPending }: {
   const worded = chosen !== undefined && chosen.option === null;
   const said = chosen && (chosen.note || chosen.defer) ? answerInWords(chosen.defer, chosen.note ?? "") : "";
   const saidThen = then ? [then.label, answerInWords(then.defer, then.note ?? "")].filter(Boolean).join(". ") : "";
-  return <section className="decision-answer" data-testid="decision-answer" data-call-id={call.id}>
+  // What the captain said that nothing has recorded: the reply firstmate keeps on the call, the same one Bearings shows.
+  const reply = replyOf(call);
+  const earlierWords = reply
+    ? `You said${reply.via === "review" ? " in your review" : reply.via === "quarterdeck" ? " in Bearings" : ""}, ${replyWhen(reply)}: ${reply.words}`
+    : then && saidThen ? `You said in your review, ${when(then.sent_at!)}: ${saidThen}` : "";
+  return <section className="decision-answer" data-testid="decision-answer" data-call-id={call.id} data-replied={reply ? "true" : undefined}>
     <header><span>Your call</span><small>{call.id}</small></header>
     {call.question && <p>{call.question}</p>}
     {updated && <small className="decision-updated" data-testid="options-updated">Options updated since rev {revision.rev}</small>}
@@ -2995,7 +3001,7 @@ function RailCall({ call, revision, chosen, before, onAnswer, onPending }: {
             {said && <blockquote className="decision-words" data-testid="answer-words">{worded ? said : `You added: ${said}`}</blockquote>}
           </>
         : <>
-            {then && saidThen && <blockquote className="decision-words" data-testid="answer-earlier">You said in your review, {when(then.sent_at!)}: {saidThen}</blockquote>}
+            {earlierWords && <blockquote className="decision-words" data-testid="answer-earlier">{earlierWords}</blockquote>}
             {call.options.length === 0 && <small className="decision-missing" data-testid="options-missing">This page argues a call whose options are not recorded, so answer it in words.</small>}
             <CallAnswerFields
               call={call}
@@ -3020,6 +3026,8 @@ function RailCall({ call, revision, chosen, before, onAnswer, onPending }: {
           ? <small className="decision-sent">Sent {when(chosen!.sent_at!)}{worded ? ", for the first mate to record" : ""}</small>
           : current
             ? <small className="decision-staged">{worded ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
+            : reply
+              ? <small className="decision-replied" data-testid="call-replied">With the first mate · not recorded yet</small>
             : deferring && !deferDate
               ? <small className="decision-staged pending">Pick the day to be asked again</small>
               : null)}

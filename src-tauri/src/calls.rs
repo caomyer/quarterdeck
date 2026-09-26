@@ -1,4 +1,5 @@
-//! Recording the captain's answers through firstmate's own intake.
+//! Recording the captain's answers through firstmate's own intake, and
+//! keeping his words on a call through its `reply` when they record nothing.
 //!
 //! firstmate owns every call: `bin/fm-captain-hold.sh` is the only writer of
 //! anything about one, and `answers` is its one way in for an answer. The app
@@ -205,6 +206,107 @@ async fn run(home: &Path, answers: &[Keyed]) -> Vec<Outcome> {
     parse(answers, &stdout, failure.as_deref())
 }
 
+/// How the captain's words reached a call: a Bearings card, or a page's review.
+pub const REPLY_VIA: [&str; 2] = ["quarterdeck", "review"];
+
+/// Longest reply firstmate keeps on a call, in bytes.
+const REPLY_LIMIT: usize = 8192;
+
+/// A words file of the app's own for one run of `reply`, readable only by the
+/// captain and gone once the run is over, whatever happens to it.
+struct WordsFile(std::path::PathBuf);
+
+impl WordsFile {
+    fn write(words: &str) -> Result<Self, String> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("quarterdeck-reply-{}-{n}.txt", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("the app could not stage your words: {e}"))?;
+        let kept = WordsFile(path);
+        file.write_all(words.as_bytes()).map_err(|e| format!("the app could not stage your words: {e}"))?;
+        Ok(kept)
+    }
+}
+
+impl Drop for WordsFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Keeps the captain's words on a call through firstmate's own `reply`, which
+/// records that the captain replied and never what he decided:
+///
+/// ```text
+/// bin/fm-captain-hold.sh reply <call> --words-file <path> --via quarterdeck|review [--message <id>]
+/// ```
+///
+/// Kept only when it says `replied:` or `unchanged:`; anything else is firstmate
+/// refusing or failing, and the reason is its own one line, without its name.
+/// Naming the message later, with the same words, fills it in on the reply.
+pub async fn reply(home: &Path, call: &str, words: &str, via: &str, message: Option<&str>) -> Result<(), String> {
+    if !crate::artifact::valid_task_id(call) {
+        return Err("that is not a call".to_string());
+    }
+    if words.trim().is_empty() {
+        return Err("there are no words to keep".to_string());
+    }
+    if words.len() > REPLY_LIMIT {
+        return Err(format!("your words are longer than the {REPLY_LIMIT} bytes firstmate keeps on a call"));
+    }
+    if !REPLY_VIA.contains(&via) {
+        return Err(format!("'{via}' is not a way a reply reaches a call"));
+    }
+    let script = home.join("bin").join("fm-captain-hold.sh");
+    if !script.is_file() {
+        return Err("this home's firstmate has no bin/fm-captain-hold.sh".to_string());
+    }
+    let file = WordsFile::write(words)?;
+    let mut command = envpath::command(&script);
+    command.arg("reply").arg(call).arg("--words-file").arg(&file.0).args(["--via", via]);
+    if let Some(message) = message {
+        command.args(["--message", message]);
+    }
+    let child = command
+        .env("FM_HOME", home)
+        .current_dir(home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("could not run bin/fm-captain-hold.sh: {e}"))?;
+    let output = match tokio::time::timeout(INTAKE_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("bin/fm-captain-hold.sh could not be read: {e}")),
+        Err(_) => return Err(format!("bin/fm-captain-hold.sh did not finish within {}s", INTAKE_TIMEOUT.as_secs())),
+    };
+    drop(file);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let kept = stdout.lines().any(|line| {
+        let line = line.trim();
+        [format!("replied: {call}"), format!("unchanged: {call}")].iter().any(|said| line == said)
+    });
+    if output.status.success() && kept {
+        return Ok(());
+    }
+    // An older firstmate prints its usage for a command it does not have.
+    if output.status.code() == Some(2) {
+        return Err("this home's firstmate is older than replies on a call; update firstmate, or answer in chat".to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or_default();
+    let reason = reason.strip_prefix("fm-captain-hold: ").unwrap_or(reason);
+    Err(if reason.is_empty() { format!("firstmate did not keep it ({})", output.status) } else { reason.to_string() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +402,65 @@ mod tests {
         assert!(matches!(&outcomes[2], Outcome::NotRecorded(_)), "{outcomes:?}");
         // Only what it could take was fed to it.
         assert_eq!(std::fs::read_to_string(home.join("stdin")).unwrap(), "res-b\ty\tY\tdone\n");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A home whose `reply` records how it was run, keeps the words it was given, prints `says` and exits `exit`.
+    fn home_with_reply(name: &str, says: &str, stderr: &str, exit: i32) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("fm-calls-reply-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        let script = home.join("bin/fm-captain-hold.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FM_HOME/args\"\ncp \"$4\" \"$FM_HOME/words\"\nls -l \"$4\" > \"$FM_HOME/mode\"\ncat <<'EOF'\n{says}\nEOF\nprintf '%s\\n' '{stderr}' >&2\nexit {exit}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        home
+    }
+
+    #[tokio::test]
+    async fn a_reply_is_kept_through_firstmates_own_reply() {
+        let home = home_with_reply("kept", "replied: qd-start-work-1", "", 0);
+        let words = "it doesn't make sense that screenshots cannot be attached, right?\nthey could last week.";
+        reply(&home, "qd-start-work-1", words, "quarterdeck", None).await.expect("kept");
+        let read = |name: &str| std::fs::read_to_string(home.join(name)).unwrap();
+        let args: Vec<String> = read("args").lines().map(str::to_string).collect();
+        assert_eq!(args[0], "reply");
+        assert_eq!(args[1], "qd-start-work-1");
+        assert_eq!(args[2], "--words-file");
+        assert_eq!(&args[4..], ["--via", "quarterdeck"]);
+        assert_eq!(read("words"), words, "the words go whole, every line");
+        assert!(read("mode").starts_with("-rw-------"), "only the captain can read the staged words: {}", read("mode"));
+        assert!(!Path::new(&args[3]).exists(), "the staged words are gone once firstmate has them");
+
+        let home = home_with_reply("named", "unchanged: qd-start-work-1", "", 0);
+        reply(&home, "qd-start-work-1", "words", "review", Some("m1790375413720-25")).await.expect("kept");
+        let args = std::fs::read_to_string(home.join("args")).unwrap();
+        assert!(args.ends_with("--via\nreview\n--message\nm1790375413720-25\n"), "{args}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn a_reply_firstmate_refuses_is_not_kept_and_says_why() {
+        let home = home_with_reply("closed", "", "fm-captain-hold: call qd-a is already closed", 1);
+        let problem = reply(&home, "qd-a", "words", "quarterdeck", None).await.unwrap_err();
+        assert_eq!(problem, "call qd-a is already closed");
+        // Printing the line for another call, or exiting non-zero after it, is not keeping it.
+        let home = home_with_reply("other", "replied: qd-ab", "", 0);
+        assert!(reply(&home, "qd-a", "words", "quarterdeck", None).await.is_err());
+        let home = home_with_reply("older", "", "Usage:", 2);
+        let problem = reply(&home, "qd-a", "words", "quarterdeck", None).await.unwrap_err();
+        assert!(problem.contains("older than replies"), "{problem}");
+        // Nothing the app can see is worth running firstmate for.
+        for (call, words, via) in [("../x", "words", "quarterdeck"), ("qd-a", "  \n", "quarterdeck"), ("qd-a", "words", "chat")] {
+            let home = home_with_reply("never", "replied: qd-a", "", 0);
+            assert!(reply(&home, call, words, via, None).await.is_err(), "{call} {words:?} {via}");
+            assert!(!home.join("args").exists(), "firstmate was run for {call} {words:?} {via}");
+        }
         let _ = std::fs::remove_dir_all(home);
     }
 

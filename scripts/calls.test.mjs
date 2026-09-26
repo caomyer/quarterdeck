@@ -5,7 +5,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerInWords, answeredBy, answeredByCaptain, argumentOf, callsArguedBy, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, resolveEvidence } from "../src/calls.ts";
+import { answerInWords, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, replyOf, resolveEvidence } from "../src/calls.ts";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -138,4 +138,21 @@ test("an answer in words is not now until a day, what the captain wrote, or both
   assert.equal(answerInWords("2026-10-03", ""), "Not now. Ask me again on Oct 3.");
   assert.equal(answerInWords("2026-10-03", "After the launch."), "Not now. Ask me again on Oct 3. After the launch.");
   assert.equal(answerInWords(undefined, "   "), "");
+});
+
+test("a reply the captain made is the first mate's move, shown while the call is open and never as an answer", () => {
+  const reply = { words: "we attach screenshots already, right?", via: "quarterdeck", at: ago(1), message: "m1", previous: null };
+  const replied = call("qd-start-work-1", { reply });
+  assert.deepEqual(replyOf(replied), reply);
+  assert.equal(awaitsCaptain(replied), false, "he has spoken: it is not waiting on him");
+  assert.equal(openCalls([replied]).length, 1, "it is still open, and still answerable");
+  assert.equal(replied.answer, null, "a reply records nothing about what he decided");
+  // Nothing replied, an older firstmate that has no reply field, and a call closed or answered with a stale reply.
+  assert.equal(awaitsCaptain(call("a")), true);
+  assert.equal(replyOf(call("a")), null);
+  assert.equal(awaitsCaptain(call("b", { reply: null })), true);
+  assert.equal(replyOf(call("c", { state: "closed", reply })), null);
+  assert.equal(replyOf(call("d", { state: "answered", reply })), null);
+  // Deferred until a day, a call waits on no one, whatever it carries.
+  assert.equal(awaitsCaptain(call("e", { captain_actionable: false })), false);
 });
