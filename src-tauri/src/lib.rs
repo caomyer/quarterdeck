@@ -12,6 +12,7 @@ mod review;
 mod routing;
 mod settings;
 mod snapshot;
+mod sources;
 mod start;
 mod update;
 
@@ -92,6 +93,14 @@ pub fn run() {
       review::call_answer,
       start::start_work,
       start::start_asks,
+      start::take_on,
+      start::take_on_asks,
+      sources::sources_get,
+      sources::sources_add,
+      sources::sources_edit,
+      sources::sources_remove,
+      sources::sources_dismiss,
+      sources::sources_link,
       update::update_status,
       update::update_check,
       update::update_restart,

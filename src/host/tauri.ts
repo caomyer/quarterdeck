@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
-import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, StartAsk, StartRequest, TaskFile, TaskNotes } from "./types";
+import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskFile, TaskNotes, TaskSource } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -97,6 +97,38 @@ export class TauriHostAdapter implements HostAdapter {
 
   startAsks() {
     return invoke<Record<string, StartAsk>>("start_asks");
+  }
+
+  takeOn({ source, item, key, project, title, note }: TakeOnRequest) {
+    return invoke<TakeOnAsk>("take_on", { source, item, key, project, title, note: note ?? null });
+  }
+
+  takeOnAsks() {
+    return invoke<Record<string, TakeOnAsk>>("take_on_asks");
+  }
+
+  sourcesGet() {
+    return invoke<SourcesRead>("sources_get");
+  }
+
+  sourcesAdd(provider: string, locator: string, project: string, filter: string, outbound: TaskSource["outbound"]) {
+    return invoke<SourcesRead>("sources_add", { provider, locator, project, filter, outbound });
+  }
+
+  sourcesEdit(source: string, change: { filter?: string; outbound?: TaskSource["outbound"] }) {
+    return invoke<SourcesRead>("sources_edit", { source, filter: change.filter ?? null, outbound: change.outbound ?? null });
+  }
+
+  sourcesRemove(source: string) {
+    return invoke<SourcesRead>("sources_remove", { source });
+  }
+
+  sourcesDismiss(source: string, item: string) {
+    return invoke<SourcesRead>("sources_dismiss", { source, item });
+  }
+
+  sourcesLink(task: string, reference: string) {
+    return invoke<unknown>("sources_link", { task, reference });
   }
 
   /** Waits until every event is being listened to: a start's history is sent once, and a window that missed it would show no earlier conversation. */

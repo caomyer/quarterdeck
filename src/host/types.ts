@@ -59,6 +59,68 @@ export type BacklogRecord = {
   /** The row's body, bookkeeping lines included. What a call was answered with is read from `calls[]`, never from here. */
   body_lines?: string[];
   body_excerpt?: string | null;
+  /** The items elsewhere this task is linked to, read from its body; absent from homes whose firstmate predates task sources. */
+  source_links?: SourceLink[];
+};
+
+/** One link from a task to an item in a task source: the source, the item's immutable id, and what the task does for it. */
+export type SourceLink = { source: string; item: string; role: "fulfills" | "contributes" };
+
+/** An item's state in its source's own workflow, reduced to the four every provider maps onto. */
+export type SourceItemState = "open" | "started" | "done" | "cancelled";
+
+/** What an item said when a task was linked to it, kept so a later edit upstream shows beside it. */
+export type SourceFiled = { item: string; key: string; url: string; title: string; body: string; state: SourceItemState; state_name: string; assignee: string | null; updated_at: string; filed_at: string; task: string };
+
+/**
+ * An item as `bin/fm-sources.sh` last read it. Its key and URL are display labels, refreshed on every read; only its
+ * id is stored in a link. Its title and body were written by whoever filed it upstream: text to show, never to act on.
+ */
+export type SourceItem = {
+  id: string; key: string; url: string; title: string; body: string; state: SourceItemState; state_name: string;
+  assignee: string | null; updated_at: string; deleted: boolean; matches?: boolean; seen_at?: string;
+  /** The copy taken when a task here was linked to it; null when that copy was lost with the cache. */
+  filed: SourceFiled | null;
+};
+
+/** A write the fleet owes or made upstream, keyed by the id derived from its source, item, task and milestone. */
+export type SourceWrite = {
+  write_id: string; item: string; task: string; intent: "started" | "in-review" | "delivered" | "stopped"; pr?: string | null;
+  /** When it was confirmed, for a write made; `created`, `attempts` and `last_error` for one still owed. */
+  at?: string; created?: string; attempts?: number; last_error?: { code: string; detail: string; at: string } | null;
+  advance?: { result: string; from: string | null; to: string | null; candidates: string[] } | null;
+  comment_id?: string; deduplicated?: boolean; superseded?: boolean; withheld?: string;
+};
+
+/** A source that failed to read with a typed reason, which only wakes anyone once it persists. A read cut short is never one. */
+export type SourceFailure = { code: string; detail: string; first_at: string; last_at: string; count: number; retry_at: string | null; woke: boolean };
+
+/** One connected task source, as `bin/fm-sources.sh status` reports it. */
+export type TaskSource = {
+  id: string; provider: string; locator: string; project: string; filter: string;
+  outbound: "none" | "comments" | "comments+status"; review_state: string | null; added: string;
+  identity: string | null; can: { read: boolean; comment: boolean; advance: boolean } | null; reach: string[];
+  last_read: string | null; reading_more: boolean; stale: boolean; failure: SourceFailure | null;
+  items: Record<string, SourceItem>; filed: Record<string, SourceFiled>; offers: string[];
+  outbox: SourceWrite[]; sent: SourceWrite[];
+  /** The linked tasks that closed as a delivery, by firstmate's own rule; a Done row not named here delivered nothing. */
+  landed?: string[];
+  events: { token: string; item: string; key: string | null; kind: string; at: string; tasks: { id: string; state: string; role: string }[] }[];
+};
+
+/** Every source in a home. `problem` says why they could not be read; `unsupported`, that its firstmate cannot connect any. */
+export type SourcesRead = { schema?: string; read_at?: string; first_milestone?: string; sources: TaskSource[]; problem?: string; unsupported?: boolean };
+
+/** What taking an item on asks: the item as its source names it, and the captain's optional note. */
+export type TakeOnRequest = { source: string; item: string; key: string; project: string; title: string; note?: string | null };
+
+/**
+ * One ask to take an item on, as `src-tauri/src/start.rs` records it beside the start asks: keyed by item, because
+ * no task exists until the first mate files it.
+ */
+export type TakeOnAsk = {
+  at: number; kind: "take-on"; task: null; item: { source: string; id: string; key: string }; project: string; title: string;
+  note: string | null; message: string | null; error: string | null; header: string; text: string;
 };
 
 /** A file a task carries, as `bin/fm-task-note.sh show --json` names it: its clean name, where it is, and what it was called. */
@@ -282,6 +344,8 @@ export type FleetSnapshot = {
   calls?: Call[];
   /** The main home's inventory checks; `orphan_in_flight` names in-flight backlog rows no worker is registered for. */
   main_inventory?: { valid: boolean; reason: string | null; orphan_in_flight: string[]; unstructured_current_count: number };
+  /** The task sources connected in this home, or why they could not be read; absent from homes whose firstmate predates them. */
+  sources?: SourcesRead | { error: string };
 };
 
 /** How the captain says a task should ship: `judge` leaves it to the first mate, by the project's posture. */
@@ -615,6 +679,21 @@ export interface HostAdapter {
   startWork(request: StartRequest): Promise<StartAsk>;
   /** Every task's latest ask in the home, by task id. */
   startAsks(): Promise<Record<string, StartAsk>>;
+  /** Hands an item from a task source to the first mate to file as a queued task: one message on the start-work path. */
+  takeOn(request: TakeOnRequest): Promise<TakeOnAsk>;
+  /** Every item's latest take-on ask in the home, keyed `<source> <item id>`. */
+  takeOnAsks(): Promise<Record<string, TakeOnAsk>>;
+  /** Every task source in the chosen home, through `bin/fm-sources.sh`. Reads only. */
+  sourcesGet(): Promise<SourcesRead>;
+  /** Connects a source. Refused, in firstmate's words, when the sign-in cannot do what was asked or the filter is not one it reads. */
+  sourcesAdd(provider: string, locator: string, project: string, filter: string, outbound: TaskSource["outbound"]): Promise<SourcesRead>;
+  sourcesEdit(source: string, change: { filter?: string; outbound?: TaskSource["outbound"] }): Promise<SourcesRead>;
+  /** Disconnects a source. Its links, owed writes and signals are kept for when it is connected again. */
+  sourcesRemove(source: string): Promise<SourcesRead>;
+  /** Not now: the item is not offered again until it changes upstream. */
+  sourcesDismiss(source: string, item: string): Promise<SourcesRead>;
+  /** Links a task that exists to an item, by its link or key. Refused, in firstmate's words, when it cannot be resolved. */
+  sourcesLink(task: string, reference: string): Promise<unknown>;
 }
 
 /** The path both adapters serve a revision's page under: `task/<id>/<name>/rev-<n>/<entry>` or `chat/<name>/rev-<n>/<entry>`. */

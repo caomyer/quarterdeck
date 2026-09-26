@@ -7,8 +7,11 @@
  * three shapes, plus backticks for code, and anything else stays the text it was.
  */
 
-/** Backlog body lines that are bookkeeping rather than anything a person wrote about the task. */
-export const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:|Answer key:|Answered by:|Answered via:)/;
+/**
+ * Backlog body lines that are bookkeeping rather than anything a person wrote about the task. A `source-link:` line is
+ * a link to an item elsewhere, which `bin/fm-sources.sh` writes and the drawer shows as its chip and Upstream section.
+ */
+export const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:|Answer key:|Answered by:|Answered via:|source-link: )/;
 
 /** A run of text, plain or code. */
 export type Span = { code: boolean; text: string };

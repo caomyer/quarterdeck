@@ -47,16 +47,18 @@ import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type StartAsk, type StartMode, type TaskFile, type TaskNote } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, createHostAdapter, type ProjectHistory, type IntakeResult, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
 import { answeredBy, answeredByCaptain, answerInWords, argumentOf, callsArguedBy, decidedForCaptain, type Evidence, homeCalls, isOpen, linkLabel, openCalls, optionsUpdatedSince, recommended, resolveEvidence } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
-import { askedHow, BUSY, judgeDetail, launchedAt, lighterReason, MODE_CHOICES, modeLine, postureHint, type StartInputs, type StartPhase, startPhase, wantsFreshReading, wantsReadingAfterTurn } from "./start";
+import { askedHow, askWantsReading, BUSY, judgeDetail, launchedAt, lighterReason, MODE_CHOICES, modeLine, postureHint, type StartInputs, type StartPhase, startPhase, wantsFreshReading, wantsReadingAfterTurn } from "./start";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 import { RoutingSettings } from "./Routing";
+import { IntakeSection, LinkField, SourceChips, SourcesSettings, UpstreamSections } from "./TaskSources";
+import { askKey, linkViews, offerRows, type OfferRow, sourcesOf } from "./sources";
 
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
 const SceneEditor = lazy(() => import("./SceneEditor").then((module) => ({ default: module.SceneEditor })));
@@ -242,6 +244,18 @@ export function App() {
   useEffect(() => {
     void host.startAsks().then(setAsks, () => setAsks({}));
   }, [bridge.home]);
+  // The task sources, from the snapshot; a change the captain just made shows at once, until the next snapshot has it.
+  const [sourcesChange, setSourcesChange] = useState<{ read: SourcesRead; after: string | undefined } | null>(null);
+  const sourcesRead = useMemo(() => {
+    if (sourcesChange && sourcesChange.after === fleet?.generated) return { sources: sourcesChange.read.sources, problem: sourcesChange.read.problem ?? null, firstMilestone: sourcesChange.read.first_milestone ?? null };
+    return sourcesOf(fleet);
+  }, [fleet, sourcesChange]);
+  const sources = sourcesRead.sources;
+  // Every item's latest ask to take it on, read from the home beside the start asks.
+  const [takeOns, setTakeOns] = useState<Record<string, TakeOnAsk>>({});
+  useEffect(() => {
+    void host.takeOnAsks().then(setTakeOns, () => setTakeOns({}));
+  }, [bridge.home]);
   // When the first mate was last seen out of a turn, so an ask read in a turn that has ended can be judged.
   const [quietSince, setQuietSince] = useState<number | null>(null);
   useEffect(() => setQuietSince((current) => BUSY.includes(runtime.state) ? null : current ?? Date.now()), [runtime.state]);
@@ -267,6 +281,27 @@ export function App() {
   useEffect(() => {
     if (readingAfterTurn) void bridge.refreshSnapshot();
   }, [readingAfterTurn, bridge.refreshSnapshot]);
+  // A take-on answered only in chat changes nothing under the home either, so its turn's end asks for a reading too.
+  const snapshotAt = fleet ? Date.parse(fleet.generated) : 0;
+  const takeOnReadingWanted = Object.values(takeOns).some((ask) => askWantsReading(ask, ask.message ? outbox[ask.message] : undefined, runtime.state, quietSince, snapshotAt));
+  useEffect(() => {
+    if (takeOnReadingWanted) void bridge.refreshSnapshot();
+  }, [takeOnReadingWanted, bridge.refreshSnapshot]);
+  const intakeRows = (project: string) => offerRows(project, sources, {
+    records: fleet?.backlog?.records ?? [], asks: takeOns,
+    deliveries: Object.fromEntries(Object.values(takeOns).filter((ask) => ask.message).map((ask) => [ask.message!, outbox[ask.message!]])),
+    runtime: runtime.state, sendReady: bridge.sendReady, quietSince, snapshotAt,
+  }, now);
+  /** What a task linked to an item elsewhere adds to its drawer, or nothing for one that is not. */
+  function upstreamFor(record: BacklogRecord | undefined, linkable: boolean) {
+    const views = linkViews(record, sources);
+    const projectSources = sources.filter((source) => source.project === (record?.repo ?? selectedProject));
+    if (views.length === 0) {
+      if (!record || !linkable || projectSources.length === 0) return undefined;
+      return { chips: null, sections: <LinkField sources={projectSources} onLink={(reference) => linkTask(record.id, reference)} /> };
+    }
+    return { chips: <SourceChips views={views} now={now} />, sections: <UpstreamSections record={record} views={views} now={now} firstMilestone={sourcesRead.firstMilestone} /> };
+  }
   const waitingIn = (name: string) => waiting.filter((call) => callProject(call, records) === name);
   // What a project has underway, the same wherever it is counted: a finished scout waiting to be read is not.
   const underwayIn = (project: ProjectSummary) => project.tasks.filter((task) => !readyIds.has(task.id) && records.get(task.id)?.state !== "done");
@@ -413,6 +448,28 @@ export function App() {
     const ask = await host.startWork({ task: record.id, project: record.repo ?? selectedProject ?? "", title: record.title, kind: record.kind ?? "ship", mode, note });
     if (ask.message) bridge.noteSent(ask.message, ask.text);
     setAsks((current) => ({ ...current, [ask.task]: ask }));
+  }
+
+  /**
+   * Hands an offered item to the first mate to file: one message on the start-work path, recorded by item. It
+   * files a queued task; the row, not this call, says it did.
+   */
+  async function takeOn(row: OfferRow, note: string) {
+    const ask = await host.takeOn({ source: row.source.id, item: row.item.id, key: row.item.key, project: row.source.project, title: row.item.title, note });
+    if (ask.message) bridge.noteSent(ask.message, ask.text);
+    setTakeOns((current) => ({ ...current, [askKey(ask.item.source, ask.item.id)]: ask }));
+  }
+
+  /** Not now: firstmate keeps the item from being offered again until it changes. */
+  async function dismissOffer(row: OfferRow) {
+    const read = await host.sourcesDismiss(row.source.id, row.item.id);
+    setSourcesChange({ read, after: fleet?.generated });
+  }
+
+  /** Links a task that exists to an item, through firstmate's writer, then reads the snapshot that shows it. */
+  async function linkTask(task: string, reference: string) {
+    await host.sourcesLink(task, reference);
+    await bridge.refreshSnapshot();
   }
 
   function openTask(id: string) {
@@ -675,6 +732,18 @@ export function App() {
           onOpenReport={(item) => item.page ? showArtifact(item.page) : draftInChat(askAboutReport(taskTitle(item.task.id)))}
           onOpenEntry={setLogEntry}
           onOpenQueued={(record) => setQueuedId(record.id)}
+          intake={<IntakeSection
+            project={selectedProjectData.name}
+            rows={intakeRows(selectedProjectData.name)}
+            sources={sources}
+            now={now}
+            sendReady={bridge.sendReady}
+            onTakeOn={takeOn}
+            onDismiss={dismissOffer}
+            onOpenTask={(record) => setQueuedId(record.id)}
+            onChat={() => navigate("chat")}
+            onStartHost={() => void bridge.start()}
+          />}
         />}
         {view === "artifacts" && <ArtifactsView artifacts={artifacts} tasks={fleet?.tasks ?? []} reviews={reviews} backlog={records} calls={calls} onOpen={showArtifact} />}
         {view === "artifact" && (shownArtifact && shownRevision
@@ -705,11 +774,12 @@ export function App() {
       </main>
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
-      {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} projects={projects.map((project) => project.name)} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => { setSettingsOpen(false); void bridge.refreshSnapshot(); }} />}
       {queuedRecord && phase && (queuedTask && fleet && LAUNCH_PHASES.has(phase)
         ? <TaskDrawer task={queuedTask} title={withinProject(queuedRecord.title, selectedProject ?? "")} record={queuedRecord} now={now} reviews={reviews} onAskReport={() => { setQueuedId(null); draftInChat(askAboutReport(taskTitle(queuedTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setQueuedId(null); setShowEverything(false); }}
-            launch={{ phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, onDraft: draftInChat }} />
+            launch={{ phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, onDraft: draftInChat }} upstream={upstreamFor(queuedRecord, false)} />
         : <QueuedDrawer record={queuedRecord} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedRecord.id)} reviews={reviews} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onClose={() => setQueuedId(null)}
+            upstream={upstreamFor(queuedRecord, queuedRecord.state === "queued")}
             start={{
               phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined,
               posture: bridge.projects.find((project) => project.name === (queuedRecord.repo ?? selectedProject))?.mode,
@@ -720,8 +790,8 @@ export function App() {
               onOpenCall: (id) => { navigate("bearings"); setFocusedCall(id); },
               onDraft: draftInChat,
             }} />)}
-      {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
-      {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} />}
+      {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} upstream={upstreamFor(logEntry.record, false)} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
+      {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} upstream={upstreamFor(records.get(activeTask.id), false)} />}
     </div>
   );
 }
@@ -783,13 +853,13 @@ function HomeProblem({ problem }: { problem: string }) {
   return <div className="home-problem" role="alert"><CircleAlert size={16} /><span>{problem}</span></div>;
 }
 
-function SettingsDialog({ home, problem, running, choosing, chosen, onChoose, onUseApp, onClose }: { home: string; problem: string | null; running: boolean; choosing: boolean; chosen: boolean; onChoose: () => void; onUseApp: () => void; onClose: () => void }) {
+function SettingsDialog({ home, problem, running, choosing, chosen, projects, onChoose, onUseApp, onClose }: { home: string; problem: string | null; running: boolean; choosing: boolean; chosen: boolean; projects: string[]; onChoose: () => void; onUseApp: () => void; onClose: () => void }) {
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
-  return <div className="drawer-backdrop" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>Settings</span><h2>The first mate</h2></div><button className="icon-button" onClick={onClose} title="Close settings"><X size={18} /></button></header><div className="settings-body"><h3>firstmate folder</h3><p>{chosen ? "The first mate runs in the folder you chose, and Bearings is read from there." : "The app keeps its own first mate here, and Bearings is read from here."}</p><code className="settings-path" title={home}>{home}</code>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={running || choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose a different folder…"}</button>{chosen && <button className="home-revert" disabled={running || choosing} onClick={onUseApp}>Use the app's own first mate again</button>}{running && <small>Stop the first mate before changing which folder it runs in.</small>}{home && <RoutingSettings key={home} host={host} />}</div></section></div>;
+  return <div className="drawer-backdrop" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>Settings</span><h2>The first mate</h2></div><button className="icon-button" onClick={onClose} title="Close settings"><X size={18} /></button></header><div className="settings-body"><h3>firstmate folder</h3><p>{chosen ? "The first mate runs in the folder you chose, and Bearings is read from there." : "The app keeps its own first mate here, and Bearings is read from here."}</p><code className="settings-path" title={home}>{home}</code>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={running || choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose a different folder…"}</button>{chosen && <button className="home-revert" disabled={running || choosing} onClick={onUseApp}>Use the app's own first mate again</button>}{running && <small>Stop the first mate before changing which folder it runs in.</small>}{home && <RoutingSettings key={home} host={host} />}{home && <SourcesSettings key={`sources ${home}`} host={host} projects={projects} />}</div></section></div>;
 }
 
 const SNAPSHOT_SOURCES: Record<string, { label: string; part: "bearingsAt" | "fleetAt" }> = {
@@ -1422,7 +1492,7 @@ function useProjectHistory(project: string | null, stamp: string | undefined) {
 
 type ProjectReport = { task: FleetTask; page?: Artifact; report: string | null };
 
-function ProjectView({ project, now, taskTitle, records, waiting, reports, underway, queued, recent, calls, history, onOpenTask, onOpenCall, onOpenReport, onOpenEntry, onOpenQueued }: {
+function ProjectView({ project, now, taskTitle, records, waiting, reports, underway, queued, recent, calls, history, intake, onOpenTask, onOpenCall, onOpenReport, onOpenEntry, onOpenQueued }: {
   project: ProjectSummary;
   now: number;
   taskTitle: (id: string) => string;
@@ -1434,6 +1504,8 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
   recent: BacklogRecord[];
   calls: Call[];
   history: ReturnType<typeof useProjectHistory>;
+  /** Issues the project's task sources offer, to take on or put aside. */
+  intake?: React.ReactNode;
   onOpenTask: (task: FleetTask) => void;
   onOpenCall: (id: string) => void;
   onOpenReport: (item: ProjectReport) => void;
@@ -1471,6 +1543,8 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
         {reports.map((item) => <button className="task-row wide" key={item.task.id} onClick={() => onOpenReport(item)}><span className="task-state tone-blue"><FileText size={16} /></span><span className="task-copy"><strong>{title(taskTitle(item.task.id))}</strong><small>{item.page ? "The report is ready to read." : "The report is written, without a page."}</small></span><span className="task-chip answer-chip">Read</span></button>)}
       </div>
     </DashboardSection>}
+
+    {intake}
 
     <DashboardSection title="Work" tone="blue" count={underway.length} countLabel={`underway · ${queued.length} queued`}>
       <div className="task-list" data-testid="project-underway">{underway.map((task) => {
@@ -1573,6 +1647,9 @@ const CLOSED_AS: Record<LogEntry["kind"], (entry: LogEntry) => string> = {
   closed: () => "Closed",
 };
 
+/** What a task linked to an item elsewhere adds to its drawer: the chip under its title, and its Upstream sections. */
+type DrawerUpstream = { chips: React.ReactNode; sections: React.ReactNode };
+
 /** What the queued drawer needs to offer Start work and follow the ask, all of it read by App. */
 type QueuedStart = {
   phase: StartPhase;
@@ -1610,7 +1687,7 @@ const START_QUESTIONS = {
  * already carries. From here the captain can hand it to the first mate, and the drawer then follows that ask
  * until a worker is registered, when the live task drawer takes over.
  */
-function QueuedDrawer({ record, project, now, artifacts, reviews, source, start, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; start: QueuedStart; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
+function QueuedDrawer({ record, project, now, artifacts, reviews, source, start, upstream, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; start: QueuedStart; upstream?: DrawerUpstream; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
   const body = bodyBlocks(record.body_lines, record.body_excerpt);
   const kind = KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task";
   const closed = record.state === "done";
@@ -1630,10 +1707,11 @@ function QueuedDrawer({ record, project, now, artifacts, reviews, source, start,
     : record.hold_reason ? { tone: "amber", icon: <Clock3 size={16} />, label: "Waiting", detail: record.hold_reason }
     : { tone: "muted", icon: <Clock3 size={16} />, label: "Queued", detail: `${kind} · waiting its turn` };
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="queued-drawer" data-phase={phase}>
-    <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(record.title, project)}</h2><small className="drawer-id">{record.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
+    <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(record.title, project)}</h2><small className="drawer-id">{record.id}</small>{upstream?.chips}</div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status" data-testid="start-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{status.label}</strong><span>{status.detail}</span></div>{status.since !== undefined && <time className="drawer-age" title={formatWhen(new Date(status.since).toISOString())}>{shortAge(clock - status.since)}</time>}</div>
     <div className="drawer-scroll">
       <StartSection record={record} start={start} ship={ship} />
+      {upstream?.sections}
       <TaskFiles taskId={record.id} notes={notes.notes} />
       {body.length > 0 ? <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection> : <DrawerSection title="What was asked"><div className="brief-block"><p>The row says nothing more than its title.</p></div></DrawerSection>}
       <TaskNotesThread read={notes} running={record.state === "in_flight"} closed={closed} />
@@ -1706,7 +1784,7 @@ function StartSection({ record, start, ship }: { record: BacklogRecord; start: Q
 }
 
 /** A closed task, read from its backlog row: what was asked, what it left behind, and how it closed. */
-function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpenArtifact, onAskReport, onClose }: { entry: LogEntry; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; onClose: () => void }) {
+function LogbookDrawer({ entry, project, now, artifacts, reviews, source, upstream, onOpenArtifact, onAskReport, onClose }: { entry: LogEntry; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; upstream?: DrawerUpstream; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; onClose: () => void }) {
   const look = LOG_LOOK[entry.kind];
   const record = entry.record;
   const call = entry.call;
@@ -1715,7 +1793,7 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpen
   const days = record.since && entry.date ? Math.round((Date.parse(entry.date) - Date.parse(record.since)) / DAY_MS) : null;
   const panel = useDrawerDismiss(onClose);
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="log-drawer">
-    <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(entry.title, project)}</h2><small className="drawer-id">{entry.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
+    <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(entry.title, project)}</h2><small className="drawer-id">{entry.id}</small>{upstream?.chips}</div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status"><span className={`task-state tone-${look.tone}`}>{look.icon}</span><div><strong className={`tone-${look.tone}`}>{outcomeLine(entry, now)}</strong><span>{KIND_NAMES[record.kind ?? ""] ?? look.chip}{days !== null && days >= 0 && ` · ${tookLine(entry.kind, days)}`}</span></div></div>
     <div className="drawer-scroll">
       {call && <DrawerSection title="The call"><div className="brief-block log-call">
@@ -1726,6 +1804,7 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, onOpen
       {body.length > 0 && <DrawerSection title={call ? "From the backlog" : "What was asked"}><TaskBody blocks={body} /></DrawerSection>}
       <TaskNotesThread read={notes} running={false} closed />
       {entry.pr && <DrawerSection title="PR"><div className="pr-block"><a href={entry.pr} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {entry.pr}</a></div></DrawerSection>}
+      {upstream?.sections}
       {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
       {entry.report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={entry.report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">
@@ -2060,7 +2139,7 @@ function launchStatus(phase: StartPhase, task: FleetTask, clock: number, note: s
   return null;
 }
 
-function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose, launch }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void; launch?: LaunchView }) {
+function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose, launch, upstream }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void; launch?: LaunchView; upstream?: DrawerUpstream }) {
   const [capture, setCapture] = useState<{ text: string; observed_at?: string } | null>(null);
   // A worker with no agent in it is shown with its screen open: the screen is the evidence.
   const [screenOpen, setScreenOpen] = useState(launch?.phase === "didnt_start");
@@ -2109,12 +2188,13 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
     {screenOpen && <><p className="worker-caption">Read-only, newest at the bottom. To change anything, tell the first mate.</p><div className="worker-screen"><header><TerminalSquare size={14} /><span>{task.endpoint.target}</span></header><pre ref={screen}>{captureText}</pre></div></>}
   </section>;
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid={launch ? "queued-drawer" : undefined} data-phase={launch?.phase}>
-    <header className="drawer-header"><div><span>{projectName(task.project)}</span><h2 data-testid="drawer-title">{title}</h2><small className="drawer-id">{task.id}</small></div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
+    <header className="drawer-header"><div><span>{projectName(task.project)}</span><h2 data-testid="drawer-title">{title}</h2><small className="drawer-id">{task.id}</small>{upstream?.chips}</div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status" data-testid="start-status"><span className={`task-state tone-${shownStatus.tone}`}>{shownStatus.icon}</span><div><strong className={`tone-${shownStatus.tone}`}>{shownStatus.label}</strong>{shownStatus.detail && <span>{shownStatus.detail}</span>}</div>{started?.exact && <time className="drawer-age" data-testid="drawer-age" title={`Started ${formatStart(started)}`}>{launching ? shortAge(clock - started.ms) : formatDuration(now - started.ms)}</time>}</div>
     <div className="drawer-scroll">
       {launch?.phase === "didnt_start" && <DrawerSection title="What to do"><div className="brief-block start-block bad" data-testid="start-work"><p>The first mate may already be fixing it. If it hasn't said so in chat, ask it.</p><div className="start-actions"><button className="btn-base primary" onClick={() => launch.onDraft(START_QUESTIONS.relaunch(task.id))}>Ask the first mate to relaunch</button></div></div></DrawerSection>}
       {how && <DrawerSection title="How it ships"><div className="brief-block" data-testid="how-it-ships"><p><span className="mode-chip">{task.mode}</span> {how}</p>{why && <p className="start-why">{why}</p>}</div></DrawerSection>}
       {(launch?.phase === "didnt_start" || launch?.phase === "unconfirmed") && screen_}
+      {upstream?.sections}
       <TaskFiles taskId={task.id} notes={notes.notes} />
       {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}
       <DrawerSection title="Latest from the worker"><div className="brief-block"><p>{lastEvent.note || "The worker hasn't written a note yet."}</p></div></DrawerSection>

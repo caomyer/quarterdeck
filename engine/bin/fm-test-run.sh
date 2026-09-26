@@ -383,7 +383,8 @@ family_for_basename() {
       printf '%s\n' afk
       ;;
     fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|fm-contributions.test.sh|\
-    fm-fleet-snapshot-view.test.sh|fm-home-summary-refresh.test.sh|fm-history.test.sh)
+    fm-fleet-snapshot-view.test.sh|fm-home-summary-refresh.test.sh|fm-history.test.sh|\
+    fm-sources.test.sh|fm-source-github.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
@@ -671,6 +672,8 @@ tests/fm-history.test.sh 15000
 tests/fm-home-init.test.sh 70000
 tests/fm-installed-home.test.sh 15000
 tests/fm-watch-served-harness.test.sh 20000
+tests/fm-sources.test.sh 50000
+tests/fm-source-github.test.sh 2000
 tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
 tests/fm-afk-inject-e2e.test.sh 35792
@@ -1559,7 +1562,8 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     bin/fm-bearings-snapshot.sh|bin/fm-fleet-snapshot.sh|bin/fm-fleet-view.sh|bin/fm-contributions.sh|bin/fm-contributions.jq|\
-    bin/fm-home-summary-refresh.sh|bin/fm-history.sh|bin/fm-backlog-parse-lib.sh)
+    bin/fm-home-summary-refresh.sh|bin/fm-history.sh|bin/fm-backlog-parse-lib.sh|\
+    bin/fm-sources.sh|bin/fm-source-*.sh)
       printf '%s\n' snapshot-bearings
       ;;
     bin/fm-captain-hold.sh|bin/fm-decision-options.sh)

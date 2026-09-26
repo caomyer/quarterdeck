@@ -16,6 +16,7 @@ The rule that local timings are not interchangeable with CI timings therefore st
 Refresh all four from the next green run's timing artifacts.
 `tests/fm-home-init.test.sh` (70000) and `tests/fm-installed-home.test.sh` (15000) are likewise rounded up from local macOS runs of 62s and 8973ms on 2026-09-19; refresh them from the next green run.
 `tests/fm-watch-served-harness.test.sh` (20000) is likewise rounded up from local macOS runs of 12867ms and 17105ms on 2026-09-18, because it landed between CI refreshes; refresh it from the same run.
+`tests/fm-sources.test.sh` (50000) and `tests/fm-source-github.test.sh` (2000) are likewise rounded up from local macOS runs of 43520ms under concurrent load and 1390ms on 2026-09-25; refresh them from the same run.
 `tests/fm-captain-calls.test.sh` runs in the portable serial lane, never the parallel shards.
 `tests/fm-task-delivery.test.sh` carries its measured CI value plus 3000ms, rounded up from the 2890ms a promotion journey case added to it locally on 2026-09-18; refresh it from the same run.
 `fm-artifact.test.sh` also carries a real headless Chrome case that skips where no Chrome is installed, so its CI duration depends on whether the runner has one.

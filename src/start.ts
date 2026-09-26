@@ -89,8 +89,11 @@ function readSince(snapshotAt: number, quietSince: number) {
   return snapshotAt >= Math.floor(quietSince / 1000) * 1000;
 }
 
+/** Any ask the app sent the first mate and recorded: when, and the id the host gave its message. */
+type SentAsk = { at: number; message: string | null };
+
 /** When the ask's turn was over by: once it was read and the first mate was quiet. Null while either is still to come. */
-function settledAt(ask: StartAsk, delivery: AskDelivery | undefined, quietSince: number | null) {
+function settledAt(ask: SentAsk, delivery: AskDelivery | undefined, quietSince: number | null) {
   const read = delivery ? (delivery.status === "picked_up" ? Date.parse(delivery.readAt ?? "") || ask.at : null) : ask.at;
   return read === null || quietSince === null ? null : Math.max(read, quietSince);
 }
@@ -103,14 +106,30 @@ export function startPhase(inputs: StartInputs): StartPhase {
   if (record.state === "in_flight") return orphans.includes(record.id) ? "orphaned" : "in_flight";
   if (heldForCaptain(record)) return "held";
   if (ask) {
-    if (!ask.message || delivery?.errorKind) return "not_sent";
-    // Read, the turn that read it over, and a snapshot taken since both that still has the row queued. The host marks
-    // a message read when its turn is done, so a read ask and a quiet first mate mean that turn has ended.
-    const settled = settledAt(ask, delivery, quietSince);
-    if (settled !== null && !BUSY.includes(runtime) && readSince(snapshotAt, settled)) return "not_started";
-    return "asked";
+    const progress = askProgress(ask, delivery, runtime, quietSince, snapshotAt);
+    return progress === "answered" ? "not_started" : progress;
   }
   return sendReady ? "queued" : "offline";
+}
+
+/**
+ * How far an ask the first mate has not acted on yet has got, for every panel that asks it something: `not_sent` when
+ * the host did not take it or its turn errored; `answered` when it was read, the turn that read it is over, and a
+ * snapshot taken since then still shows nothing done, so the answer is in chat; `asked` while any of that is to come.
+ * The host marks a message read when its turn is done, so a read ask and a quiet first mate mean that turn has ended.
+ */
+export function askProgress(ask: SentAsk, delivery: AskDelivery | undefined, runtime: HostRuntimeState, quietSince: number | null, snapshotAt: number): "not_sent" | "answered" | "asked" {
+  if (!ask.message || delivery?.errorKind) return "not_sent";
+  const settled = settledAt(ask, delivery, quietSince);
+  if (settled !== null && !BUSY.includes(runtime) && readSince(snapshotAt, settled)) return "answered";
+  return "asked";
+}
+
+/** Whether an ask's turn is over but the snapshot on screen predates it, so only a fresh reading can judge it. */
+export function askWantsReading(ask: SentAsk | null, delivery: AskDelivery | undefined, runtime: HostRuntimeState, quietSince: number | null, snapshotAt: number) {
+  if (!ask?.message || delivery?.errorKind || BUSY.includes(runtime)) return false;
+  const settled = settledAt(ask, delivery, quietSince);
+  return settled !== null && !readSince(snapshotAt, settled);
 }
 
 /**
@@ -120,9 +139,7 @@ export function startPhase(inputs: StartInputs): StartPhase {
  */
 export function wantsReadingAfterTurn(inputs: StartInputs) {
   const { record, ask, delivery, runtime, quietSince, snapshotAt } = inputs;
-  if (!ask?.message || record.state !== "queued" || delivery?.errorKind || BUSY.includes(runtime)) return false;
-  const settled = settledAt(ask, delivery, quietSince);
-  return settled !== null && !readSince(snapshotAt, settled);
+  return record.state === "queued" && askWantsReading(ask, delivery, runtime, quietSince, snapshotAt);
 }
 
 /** Phases in which only a fresh reading can move the drawer on, so it asks for one now and then. */
