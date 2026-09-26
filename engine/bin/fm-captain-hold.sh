@@ -110,7 +110,10 @@
 # lifecycle. An exact retry (same words, via, and message) prints `unchanged:`,
 # and the same words and via with --message on a reply that names no message
 # fill that message in, keeping its `at` and `previous`, for a surface that
-# keeps the words before it sends the message that carries them.
+# keeps the words before it sends the message that carries them. With
+# --message, any other reply the call carries is newer than those words, so it
+# stands and the command prints `unchanged:`; a fresh reply is written only
+# when the call carries none.
 # Only the first mate acting clears it: `answer` (and so `answers` and
 # `decide`) once the answer is recorded, `offer`, and every `hold` once the
 # hold is applied, because each records, re-asks, or defers the call.
@@ -1831,6 +1834,10 @@ command_reply() {
       || fail "cannot compose the call content for $id"
     call_record_store "$id" "$record"
     printf 'replied: %s\n' "$id"
+    return 0
+  fi
+  if [ -n "$message" ] && printf '%s' "$record" | jq -e '.reply != null' >/dev/null; then
+    printf 'unchanged: %s\n' "$id"
     return 0
   fi
   record=$(printf '%s' "$record" | jq -c --arg words "$words" --arg via "$via" --arg at "$now" \

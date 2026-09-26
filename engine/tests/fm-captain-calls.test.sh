@@ -675,6 +675,17 @@ test_reply_keeps_the_captains_words_beside_an_open_call() {
   assert_equals 'm42|2026-09-18T12:10:00Z|quarterdeck' \
     "$(jq -r '[.reply.message, .reply.at, .reply.previous.via] | join("|")' "$record")" \
     "naming the message later fills it in, keeping when the captain replied and what he said before"
+
+  # A message named for words the captain has since replaced leaves the newer reply standing.
+  before=$(cat "$record")
+  assert_equals "unchanged: sample-reply" \
+    "$(CALL_NOW=2026-09-18T12:14:00Z run_captain "$home" reply sample-reply --words-file "$home/words.txt" \
+      --via quarterdeck --message m43)" "naming a message for older words changes nothing"
+  assert_equals "$before" "$(cat "$record")" "the newer reply stands, byte for byte"
+  assert_equals "unchanged: sample-reply" \
+    "$(CALL_NOW=2026-09-18T12:15:00Z run_captain "$home" reply sample-reply --words-file "$home/later.txt" \
+      --via review --message m44)" "the same words already naming another message are left as they are"
+  assert_equals "$before" "$(cat "$record")" "the reply keeps the message that carried it"
   pass "reply keeps the captain's words, how and when, beside an open call without deciding it"
 }
 
