@@ -211,7 +211,7 @@ export function policyLine(source: TaskSource, record: BacklogRecord, item: stri
   const written = new Set(source.sent.filter(mine).map((write) => write.intent));
   const owed = new Set(source.outbox.filter(mine).map((write) => write.intent));
   const detail = owed.size > 0 ? "What is owed posts once, on a read that works."
-    : record.state === "done" ? (written.has("delivered") ? "Nothing more is owed." : "The work here is done.")
+    : record.state === "done" ? (written.has("delivered") ? "Nothing more is owed." : "It closed without landing, so nothing more is posted.")
     : written.has("in-review") ? "Next: one comment when it lands."
     : firstWords(firstMilestone);
   return { text, detail };

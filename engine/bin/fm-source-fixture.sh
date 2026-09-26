@@ -19,7 +19,8 @@
 #   - Update times have minute precision, so `changes` overlaps its cursor by a
 #     minute and returns some items twice.
 #   - Its intake filter is its own syntax, `labels = <name>`, opaque to the core.
-#   - A comment's write id is kept as a property of the comment, not a marker.
+#   - A comment's write id is kept as a property of the comment, not a marker,
+#     and a comment is `ours` only when it carries one, whoever its author.
 #
 # World shape (every key but items optional):
 #   {identity, can:{read,comment,advance}, scopes:[...], reach:[...],
@@ -88,18 +89,16 @@ CONVERT_JQ='
     | gsub("\\*\\*(?<b>[^*\n]+)\\*\\*"; "*\(.b)*");
   def category($w; $item): ($w.workflows[$item.workflow // "default"].statuses[$item.status]) // "new";
   def contract_state($c): if $c == "new" then "open" else $c end;
-  def item($w; $identity):
+  def item($w):
     . as $i
     | {id:.id, key:.key, url:("https://fixture.invalid/browse/" + .key),
        title:(.summary // ""), body:((.description // "") | wiki_to_md),
        state:contract_state(category($w; $i)), state_name:.status,
        assignee:(.assignee // null), updated_at:(.updated + ":00Z"), deleted:(.deleted // false),
-       comments:[(.comments // [])[] | {id, author, ours:(.author == $identity), at:.created, body:(.body | wiki_to_md)}]};'
-
-identity() { jq -r '.identity // "fixture-bot"' "$WORLD"; }
+       comments:[(.comments // [])[] | {id, author, ours:(.write_id != null), at:.created, body:(.body | wiki_to_md)}]};'
 
 item_json() {  # <id>; the contract item, or nothing
-  jq -c --arg id "$1" --arg identity "$(identity)" "$CONVERT_JQ"'. as $w | .items[] | select(.id == $id) | item($w; $identity)' "$WORLD"
+  jq -c --arg id "$1" "$CONVERT_JQ"'. as $w | .items[] | select(.id == $id) | item($w)' "$WORLD"
 }
 
 case "$VERB" in
@@ -134,7 +133,7 @@ case "$VERB" in
     minute=${BASH_REMATCH[1]} offset=${BASH_REMATCH[3]:-0}
     # Minute precision: read from a minute before the cursor, as JQL must.
     jq -c --arg since "$minute" --argjson offset "$offset" --arg label "$label" --argjson budget "$budget" \
-      --argjson linked "$(printf '%s' "$SOURCE_JSON" | jq -c '.linked // []')" --arg identity "$(identity)" "$CONVERT_JQ"'
+      --argjson linked "$(printf '%s' "$SOURCE_JSON" | jq -c '.linked // []')" "$CONVERT_JQ"'
       . as $w
       | (($since + ":00Z") | fromdateiso8601 - 60 | todateiso8601 | .[:16]) as $from
       | [.items[] | select(.updated >= $from)
@@ -147,7 +146,7 @@ case "$VERB" in
       | $all[$offset : $offset + $pages * $size] as $read
       | (($all | length) > ($offset + ($read | length))) as $more
       | {ok:true,
-         items:[$read[] | (. as $i | item($w; $identity) + {matches:$i.matches})],
+         items:[$read[] | (. as $i | item($w) + {matches:$i.matches})],
          cursor:(if $more then $since + "#" + (($offset + ($read | length)) | tostring)
                  elif ($all | length) == 0 then $since else ($all | map(.updated) | max) end),
          more:$more}' "$WORLD"

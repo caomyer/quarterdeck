@@ -58,7 +58,8 @@ Read every pending one with `bin/fm-sources.sh events`; each names the item, its
 - `edited`: compare it with the task's as-filed copy and steer the brief or the worker only when the ask changed.
 - `commented`: read it as you would a maintainer's comment on a contribution; answer the captain only if it needs the captain.
 - `reassigned`: someone else may be doing it; check before spending a worker on it.
-- `deleted`: the link reads gone; the task stays until you or the captain decide.
+- `deleted`: the item is gone from its source, deleted or transferred away; the link reads gone and the task stays until you or the captain decide.
+  It is noticed only when the item is next resolved, not promptly: GitHub's change list reports neither, so an item can be gone long before this arrives, and a linked item still reading open has not been proven present.
 - `failing`: the source has not been readable for a while; tell the captain the one fix the snapshot names (for GitHub, `gh auth login`), once.
 - `write-unconfirmed`: a milestone comment was not confirmed twice; it stays owed and is retried, so tell the captain only if it persists.
 

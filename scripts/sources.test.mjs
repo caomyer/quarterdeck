@@ -146,4 +146,5 @@ test("a task whose completion comment is still owed never reads as owing nothing
   assert.equal(policyLine(owed, row("t-1", { state: "done" }), "I_2", "in-review").detail, "What is owed posts once, on a read that works.");
   const sent = source({ sent: [{ write_id: "c", item: "I_2", task: "t-1", intent: "delivered", at: iso(20) }] });
   assert.equal(policyLine(sent, row("t-1", { state: "done" }), "I_2", "in-review").detail, "Nothing more is owed.");
+  assert.equal(policyLine(source(), row("t-1", { state: "done" }), "I_2", "in-review").detail, "It closed without landing, so nothing more is posted.");
 });

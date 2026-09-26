@@ -25,13 +25,17 @@
 # duplicate. GitHub has no started or review state, so `advance started` and
 # `advance in-review` answer not-supported, and `advance delivered` answers
 # already on a closed issue and not-supported on an open one: closing is left to
-# the pull request's "Fixes #n". GitHub does not report deletions in its change
-# list, so a deleted issue is found only when it is next resolved.
+# the pull request's "Fixes #n". GitHub's change list reports neither deletions
+# nor transfers, so a deleted or transferred issue is noticed only when it is
+# next resolved, not promptly: resolving it then answers not_found, which the
+# core records as a deleted item.
 #
 # changes asks one `issues?since=` list per call (oldest update first, pages of
 # FM_SOURCE_GITHUB_PAGE, default 50) and fetches comments only for linked items
 # that changed. A comment is made idempotent by a hidden `<!-- fm-write:<id> -->`
-# marker, searched for before posting, and is read back after posting.
+# marker, searched for before posting, and is read back after posting. That
+# marker alone makes a comment `ours`: the sign-in is the captain's own, so a
+# comment the captain writes by hand is theirs, not the fleet's.
 # jq, not the shell, expands the $ names inside these single-quoted programs.
 # shellcheck disable=SC2016
 set -u
@@ -136,7 +140,7 @@ filter_json() {
 ITEM_JQ='
   def state_of: if .state == "open" then "open"
     elif (.state_reason // "completed") == "completed" then "done" else "cancelled" end;
-  def item($identity; $comments; $filter):
+  def item($comments; $filter):
     {id:.node_id, key:("#" + (.number | tostring)), url:.html_url,
      title:(.title // ""), body:(.body // ""),
      state:state_of,
@@ -147,9 +151,7 @@ ITEM_JQ='
        ([.labels[]? | (.name // .) | ascii_downcase] as $have | all($filter.labels[]; . as $l | $have | index($l) != null))
        and ($filter.state == null or $filter.state == .state) end),
      comments:[$comments[]? | {id:(.node_id // (.id | tostring)), author:(.user.login // null),
-       ours:((.user.login // "") == $identity), at:(.created_at // null), body:(.body // "")}]};'
-
-identity() { printf '%s' "$SOURCE_JSON" | jq -r '.identity // ""'; }
+       ours:((.body // "") | test("<!-- fm-write:[A-Za-z0-9_-]+ -->")), at:(.created_at // null), body:(.body // "")}]};'
 
 cmd_probe() {
   local login scopes repo
@@ -226,8 +228,8 @@ cmd_changes() {
         break
       fi
     fi
-    jq -c --arg identity "$(identity)" --argjson filter "$filter" --slurpfile comments "$TMP/comments.json" \
-      "$ITEM_JQ item(\$identity; \$comments[0]; \$filter)" <<< "$(jq -c --arg id "$node" '.[] | select(.node_id == $id)' "$TMP/kept.json")" \
+    jq -c --argjson filter "$filter" --slurpfile comments "$TMP/comments.json" \
+      "$ITEM_JQ item(\$comments[0]; \$filter)" <<< "$(jq -c --arg id "$node" '.[] | select(.node_id == $id)' "$TMP/kept.json")" \
       >> "$TMP/items.jsonl"
   done < <(jq -r '.[] | [(.number | tostring), .node_id] | @tsv' "$TMP/kept.json")
   jq -sc --arg cursor "$cursor" --argjson more "$more" '{ok:true,items:.,cursor:$cursor,more:$more}' "$TMP/items.jsonl"
@@ -257,8 +259,8 @@ read_item() {  # <number>; prints the contract item
   printf '%s' "$issue" | jq -e '.pull_request == null' >/dev/null || failure invalid "#$n is a pull request, not an issue"
   gh_call api "repos/$REPO/issues/$n/comments?per_page=100" --paginate --slurp || gh_failure $?
   jq -c 'add // []' "$TMP/out" > "$TMP/comments.json"
-  printf '%s' "$issue" | jq -c --arg identity "$(identity)" --slurpfile comments "$TMP/comments.json" \
-    "$ITEM_JQ item(\$identity; \$comments[0]; null) | del(.matches)"
+  printf '%s' "$issue" | jq -c --slurpfile comments "$TMP/comments.json" \
+    "$ITEM_JQ item(\$comments[0]; null) | del(.matches)"
 }
 
 cmd_resolve() {

@@ -63,7 +63,8 @@
 # invalid | provider, and detail is scrubbed of the token. Every item has one
 # shape: {id, key, url, title, body (markdown), state (open|started|done|
 # cancelled), state_name, assignee, updated_at, deleted, comments:[{id, author,
-# ours, at, body}]}, plus `matches` (whether it meets the intake filter) on
+# ours, at, body}]}, where `ours` means the fleet wrote it (by the write id it
+# carries, never by the author, since the sign-in may be the captain's), plus `matches` (whether it meets the intake filter) on
 # `changes`. The verbs, each passed --source <cfg-json> (the source's config plus
 # `identity` and `linked`, the ids linked or offered here):
 #   probe                  -> {ok, identity, can:{read,comment,advance}, scopes, reach}
@@ -84,7 +85,9 @@
 #
 # OUTBOUND. `poll` derives each linked task's milestone from the backlog and the
 # task's registered PR: `started` while in flight, `in-review` while in flight
-# with a PR, `delivered` once done with a PR or report. A milestone is written
+# with a PR, `delivered` once done as a delivery by firstmate's own rule
+# (`landed_delivery` in bin/fm-landed-lib.sh). A Done row that delivered
+# nothing (dropped, superseded, merged away) writes nothing. A milestone is written
 # once per (source, item, task), never below one already written, under a write
 # id derived from those four, so a replay converges instead of posting twice.
 # Pending writes live in data/sources/<dir>/outbox/ and leave only when the
@@ -104,7 +107,11 @@
 # a linked item (closed, cancelled, reopened, deleted, edited, reassigned,
 # commented by someone else) becomes one signal in data/sources/<dir>/events/,
 # written before the wake and removed only by `ack`; a crash can repeat a wake
-# but cannot lose a signal. Nothing inbound ever changes the backlog. New items
+# but cannot lose a signal. A provider whose change list does not report
+# deletions or transfers (GitHub's does not) shows them only when the item is
+# next resolved, which the poll does only for a linked item it has not read
+# yet: then a `not_found` becomes a deleted item and a `deleted` signal. So a
+# deletion or transfer is noticed when the item is next resolved, not promptly. Nothing inbound ever changes the backlog. New items
 # meeting the filter are only offered in the app, and wake no one.
 #
 # FILES. config/sources.json (durable, never a token). data/sources/<dir>/
@@ -151,6 +158,8 @@ STALE_SECONDS=1800
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-landed-lib.sh
+. "$SCRIPT_DIR/fm-landed-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
@@ -321,14 +330,16 @@ backlog_input() {
 # Every edge in this home's backlog, with what the poll needs about its task.
 edges_json() {
   backlog_input
-  jq -c '
+  jq -c "$FM_LANDED_JQ_DEFS"'
     (.tasks // []) as $tasks
     | [.backlog.records[]? | select(.structured == true) | . as $r
        | ($tasks | map(select(.id == $r.id)) | first) as $t
+       | ($r | landed_delivery) as $landed
+       | ($r | landed_artifact) as $artifact
        | $r.source_links[]?
-       | {source, item, role, task:$r.id, state:$r.state, title:$r.title, kind:$r.kind,
-          pr:(if ($t.pr.url // "") != "" then $t.pr.url else $r.pr_url end),
-          report:$r.report_path, completion:$r.completion.verb}]' "$TMP/input.json"
+       | {source, item, role, task:$r.id, state:$r.state, title:$r.title, kind:$r.kind, landed:$landed,
+          pr:(if $r.state == "done" then (if $landed and $artifact != null and $artifact == $r.pr_url then $artifact else null end)
+              elif ($t.pr.url // "") != "" then $t.pr.url else $r.pr_url end)}]' "$TMP/input.json"
 }
 
 tasks_axi() { "$SCRIPT_DIR/fm-tasks-axi.sh" "$@"; }
@@ -655,7 +666,7 @@ derive_outbox() {  # <source-id>
     task=$(printf '%s' "$edge" | jq -r .task)
     pr=$(printf '%s' "$edge" | jq -r '.pr // ""')
     intent=$(printf '%s' "$edge" | jq -r '
-      if .state == "done" and ((.pr // "") != "" or (.report // "") != "") then "delivered"
+      if .state == "done" then (if .landed then "delivered" else "" end)
       elif .state == "in_flight" and (.pr // "") != "" then "in-review"
       elif .state == "in_flight" then "started" else "" end')
     [ -n "$intent" ] && [ "$(rank "$intent")" -ge "$first" ] || continue
@@ -815,8 +826,8 @@ apply_changes() {  # <source-id> <edges-json>
   jq -c --argjson cache "$cache" --argjson edges "$edges" '
     .items[] | . as $new | ($cache.items[$new.id] // null) as $old
     | select($old == null or $old.updated_at != $new.updated_at or ($new.deleted and ($old.deleted | not)))
-    | select(any($edges[]; .item == $new.id) and $old != null)
-    | [ (if $new.deleted and ($old.deleted | not) then {kind:"deleted",detail:"",disc:$new.updated_at} else empty end),
+    | select(any($edges[]; .item == $new.id) and ($old != null or $new.deleted))
+    | [ (if $new.deleted and ($old.deleted // false | not) then {kind:"deleted",detail:"",disc:$new.updated_at} else empty end),
         (if $new.deleted then empty
          elif $new.state != $old.state then
            (if $new.state == "done" then {kind:"closed",detail:$new.state_name,disc:$new.updated_at}
@@ -826,7 +837,7 @@ apply_changes() {  # <source-id> <edges-json>
          else empty end),
         (if ($new.title != $old.title or $new.body != $old.body) and ($new.deleted | not)
          then {kind:"edited",detail:("Title now: " + $new.title),disc:$new.updated_at} else empty end),
-        (if ($new.assignee // null) != ($old.assignee // null)
+        (if $old != null and ($new.assignee // null) != ($old.assignee // null)
          then {kind:"reassigned",detail:("Assignee now: " + ($new.assignee // "nobody")),disc:$new.updated_at} else empty end),
         ($new.comments[]? | .id as $cid | select((.ours | not) and ((($old.comment_ids // []) | index($cid)) == null))
           | {kind:"commented",detail:("\(.author // "someone"): " + (.body | .[:400])),disc:.id})
@@ -855,8 +866,17 @@ backfill_linked() {  # <source-id> <provider> <edges-json>
     remaining=$((DEADLINE - $(date +%s)))
     [ "$remaining" -gt 0 ] || return 0
     adapter "$provider" "$remaining" resolve "$id" --source "$(adapter_cfg "$source" "$(jq -cn --argjson e "$edges" '[$e[].item] | unique')")"
-    answer_ok || continue
-    jq -c '{items:[.item + {matches:false}]}' "$TMP/answer.json" > "$TMP/one.json"
+    if answer_ok; then
+      jq -c '{items:[.item + {matches:false}]}' "$TMP/answer.json" > "$TMP/one.json"
+    elif [ "$(answer_code)" = not_found ]; then
+      # A linked item the source no longer has is gone: deleted or transferred away.
+      read_json "$(sstate "$source")/filed/$(digest "$id").json" '{}' | jq -c --arg id "$id" --arg now "$NOW" '
+        {items:[{id:$id,key:(.key // null),url:(.url // null),title:(.title // ""),body:(.body // ""),
+          state:(.state // "open"),state_name:(.state_name // ""),assignee:(.assignee // null),
+          updated_at:$now,deleted:true,comments:[],matches:false}]}' > "$TMP/one.json"
+    else
+      continue
+    fi
     cp "$TMP/one.json" "$TMP/answer.json"
     apply_changes "$source" "$edges"
   done

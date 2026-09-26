@@ -291,7 +291,7 @@ test_inbound_changes_are_signals_only() {
   world_set in '(.items[] | select(.id == "r1")) |= (.status = "To Do" | .updated = "2026-09-25T10:09")'
   src "$home" 10:10 poll >/dev/null || fail 'poll failed'
   [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail 'a reopened item changed the backlog'
-  world_set in '(.items[] | select(.id == "o1")) |= (.comments += [{id:"k1",author:"fm-bot",created:"x",body:"ours"}] | .updated = "2026-09-25T10:11")'
+  world_set in '(.items[] | select(.id == "o1")) |= (.comments += [{id:"k1",author:"fm-bot",created:"x",body:"ours",write_id:"fm-w1"}] | .updated = "2026-09-25T10:11")'
   src "$home" 10:12 poll >/dev/null || fail 'poll failed'
   world_set in '(.items[] | select(.id == "o1")) |= (.comments += [{id:"k2",author:"dana",created:"x",body:"*Please* hurry"}] | .updated = "2026-09-25T10:13")'
   src "$home" 10:14 poll >/dev/null || fail 'poll failed'
@@ -358,6 +358,66 @@ test_silent_until_pr_and_forward_only() {
   source_of "$home" fixture:si | jq -e '[.sent[] | select(.task == "qd-si-2")][0].withheld == "policy"' >/dev/null \
     || fail 'a withheld write was not recorded'
   pass 'nothing is written before a PR, milestones go forward only, stop speaks only after speaking, none writes nothing'
+}
+
+test_closed_without_delivery_posts_nothing() {
+  local home
+  home=$(new_home undelivered)
+  new_world ud "[$(item u1 UD-1 10:00), $(item u2 UD-2 10:00)]"
+  connect "$home" ud
+  in_flight_with_pr "$home" ud UD-1 qd-ud-1 11
+  src "$home" 10:02 poll >/dev/null || fail 'poll failed'
+  [ "$(comment_count ud u1)" = 1 ] || fail 'the PR milestone was not posted'
+  # Dropped with its PR still registered: the stop comment goes, and no landed one.
+  printf 'The captain dropped it.\n' | src "$home" 10:03 stop qd-ud-1 | jq -e '.queued == 1' >/dev/null \
+    || fail 'stopping announced work queued no comment'
+  axi "$home" "done" qd-ud-1 --note 'dropped: superseded'
+  src "$home" 10:04 poll >/dev/null || fail 'poll failed'
+  src "$home" 10:05 poll >/dev/null || fail 'second poll failed'
+  [ "$(comment_count ud u1)" = 2 ] || fail "a dropped task posted $(comment_count ud u1) comments, not the PR and stop ones"
+  ! jq -r '.items[] | select(.id == "u1") | .comments[].body' "$WORLDS/ud.json" | grep -q 'landed' \
+    || fail 'a task closed without delivery said it landed'
+  # Closed without delivery before anything was said: nothing is said at all.
+  src "$home" 10:06 file fixture:ud UD-2 qd-ud-2 'superseded' --kind ship >/dev/null || fail 'file failed'
+  axi "$home" start qd-ud-2
+  printf 'kind=ship\npr=https://example.invalid/o/r/pull/12\n' > "$home/state/qd-ud-2.meta"
+  axi "$home" "done" qd-ud-2
+  src "$home" 10:07 poll >/dev/null || fail 'poll failed'
+  [ "$(comment_count ud u2)" = 0 ] || fail 'a task closed without delivery posted upstream'
+  source_of "$home" fixture:ud | jq -e '[.sent[], .outbox[] | select(.task == "qd-ud-2")] | length == 0' >/dev/null \
+    || fail 'a task closed without delivery queued a write'
+  pass 'a task closed without a delivery never says it landed, by firstmate'"'"'s own delivery rule'
+}
+
+test_own_account_comment_wakes() {
+  local home
+  home=$(new_home own)
+  new_world own "[$(item w1 OW-1 10:00)]"
+  connect "$home" own
+  src "$home" 10:01 file fixture:own OW-1 qd-own-1 'captain comments' >/dev/null || fail 'file failed'
+  src "$home" 10:02 poll >/dev/null
+  # The sign-in is the captain's own: a comment by that account without a write id is theirs.
+  world_set own '(.items[0]) |= (.comments += [{id:"h1",author:"fm-bot",created:"x",body:"Hold off, the approach changed"}] | .updated = "2026-09-25T10:05")'
+  src "$home" 10:06 poll | grep -q 'sources: commented' || fail 'a comment by the signed-in account did not wake'
+  events_of "$home" | jq -e 'length == 1 and .[0].kind == "commented" and .[0].tasks[0].id == "qd-own-1"' >/dev/null \
+    || fail "the captain's own comment raised $(events_of "$home")"
+  pass 'a comment by the signed-in account wakes the first mate; only the fleet'"'"'s own writes are ours'
+}
+
+test_item_gone_when_resolved_is_deleted() {
+  local home out
+  home=$(new_home gone)
+  new_world gone "[$(item g1 GO-1 10:00)]"
+  connect "$home" gone
+  src "$home" 10:01 file fixture:gone GO-1 qd-gone-1 'gone before read' >/dev/null || fail 'file failed'
+  world_set gone '.items = []'
+  out=$(src "$home" 10:02 poll) || fail 'poll failed'
+  printf '%s' "$out" | grep -q 'sources: deleted GO-1' || fail "an item the source no longer has did not wake: $out"
+  source_of "$home" fixture:gone | jq -e '.items.g1.deleted == true and .items.g1.key == "GO-1"' >/dev/null \
+    || fail 'an item the source no longer has does not read deleted'
+  out=$(src "$home" 10:03 poll) || fail 'poll failed'
+  [ -z "$out" ] || fail "a deleted item woke twice: $out"
+  pass 'a linked item the source answers not_found for reads deleted and wakes once'
 }
 
 test_unconfirmed_write_signals_once() {
@@ -444,6 +504,9 @@ test_timeouts_never_wake
 test_lost_response_deduplicates
 test_inbound_changes_are_signals_only
 test_silent_until_pr_and_forward_only
+test_closed_without_delivery_posts_nothing
+test_own_account_comment_wakes
+test_item_gone_when_resolved_is_deleted
 test_unconfirmed_write_signals_once
 test_handoff_to_a_home_without_the_source
 test_refusals

@@ -126,6 +126,12 @@ test_comment_is_idempotent_and_off_argv() {
   out=$(printf '\nSecond\n' | gha comment I_5 --write-id fm-second-000001 --source "$CFG")
   printf '%s' "$out" | jq -e '.deduplicated == true' >/dev/null || fail "the retry after a lost answer posted again: $out"
   [ "$(jq length "$FAKE/comments.json")" = 2 ] || fail 'not exactly one comment per write id'
+  # The sign-in is the captain's own: only the marker makes a comment ours.
+  jq -c '. + [{id:1,node_id:"IC_1",issue:5,user:{login:"me"},created_at:"2026-09-25T10:00:00Z",body:"Hold off, please"}]' \
+    "$FAKE/comments.json" > "$FAKE/c.tmp" && mv "$FAKE/c.tmp" "$FAKE/comments.json"
+  out=$(printf '\n' | gha resolve '#5' --source "$CFG")
+  printf '%s' "$out" | jq -e '[.item.comments[] | [(.body | startswith("Hold off")), .ours]] | sort == [[false,true],[false,true],[true,false]]' >/dev/null \
+    || fail "ours followed something other than the write marker: $out"
   out=$(printf '\n' | gha advance I_5 delivered --source "$CFG")
   printf '%s' "$out" | jq -e '.result == "not-supported"' >/dev/null || fail "delivered on an open issue answered $out"
   out=$(printf '\n' | gha advance I_7 delivered --source "$CFG")
