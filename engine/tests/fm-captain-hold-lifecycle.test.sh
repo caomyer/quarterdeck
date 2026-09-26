@@ -1077,6 +1077,13 @@ Europe/Berlin 2026-09-25T21:59:00Z east-call dated
 Europe/Berlin 2026-09-25T22:01:00Z east-call live
 CASES
 
+  # The app offers Not now no day earlier than the one after the day published here.
+  got=$(PATH="$home/fakebin:$PATH" TZ=America/Los_Angeles FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_SNAPSHOT_NOW=2026-09-26T00:11:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json | jq -r '.captain_day') || fail "snapshot failed in the captain's evening"
+  [ "$got" = 2026-09-25 ] || fail "the snapshot published captain_day $got at 17:11 PDT on Sep 25"
+
   json=$(captain_day_bearings "$home" America/Los_Angeles 2026-09-26T00:11:00Z) \
     || fail "Bearings failed in the captain's evening"
   printf '%s' "$json" | jq -e '

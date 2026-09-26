@@ -103,6 +103,11 @@ export type Call = {
   state: "open" | "answered" | "closed";
   bucket?: string | null;
   captain_actionable?: boolean;
+  /**
+   * The earliest day Not now can name, `yyyy-mm-dd`: the day after the captain's day. Set by `homeCalls` from the
+   * snapshot, never by firstmate; absent when the snapshot carries no captain's day.
+   */
+  ask_again_from?: string;
   /** The task whose work raised it: everything that task produced argues it. */
   origin?: string | null;
   /** The task it is about, if another. */
@@ -270,6 +275,11 @@ export type Artifact = {
 export type FleetSnapshot = {
   schema: string;
   generated: string;
+  /**
+   * The captain's day at `generated`, `yyyy-mm-dd`, from the one owner firstmate keeps (`bin/fm-backlog-parse-lib.sh`).
+   * Absent from a firstmate that predates it.
+   */
+  captain_day?: string;
   fm_home: string;
   backlog?: { records: BacklogRecord[] };
   tasks: FleetTask[];

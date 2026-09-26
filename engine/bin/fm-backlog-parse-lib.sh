@@ -29,7 +29,9 @@
 # written zone would go stale. FM_CAPTAIN_DAY_JQ's captain_day is that date,
 # and every consumer reads it from here: the parser below for hold_bucket and
 # hold_age_days, and fm_captain_day for a shell caller such as
-# bin/fm-captain-hold.sh refusing an --until that is already due. A date-only
+# bin/fm-captain-hold.sh refusing an --until that is already due, and
+# bin/fm-fleet-snapshot.sh publishing it as `captain_day` so the app offers no
+# earlier day to defer to than the hold would take. A date-only
 # value (hold_until, `since`, a date-only hold stamp) is already a captain's
 # day and is never shifted.
 #

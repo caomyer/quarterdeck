@@ -12,6 +12,8 @@
 # Top-level fields:
 #   schema: stable schema id.
 #   generated: UTC observation time for this fresh command execution.
+#   captain_day: the captain's YYYY-MM-DD at `generated`, from the one owner in
+#     bin/fm-backlog-parse-lib.sh; a call can be deferred only to a later day.
 #   fm_home: resolved operational home.
 #   roots: resolved root/config/data/state/projects directories.
 #   backlog: {path,present,records[]} where records are ordered as written in
@@ -1874,8 +1876,11 @@ secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
 secondmate_landed_from_current_json "$SECONDMATE_CURRENT_JSON_FILE" "$SECONDMATE_LANDED_JSON_FILE" \
   || { echo "fm-fleet-snapshot: secondmate landed projection failed" >&2; exit 1; }
 
+CAPTAIN_DAY=$(fm_captain_day "$SNAPSHOT_NOW") \
+  || { echo "fm-fleet-snapshot: could not read the captain's day" >&2; exit 1; }
 jq -n \
   --arg generated "$SNAPSHOT_NOW" \
+  --arg captain_day "$CAPTAIN_DAY" \
   --arg fm_home "$FM_HOME" \
   --arg fm_root "$FM_ROOT" \
   --arg state "$STATE" \
@@ -1903,6 +1908,7 @@ jq -n \
    {
      schema:"fm-fleet-snapshot.v1",
      generated:$generated,
+     captain_day:$captain_day,
      fm_home:$fm_home,
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,
