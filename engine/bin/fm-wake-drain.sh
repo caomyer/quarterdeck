@@ -3,8 +3,8 @@
 # optionally acknowledge handled records,
 # annotate every unread line for validated signal status keys, surface unread
 # informational status lines, latest captain-facing statuses not covered by a
-# newer branch outcome, OPEN DECISIONS, and captain-call record divergence,
-# then assert liveness.
+# newer branch outcome, OPEN DECISIONS, captain-call record divergence, and
+# captain replies no one has acted on, then assert liveness.
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
@@ -548,6 +548,53 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
+# Print the UNHANDLED REPLIES section: every open captain call carrying a reply
+# the captain made on it (bin/fm-captain-hold.sh `reply`) that has waited at
+# least FM_REPLY_OVERDUE_MINUTES (default 5) with nothing recording it or asking
+# again. The captain has spoken and the next move is the first mate's, so this
+# is the first mate's own overdue work, never a call awaiting the captain.
+# `replies` owns what counts. Stateless like RECORD DIVERGENCE: it prints on
+# every drain until the first mate acts, it does not depend on any status log,
+# and a failure never changes the drain's exit status.
+print_unhandled_replies_section() {
+  local replies task at via words line shown=0 omitted=0 bound minutes
+  local output='' used=0 bytes item_bytes=300 global_bytes=2400
+
+  bound=${FM_DIVERGENCE_TIMEOUT:-20}
+  case "$bound" in ''|*[!0-9]*|0) bound=20 ;; esac
+  minutes=${FM_REPLY_OVERDUE_MINUTES:-5}
+  case "$minutes" in ''|*[!0-9]*) minutes=5 ;; esac
+
+  replies=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-captain-hold.sh" replies --older-than "$minutes" 2>/dev/null) || return 0
+  [ -n "$replies" ] || return 0
+
+  while IFS=$(printf '\t') read -r task at via words; do
+    [ -n "$task" ] || continue
+    line="$task: the captain replied via $via at $at, still unrecorded: $words"
+    fm_cap_line_var "$line" $((item_bytes - 1))
+    line=$FM_LINE_CAP_LINE
+    bytes=$(( ${#line} + 1 ))
+    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+      omitted=$((omitted + 1))
+      continue
+    fi
+    output="$output$line
+"
+    used=$((used + bytes))
+    shown=$((shown + 1))
+  done <<EOF
+$replies
+EOF
+
+  [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0
+  printf 'UNHANDLED REPLIES (the captain replied on these calls and nothing has recorded or re-asked them - your overdue work, not calls awaiting the captain):\n' || return 1
+  printf '%s' "$output" || return 1
+  if [ "$omitted" -gt 0 ]; then
+    printf 'UNHANDLED REPLIES: %d more omitted (byte cap)\n' "$omitted" || return 1
+  fi
+  printf 'UNHANDLED REPLIES: read each reply with bin/fm-captain-hold.sh list --json; record it with bin/fm-captain-hold.sh answer <task> --decision-file <path> (with --key when the words name an option) only if the words decide the call, otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer; never infer an answer from the reply alone.\n' || return 1
+}
+
 print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
@@ -606,6 +653,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
   fm_lock_release "$lock"
+  print_unhandled_replies_section || true
   return "$rc"
 }
 

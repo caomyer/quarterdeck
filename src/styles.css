@@ -461,7 +461,10 @@ a { color: var(--sea); }
 .call-state small { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .call-state button { height: 34px; border: 0; color: var(--on-primary); background: var(--primary); font-size: 12.5px; font-weight: 600; }
 .call-state button:hover:not(:disabled) { color: var(--on-accent); background: var(--sea); }
-.call-state.call-not-recorded { margin-top: 14px; background: var(--coral-wash); }
+.call-state.call-not-recorded, .call-state.call-not-kept { margin-top: 14px; background: var(--coral-wash); }
+/* The captain's reply on a call, kept by firstmate and not recorded yet: his words, and what he said before them. */
+.call-said { max-width: 72ch; margin: 12px 0 0; padding-left: 12px; border-left: 2px solid color-mix(in srgb, var(--amber) 60%, var(--border)); color: var(--ink-3); font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+.call-said.earlier { margin-top: 8px; border-left-color: var(--border); color: var(--muted); font-size: 12.5px; }
 .call-state small.call-unread { color: var(--ink); }
 /* A call opened from a project page is pointed out on Bearings. */
 .decision-card.focused { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sea) 40%, transparent); transition: box-shadow .2s ease; }
@@ -1129,6 +1132,7 @@ a { color: var(--sea); }
 .decision-choices button.selected small { color: inherit; opacity: .85; }
 .decision-staged { display: block; margin-top: 9px; color: var(--sea); font-size: 12px; font-weight: 500; }
 .decision-sent { display: block; margin-top: 9px; color: var(--green); font-size: 12px; font-weight: 500; }
+.decision-replied { display: block; margin-top: 9px; color: var(--amber); font-size: 12px; font-weight: 500; }
 .decision-missing { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .decision-refused { display: block; margin-top: 9px; color: var(--coral); font-size: 12px; font-weight: 500; line-height: 1.45; }
 .decision-updated { display: inline-block; margin: 0 0 10px; padding: 3px 8px; border-radius: 6px; color: var(--amber); background: color-mix(in srgb, var(--amber) 11%, transparent); font-size: 11.5px; font-weight: 600; }

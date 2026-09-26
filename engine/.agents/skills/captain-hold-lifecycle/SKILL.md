@@ -2,7 +2,7 @@
 name: captain-hold-lifecycle
 description: >-
   Agent-only policy for completing investigations and visual reviews without losing unresolved captain calls, and for closing what the captain owns with his actual words.
-  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, and on any RECORD DIVERGENCE line the wake drain prints.
+  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, when a message says the captain replied to a call, and on any RECORD DIVERGENCE or UNHANDLED REPLIES line the wake drain prints.
 user-invocable: false
 metadata:
   internal: true
@@ -53,6 +53,15 @@ A captain-held task closed outside this owner leaves no durable answer, so the c
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create held tasks.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.
 
+A reply is the captain speaking on a call without it recording anything: his words, a dated "not now", or an option the call cannot take by key, kept on the call by `bin/fm-captain-hold.sh reply` and listed as the call's `reply` in `list --json` and the fleet snapshot's `calls[]`.
+A reply records that he replied, never what he decided, so deciding stays your explicit act.
+A call with `reply` set is not awaiting the captain: never report it to him as waiting on him, because he has spoken and the next move is yours.
+Act on it in the turn you read it: record it with `answer` when his words decide the call (with `--key` when they name one of the call's options, `--release` when the call declares that close, and `--via quarterdeck` when the reply came from the app), re-hold with `--until` when they defer it to a date, or otherwise answer him in chat and ask again with `offer`.
+Never infer an answer from the reply alone: words that dispute the call's premise or ask a question are not an option, and recording them as one can release held work on a question.
+Each of those acts clears the reply; nothing else does.
+A reply still set after a few minutes prints as `UNHANDLED REPLIES` on every wake drain until you act, and that section is your own overdue work.
+Free text the captain types in chat, not on a call, is never matched to a call by any script or surface: when a chat message plausibly addresses an open call, ask him in one line whether it is his answer to that call, and record it only on his yes.
+
 A captain call can be written down twice - as the keyed status decision the fold reads, and as the backlog task held for the captain - and those two records can disagree without either surface saying so.
 `bin/fm-captain-hold.sh diverged` reports that contradiction and the wake drain prints it as `RECORD DIVERGENCE`; it closes nothing, because a captain call closed wrongly leaves review entirely, which is worse than the noise.
 Read such a line as "these two records disagree", never as "the captain ruled and someone forgot to file it": a call can dissolve because its premise was false, or turn out to have been a question of fact rather than the captain's to answer.
@@ -66,7 +75,7 @@ The absence of a routed work item is not a divergence and the guard never requir
 3. Hold that task - or create one captain-held task for the review's open questions - with a concise reason, the question, the options, the recommendation, and `--origin` when the call came out of another task's work.
 4. Run `complete` with the full captain-held inventory for that review pass.
 5. Relay the choices to the captain as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
-6. Close each call only through `answer` (or a channel that feeds `answers`), close a board-requested moot call through evidence-backed `reconcile close`, record a still-active reconciliation through `reconcile note`, use `--until` when the captain defers it, or confirm a channel already closed it.
+6. Close each call only through `answer` (or a channel that feeds `answers`), act on every reply as the policy above says, close a board-requested moot call through evidence-backed `reconcile close`, record a still-active reconciliation through `reconcile note`, use `--until` when the captain defers it, or confirm a channel already closed it.
 7. Confirm Bearings reflects the outcome: answered or reconciled-moot calls leave Captain's Call, released work resumes, active reconciliations remain held, and deferred calls sit in Charted Next with their date.
 
 `bin/fm-captain-hold.sh --help` owns command syntax, close modes, legacy-identity compatibility, completion attestation, retry behavior, and close ordering.

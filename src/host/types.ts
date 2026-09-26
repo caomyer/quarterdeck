@@ -84,6 +84,22 @@ export type CallAnswer = {
   at: string;
 };
 
+/**
+ * The captain's words on a call that nothing has recorded yet, kept by `bin/fm-captain-hold.sh reply`: words, a dated
+ * not now, or an option the call cannot take by key. It records that the captain replied, never what he decided, and
+ * only the first mate acting clears it, by recording an answer, asking again, or holding the call.
+ */
+export type CallReply = {
+  words: string;
+  /** `quarterdeck`: a Bearings card. `review`: a page's review. `chat`. */
+  via: string;
+  at: string;
+  /** The message that carried the words to the first mate, or null when none has. */
+  message: string | null;
+  /** The reply this one replaced, while nothing has cleared it. */
+  previous?: Omit<CallReply, "previous"> | null;
+};
+
 /** Why the first mate settled a call for the captain, on a call raised and answered by `decide`. */
 export type CallDecided = { what: string; why: string; kind?: string | null; link?: string | null };
 
@@ -115,6 +131,8 @@ export type Call = {
   updated_at?: string | null;
   answer: CallAnswer | null;
   decided: CallDecided | null;
+  /** The captain's reply while the call is open and nothing has recorded it; absent from a firstmate that predates replies. */
+  reply?: CallReply | null;
 };
 
 /**
@@ -229,11 +247,13 @@ export type IntakeOutcome = { call: string; result: IntakeResult; detail: string
  * in words, or `defer` the date to be asked again on, and the first mate records it. `sent_at` is when the first
  * mate was told.
  */
-export type ReviewAnswer = { decision: string; option: string | null; label: string | null; on_answer?: string | null; note?: string | null; defer?: string | null; at: number; sent_at: number | null; recorded?: { result: IntakeResult; detail: string; at: number } | null };
+export type ReviewAnswer = { decision: string; option: string | null; label: string | null; on_answer?: string | null; note?: string | null; defer?: string | null; at: number; sent_at: number | null; recorded?: { result: IntakeResult; detail: string; at: number } | null; /** Whether firstmate kept an answer in words on its call as the captain's reply, as the review went. */ reply?: { result: "kept" | "not_kept"; detail: string } | null };
 /** What the captain said in words with an answer: anything added to an option, or, with none, the answer itself, or a date. */
 export type AnswerWords = { note?: string; defer?: string };
 /** What sending a review did: the message (null if it could not go), and what the intake did with each answer. */
 export type ReviewSubmitted = { message: string | null; text: string; review: ReviewView; outcomes?: IntakeOutcome[]; warning?: string };
+/** What replying to a call from Bearings did: kept on the call or not, and whether the first mate was told. */
+export type CallReplied = { kept: boolean; problem?: string; message: string | null; text: string | null; warning?: string };
 /** What answering a call from Bearings did. `message` is null when nothing was told to the first mate. */
 export type CallAnswered = { outcome: IntakeOutcome; message: string | null; text: string | null; review: ReviewView | null; warning?: string };
 /** What the list needs about a page's review, keyed `task/<id>/<name>` or `chat/<name>`. */
@@ -602,6 +622,11 @@ export interface HostAdapter {
    * argues it, when there is one), and only a recorded answer is told to the first mate.
    */
   callAnswer(answer: CallAnswerRequest): Promise<CallAnswered>;
+  /**
+   * Replies to one call from Bearings in the captain's words: firstmate keeps them on the call through its `reply`, and
+   * only then is the first mate told, naming the call. Words firstmate would not keep send nothing.
+   */
+  callReply(call: string, words: string): Promise<CallReplied>;
   /** Settles a sent comment, or opens it again. */
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean): Promise<ReviewView>;
   /** Remembers that the captain has looked at a revision, so a later one reads as new. */

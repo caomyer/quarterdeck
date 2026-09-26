@@ -90,6 +90,7 @@ pub fn run() {
       review::review_answer,
       review::review_scene,
       review::call_answer,
+      review::call_reply,
       start::start_work,
       start::start_asks,
       update::update_status,

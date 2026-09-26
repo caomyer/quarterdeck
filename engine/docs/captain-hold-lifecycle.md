@@ -210,6 +210,19 @@ Cost stays flat: one `tasks-axi list`, one key scan per status log, and the prec
 The comparison is refused unless the status directory is the active home's own, since tasks-axi reads that home's backlog and a mismatch would report one home's logs against another's tasks.
 If tasks-axi is unavailable or its listing cannot be parsed, the guard cannot read the structured record and prints nothing.
 
+## Replies waiting on the first mate
+
+The captain can speak on a call without deciding it: words that dispute its premise, a dated "not now", or an option on a call that cannot record it by key.
+`bin/fm-captain-hold.sh reply` keeps those words beside the open call as its record's `reply`, under the call's control lock, and records nothing about what they mean.
+A surface that carries the captain's words to a call writes them there first, so Bearings, a page's review rail, and the first mate all read one state from `calls[]`: not answered (`reply` and `answer` null), replied and not yet recorded (`reply` set), and answered (`answer` set).
+It never moves `updated_at`, so a page revision's standing against the choice it argues is unchanged, and it leaves the hold projection (`bucket`, `captain_actionable`) as it was, so a replied call stays answerable on every surface.
+Only the first mate acting clears it: `answer` once the answer is recorded, `offer`, and every `hold`, each of which records, re-asks, or defers the call.
+
+`bin/fm-captain-hold.sh replies --older-than <minutes>` is the read-only report of replies still set on open calls, and `bin/fm-wake-drain.sh` prints it as a bounded `UNHANDLED REPLIES` section on every drain once a reply is `FM_REPLY_OVERDUE_MINUTES` old (default 5).
+It needs no status log, so it prints on a home with no live work too, and it stops only when the first mate acts, because an unhandled reply is the first mate's overdue work, not a call awaiting the captain.
+`captain-hold-lifecycle` owns what the first mate does with one.
+`tests/fm-captain-calls.test.sh` proves the record, the lock, the refusals, each clearing path, `list` and the drain section.
+
 ## Compatibility with pre-collapse installs
 
 Older installs created derived `<origin>-decision-<key>` identities through the retired `bin/fm-decision-hold.sh`.
