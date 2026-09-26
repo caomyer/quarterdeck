@@ -592,7 +592,7 @@ EOF
   if [ "$omitted" -gt 0 ]; then
     printf 'UNHANDLED REPLIES: %d more omitted (byte cap)\n' "$omitted" || return 1
   fi
-  printf 'UNHANDLED REPLIES: read each reply with bin/fm-captain-hold.sh list --json; record it with bin/fm-captain-hold.sh answer <task> --decision-file <path> (with --key when the words name an option) only if the words decide the call, otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer; never infer an answer from the reply alone.\n' || return 1
+  printf 'UNHANDLED REPLIES: read each reply with bin/fm-captain-hold.sh list --json; record it with bin/fm-captain-hold.sh answer <task> --decision-file <path> (with --key when the words name an option) only if the words decide the call, otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with bin/fm-captain-hold.sh hold <task> --until <date> when the words put it off to a date; never infer an answer from the reply alone.\n' || return 1
 }
 
 print_status_sections() {
