@@ -57,12 +57,15 @@ async function paintedWith(locator, token) {
   return (await locator.evaluate((element) => getComputedStyle(element).color)) === want;
 }
 
-/** Checks the tone in both themes, and saves the state's screenshot in each. */
-async function inBothThemes(page, name, run) {
+/** Checks the tone in both themes, and saves the state's screenshot in each, with `subject` scrolled into view. */
+async function inBothThemes(page, name, run, subject) {
   for (const theme of themes) {
     await setTheme(page, theme);
     await run(theme);
-    if (shots) await page.screenshot({ path: join(shots, `${name}-${theme}.png`) });
+    if (shots) {
+      await subject?.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(shots, `${name}-${theme}.png`) });
+    }
   }
   await setTheme(page, "light");
 }
@@ -110,7 +113,7 @@ async function captainMessages(page) {
   check(await card.locator(".suggestion-chips button:not(:disabled)").count() === 3 && await card.locator(".reply-field textarea").isEditable(), "every way to answer is still there on the amber card");
   await inBothThemes(page, "reply-amber", async (theme) => {
     check(await paintedWith(card.locator("[data-testid='call-replied']"), "--amber"), `${theme}: a reply is painted --amber`);
-  });
+  }, card);
   const told = await captainMessages(page);
   const message = told.find((text) => text.includes(`The captain replied to call ${UNARGUED} from Bearings`));
   check(Boolean(message), "the first mate is told, naming the call id");
@@ -125,7 +128,7 @@ async function captainMessages(page) {
   await recorded.waitFor();
   await inBothThemes(page, "reply-recorded", async (theme) => {
     check(await paintedWith(recorded.locator(".call-state"), "--green"), `${theme}: a recorded answer is painted --green`);
-  });
+  }, recorded);
   await card.waitFor({ state: "detached" });
   check(true, "recorded, the call leaves Captain's call");
   await page.close();
@@ -165,7 +168,7 @@ async function captainMessages(page) {
   check(await card.getAttribute("data-replied") === null, "a refused reply is not shown as kept");
   await inBothThemes(page, "reply-refused", async (theme) => {
     check(await paintedWith(card.locator("[data-testid='reply-refused']"), "--coral"), `${theme}: a refused reply is painted --coral`);
-  });
+  }, card);
   check((await captainMessages(page)).length === sentBefore, "nothing reached the first mate");
   await page.close();
 }
@@ -183,7 +186,7 @@ async function captainMessages(page) {
   check((await captainMessages(page)).length === sentBefore, "no message went");
   await inBothThemes(page, "reply-not-told", async (theme) => {
     check(await paintedWith(card.locator("[data-testid='call-replied']"), "--amber"), `${theme}: kept but not told is still --amber`);
-  });
+  }, card);
   await page.close();
 }
 
@@ -201,7 +204,7 @@ for (const [flag, told] of [["replied", true], ["replied-untold", false]]) {
   if (told) {
     await inBothThemes(page, "reply-after-reload", async (theme) => {
       check(await paintedWith(card.locator("[data-testid='call-replied']"), "--amber"), `${theme}: after a reload the reply is --amber`);
-    });
+    }, card);
   }
   await page.close();
 }
@@ -217,7 +220,7 @@ for (const [flag, told] of [["replied", true], ["replied-untold", false]]) {
   await card.locator("[data-testid='call-replied']").waitFor({ state: "detached", timeout: 8000 });
   check((await card.locator("[data-testid='decision-reason']").innerText()).endsWith("(asked again after your reply)"), "asked again, the card shows the new question");
   check(await card.getAttribute("data-replied") === null && Number(await captainsCall(page).innerText()) === before, "and the call waits on the captain again");
-  await inBothThemes(page, "reply-reasked", async () => {});
+  await inBothThemes(page, "reply-reasked", async () => {}, card);
   await page.close();
 }
 {
@@ -250,7 +253,7 @@ for (const [flag, told] of [["replied", true], ["replied-untold", false]]) {
   check((await railCall.locator("[data-testid='answer-earlier']").innerText()).startsWith("You said in your review, ") && (await railCall.locator("[data-testid='answer-earlier']").innerText()).endsWith(": Publisher first, but log every episode we had to transcribe."), "the rail shows the reply firstmate keeps");
   await inBothThemes(page, "reply-rail", async (theme) => {
     check(await paintedWith(railCall.locator("[data-testid='call-replied']"), "--amber"), `${theme}: the rail's reply is --amber`);
-  });
+  }, railCall);
   await page.locator(".nav-item", { hasText: "Chat" }).click();
   const review = await page.locator("[data-testid='review-card']").last().locator(".review-card-text pre").textContent();
   check(review.includes("Answered in words, kept on each call as the captain's reply; nothing has recorded them.") && review.includes("\nres-transcripts-source: Publisher first, but log every episode we had to transcribe."), "the review tells the first mate the words are kept on the call and unrecorded");
@@ -259,7 +262,7 @@ for (const [flag, told] of [["replied", true], ["replied-untold", false]]) {
   await card.locator("[data-testid='call-replied']").waitFor();
   check((await card.locator("[data-testid='call-said']").innerText()).startsWith("You said in your review of “Which episodes already carry a transcript?”, "), "Bearings shows the same reply, and the review it went in");
   check(await card.locator("button", { hasText: "Answer now" }).count() === 1, "and still offers every way to answer it");
-  await inBothThemes(page, "reply-from-review", async () => {});
+  await inBothThemes(page, "reply-from-review", async () => {}, card);
   await page.locator(".nav-item", { hasText: "Artifacts" }).click();
   const row = page.locator(".artifact-row", { hasText: reportTitle });
   check(await page.locator(".artifact-group[data-standing='discussion'] .artifact-row", { hasText: reportTitle }).count() === 1, `a read page whose only call has the captain's reply is in discussion, not open for review (${await row.count()})`);
