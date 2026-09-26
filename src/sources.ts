@@ -77,14 +77,17 @@ export function itemState(item: SourceItem) {
   return item.state === "done" || item.state === "cancelled" ? (item.state === "cancelled" ? "cancelled" : "closed") : item.state_name || item.state;
 }
 
-/** The chip on a linked task: "GitHub #2 open · read 3 min ago", or why the item cannot be shown. */
+/**
+ * The chip on a linked task: "GitHub #2 open · as last read 3 min ago", dated by when that item itself was last read,
+ * never by the source's latest read, which only lists what changed; or the copy taken when it was filed, said as such.
+ */
 export function chipText(view: LinkView, now: number) {
   if (!view.source) return `${view.link.source} · not connected in this home`;
   const name = providerName(view.source.provider);
-  const shown = view.item ?? view.filed;
-  if (!shown) return `${name} · not read yet`;
-  const state = view.item ? itemState(view.item) : shown.state_name;
-  return `${name} ${shown.key} ${state} · ${freshness(view.source, now)}`;
+  const { item, filed } = view;
+  if (item) return `${name} ${item.key} ${itemState(item)} · ${item.seen_at ? `as last read ${ago(now - Date.parse(item.seen_at))}` : "not dated"}`;
+  if (filed) return `${name} ${filed.key} ${filed.state_name} · as filed ${ago(now - Date.parse(filed.filed_at))}, not read since`;
+  return `${name} · not read yet`;
 }
 
 /** The tone of an item's state, from the tokens: open is blue, done green, cancelled or gone muted. */
@@ -211,7 +214,9 @@ export function policyLine(source: TaskSource, record: BacklogRecord, item: stri
   const written = new Set(source.sent.filter(mine).map((write) => write.intent));
   const owed = new Set(source.outbox.filter(mine).map((write) => write.intent));
   const detail = owed.size > 0 ? "What is owed posts once, on a read that works."
-    : record.state === "done" ? (written.has("delivered") ? "Nothing more is owed." : "It closed without landing, so nothing more is posted.")
+    : record.state === "done" ? (written.has("delivered") ? "Nothing more is owed."
+      : (source.landed ?? []).includes(record.id) ? "It landed: the completion comment is queued on the next read."
+      : "It closed without landing, so nothing more is posted.")
     : written.has("in-review") ? "Next: one comment when it lands."
     : firstWords(firstMilestone);
   return { text, detail };

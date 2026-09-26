@@ -87,7 +87,10 @@
 # task's registered PR: `started` while in flight, `in-review` while in flight
 # with a PR, `delivered` once done as a delivery by firstmate's own rule
 # (`landed_delivery` in bin/fm-landed-lib.sh). A Done row that delivered
-# nothing (dropped, superseded, merged away) writes nothing. A milestone is written
+# nothing (dropped, superseded, merged away) writes nothing more, and any
+# milestone still waiting for it is superseded rather than posted. The snapshot
+# names each source's linked tasks that landed (`landed`), so no reader keeps
+# its own copy of that rule. A milestone is written
 # once per (source, item, task), never below one already written, under a write
 # id derived from those four, so a replay converges instead of posting twice.
 # Pending writes live in data/sources/<dir>/outbox/ and leave only when the
@@ -655,6 +658,18 @@ milestone_body() {  # <intent> <pr> <task>
   esac
 }
 
+# Move every milestone still waiting for one (item, task) to sent, superseded.
+supersede_owed() {  # <dir> <item> <task>
+  local dir=$1 f
+  for f in "$dir"/outbox/*.json; do
+    [ -f "$f" ] || continue
+    jq -e --arg i "$2" --arg t "$3" '.item == $i and .task == $t and .intent != "stopped"' "$f" >/dev/null 2>&1 || continue
+    put_json "$dir/sent.json" "$(read_json "$dir/sent.json" '{}' | jq -c --slurpfile e "$f" --arg now "$NOW" \
+      '.[$e[0].write_id] = ($e[0] | {intent,task,item,at:$now,superseded:true})')"
+    rm -f -- "$f"
+  done
+}
+
 # Queue each linked task's current milestone for one source, forward-only.
 derive_outbox() {  # <source-id>
   local source=$1 dir sent first edge item task intent pr wid have
@@ -666,9 +681,15 @@ derive_outbox() {  # <source-id>
     task=$(printf '%s' "$edge" | jq -r .task)
     pr=$(printf '%s' "$edge" | jq -r '.pr // ""')
     intent=$(printf '%s' "$edge" | jq -r '
-      if .state == "done" then (if .landed then "delivered" else "" end)
+      if .state == "done" then (if .landed then "delivered" else "closed" end)
       elif .state == "in_flight" and (.pr // "") != "" then "in-review"
       elif .state == "in_flight" then "started" else "" end')
+    # Work that closed without landing says nothing more, and nothing still waiting goes.
+    if [ "$intent" = closed ]; then
+      supersede_owed "$dir" "$item" "$task"
+      sent=$(read_json "$dir/sent.json" '{}')
+      continue
+    fi
     [ -n "$intent" ] && [ "$(rank "$intent")" -ge "$first" ] || continue
     # Forward only: nothing at or above this milestone has been written or queued.
     # A stop comment is not a milestone, so work that resumes and lands still says so.
@@ -678,13 +699,8 @@ derive_outbox() {  # <source-id>
     [ "${have:-0}" -lt "$(rank "$intent")" ] || continue
     wid=$(write_id "$source" "$item" "$task" "$intent")
     # A higher milestone supersedes a lower one still waiting.
-    for f in "$dir"/outbox/*.json; do
-      [ -f "$f" ] || continue
-      jq -e --arg i "$item" --arg t "$task" '.item == $i and .task == $t and .intent != "stopped"' "$f" >/dev/null 2>&1 || continue
-      sent=$(printf '%s' "$sent" | jq -c --slurpfile e "$f" --arg now "$NOW" '.[$e[0].write_id] = ($e[0] | {intent,task,item,at:$now,superseded:true})')
-      put_json "$dir/sent.json" "$sent"
-      rm -f -- "$f"
-    done
+    supersede_owed "$dir" "$item" "$task"
+    sent=$(read_json "$dir/sent.json" '{}')
     put_json "$dir/outbox/$wid.json" "$(jq -cn --arg w "$wid" --arg s "$source" --arg i "$item" --arg t "$task" \
       --arg intent "$intent" --arg pr "$pr" --arg now "$NOW" --arg body "$(milestone_body "$intent" "$pr" "$task")" \
       '{write_id:$w,source:$s,item:$i,task:$t,intent:$intent,pr:(if $pr == "" then null else $pr end),
@@ -973,6 +989,7 @@ cmd_snapshot() {
   local id sd dd f kind where
   [ "$#" -eq 0 ] || usage_fail 'snapshot takes no arguments'
   : > "$TMP/sources.jsonl"
+  [ "$(config_json | jq '.sources | length')" -eq 0 ] || edges_json > "$TMP/edges.json"
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     sd=$(sstate "$id"); dd=$(sdata "$id")
@@ -988,7 +1005,7 @@ cmd_snapshot() {
       --argjson cache "$(read_json "$sd/items.json" '{"items":{}}')" --argjson sent "$(read_json "$dd/sent.json" '{}')" \
       --argjson dismissed "$(read_json "$dd/dismissed.json" '{}')" \
       --slurpfile filed "$TMP/filed.jsonl" --slurpfile outbox "$TMP/outbox.jsonl" --slurpfile events "$TMP/events.jsonl" \
-      --arg now "$NOW" --argjson stale "$STALE_SECONDS" '
+      --slurpfile edges "$TMP/edges.json" --arg now "$NOW" --argjson stale "$STALE_SECONDS" '
       ($filed | map({key:.item,value:.}) | from_entries) as $filed_by
       | $cfg + {
           identity:($cursor.identity // null), can:($cursor.can // null), reach:($cursor.reach // []),
@@ -1004,7 +1021,8 @@ cmd_snapshot() {
             | select(($dismissed[.id] // null) == null or $dismissed[.id] < .updated_at) | .id],
           outbox:[$outbox[] | {write_id,item,task,intent,pr,created,attempts,last_error,advance}],
           sent:[$sent | to_entries[] | .value + {write_id:.key}],
-          events:[$events[] | {token,item,key,kind,at,tasks}]}' >> "$TMP/sources.jsonl"
+          events:[$events[] | {token,item,key,kind,at,tasks}],
+          landed:([$edges[0][] | select(.source == $cfg.id and .landed) | .task] | unique)}' >> "$TMP/sources.jsonl"
   done < <(config_json | jq -r '.sources[].id')
   jq -sc --arg now "$NOW" --arg first "$FIRST_MILESTONE" '{schema:"fm-sources-snapshot.v1",read_at:$now,first_milestone:$first,sources:.}' "$TMP/sources.jsonl"
 }

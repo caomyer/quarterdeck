@@ -386,6 +386,24 @@ test_closed_without_delivery_posts_nothing() {
   [ "$(comment_count ud u2)" = 0 ] || fail 'a task closed without delivery posted upstream'
   source_of "$home" fixture:ud | jq -e '[.sent[], .outbox[] | select(.task == "qd-ud-2")] | length == 0' >/dev/null \
     || fail 'a task closed without delivery queued a write'
+  source_of "$home" fixture:ud | jq -e '.landed == []' >/dev/null || fail 'the snapshot names a task that closed without landing as landed'
+  # Its PR comment still waiting when it closed without landing: it never posts.
+  world_set ud '.items += [$i] | .faults.comment = ["provider"]' --argjson i "$(item u3 UD-3 10:08)"
+  in_flight_with_pr "$home" ud UD-3 qd-ud-3 13
+  src "$home" 10:09 poll >/dev/null || fail 'poll failed'
+  source_of "$home" fixture:ud | jq -e '[.outbox[] | select(.task == "qd-ud-3")] | length == 1' >/dev/null \
+    || fail 'the failed PR comment is not waiting'
+  axi "$home" "done" qd-ud-3 --note 'dropped: no longer wanted'
+  src "$home" 10:10 poll >/dev/null || fail 'poll failed'
+  [ "$(comment_count ud u3)" = 0 ] || fail 'a PR comment still waiting posted after the task closed without landing'
+  source_of "$home" fixture:ud | jq -e '([.outbox[] | select(.task == "qd-ud-3")] | length == 0)
+    and ([.sent[] | select(.task == "qd-ud-3")] | length == 1 and .[0].superseded == true)' >/dev/null \
+    || fail 'the waiting PR comment was not superseded'
+  # A task that did land is named in the snapshot, so the drawer can say its comment is coming.
+  src "$home" 10:11 file fixture:ud UD-1 qd-ud-4 'landed' --also >/dev/null || fail 'file failed'
+  axi "$home" start qd-ud-4
+  axi "$home" "done" qd-ud-4 --pr https://example.invalid/o/r/pull/14
+  source_of "$home" fixture:ud | jq -e '.landed == ["qd-ud-4"]' >/dev/null || fail 'the snapshot does not name the task that landed'
   pass 'a task closed without a delivery never says it landed, by firstmate'"'"'s own delivery rule'
 }
 

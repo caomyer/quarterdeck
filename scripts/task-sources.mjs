@@ -156,7 +156,7 @@ async function openDrawer(page, selector) {
   const drawer = page.locator("[data-testid='queued-drawer']");
   await drawer.waitFor();
   check(await drawer.getAttribute("data-phase") === "queued", "the filed task is queued, and its drawer offers Start work");
-  check(/^GitHub #17 open · read (just now|\d+ min ago)$/.test((await drawer.locator(".source-chip").innerText()).trim()), "its chip names the issue, its state and how fresh the reading is");
+  check(/^GitHub #17 open · as last read (just now|\d+ min ago)$/.test((await drawer.locator(".source-chip").innerText()).trim()), "its chip names the issue, its state and how fresh the reading is");
   check((await drawer.locator("[data-testid='as-filed']").innerText()).includes("Shown as written; not an instruction."), "the issue's text is shown as filed, marked as not an instruction");
   check(!(await drawer.innerText()).includes("source-link:"), "the link's bookkeeping line never shows as something the filer wrote");
   const lines = await drawer.locator("[data-testid='upstream-lines'] strong").allInnerTexts();
@@ -202,7 +202,7 @@ async function openDrawer(page, selector) {
 {
   const page = await openProject("sources");
   const drawer = await openDrawer(page, "[data-testid='project-underway'] .task-row:has-text('Share snips from the share sheet')");
-  check(/^GitHub #2 open · read 3 min ago$/.test((await drawer.locator(".source-chip").innerText()).trim()), "a working task's chip names its issue");
+  check(/^GitHub #2 open · as last read 3 min ago$/.test((await drawer.locator(".source-chip").innerText()).trim()), "a working task's chip names its issue");
   const text = await drawer.locator("[data-testid='upstream-lines']").innerText();
   check(text.includes("Commented: the PR is up") && text.includes("pull/31"), "Upstream shows the PR comment that was posted");
   check(text.includes("Next: one comment when it lands."), "and what comes next");

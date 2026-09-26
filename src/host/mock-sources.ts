@@ -107,7 +107,7 @@ export function mockSources(variant: string | null, helpers: Helpers): { read: S
         ? { code: "auth", detail: "GitHub refused the gh sign-in: HTTP 401 Bad credentials", first_at: at(93), last_at: at(1), count: 18, retry_at: null, woke: true }
         : null,
     items: empty ? {} : items, filed: empty ? {} : filed, offers: empty ? [] : [drawer.id, border.id],
-    outbox: empty ? [] : outbox, sent: empty ? [] : sent,
+    outbox: empty ? [] : outbox, sent: empty ? [] : sent, landed: empty ? [] : [LINKED_LANDED],
     events: variant === "cancelled" ? [{ token: "0123456789abcdef0123", item: share.id, key: "#2", kind: "cancelled", at: at(10), tasks: [{ id: LINKED_WORKING, state: "in_flight", role: "fulfills" }] }] : [],
   };
   const link = (item: string): SourceLink => ({ source: MOCK_SOURCE, item, role: "fulfills" });

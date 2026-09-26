@@ -11,7 +11,7 @@ const NOW = Date.parse("2026-09-25T18:00:00Z");
 const iso = (minutesAgo) => new Date(NOW - minutesAgo * 60_000).toISOString();
 
 function item(n, fields = {}) {
-  return { id: `I_${n}`, key: `#${n}`, url: `https://github.com/o/r/issues/${n}`, title: `Issue ${n}`, body: "Body", state: "open", state_name: "open", assignee: null, updated_at: iso(60), deleted: false, matches: true, filed: null, ...fields };
+  return { id: `I_${n}`, key: `#${n}`, url: `https://github.com/o/r/issues/${n}`, title: `Issue ${n}`, body: "Body", state: "open", state_name: "open", assignee: null, updated_at: iso(60), deleted: false, matches: true, seen_at: iso(3), filed: null, ...fields };
 }
 
 function filed(n, task, fields = {}) {
@@ -43,16 +43,20 @@ test("the snapshot's sources, its reason when they cannot be read, and nothing f
 test("a linked task's chip names the item, its state and how fresh the reading is, or that its source is not here", () => {
   const two = item(2);
   const views = linkViews(row("t-1", { source_links: [link(2), { source: "linear:acme", item: "u-1", role: "contributes" }] }), [source({ items: { I_2: two } })]);
-  assert.equal(chipText(views[0], NOW), "GitHub #2 open · read 3 min ago");
+  assert.equal(chipText(views[0], NOW), "GitHub #2 open · as last read 3 min ago");
   assert.equal(chipText(views[1], NOW), "linear:acme · not connected in this home");
-  assert.match(chipText(linkViews(row("t-1", { source_links: [link(2)] }), [source({ items: { I_2: two }, last_read: iso(42) })])[0], NOW), /^GitHub #2 open · as of /);
+  // The source was read just now, but it lists only what changed: the item is dated by its own last read.
+  const old = linkViews(row("t-1", { source_links: [link(2)] }), [source({ items: { I_2: item(2, { seen_at: iso(3 * 24 * 60) }) }, last_read: iso(1) })]);
+  assert.equal(chipText(old[0], NOW), "GitHub #2 open · as last read 3 d ago");
   const closed = linkViews(row("t-1", { source_links: [link(2)] }), [source({ items: { I_2: item(2, { state: "done", state_name: "closed (completed)" }) } })]);
-  assert.equal(chipText(closed[0], NOW), "GitHub #2 closed · read 3 min ago");
+  assert.equal(chipText(closed[0], NOW), "GitHub #2 closed · as last read 3 min ago");
+  const onlyFiled = linkViews(row("t-1", { source_links: [link(2)] }), [source({ filed: { I_2: { item: "I_2", key: "#2", url: "", title: "", body: "", state: "open", state_name: "open", assignee: null, updated_at: iso(99), filed_at: iso(120), task: "t-1" } } })]);
+  assert.equal(chipText(onlyFiled[0], NOW), "GitHub #2 open · as filed 2 h ago, not read since");
 });
 
 test("a key that changed upstream shows on the chip, because only the id is stored", () => {
   const moved = linkViews(row("t-1", { source_links: [link(3)] }), [source({ items: { I_3: item(3, { key: "OPS-9" }) } })]);
-  assert.equal(chipText(moved[0], NOW), "GitHub OPS-9 open · read 3 min ago");
+  assert.equal(chipText(moved[0], NOW), "GitHub OPS-9 open · as last read 3 min ago");
 });
 
 test("one slow read says nothing; a typed failure says so only once it has persisted, in the captain's terms", () => {
@@ -147,4 +151,5 @@ test("a task whose completion comment is still owed never reads as owing nothing
   const sent = source({ sent: [{ write_id: "c", item: "I_2", task: "t-1", intent: "delivered", at: iso(20) }] });
   assert.equal(policyLine(sent, row("t-1", { state: "done" }), "I_2", "in-review").detail, "Nothing more is owed.");
   assert.equal(policyLine(source(), row("t-1", { state: "done" }), "I_2", "in-review").detail, "It closed without landing, so nothing more is posted.");
+  assert.equal(policyLine(source({ landed: ["t-1"] }), row("t-1", { state: "done" }), "I_2", "in-review").detail, "It landed: the completion comment is queued on the next read.");
 });

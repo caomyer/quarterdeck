@@ -103,6 +103,8 @@ export type TaskSource = {
   last_read: string | null; reading_more: boolean; stale: boolean; failure: SourceFailure | null;
   items: Record<string, SourceItem>; filed: Record<string, SourceFiled>; offers: string[];
   outbox: SourceWrite[]; sent: SourceWrite[];
+  /** The linked tasks that closed as a delivery, by firstmate's own rule; a Done row not named here delivered nothing. */
+  landed?: string[];
   events: { token: string; item: string; key: string | null; kind: string; at: string; tasks: { id: string; state: string; role: string }[] }[];
 };
 
