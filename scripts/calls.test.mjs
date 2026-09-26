@@ -4,8 +4,9 @@
 //
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answerInWords, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, dayAfter, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, replyOf, resolveEvidence } from "../src/calls.ts";
+import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, replyOf, resolveEvidence, stillOffered } from "../src/calls.ts";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -152,6 +153,70 @@ test("an answer in words is not now until a day, what the captain wrote, or both
   assert.equal(answerInWords("2026-10-03", ""), "Not now. Ask me again on Oct 3.");
   assert.equal(answerInWords("2026-10-03", "After the launch."), "Not now. Ask me again on Oct 3. After the launch.");
   assert.equal(answerInWords(undefined, "   "), "");
+});
+
+test("the chat shows a call raised in the last day, where it was raised, and never one decided for the captain", () => {
+  const calls = [
+    call("later", { raised_at: ago(1) }),
+    call("earlier", { raised_at: ago(20), state: "closed", answer: { key: "k", label: "L", by: "captain", via: "quarterdeck", at: ago(19) } }),
+    call("yesterday", { raised_at: ago(25) }),
+    call("no-time", { raised_at: null }),
+    call("bad-time", { raised_at: "soon" }),
+    call("decided", { raised_at: ago(2), state: "closed", decided: { what: "Merged it", why: "Checks passed." } }),
+  ];
+  assert.deepEqual(callsInChat(calls, NOW).map(({ call: shown, at }) => [shown.id, at]), [["earlier", Date.parse(ago(20))], ["later", Date.parse(ago(1))]]);
+});
+
+test("where a call stands is the same wherever it is asked", () => {
+  const recorded = call("x", { state: "closed", answer: { key: "keep", label: "Keep merging", by: "captain", via: "lavish", at: ago(1) } });
+  assert.deepEqual(callStanding(call("x")), { kind: "open", failed: null });
+  assert.deepEqual(callStanding(recorded), { kind: "recorded", label: "Keep merging", via: "lavish" });
+  assert.deepEqual(callStanding(call("x", { state: "answered", answer: recorded.answer })), { kind: "recorded", label: "Keep merging", via: "lavish" });
+  assert.deepEqual(callStanding(call("x", { state: "closed" })), { kind: "closed" });
+  assert.deepEqual(callStanding(call("x", { captain_actionable: false })), { kind: "held" });
+  assert.deepEqual(callStanding(call("x"), { answeredIn: "The page" }), { kind: "in-review", page: "The page" });
+  // This session's word from the intake comes first: the record catches up on the next snapshot.
+  const closed = { label: "Keep merging", result: "closed", detail: "recorded" };
+  assert.deepEqual(callStanding(call("x"), { answered: closed }), { kind: "recorded", label: "Keep merging", via: "quarterdeck" });
+  const refused = { label: "Keep merging", result: "not_recorded", detail: "fm-captain-hold.sh did not finish within 60s" };
+  assert.deepEqual(callStanding(call("x"), { answered: refused }), { kind: "open", failed: refused });
+});
+
+test("an answer given before the call was held again does not answer the new ask", () => {
+  const first = ago(5);
+  const answered = { label: "Keep merging", result: "closed", detail: "recorded", raised: first };
+  assert.equal(callStanding(call("x", { raised_at: first }), { answered }).kind, "recorded");
+  // Released, then held again: the hold starts a new lifecycle, and raised_at moves on.
+  assert.deepEqual(callStanding(call("x", { raised_at: ago(1) }), { answered }), { kind: "open", failed: null });
+  assert.deepEqual(callStanding(call("x", { raised_at: ago(1) }), { answered: { ...answered, result: "not_recorded" } }), { kind: "open", failed: null });
+});
+
+test("a pick stands only while the call still offers it as the captain saw it", () => {
+  const options = [{ key: "wifi", label: "Wi-Fi only" }, { key: "any", label: "Any network" }];
+  assert.equal(stillOffered(call("x", { options }), { key: "wifi", label: "Wi-Fi only" }), true);
+  assert.equal(stillOffered(call("x", { options }), { key: "first-use", label: "On first use only" }), false, "withdrawn");
+  assert.equal(stillOffered(call("x", { options }), { key: "any", label: "Any network, ask first" }), false, "kept, but relabelled");
+});
+
+test("the app's own answer messages read back as the answers they are", () => {
+  // The same file the Rust tests compare answer_message against, so neither end can drift.
+  const fixture = JSON.parse(readFileSync(new URL("../src/fixtures/call-messages.json", import.meta.url), "utf8"));
+  for (const sent of fixture.answered) {
+    assert.deepEqual(answerOfMessage(sent.text), { kind: "recorded", call: sent.call, key: sent.key, label: sent.label, note: sent.note });
+  }
+  for (const sent of fixture.replied) {
+    assert.deepEqual(answerOfMessage(sent.text), { kind: "replied", call: sent.call, words: sent.words });
+  }
+});
+
+test("only the app's own lines are answers", () => {
+  const calls = [call("res-wifi-drop")];
+  assert.deepEqual(answerOfMessage("On the res wifi drop: Not now. Ask me again on Oct 3.", calls), { kind: "replied", call: "res-wifi-drop", words: "Not now. Ask me again on Oct 3." });
+  assert.equal(answerOfMessage("On the res other call: yes", calls), null, "a call the home does not carry");
+  assert.equal(answerOfMessage("Keep foreman merging, please."), null);
+  assert.equal(answerOfMessage("I answered a call from Bearings.\nRecorded: x = y"), null);
+  assert.equal(answerOfMessage("The captain answered a call from Bearings.\nnothing recorded"), null);
+  assert.equal(answerOfMessage("Recorded: foreman-auto-merge = keep"), null, "only under the app's header");
 });
 
 test("a reply the captain made is the first mate's move, shown while the call is open and never as an answer", () => {

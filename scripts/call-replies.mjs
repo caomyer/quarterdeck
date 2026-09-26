@@ -79,7 +79,8 @@ async function typeWords(card, words) {
 
 async function captainMessages(page) {
   await page.locator(".nav-item", { hasText: "Chat" }).click();
-  const texts = await page.locator(".captain-message").allInnerTexts();
+  // An answer to a call is drawn as a card in the chat; what the first mate got is behind its fold.
+  const texts = await page.locator(".captain-message, [data-testid='answer-card']").evaluateAll((items) => items.map((item) => item.querySelector("details pre")?.textContent ?? item.textContent ?? ""));
   await page.locator(".nav-item", { hasText: "Bearings" }).click();
   return texts;
 }

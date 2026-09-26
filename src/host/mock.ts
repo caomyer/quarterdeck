@@ -135,6 +135,8 @@ function reviewValue(name: string) {
  * telling the first mate, and the first mate then acts on it with `?records-reply` (records it) or `?reasks` (asks again).
  * `?usage-t2` adds the captain's own usage-panel mock as its scout presented it, the page his t2 comment was written on:
  * its "under pace" words sit twice in the Claude row, which is shut when the page opens.
+ * `?chat-calls` has the first mate act on calls in chat the way `bin/fm-captain-hold.sh` does, when the captain asks it
+ * to (`chatCallsTurn`), so every time a call carries is one the engine would write.
  */
 /** A calendar day `days` ago where the app runs, as a bare YYYY-MM-DD date. */
 function localDate(days: number) {
@@ -534,6 +536,20 @@ const EARLIER_CONVERSATION: HistoryItem[] = [
 ];
 
 /**
+ * `?chat-calls` with `?history`: a resumed conversation carrying two of the app's own answer messages, which come back
+ * with no ids or times: one for a call the snapshot still lists, and one for a call closed long enough ago to have
+ * left it, and a message of the captain's that only looks like one.
+ */
+const CHAT_CALLS_HISTORY: HistoryItem[] = [
+  { who: "captain", text: "What's waiting on me?" },
+  { who: "mate", text: "Two calls: whether uploads wait for Wi-Fi, and whether to keep the release notes short." },
+  { who: "captain", text: "The captain answered a call from Bearings.\nAnswers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:\nRecorded: res-upload-wifi = wifi-only (\"Wi-Fi only, and say so in Settings\")\nThe captain added: Say it once, in Settings." },
+  { who: "captain", text: "The captain answered a call from Bearings.\nAnswers already recorded with bin/fm-captain-hold.sh; do the follow-up each one calls for, and do not record them again:\nRecorded: foreman-release-notes = short (\"Keep them to one screen\")" },
+  { who: "captain", text: "Recorded: I'd keep them short either way." },
+  { who: "mate", text: "Aye, captain. Both are recorded." },
+];
+
+/**
  * `?resumed-day`, with `?artifacts`: a first mate resumed after a day of work, as a relaunch brings it back, so none of
  * it has a time. The captain reviewed the usage panel's first revision in it, so that review is the one thing the app
  * knows the time of. The last exchange is from minutes ago, and every page is older than it.
@@ -595,6 +611,60 @@ const CUT_OFF_MESSAGE = "Ship the titles branch when CI is green.";
 
 const SESSION_LIMIT_ERROR = JSON.stringify({ code: -32603, data: { errorKind: "rate_limit" }, message: "Internal error: You've hit your session limit · resets 1:50pm (America/Los_Angeles)" });
 
+/** `?chat-calls`: the call the first mate raises in chat, as `bin/fm-captain-hold.sh hold` writes it. */
+const CHAT_CALL = {
+  id: "foreman-wifi-uploads",
+  title: "Foreman: should uploads wait for Wi-Fi?",
+  question: "Should foreman hold its release uploads until the Mac is on Wi-Fi?",
+  options: [
+    { key: "wifi", label: "Wait for Wi-Fi", recommended: true },
+    { key: "any", label: "Upload on any network", recommended: false },
+  ],
+};
+
+type ChatCallTurn = { asks: string; call: string; step: string; says: string; change: (call: Call | undefined, stamp: string) => Call };
+
+/** `?chat-calls`: what the first mate does when the captain asks, each one `fm-captain-hold.sh` command. */
+const CHAT_CALL_TURNS: ChatCallTurn[] = [
+  {
+    asks: "What needs me?", call: CHAT_CALL.id,
+    step: `bin/fm-captain-hold.sh hold ${CHAT_CALL.id} --option wifi="Wait for Wi-Fi" --option any="Upload on any network" --recommend wifi --on-answer release`,
+    says: "Captain, one thing needs you: foreman is about to upload the release. Hold it until you are on Wi-Fi, or send it on any network? I'd wait for Wi-Fi.",
+    change: (_call, stamp) => ({
+      id: CHAT_CALL.id, title: CHAT_CALL.title, question: CHAT_CALL.question, options: CHAT_CALL.options, on_answer: "release", state: "open", bucket: "live",
+      captain_actionable: true, origin: null, about: null, evidence: [], raised_by: "firstmate", raised_at: stamp, updated_at: stamp, answer: null, decided: null, reply: null,
+    }),
+  },
+  {
+    asks: "Offer me other options.", call: CHAT_CALL.id,
+    step: `bin/fm-captain-hold.sh offer ${CHAT_CALL.id} --option wifi="Wait for Wi-Fi" --option charging="Wait until it is charging" --recommend wifi`,
+    says: "Done: uploading on any network is off the table, and waiting until it is charging is on it.",
+    change: (call, stamp) => ({ ...call!, options: [CHAT_CALL.options[0], { key: "charging", label: "Wait until it is charging", recommended: false }], updated_at: stamp, reply: null }),
+  },
+  {
+    asks: "Ask me again about the uploads.", call: CHAT_CALL.id,
+    step: `bin/fm-captain-hold.sh hold ${CHAT_CALL.id} --option wifi="Wait for Wi-Fi" --option any="Upload on any network" --recommend any --on-answer release`,
+    says: "Captain, the Wi-Fi wait held the release for a day. Do you still want uploads to wait for Wi-Fi?",
+    change: (call, stamp) => ({
+      ...call!, state: "open", bucket: "live", captain_actionable: true, answer: null, reply: null, raised_at: stamp, updated_at: stamp,
+      options: [{ ...CHAT_CALL.options[0], recommended: false }, { ...CHAT_CALL.options[1], recommended: true }],
+    }),
+  },
+  {
+    asks: "I answered the uploads in Lavish.", call: CHAT_CALL.id,
+    step: `bin/fm-captain-hold.sh answer ${CHAT_CALL.id} --key wifi --via lavish`,
+    says: "Recorded: foreman waits for Wi-Fi.",
+    // Its answer releases the upload it held, so the row stays open and firstmate lists the call as answered.
+    change: (call, stamp) => ({ ...call!, state: "answered", bucket: null, captain_actionable: false, reply: null, answer: { key: "wifi", label: "Wait for Wi-Fi", by: "captain", via: "lavish", at: stamp } }),
+  },
+  {
+    asks: "The day has come.", call: CHAT_CALL.id,
+    step: "bin/fm-backlog-parse-lib.sh (the held day is today)",
+    says: "Your day has come: the uploads call is back.",
+    change: (call) => ({ ...call!, captain_actionable: true, bucket: "live" }),
+  },
+];
+
 export class MockHostAdapter implements HostAdapter {
   private listeners = new Set<HostEventListener>();
   private timers = new Set<number>();
@@ -618,7 +688,7 @@ export class MockHostAdapter implements HostAdapter {
     : reviewFlag("resumed-day")
       ? [...RESUMED_DAY]
         : reviewFlag("history")
-        ? [...EARLIER_CONVERSATION]
+        ? [...(reviewFlag("chat-calls") ? CHAT_CALLS_HISTORY : EARLIER_CONVERSATION)]
         : [];
   private streaming = false;
   private readonly snapshot = MockHostAdapter.fixtureSnapshot();
@@ -713,12 +783,14 @@ export class MockHostAdapter implements HostAdapter {
     const closed = answers.filter((answer) => outcomes.some((outcome) => outcome.call === answer.call && outcome.result === "closed"));
     if (closed.length && this.snapshot.fleet.calls) {
       const at = new Date().toISOString();
-      const calls = this.snapshot.fleet.calls.map((call) => {
-        const answer = closed.find((item) => item.call === call.id);
-        // As firstmate's `answer` does: recording the answer clears the captain's reply.
-        return answer ? { ...call, state: "closed" as const, captain_actionable: false, reply: null, answer: { key: answer.key, label: answer.label, by: "captain" as const, via: "quarterdeck", at } } : call;
-      });
       this.later(1200, () => {
+        // As firstmate's `answer` does: recording the answer clears the captain's reply. A call whose answer releases
+        // the work it held leaves that row open, so firstmate lists it as answered rather than closed; `raised_at` and
+        // `updated_at` stay as they were.
+        const calls = this.snapshot.fleet.calls!.map((call) => {
+          const answer = closed.find((item) => item.call === call.id);
+          return answer ? { ...call, state: call.on_answer === "release" ? "answered" as const : "closed" as const, captain_actionable: false, reply: null, answer: { key: answer.key, label: answer.label, by: "captain" as const, via: "quarterdeck", at } } : call;
+        });
         this.snapshot.fleet = { ...this.snapshot.fleet, calls };
         this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
       });
@@ -1193,7 +1265,9 @@ export class MockHostAdapter implements HostAdapter {
       return id;
     }
     if (reviewFlag("records-reply") || reviewFlag("reasks")) this.actOnReplies(id);
-    const run = () => text.startsWith("Start work on ") ? this.startTurn(id, text) : text.startsWith("Take on ") ? this.takeOnTurn(id, text) : this.deliver(id, text);
+    if (reviewFlag("chat-calls") && reviewFlag("holds-reply")) this.holdReplies(id);
+    const turn = reviewFlag("chat-calls") ? CHAT_CALL_TURNS.find((item) => item.asks === text.trim()) : undefined;
+    const run = () => turn ? this.chatCallsTurn(id, text, turn) : text.startsWith("Start work on ") ? this.startTurn(id, text) : text.startsWith("Take on ") ? this.takeOnTurn(id, text) : this.deliver(id, text);
     if (this.state === "starting") this.deferred.push(run);
     else run();
     return id;
@@ -1218,6 +1292,62 @@ export class MockHostAdapter implements HostAdapter {
           : { ...call, reply: null, updated_at: at, question: `${call.question ?? call.title} (asked again after your reply)` };
       }) };
       this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    });
+  }
+
+  /**
+   * `?chat-calls` with `?holds-reply`: the first mate acts on a dated Not now a message carried as the captain's reply
+   * the way firstmate lets it, with `hold --until`, which clears the reply and stops asking him until that day. A hold
+   * writes no content, so neither `raised_at` nor `updated_at` moves. "The day has come" asks him again.
+   */
+  private holdReplies(message: string) {
+    this.later(2500, () => {
+      const calls = this.snapshot.fleet.calls;
+      const held = calls?.filter((call) => call.state === "open" && call.reply?.message === message && /^Not now\. Ask me again on /.test(call.reply.words)) ?? [];
+      if (!held.length) return;
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls!.map((call) => held.includes(call) ? { ...call, reply: null, captain_actionable: false, bucket: "deferred" } : call) };
+      this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    });
+  }
+
+  /**
+   * `?chat-calls`: a turn in which the first mate does to a call exactly what one `bin/fm-captain-hold.sh` command
+   * does, then says so. The step comes first and the change a moment later, as the script runs, and every stamp is
+   * whole seconds, as the script writes them:
+   * - `hold` raises a new call: `raised_at` and `updated_at` are both the hold's stamp.
+   * - `offer` rewrites an open call's options: only `updated_at` moves.
+   * - `hold` again, on a call its answer released: a new lifecycle, open with no answer, and `raised_at` moves to the
+   *   new hold's stamp, with `updated_at` beside it since the hold sets the options again.
+   * - `answer --via lavish`: the captain answered it somewhere else, and it closes; nothing moves but the answer.
+   * - The day a Not now named comes: the call is live again. Nothing moves.
+   * The first mate reads the message and decides before it runs anything, a second or more, as a real turn does, so the
+   * whole-second stamp never falls before the message that asked for it. Within the second the script runs, the stamp
+   * can fall before the step that ran it, and the call's card sits above that step: too early, never too late.
+   */
+  private chatCallsTurn(id: string, text: string, turn: ChatCallTurn) {
+    this.transcript.push({ who: "captain", text });
+    this.emit({ type: "outbox", payload: { id, status: "sent" } });
+    this.emit({ type: "state", payload: { state: "prompt_turn" } });
+    this.later(250, () => this.emit({ type: "outbox", payload: { id, status: "likely_started" } }));
+    this.later(1300, () => this.emit({ type: "tool_call", payload: { id: `hold-${id}`, title: turn.step, kind: "execute", status: "in_progress" } }));
+    this.later(1600, () => {
+      const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      const calls = this.snapshot.fleet.calls ?? [];
+      const exists = calls.some((call) => call.id === turn.call);
+      const changed = exists ? calls.map((call) => call.id === turn.call ? turn.change(call, stamp) : call) : [...calls, turn.change(undefined, stamp)];
+      const records = this.snapshot.fleet.backlog?.records ?? [];
+      const row = records.some((record) => record.id === turn.call) ? records : [...records, backlogRow(turn.call, CHAT_CALL.title, { kind: "captain", hold_kind: "captain", repo: "foreman", state: "queued", current_role: "held" })];
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: changed, backlog: { ...this.snapshot.fleet.backlog!, records: row } };
+      this.emit({ type: "tool_update", payload: { id: `hold-${id}`, status: "completed" } });
+      this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    });
+    // The first mate explains after the script has run, seconds later, as it does.
+    this.later(3200, () => {
+      this.emit({ type: "text", payload: { chunk: turn.says, origin: "prompt" } });
+      this.transcript.push({ who: "mate", text: turn.says });
+      this.outstanding.delete(id);
+      this.emit({ type: "outbox", payload: { id, status: "picked_up" } });
+      this.emit({ type: "state", payload: { state: "idle" } });
     });
   }
 

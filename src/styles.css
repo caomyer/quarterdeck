@@ -661,6 +661,74 @@ a { color: var(--sea); }
 .review-card.settled > svg { flex: none; color: var(--green); }
 .review-card.settled strong { color: var(--ink-2); font-weight: 600; }
 .review-card.settled button { margin-left: auto; padding: 0; border: 0; color: var(--sea); background: transparent; font-size: 12.5px; }
+/* A call where the first mate raised it: the whole call while it waits on the captain, one line once it does not. */
+.call-chat-card { max-width: 620px; margin: -14px 0 26px 42px; padding: 14px 16px 12px; border: 1px solid var(--coral-edge); border-radius: 12px; background: var(--coral-wash); }
+.call-chat-card.replied { border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); background: var(--surface); }
+.call-chat-card.done { padding: 9px 14px; border-color: var(--border); background: var(--surface); }
+.call-chat-kicker { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--coral); font: 500 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.call-chat-card.replied .call-chat-kicker { color: var(--amber); }
+.call-chat-kicker span { color: var(--faint); }
+.call-chat-card h4 { margin: 4px 0 2px; color: var(--ink); font-size: 15px; font-weight: 600; line-height: 1.35; text-wrap: pretty; }
+.call-chat-card .call-chat-question { margin: 0 0 4px; color: var(--ink-3); font-size: 13.5px; line-height: 1.55; text-wrap: pretty; }
+.call-chat-card > p.call-argued { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.call-chat-card > p.call-unread { margin: 4px 0 0; color: var(--amber); font-size: 12.5px; }
+.call-chat-card .call-state { margin-top: 10px; background: var(--surface); }
+.call-chat-card .call-said { margin: 8px 0 0; }
+.call-chat-card .suggestion-chips { margin-top: 12px; }
+.call-chat-card .suggestion-chips button { min-height: 34px; padding: 6px 12px; font-size: 13px; }
+.call-chat-card .reply-field { margin-top: 12px; }
+.call-chat-card .reply-field textarea { min-height: 52px; }
+.call-chat-note { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; color: var(--ink-3); background: var(--surface-2); font-size: 12.5px; line-height: 1.5; }
+.call-chat-note > svg { flex: none; margin-top: 2px; color: var(--muted); }
+.call-chat-note > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.call-chat-note strong { display: block; color: var(--ink); font-size: 13px; font-weight: 600; }
+.call-chat-note.warn { border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); background: color-mix(in srgb, var(--amber) 7%, var(--surface)); }
+.call-chat-note.warn > svg { color: var(--amber); }
+.call-chat-note button, .call-chat-line button { flex: none; height: 30px; padding: 0 11px; border: 1px solid var(--control); border-radius: 8px; color: var(--ink-2); background: var(--surface); font-size: 12.5px; }
+.call-chat-note button:hover, .call-chat-line button:hover { border-color: var(--control-hover); }
+.call-chat-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--coral-edge); }
+.call-chat-card.replied .call-chat-actions { border-top-color: var(--rule); }
+.call-chat-actions > span { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.call-chat-actions > div { display: flex; gap: 6px; }
+.call-chat-actions button { height: 34px; padding: 0 14px; border: 0; border-radius: 9px; color: var(--on-accent); background: var(--sea); font-size: 13px; font-weight: 600; }
+.call-chat-actions button:hover:not(:disabled) { background: var(--sea-strong); }
+.call-chat-actions button:disabled { opacity: .5; }
+.call-chat-actions button.quiet { color: var(--muted); background: transparent; font-weight: 500; }
+.call-chat-actions button.quiet:hover { color: var(--ink); background: var(--surface-3); }
+.call-chat-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--ink-3); font-size: 13px; line-height: 1.45; }
+.call-chat-line > svg { flex: none; }
+.call-chat-line strong { color: var(--ink); font-weight: 600; }
+.call-chat-line .grow, .answer-chat-card.line .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.call-pill { flex: none; padding: 1px 7px; border: 1px solid var(--rule); border-radius: 999px; color: var(--muted); font: 10px var(--mono); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
+.call-pill.tone-green { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); }
+.call-pill.tone-amber { border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); }
+.call-chat-options { margin-top: 6px; }
+.call-chat-options summary { color: var(--faint); font-size: 12px; cursor: pointer; }
+.call-chat-options p { margin: 6px 0 0; color: var(--ink-3); font-size: 13px; line-height: 1.5; }
+.call-chat-options ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; padding: 0; list-style: none; }
+.call-chat-options li { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--rule); border-radius: 999px; color: var(--muted); font-size: 12.5px; }
+.call-chat-options li.picked { border-color: color-mix(in srgb, var(--green) 40%, var(--border)); color: var(--ink); }
+.call-chat-options li.picked svg { color: var(--green); }
+/* An answer to a call, on the captain's side of the chat, framed like the review card. */
+.answer-chat-card { width: min(100%, 470px); margin: 0 0 26px auto; padding: 12px 14px 10px; border: 1px solid color-mix(in srgb, var(--sea) 35%, var(--border)); border-radius: 12px; border-top-right-radius: 4px; background: var(--surface); }
+.answer-chat-card.tone-amber { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.answer-chat-card.tone-muted { border-color: var(--border); }
+.answer-chat-kicker { display: block; color: var(--sea); font: 500 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.answer-chat-card.tone-amber .answer-chat-kicker { color: var(--amber); }
+.answer-chat-card.tone-muted .answer-chat-kicker { color: var(--muted); }
+.answer-chat-title { display: block; margin-top: 2px; color: var(--ink); font-size: 13.5px; font-weight: 600; line-height: 1.4; }
+.answer-chat-said { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 4px; color: var(--ink); font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.answer-chat-said > svg { flex: none; margin-top: 3px; color: var(--green); }
+.answer-chat-card.tone-amber .answer-chat-said > svg { color: var(--amber); }
+.answer-chat-card.tone-muted .answer-chat-said > svg { color: var(--muted); }
+.answer-chat-added { margin: 4px 0 6px 22px; padding-left: 10px; border-left: 2px solid var(--rule); color: var(--ink-3); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.answer-chat-card > footer { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--rule); }
+.answer-chat-card > footer time.tone-green { color: var(--green); }
+.answer-chat-card > footer time.tone-amber { color: var(--amber); }
+.answer-chat-again { color: var(--sea); font: 11.5px var(--mono); }
+.answer-chat-card.line { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-color: var(--border); color: var(--ink-3); font-size: 13px; }
+.answer-chat-card.line > svg { flex: none; }
+.answer-chat-card.line strong { color: var(--ink-2); font-weight: 600; }
 .review-card.settled button:hover { color: var(--sea-strong); }
 .artifact-thumb { flex: none; width: 42px; height: 54px; border: 1px solid var(--control); border-radius: 5px; background: repeating-linear-gradient(135deg, var(--surface-3) 0 6px, color-mix(in srgb, var(--surface-3) 70%, var(--control)) 6px 12px); }
 
@@ -1192,7 +1260,7 @@ a { color: var(--sea); }
   .composer > div { justify-content: flex-end; }
   .chat-status { margin-right: auto; }
   .approval-stack { padding: 0 14px 12px; }
-  .approval-card, .step-group, .artifact-card { margin-left: 0; }
+  .approval-card, .step-group, .artifact-card, .call-chat-card { margin-left: 0; }
   .project-grid { grid-template-columns: 1fr; }
   .project-summary .project-sigil.huge { width: 40px; height: 40px; border-radius: 10px; font-size: 12px; }
   .project-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

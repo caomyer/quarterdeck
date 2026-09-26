@@ -20,7 +20,8 @@
     "updates": "node scripts/app-update.mjs",
     "starts": "node scripts/start-work.mjs",
     "replies": "node scripts/call-replies.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs scripts/sources.test.mjs",
+    "calls": "node scripts/chat-calls.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/callviews.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs scripts/sources.test.mjs",
     "sources": "node scripts/task-sources.mjs"
   },
   "dependencies": {

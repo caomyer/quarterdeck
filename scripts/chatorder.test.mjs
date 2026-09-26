@@ -88,3 +88,20 @@ test("a message nothing is known of has no bound", () => {
   assert.equal(latestTime({ createdAt: "", past: true }), Infinity);
   assert.equal(latestTime({ createdAt: "" }), Infinity);
 });
+
+test("a call is placed by when it was raised, the same way as a page: after the step that raised it, above what explains it", () => {
+  // The first mate runs the hold, then explains the call; raised_at falls between the two.
+  const bounds = [ago(12), ago(10) + 1_000, ago(9)];
+  const raised = ago(10);
+  const places = pagePlaces(bounds, [raised]);
+  assert.deepEqual(places, [1]);
+  neverBelowNewer(bounds, [raised], places);
+});
+
+test("a call raised again later is placed at its new time, and one raised in a resumed history sits too early, never too late", () => {
+  const read = ago(1);
+  const bounds = [read, read, ago(30), read];
+  const places = pagePlaces(bounds, [ago(90), ago(20)]);
+  assert.deepEqual(places, [0, 3]);
+  neverBelowNewer(bounds, [ago(90), ago(20)], places);
+});
