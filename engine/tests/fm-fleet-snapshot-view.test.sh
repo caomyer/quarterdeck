@@ -678,7 +678,9 @@ test_undated_captain_hold_phrasing_and_aging() {
 ## Done
 EOF
   fakebin=$(make_fakebin "$home")
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+  # The legacy row ages from its date-only `since` in captain's days, so the
+  # fixture is read in the zone its UTC-midnight observation was written for.
+  out=$(PATH="$fakebin:$PATH" TZ=UTC FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
     FM_SNAPSHOT_NOW=2026-07-25T00:00:00Z "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     ([.backlog.records[] | select(.id == "parked-hold" or .id == "awaiting-go" or .id == "no-dispatch"
@@ -717,13 +719,13 @@ EOF
       and (map(select(.id == "contextual-comma" and .hold_reason == "not urgent, choose the launch route now")) | length == 1)
       and (map(select(.id == "metadata-context" and .hold_reason == "not urgent, priority: decide P1 or P2")) | length == 1)
   ' >/dev/null || fail "contextual parked-style wording must not hide current decisions: $out"
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+  out=$(PATH="$fakebin:$PATH" TZ=UTC FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
     FM_SNAPSHOT_NOW=2026-07-25T00:00:00Z FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS=30 "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "aged-call")
     | .hold_bucket == "live" and .hold_age_days == 24
   ' >/dev/null || fail "raising the age threshold must leave a 24-day hold unaged: $out"
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+  out=$(PATH="$fakebin:$PATH" TZ=UTC FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
     FM_SNAPSHOT_NOW=2026-07-25T00:00:00Z FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS=5 "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "recent-call")

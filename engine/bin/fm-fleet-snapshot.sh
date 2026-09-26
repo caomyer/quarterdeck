@@ -12,6 +12,8 @@
 # Top-level fields:
 #   schema: stable schema id.
 #   generated: UTC observation time for this fresh command execution.
+#   captain_day: the captain's YYYY-MM-DD at `generated`, from the one owner in
+#     bin/fm-backlog-parse-lib.sh; a call can be deferred only to a later day.
 #   fm_home: resolved operational home.
 #   roots: resolved root/config/data/state/projects directories.
 #   backlog: {path,present,records[]} where records are ordered as written in
@@ -35,13 +37,18 @@
 #     hold reason or body prose is ever matched. The buckets are total and
 #     mutually exclusive, so every captain hold lands in exactly one and none
 #     can fall through: "blocked" when any blocker is unresolved, else "dated"
-#     when hold_until is still in the future, else "aged" when an undated hold
+#     when hold_until is after the captain's day (tasks-axi's own contract: the
+#     hold is inactive on and after that date, so a call deferred to a day is
+#     back from the first moment of it), else "aged" when an undated hold
 #     is at least FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS old (default 14; legacy
 #     unstamped holds fall back to `since`), else "live". A non-captain or Done
 #     row carries null.
 #     captain_actionable means "waiting on the captain now" and is exactly
 #     hold_bucket == "live".
-#     hold_age_days is the hold's age when computable, else null.
+#     hold_age_days is the hold's age when computable, else null: whole days
+#     elapsed since a stamped hold, or whole captain's days since a date-only one.
+#     The captain's day is owned by bin/fm-backlog-parse-lib.sh and is the
+#     host's local date, never the UTC one.
 #     Aging is a projection safety net only: the durable deferral remains
 #     re-holding with --until.
 #     Renderers keep every non-live bucket out of the default Captain's Call,
@@ -146,6 +153,10 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 BACKLOG="$DATA/backlog.md"
 SNAPSHOT_NOW=${FM_SNAPSHOT_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+case "$SNAPSHOT_NOW" in
+  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+  *) SNAPSHOT_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ) ;;
+esac
 if [ -n "${FM_SNAPSHOT_NOW_EPOCH:-}" ]; then
   SNAPSHOT_EPOCH=$FM_SNAPSHOT_NOW_EPOCH
 else
@@ -154,14 +165,6 @@ else
     || date +%s)
 fi
 case "$SNAPSHOT_EPOCH" in ''|*[!0-9]*) SNAPSHOT_EPOCH=$(date +%s) ;; esac
-# The observation date gates captain-hold deferral: a `hold-until` date still in
-# the future keeps a captain hold out of captain_actionable until it is due
-# (tasks-axi's own contract: the hold is inactive on and after that date).
-SNAPSHOT_TODAY=${SNAPSHOT_NOW%%T*}
-case "$SNAPSHOT_TODAY" in
-  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
-  *) SNAPSHOT_TODAY=$(date -u +%Y-%m-%d) ;;
-esac
 
 # Cross-home bounds are explicit so one broken or unexpectedly large home cannot
 # hang or explode the parent snapshot.
@@ -272,7 +275,8 @@ Actionable tasks-axi captain holds appear as decisions_open and stay visible in
 queued with hold_reason, hold_kind, hold_until,
 hold_bucket, hold_age_days, and plural blocker fields for downstream
 projections. A captain hold is actionable only when every blocker is Done, any
-hold-until date has arrived, and an undated hold remains below the aging threshold.
+hold-until date has arrived on the captain's local calendar, and an undated hold
+remains below the aging threshold.
 Cross-home collection uses FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the
 count bound) and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Every sampled remote home's state/home-summary.json is fetched concurrently
@@ -404,7 +408,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
   fi
 
   # shellcheck disable=SC2094 # the path is only a label; the file is read once
-  fm_backlog_parse_json "$backlog" "$SNAPSHOT_TODAY" "$SNAPSHOT_NOW" "$FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS" < "$backlog"
+  fm_backlog_parse_json "$backlog" "$SNAPSHOT_NOW" "$FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS" < "$backlog"
 }
 
 SNAPSHOT_TASK_DIR=
@@ -1867,12 +1871,7 @@ scout_report_lines > "$SCOUT_REPORTS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: scout report snapshot failed" >&2; exit 1; }
 FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-artifact.sh" list --json > "$ARTIFACTS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: artifact listing failed" >&2; exit 1; }
-CALLS_NOW=$SNAPSHOT_NOW
-case "$CALLS_NOW" in
-  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
-  *) CALLS_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ) ;;
-esac
-FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CAPTAIN_HOLD_NOW="$CALLS_NOW" \
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CAPTAIN_HOLD_NOW="$SNAPSHOT_NOW" \
   "$SCRIPT_DIR/fm-captain-hold.sh" list --json --backlog-json "$BACKLOG_JSON_FILE" > "$CALLS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: call listing failed" >&2; exit 1; }
 SOURCES_JSON_FILE="$JSON_TRANSPORT_DIR/sources.json"
@@ -1888,8 +1887,11 @@ secondmate_current_json "$TASKS_JSON_FILE" "$SECONDMATE_CURRENT_JSON_FILE" \
 secondmate_landed_from_current_json "$SECONDMATE_CURRENT_JSON_FILE" "$SECONDMATE_LANDED_JSON_FILE" \
   || { echo "fm-fleet-snapshot: secondmate landed projection failed" >&2; exit 1; }
 
+CAPTAIN_DAY=$(fm_captain_day "$SNAPSHOT_NOW") \
+  || { echo "fm-fleet-snapshot: could not read the captain's day" >&2; exit 1; }
 jq -n \
   --arg generated "$SNAPSHOT_NOW" \
+  --arg captain_day "$CAPTAIN_DAY" \
   --arg fm_home "$FM_HOME" \
   --arg fm_root "$FM_ROOT" \
   --arg state "$STATE" \
@@ -1918,6 +1920,7 @@ jq -n \
    {
      schema:"fm-fleet-snapshot.v1",
      generated:$generated,
+     captain_day:$captain_day,
      fm_home:$fm_home,
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,

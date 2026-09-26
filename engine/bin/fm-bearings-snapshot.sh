@@ -335,15 +335,9 @@ EOF
 fi
 
 # --- projection: canonical snapshot -> fm-bearings.v1 model (JSON) ----------
-BEARINGS_TODAY=${NOW%%T*}
-case "$BEARINGS_TODAY" in
-  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
-  *) BEARINGS_TODAY=$(date -u +%Y-%m-%d) ;;
-esac
 MODEL=$(printf '%s' "$SNAP" | jq \
   --arg home "$HOME_LABEL" \
   --arg now "$NOW" \
-  --arg today "$BEARINGS_TODAY" \
   --arg prs "$PR_STATUS" \
   --arg fields "$FIELDS" \
   --argjson landed_n "$FM_BEARINGS_LANDED" \

@@ -877,6 +877,28 @@ test_the_wake_drain_prints_unhandled_replies() {
   pass "the wake drain prints UNHANDLED REPLIES until the first mate acts"
 }
 
+test_a_refused_deferral_keeps_the_reply_and_a_valid_one_clears_it() {
+  local home record out rc
+  home=$(make_home reply-defer)
+  printf 'Not now. Ask me again on Oct 3.\n' > "$home/words.txt"
+  run_captain "$home" hold sample-defer --title 'Defer sample' --reason 'pending' --option a=A --option b=B >/dev/null \
+    || fail "hold failed"
+  record="$home/state/calls/sample-defer.json"
+  run_captain "$home" reply sample-defer --words-file "$home/words.txt" --via quarterdeck >/dev/null || fail "reply failed"
+  # 2026-09-18T12:00:00Z is still 2026-09-18 in Los Angeles, so that day is already due there.
+  out=$(TZ=America/Los_Angeles run_captain "$home" hold sample-defer --reason 'deferred' --until 2026-09-18 2>&1); rc=$?
+  expect_code 1 "$rc" "a deferral to a day already due on the captain's calendar"
+  assert_contains "$out" "is not after the captain's today (2026-09-18)" "the refusal names the captain's day"
+  assert_equals '"Not now. Ask me again on Oct 3."' "$(jq -c .reply.words "$record")" \
+    "a refused deferral changes nothing, so the captain's reply is still waiting on the first mate"
+  TZ=America/Los_Angeles run_captain "$home" hold sample-defer --reason 'deferred' --until 2026-10-03 >/dev/null \
+    || fail "a deferral to a later day failed"
+  assert_equals null "$(jq -c .reply "$record")" "a deferral the captain's calendar accepts clears the reply"
+  assert_equals 'open|null' "$(call_json "$home" sample-defer | jq -r '[.state, (.reply|tostring)] | join("|")')" \
+    "the deferred call is still open and lists no reply"
+  pass "a refused deferral keeps the captain's reply, and a valid one clears it"
+}
+
 test_hold_records_the_call_and_refuses_what_nobody_could_answer
 test_a_hold_without_content_is_still_a_call
 test_origin_evidence_is_derived_whatever_the_presentation_order
@@ -898,3 +920,4 @@ test_reply_takes_the_calls_control_lock
 test_only_the_first_mate_acting_clears_a_reply
 test_replies_lists_what_waits_on_the_first_mate
 test_the_wake_drain_prints_unhandled_replies
+test_a_refused_deferral_keeps_the_reply_and_a_valid_one_clears_it

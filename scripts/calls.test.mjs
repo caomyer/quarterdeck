@@ -5,7 +5,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerInWords, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, replyOf, resolveEvidence } from "../src/calls.ts";
+import { answerInWords, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, dayAfter, decidedForCaptain, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, replyOf, resolveEvidence } from "../src/calls.ts";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -131,6 +131,20 @@ test("a link is named by what it is", () => {
   assert.equal(linkLabel("https://github.com/caomyer/foreman/pull/24"), "PR #24");
   assert.equal(linkLabel("https://www.example.com/doc"), "example.com");
   assert.equal(linkLabel("not a url"), "not a url");
+});
+
+test("Not now can name no day earlier than the one after the captain's", () => {
+  assert.equal(dayAfter("2026-09-25"), "2026-09-26");
+  assert.equal(dayAfter("2026-09-30"), "2026-10-01");
+  assert.equal(dayAfter("2026-12-31"), "2027-01-01");
+  assert.equal(dayAfter("2028-02-28"), "2028-02-29");
+  assert.equal(dayAfter("2026-03-07"), "2026-03-08", "a clock change is still one calendar day");
+  assert.equal(dayAfter("2026-09-26T00:11:00Z"), null, "a moment is not a day");
+  assert.equal(dayAfter("soon"), null);
+  const { calls } = homeCalls({ tasks: [], calls: [call("dated"), call("later")], captain_day: "2026-09-25" }, null, new Map());
+  assert.deepEqual(calls.map((each) => each.ask_again_from), ["2026-09-26", "2026-09-26"]);
+  const older = homeCalls({ tasks: [], calls: [call("dated")] }, null, new Map());
+  assert.equal("ask_again_from" in older.calls[0], false, "a firstmate that names no day sets no earliest day");
 });
 
 test("an answer in words is not now until a day, what the captain wrote, or both", () => {

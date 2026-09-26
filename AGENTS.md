@@ -64,6 +64,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Words, a dated Not now, or an option a call cannot take by key are the captain's reply: every surface keeps them on the call through `reply` before telling the first mate, and draws a call's reply only from `calls[].reply`, never from what the window remembers.
   Check every card state, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm replies`.
   Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test reply_e2e_live_scratch_home -- --ignored --nocapture` replies in words across a relaunch, with a dated Not now, and in a page's review, and waits for a real first mate to record or ask again.
+  The captain's day comes only from the snapshot's `captain_day`, which `bin/fm-backlog-parse-lib.sh` owns, so the app never keeps a second "today" for a deferral.
   Closed work beyond the snapshot's few recent rows comes only from `bin/fm-history.sh`, read when a project page opens; the app never parses the backlog or its archive itself.
 - Live test of a project's history, which spends no tokens and changes nothing in the home:
   `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test history_e2e_live_scratch_home -- --ignored --nocapture`.
