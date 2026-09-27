@@ -126,7 +126,7 @@ function taskStatus(state: string, size = 16): { tone: Tone; icon: React.ReactNo
 function runtimeLabel(state: HostRuntimeState, pending: number, approvals: number) {
   if (approvals > 0 && ["idle", "prompt_turn", "agent_turn"].includes(state)) return "Waiting for your OK";
   if (state === "prompt_turn") return `Working on your ${pending > 1 ? `${pending} messages` : "message"}`;
-  if (state === "agent_turn") return "Handling a fleet update";
+  if (state === "agent_turn") return "Working on its own";
   if (state === "restarting") return "Restarting…";
   if (state === "starting") return "Starting…";
   if (state === "locked_by_other") return "Running elsewhere";
@@ -765,7 +765,7 @@ export function App() {
                 <div>
                   <span>Ahoy</span>
                   <h2>{nothingYet ? "Welcome aboard." : `Welcome back. ${openCallCount ? `${capitalize(countWord(openCallCount, "thing"))} ${openCallCount === 1 ? "wants" : "want"} your word.` : "Nothing needs your word."}`}</h2>
-                  <p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : `${openCallCount ? "Everything else is moving. " : ""}The first mate can walk you through what changed since you were last here${openCallCount ? ", then take you through what's waiting" : ""}.`}</p>
+                  <p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : `${openCallCount && underway.length ? "Everything else is moving. " : ""}The first mate can walk you through what changed since you were last here${openCallCount ? ", then take you through what's waiting" : ""}.`}</p>
                 </div>
                 <div className="ahoy-actions"><button onClick={runAhoy}>{nothingYet ? "Ahoy" : "Catch me up"}</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
               </section>
