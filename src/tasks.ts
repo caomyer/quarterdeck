@@ -13,8 +13,11 @@ import type { BacklogRecord } from "./host/types";
 
 /** What a list is mounted with. A project page passes its project; a list of everything passes nothing. */
 export type TaskFilter = { project?: string | null };
-/** The fixed views over the filter: every open task, what can start now, what waits on other work, what is put off. */
-export type TaskView = "open" | "ready" | "blocked" | "held";
+/**
+ * The fixed views over the filter: every open task, what can start now, what waits on other work, what is put off, and
+ * what has produced something waiting on the captain (`src/produced.ts` says which, through `ListInput.review`).
+ */
+export type TaskView = "open" | "ready" | "blocked" | "held" | "review";
 export type TaskSort = "start" | "unblocks" | "waiting" | "newest";
 export type TaskGrouping = "none" | "group";
 /** Where a row stands in the list: `underway` is in flight, `landed` is a closed member shown under its group. */
@@ -187,6 +190,8 @@ export type ListInput = {
   underway?: Set<string>;
   /** Tasks another section of the page already shows, such as a finished scout's report waiting to be read. */
   hidden?: Set<string>;
+  /** Tasks whose output waits on the captain now, which the To review view shows. */
+  review?: Set<string>;
   captainDay?: string | null;
 };
 
@@ -223,16 +228,20 @@ export function openRows(input: ListInput): ListRow[] {
   return rows;
 }
 
-const VIEW_STANDING: Record<Exclude<TaskView, "open">, RowStanding> = { ready: "ready", blocked: "blocked", held: "held" };
+const VIEW_STANDING: Record<Exclude<TaskView, "open" | "review">, RowStanding> = { ready: "ready", blocked: "blocked", held: "held" };
 
-export function inView(row: ListRow, view: TaskView) {
+export function inView(row: ListRow, view: TaskView, review?: Set<string>) {
+  if (view === "review") return row.standing !== "landed" && (review?.has(row.id) ?? false);
   return view === "open" ? row.standing !== "landed" : row.standing === VIEW_STANDING[view];
 }
 
 /** How many rows each view holds, over the same filter and search. */
 export function viewCounts(input: ListInput): Record<TaskView, number> {
   const rows = openRows(input);
-  return { open: rows.length, ready: rows.filter((row) => row.standing === "ready").length, blocked: rows.filter((row) => row.standing === "blocked").length, held: rows.filter((row) => row.standing === "held").length };
+  return {
+    open: rows.length, ready: rows.filter((row) => row.standing === "ready").length, blocked: rows.filter((row) => row.standing === "blocked").length,
+    held: rows.filter((row) => row.standing === "held").length, review: rows.filter((row) => inView(row, "review", input.review)).length,
+  };
 }
 
 const TIER: Record<RowStanding, number> = { underway: 0, ready: 1, blocked: 2, held: 3, landed: 4 };
@@ -253,7 +262,7 @@ export function startRanks(records: BacklogRecord[], captainDay?: string | null)
 
 /** The rows a view shows, in the chosen order. Underway work always leads, as the section this list replaced did. */
 export function taskRows(input: ListInput & { view: TaskView; sort: TaskSort }): ListRow[] {
-  const rows = openRows(input).filter((row) => inView(row, input.view));
+  const rows = openRows(input).filter((row) => inView(row, input.view, input.review));
   const ranks = startRanks(input.records, input.captainDay);
   const graph = taskGraph(input.records);
   const rank = (row: ListRow) => ranks.get(row.id) ?? Number.MAX_SAFE_INTEGER;

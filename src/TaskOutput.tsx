@@ -45,11 +45,11 @@ export function ProducedSection({ task, output, delivered, noPr, reportOpen, rea
             ? <PageLine key={`${item.artifact.name}`} item={item} onOpen={() => onOpenPage(item.artifact)} />
             : item.kind === "report"
             ? <ReportLine key="report" task={task} item={item} open={reportOpen} read={readReport} onAsk={onAskReport} />
-            : <button key="pr" type="button" className="to-row" data-output="pr" onClick={() => openOutside(item.url)} title={item.url}>
+            : <a key="pr" className="to-row" data-output="pr" href={item.url} target="_blank" rel="noreferrer noopener" onClick={(event) => { event.preventDefault(); openOutside(item.url); }} title={item.url}>
                 <span className="to-icon">{item.merged ? <GitMerge size={15} /> : <GitPullRequest size={15} />}</span>
                 <span className="to-copy"><strong>{item.number ? `PR #${item.number}` : "Its PR"}</strong><small>{item.merged ? "Merged" : item.url.replace(/^https?:\/\//, "")}</small></span>
                 <span className="to-act quiet">Open <ExternalLink size={12} /></span>
-              </button>)}
+              </a>)}
           {noPr && !output.some((item) => item.kind === "pr") && <div className="to-row static" data-output="no-pr">
             <span className="to-icon"><GitPullRequest size={15} /></span>
             <span className="to-copy"><strong>No PR yet</strong><small>It shows here when the worker opens one.</small></span>
@@ -149,10 +149,11 @@ export function PageTaskStrip({ task, title, project, standing, record, pages, c
   task: string; title: string; project: string | null; standing: TaskStanding | null; record?: BacklogRecord; pages: Artifact[]; current: Artifact;
   needs: (page: Artifact) => boolean; onOpenTask: (() => void) | null; onOpenPage: (page: Artifact) => void;
 }) {
-  const meta = [project, standing?.label].filter(Boolean);
+  // A task with neither a row nor a worker says so where its standing would be.
+  const meta = onOpenTask ? [project, standing?.label].filter(Boolean) : ["No longer in this home"];
   const name = <>
     <ChevronLeft size={15} className="pts-back" aria-hidden="true" />
-    <span className="pts-copy"><strong>{title}</strong><small>{meta.map((part, index) => <span key={index} className={index === 1 && standing ? `tone-${standing.tone}` : undefined}>{part}</span>)}{record && <PriorityBadge record={record} dim={record.state === "done"} />}</small></span>
+    <span className="pts-copy"><strong>{title}</strong><small>{meta.map((part, index) => <span key={index} className={index === 1 && standing && onOpenTask ? `tone-${standing.tone}` : undefined}>{part}</span>)}{record && <PriorityBadge record={record} dim={record.state === "done"} />}</small></span>
   </>;
   return <nav className="page-task-strip" aria-label="The task this page is from" data-testid="page-task-strip" data-task={task}>
     {onOpenTask

@@ -107,7 +107,7 @@ const BLOCKED = ["res-share-preview", "res-transcript-search", "res-foreman-hook
   check((await row(page, "res-storage-cap").innerText()).includes("You said not now on its call"), "and that it was the captain's not now");
   check(await row(page, "res-storage-cap").locator(".tl-check, .tl-pri-button").count() === 0, "a call is answered, not edited, from the list");
   const tabs = await list(page).locator(".tl-views button").allInnerTexts();
-  check(JSON.stringify(tabs.map((tab) => tab.replace(/\s+/g, " "))) === JSON.stringify(["Open 14", "Ready 6", "Blocked 4", "Put off 3"]), `each view counts what it holds (${tabs.join(" | ")})`);
+  check(JSON.stringify(tabs.map((tab) => tab.replace(/\s+/g, " "))) === JSON.stringify(["Open 14", "Ready 6", "Blocked 4", "Put off 3", "To review 1"]), `each view counts what it holds (${tabs.join(" | ")})`);
   check((await list(page).locator(".tl-summary").innerText()) === "1 underway · 10 queued · 3 put off", "the heading counts the project's work in words");
   await shot(page, "a1-list");
 
