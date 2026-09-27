@@ -14,11 +14,19 @@
 # Every URL explicitly linked by a structured backlog row or a task's pr= is
 # owned. Previously observed URLs remain in data/<task>/contributions.json after
 # endpoint teardown. Repository-wide PR discovery never establishes ownership.
-# GitHub PRs and issues are supported; other forges remain visibly unmeasured.
+# GitHub PRs and issues are supported. poll skips a URL on any other forge: it
+# is never read, never counted toward a streak and never woken, only given a
+# record that keeps its ownership, and Bearings reports it as unmeasured.
 #
 # This script owns fm-contributions.v1: one atomic file per durable task with
 # task and records[]. Each record contains url, kind, checked_at, error,
-# observation, verdict, seen event tokens, pending events, and notified tokens.
+# failure, observation, verdict, seen event tokens, pending events, and notified
+# tokens. failure is the current streak of one kind of unsuccessful attempt:
+# {kind, count, first_at, woke}, kind failed or not-read.
+# last_read says what the latest attempt was: {at, result, rc, detail}, where
+# result is read, not-read, budget-exhausted or failed, rc is the last gh exit
+# status (null when the budget refused the call), and detail, for a failure
+# only, is the forge's error text or the reason the answer was refused.
 # observation is one coherent forge read (a PR head is rechecked after fetching
 # checks/reviews). Checks are normalized by name, id, started_at, status and
 # conclusion; projection picks the newest attempt per distinct name. The last
@@ -33,12 +41,23 @@
 # poll consumes fm-fleet-snapshot.sh --contribution-input, a local-only read,
 # and spends at most FM_CONTRIBUTIONS_BUDGET seconds on forge reads (default 20,
 # 1..25). Each gh call is bounded by the remaining budget and five seconds.
-# Oldest observations go first, so a large corpus progresses across polls.
-# Each distinct URL is observed once per poll and applied to every owner. When
-# the budget runs out mid-observation, the poll ends with that URL's records
-# untouched; only a genuine forge failure or head change records an error.
-# API failure leaves error evidence; an expired or absent observation is not
-# silence. FM_CONTRIBUTIONS_MAX_AGE (default 900 seconds) bounds freshness.
+# Oldest observations go first, so a large corpus progresses across polls,
+# except that a URL whose not-read streak has woken goes after every other URL
+# and spends only leftover budget. Each distinct URL is observed once per poll
+# and applied to every owner.
+# A read either bound cuts short is "not read yet", never a forge failure: its
+# records keep checked_at, error, observation, seen and pending, so it goes
+# first next poll. When the budget runs out the poll ends and nothing else
+# changes but last_read; when only the five-second slice ran out, the attempt
+# counts toward a not-read streak and the poll moves on. A typed failure (a gh
+# error, a refused answer or a head change) records an error at once and counts
+# toward a failed streak. Either streak wakes once it persists for
+# FAIL_WAKE_COUNT attempts or FAIL_WAKE_SECONDS, once per streak: "could not
+# finish reading <url>" for not-read, "the forge refused <url>" for failed. An
+# attempt of the other kind restarts the streak; a successful read clears it.
+# An expired or absent observation is not silence: Bearings reports it as
+# coverage the fleet must reconcile.
+# FM_CONTRIBUTIONS_MAX_AGE (default 900 seconds) bounds freshness.
 # FM_CONTRIBUTIONS_NOW supplies an ISO UTC clock for tests, otherwise UTC now.
 # FM_CONTRIBUTIONS_READY_LABEL selects the equivalent triage label, default
 # ready-for-pr. Labels are matched case-insensitively and exactly.
@@ -80,6 +99,9 @@ BUDGET=${FM_CONTRIBUTIONS_BUDGET:-20}
 case "$MAX_AGE" in ''|*[!0-9]*) fail 'invalid freshness bound' ;; esac
 case "$BUDGET" in ''|*[!0-9]*) fail 'invalid poll budget' ;; esac
 [ "$BUDGET" -ge 1 ] && [ "$BUDGET" -le 25 ] || fail 'poll budget must be 1..25 seconds'
+# The same persistence bar as fm-sources.sh's typed read failures.
+FAIL_WAKE_COUNT=3
+FAIL_WAKE_SECONDS=1800
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-contributions.XXXXXX")
 LOCK_HELD=0
 cleanup() {
@@ -173,20 +195,28 @@ forge() {
   local remaining bounded=0 rc=0
   remaining=$((DEADLINE - $(date +%s)))
   # The budget, not the forge, refused this read.
-  [ "$remaining" -gt 0 ] || { BUDGET_EXHAUSTED=1; return 1; }
+  [ "$remaining" -gt 0 ] || { BUDGET_EXHAUSTED=1; FORGE_RC=; return 1; }
   if [ "$remaining" -le 5 ]; then bounded=1; else remaining=5; fi
   fm_run_timed "$remaining" env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
     gh "$@" 2> "$TMP/forge.err" || rc=$?
-  # A read killed at the budget's own deadline is budget exhaustion too.
-  [ "$rc" -ne 124 ] || [ "$bounded" -eq 0 ] || BUDGET_EXHAUSTED=1
+  FORGE_RC=$rc
+  # A read killed at either bound is not read yet, never evidence against the
+  # forge. Killed at the budget's own deadline, it is budget exhaustion too.
+  if [ "$rc" -eq 124 ]; then
+    NOT_READ=1
+    [ "$bounded" -eq 0 ] || BUDGET_EXHAUSTED=1
+  fi
   return "$rc"
 }
 
-observe() { # canonical GitHub URL -> normalized JSON
+supported_forge() { # canonical URL -> whether observe can read it
+  case "$1" in https://github.com/*/pull/*|https://github.com/*/issues/*) return 0 ;; *) return 1 ;; esac
+}
+
+observe() { # supported canonical URL -> normalized JSON
   local url=$1 part number kind endpoint head after label
-  case "$url" in https://github.com/*) ;; *) return 1 ;; esac
   part=${url#https://github.com/}; number=${part##*/}; part=${part%/*}; kind=${part##*/}; part=${part%/*}
-  case "$kind" in pull) endpoint="repos/$part/pulls/$number" ;; issues) endpoint="repos/$part/issues/$number" ;; *) return 1 ;; esac
+  if [ "$kind" = pull ]; then endpoint="repos/$part/pulls/$number"; else endpoint="repos/$part/issues/$number"; fi
   forge api "$endpoint" > "$TMP/core.json" || return 1
   jq -e '(.state == "open" or .state == "closed") and (.user.login | type == "string")' "$TMP/core.json" >/dev/null || return 1
   forge api "repos/$part/issues/$number/comments?per_page=100" --paginate --slurp > "$TMP/comments.json" || return 1
@@ -263,7 +293,7 @@ publish_pending() { # task canonical-url record-file
 }
 
 poll() {
-  local task url old kind error observed
+  local task url old kind error observed failing result
   local -a row
   acquire
   get_input
@@ -271,45 +301,86 @@ poll() {
   [ "$ERRORS" -eq 0 ] || printf 'contributions: %s unreadable durable record(s)\n' "$ERRORS"
   # One line per distinct URL: the URL, then every owning task.
   jq_lib -nr --slurpfile input "$TMP/input.json" --slurpfile saved "$TMP/saved.json" '
-    known($input[0];$saved[0]) | map(. as $k | . + {at:([$saved[0][] | select(.task == $k.task) | .records[] | select(.url == $k.url) | .checked_at] | first // "")})
-    | group_by(.url) | map({url:.[0].url,at:(map(.at) | min),tasks:(map(.task) | unique)})
-    | sort_by(.at,.tasks[0],.url)[] | [.url] + .tasks | @tsv' > "$TMP/known.tsv"
+    known($input[0];$saved[0]) | map(. as $k | ([$saved[0][] | select(.task == $k.task) | .records[] | select(.url == $k.url)] | first) as $r
+      | . + {at:($r.checked_at // ""),stalled:($r.failure.kind == "not-read" and $r.failure.woke == true)})
+    | group_by(.url) | map({url:.[0].url,at:(map(.at) | min),stalled:any(.[]; .stalled),tasks:(map(.task) | unique)})
+    | sort_by(.stalled,.at,.tasks[0],.url)[] | [.url] + .tasks | @tsv' > "$TMP/known.tsv"
   DEADLINE=$(( $(date +%s) + BUDGET ))
   BUDGET_EXHAUSTED=0
   while IFS=$'\t' read -r -a row; do
     [ "${#row[@]}" -ge 2 ] || continue
-    [ "$(date +%s)" -lt "$DEADLINE" ] || break
     url=${row[0]}
-    observed=0
-    observe "$url" || observed=$?
-    # An observation the budget cut short is unmeasured, not unavailable: keep
-    # every owner's prior record so the URL is observed first next poll.
-    [ "$BUDGET_EXHAUSTED" -eq 0 ] || break
-    [ "$observed" -eq 0 ] || printf 'contributions: observation unavailable for %s\n' "$url"
     case "$url" in */issues/*) kind=issue ;; *) kind="pr" ;; esac
+    if ! supported_forge "$url"; then
+      for task in "${row[@]:1}"; do
+        fm_pr_task_id_valid "$task" || { printf 'contributions: invalid durable task id\n'; continue; }
+        jq -e --arg task "$task" --arg url "$url" 'any(.[]; .task == $task and any(.records[]; .url == $url))' "$TMP/saved.json" >/dev/null && continue
+        jq -n --arg url "$url" --arg kind "$kind" \
+          '{url:$url,kind:$kind,checked_at:null,observation:null,verdict:null,seen:[],pending:[],notified:[]}' > "$TMP/row.json"
+        write_record "$task" "$TMP/row.json"
+      done
+      continue
+    fi
+    [ "$(date +%s)" -lt "$DEADLINE" ] || break
+    observed=0
+    NOT_READ=0
+    FORGE_RC=
+    : > "$TMP/forge.err"
+    observe "$url" || observed=$?
+    # An observation a bound cut short is unmeasured, not unavailable: every
+    # owner keeps its prior measurement, so the URL is observed first next poll.
+    if [ "$BUDGET_EXHAUSTED" -ne 0 ]; then result=budget-exhausted
+    elif [ "$NOT_READ" -ne 0 ]; then result=not-read
+    elif [ "$observed" -ne 0 ]; then result=failed
+    else result='read'; fi
+    jq -n --arg now "$NOW" --arg result "$result" --arg rc "$FORGE_RC" --rawfile err "$TMP/forge.err" '
+      {at:$now,result:$result,rc:(if $rc == "" then null else ($rc | tonumber) end),
+       detail:(if $result != "failed" then null
+         else ($err | gsub("\\s+";" ") | ltrimstr(" ") | rtrimstr(" ") | .[:300]
+           | if . == "" then "forge answer failed validation" else . end) end)}' > "$TMP/last-read.json"
+    failing=
     for task in "${row[@]:1}"; do
       fm_pr_task_id_valid "$task" || { printf 'contributions: invalid durable task id\n'; continue; }
       old="$TMP/old.json"
       jq -n --slurpfile saved "$TMP/saved.json" --arg task "$task" --arg url "$url" --arg kind "$kind" '
         ([$saved[0][] | select(.task == $task) | .records[] | select(.url == $url)] | first)
         // {url:$url,kind:$kind,checked_at:null,observation:null,verdict:null,seen:[],pending:[],notified:[]}' > "$old"
-      if [ "$observed" -eq 0 ]; then
+      if [ "$result" = budget-exhausted ]; then
+        cp "$old" "$TMP/row.json"
+      elif [ "$result" = read ]; then
         jq -n --arg now "$NOW" --slurpfile old "$old" --slurpfile observation "$TMP/observation.json" '
           $old[0] as $old | $observation[0] as $o
           | ($o.events + (if $o.ready == true and $old.observation.ready != true and (any($o.events[]; .type == "ready-for-pr") | not) then
               [{token:("ready-for-pr:" + $now),type:"ready-for-pr",source:$old.url,head:null,body:"filed issue reached ready-for-pr"}]
               else [] end)) as $events
-          | $old + {checked_at:$now,error:null,
+          | $old + {checked_at:$now,error:null,failure:null,
             observation:($o + {absent_checks:((($old.observation.absent_checks // []) + [($old.observation.checks // [])[] | .name]) - [$o.checks[].name] | unique)}),
             seen:($events | map(.token)),
             pending:(($old.pending // []) + [$events[] | select(.token as $t | ($old.seen // [] | index($t)) == null)] | unique_by(.token))}' > "$TMP/row.json"
       else
         error='forge observation unavailable or changed during read'
-        jq --arg now "$NOW" --arg error "$error" '.checked_at=$now | .error=$error' "$old" > "$TMP/row.json"
+        jq --arg now "$NOW" --arg error "$error" --arg kind "$result" '
+          (if $kind == "failed" then .checked_at=$now | .error=$error else . end)
+          | .failure=((if .failure.kind == $kind then .failure else {kind:$kind,count:0,first_at:$now,woke:false} end) | .count += 1)' "$old" > "$TMP/row.json"
+        if jq -e --argjson now "$EPOCH" --argjson n "$FAIL_WAKE_COUNT" --argjson s "$FAIL_WAKE_SECONDS" '
+            .failure as $f | ($f.woke | not)
+            and ($f.count >= $n or ($now - ($f.first_at | fromdateiso8601)) >= $s)' "$TMP/row.json" >/dev/null; then
+          failing=$(jq -r '"\(.failure.count) attempts since \(.failure.first_at)"' "$TMP/row.json")
+          jq '.failure.woke = true' "$TMP/row.json" > "$TMP/woke.json"
+          mv "$TMP/woke.json" "$TMP/row.json"
+        fi
       fi
+      jq --slurpfile read "$TMP/last-read.json" '.last_read = $read[0]' "$TMP/row.json" > "$TMP/read-row.json"
+      mv "$TMP/read-row.json" "$TMP/row.json"
       write_record "$task" "$TMP/row.json"
       publish_pending "$task" "$url" "$TMP/row.json"
     done
+    if [ -n "$failing" ] && [ "$result" = not-read ]; then
+      printf 'contributions: could not finish reading %s (%s)\n' "$url" "$failing"
+    elif [ -n "$failing" ]; then
+      printf 'contributions: the forge refused %s (%s)\n' "$url" "$failing"
+    fi
+    [ "$result" != budget-exhausted ] || break
   done < "$TMP/known.tsv"
 }
 
