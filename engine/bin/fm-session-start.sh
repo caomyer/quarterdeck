@@ -57,6 +57,12 @@
 #   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
+#                       In a locked session on a home nothing has been set up
+#                       in yet - no projects cloned, no data/projects.md,
+#                       data/captain.md, data/secondmates.md or data/backlog.md -
+#                       it also prints a NEW CAPTAIN paragraph saying how to
+#                       greet a captain meeting their first mate for the first
+#                       time. It stops the moment any of those exists.
 #
 # Those nine names are also the runtime-bound stage list below, so a truncated
 # startup can name exactly which of them never ran.
@@ -1025,6 +1031,26 @@ else
 cat <<EOF
 Follow the supervision operating instructions block above for harness '$PRIMARY_HARNESS'.
 This script never starts supervision itself.
+
+EOF
+fi
+# A home nothing has been set up in yet: its captain is meeting their first mate.
+new_captain_home() {
+  local file
+  for file in projects.md captain.md secondmates.md backlog.md; do
+    [ -e "$DATA/$file" ] && return 1
+  done
+  [ -z "$(ls -A "$FM_HOME/projects" 2>/dev/null)" ]
+}
+if [ "$READ_ONLY" -eq 0 ] && new_captain_home; then
+  cat <<'EOF'
+NEW CAPTAIN: nothing in this home has been set up yet - no projects, no captain
+preferences, and no work ever filed - so this is the captain's first session.
+Make your first reply a welcome: introduce yourself in a few sentences as their
+first mate and what you do for them; say in plain words what this machine still
+needs before a worker can be sent anywhere, from the bootstrap diagnostics
+above and asking consent as bootstrap-diagnostics says; then ask what they would
+like to work on first.
 
 EOF
 fi

@@ -762,6 +762,34 @@ EOF
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
 }
 
+# --- a new captain's first session -------------------------------------------
+
+test_new_captain_is_welcomed_only_on_a_home_never_set_up() {
+  local rec root home fakebin out file next
+  rec=$(new_world new-captain)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "NEW CAPTAIN: nothing in this home has been set up yet" "a home never set up did not say its captain is new"
+  next=$(printf '%s\n' "$out" | sed -n '/^NEXT STEP$/,$p')
+  assert_contains "$next" "then ask what they would" "the welcome belongs to the closing reminder"
+
+  for file in projects.md captain.md secondmates.md backlog.md; do
+    : > "$home/data/$file"
+    out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_not_contains "$out" "NEW CAPTAIN" "a home with data/$file still greeted a new captain"
+    rm -f "$home/data/$file"
+  done
+  mkdir -p "$home/projects/demo"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "NEW CAPTAIN" "a home with a project cloned still greeted a new captain"
+  pass "session start welcomes a new captain only on a home nothing has been set up in"
+}
+
 # --- lock refusal: read-only path --------------------------------------------
 
 test_lock_refusal_read_only_path() {
@@ -2671,6 +2699,7 @@ EOF
 }
 
 test_context_digest_absent_empty_present
+test_new_captain_is_welcomed_only_on_a_home_never_set_up
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock

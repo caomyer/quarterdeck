@@ -55,6 +55,8 @@
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
+#          On macOS, "MISSING_MANUAL: brew" comes first when Homebrew is absent
+#          and any MISSING line's install command runs through it.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -894,6 +896,7 @@ install_cmd() {
 
 manual_install_url() {
   case "$1" in
+    brew) echo "https://brew.sh" ;;
     herdr) echo "https://herdr.dev" ;;
     cursor-agent) echo "https://cursor.com/cli" ;;
     *) return 1 ;;
@@ -1421,6 +1424,17 @@ detect_local_tools() {
   fi
 }
 
+# Every macOS install line above goes through Homebrew, so a Mac without it can
+# run none of them: name it first, as a manual install, when anything reported
+# needs it. Elsewhere those lines already say "or the platform's package manager".
+# FM_BOOTSTRAP_UNAME_OVERRIDE stands in for `uname -s` here alone, for tests.
+homebrew_diagnostic() {  # <detect_local_tools output>
+  [ "${FM_BOOTSTRAP_UNAME_OVERRIDE:-$(uname -s 2>/dev/null)}" = Darwin ] || return 0
+  command -v brew >/dev/null 2>&1 && return 0
+  printf '%s\n' "$1" | grep -q '(install: brew ' || return 0
+  echo "MISSING_MANUAL: brew (instructions: $(manual_install_url brew))"
+}
+
 detect_local_config() {
   # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
   # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
@@ -1536,7 +1550,11 @@ detect_home_summary_publication() {
 # The stamp variable is named for the library rather than `start` on purpose:
 # fleet_sync and others assign plain names like `start` without `local`, and
 # bash's dynamic scoping would let them overwrite a stamp held by a caller.
-local_phase && detect_local_tools
+if local_phase; then
+  local_tools_report=$(detect_local_tools)
+  homebrew_diagnostic "$local_tools_report"
+  [ -z "$local_tools_report" ] || printf '%s\n' "$local_tools_report"
+fi
 if network_phase; then
   __fm_timing_stamp=$(fm_timing_now_ms)
   gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"

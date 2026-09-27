@@ -44,7 +44,8 @@ unset TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID HERDR_SESSION HERDR_SOCKET_PATH \
 make_fake_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  fm_fake_exit0 "$fakebin" tmux node chrome-devtools-axi
+  # brew stands in for Homebrew on a Mac, so no case hears the line that names it missing.
+  fm_fake_exit0 "$fakebin" tmux node chrome-devtools-axi brew
   fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.46
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
@@ -568,6 +569,51 @@ SH
   expected="MISSING: git (install: brew install git  # or the platform's package manager)"
   [ "$out" = "$expected" ] || fail "missing git should report the supported install instruction, got: $out"
   pass "bootstrap requires git with an install instruction"
+}
+
+test_homebrew_is_named_first_on_a_mac_that_needs_it() {
+  local case_dir fakebin bash_env out path_sans_brew missing_git
+  missing_git="MISSING: git (install: brew install git  # or the platform's package manager)"
+  case_dir="$TMP_ROOT/homebrew"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/brew"
+  path_sans_brew=$(fm_test_base_path_sans "$BASE_PATH" brew)
+  bash_env="$case_dir/no-git.bash"
+  cat > "$bash_env" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = git ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+SH
+  local system=Darwin
+  # platform <name>: the system the Homebrew check believes it runs on.
+  platform() { system=$1; }
+  run_it() {  # [extra env...]
+    env PATH="$fakebin:$path_sans_brew" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_BOOTSTRAP_UNAME_OVERRIDE="$system" "$@" "$ROOT/bin/fm-bootstrap.sh"
+  }
+
+  platform Darwin
+  out=$(run_it BASH_ENV="$bash_env")
+  assert_equals "$(printf '%s\n%s' "MISSING_MANUAL: brew (instructions: https://brew.sh)" "$missing_git")" "$out" \
+    "a Mac without Homebrew hears about it first, before the install lines that need it"
+
+  out=$(run_it)
+  assert_equals "" "$out" "a Mac without Homebrew that is missing nothing hears nothing"
+
+  platform Linux
+  out=$(run_it BASH_ENV="$bash_env")
+  assert_equals "$missing_git" "$out" "elsewhere the line already offers the platform's package manager"
+
+  platform Darwin
+  fm_fake_exit0 "$fakebin" brew
+  out=$(run_it BASH_ENV="$bash_env")
+  assert_equals "$missing_git" "$out" "a Mac with Homebrew is not told to install it"
+  pass "bootstrap names Homebrew first on a Mac that lacks it and needs it"
 }
 
 test_orca_backend_gates_orca_tool_only_when_selected() {
@@ -1290,6 +1336,7 @@ test_quarterdeck_presentation_needs_no_lavish
 test_tasks_axi_min_version
 test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction
+test_homebrew_is_named_first_on_a_mac_that_needs_it
 test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux
