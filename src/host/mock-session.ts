@@ -87,7 +87,8 @@ export class MockSession {
   async set(category: PickedCategory, value: string): Promise<SessionControls> {
     const state = scenario();
     if (state === "gone") throw new Error(GONE);
-    if (this.unfit[value]) throw new Error(this.unfit[value]);
+    const unfit = this.unfit[`${category}:${value}`];
+    if (unfit) throw new Error(unfit);
     this.pending = { category, value };
     this.emit({ type: "session_controls", payload: this.view() });
     await new Promise((resolve) => window.setTimeout(resolve, state === "slow" ? 4000 : 350));
@@ -99,7 +100,7 @@ export class MockSession {
     }
     if (state === "auto" && value === "haiku" && model) {
       const reason = `Haiku can't run this home's auto permissions, so the first mate stayed on ${model.options.find((entry) => entry.value === model.currentValue)?.name.replace(/\s*\(recommended\)$/i, "") ?? model.currentValue}`;
-      this.unfit = { ...this.unfit, haiku: reason };
+      this.unfit = { ...this.unfit, [`${category}:${value}`]: reason };
       this.emit({ type: "session_controls", payload: this.view() });
       throw new Error(reason);
     }

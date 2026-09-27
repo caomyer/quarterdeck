@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { elapsed } from "./calm";
 import type { CalmRead, PickedCategory, SessionCommand, SessionControls, SessionOption } from "./host/types";
-import { categoryName, type Palette, pillState, routeOf, valueLabel, valueName } from "./sessionctl";
+import { categoryName, type Palette, pillState, routeOf, unfitReason, valueLabel, valueName } from "./sessionctl";
 
 /** One line of the palette's header: how many commands, and what the keys do. */
 function paletteHead(state: Extract<Palette, { kind: "list" }>, route: PickedCategory | null) {
@@ -60,7 +60,8 @@ export function GhostHint({ draft, hint }: { draft: string; hint: string | null 
 /** What went wrong with a change, shown under the composer bar until the next change or a dismissal. */
 export type SessionNotice =
   | { kind: "refused"; category: PickedCategory; value: string; reason: string }
-  | { kind: "calm"; problem: string };
+  | { kind: "calm"; problem: string }
+  | { kind: "not-live"; category: PickedCategory; value: string };
 
 const GONE = "the first mate's session has ended";
 
@@ -86,7 +87,7 @@ function SettingMenu({ category, option, controls, onChoose, onClose }: { catego
   return <div className="session-menu" ref={menu} role="menu" aria-label={categoryName(category)} onKeyDown={onKeyDown}>
     <div className="session-menu-head">{head}</div>
     <ul>{option.options.map((entry) => {
-      const unfit = controls.unfit[entry.value];
+      const unfit = unfitReason(controls, category, entry.value);
       const current = entry.value === option.currentValue;
       return <li key={entry.value}><button role="menuitemradio" aria-checked={current} disabled={Boolean(unfit)} onClick={() => onChoose(entry.value)}>
         <span>{valueName(option, entry.value)}</span>
@@ -150,12 +151,16 @@ export function SessionNotices({ controls, calm, notice, dismissedProblems, onRe
     const name = option ? valueName(option, notice.value) : notice.value;
     if (notice.reason === GONE) {
       lines.push(<p key="refused" className="session-notice" role="alert"><b>Couldn't change {categoryName(notice.category).toLowerCase()}:</b> the first mate's session has ended. Nothing changed. Restart the first mate, then choose again. <button className="link-button" onClick={onRestart}>Restart</button></p>);
-    } else if (controls?.unfit[notice.value]) {
+    } else if (unfitReason(controls, notice.category, notice.value)) {
       lines.push(<p key="refused" className="session-notice" role="alert"><b>Couldn't switch to {name}.</b> {notice.reason}. <button className="link-button" onClick={onDismiss}>Dismiss</button></p>);
     } else {
       const still = option ? ` It is still on ${valueLabel(option, option.currentValue)}.` : "";
       lines.push(<p key="refused" className="session-notice" role="alert"><b>Couldn't switch to {name}.</b> The first mate said: “{notice.reason}”.{still} <button className="link-button" onClick={onRetry}>Try again</button></p>);
     }
+  }
+  if (notice?.kind === "not-live") {
+    const option = controls?.options?.find((candidate) => candidate.category === notice.category);
+    lines.push(<p key="not-live" className="session-notice" role="status"><b>{categoryName(notice.category)} can't change yet.</b> The switch to {option ? valueName(option, notice.value) : notice.value} can be made once the first mate is running, so nothing was sent. <button className="link-button" onClick={onDismiss}>Dismiss</button></p>);
   }
   if (notice?.kind === "calm") {
     lines.push(<p key="calm" className="session-notice" role="alert"><b>Calm wasn't saved.</b> fm-calm.sh said: “{notice.problem}”. The chat is unchanged. <button className="link-button" onClick={onRetry}>Try again</button></p>);

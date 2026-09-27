@@ -250,6 +250,13 @@ for (const [state, words] of [["waiting", "Commands appear once the first mate h
   await page.waitForFunction(() => document.querySelector(".session-pill[data-category=model]")?.hasAttribute("disabled"));
   check((await pill(page, "model").locator(".v").innerText()) === "Default · Opus", "stopped, the model pill keeps the last value");
   check((await pill(page, "model").getAttribute("title")).includes("applied again when it starts"), "and says the pick comes back at the next start");
+  const before = await page.locator(".captain-message").count();
+  await type(page, "/model sonnet");
+  await composer(page).press("Enter");
+  await notice(page).waitFor();
+  check((await notice(page).innerText()).includes("The switch to Sonnet can be made once the first mate is running, so nothing was sent."), "a typed /model while stopped says it waits for the first mate");
+  check((await composer(page).inputValue()) === "/model sonnet" && (await page.locator(".captain-message").count()) === before, "and keeps the draft rather than sending it as text");
+  await shot(page, "typed-not-live");
   await shot(page, "stopped");
   await page.close();
 }

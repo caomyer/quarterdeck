@@ -2189,7 +2189,11 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
   };
   const submit = () => {
     const typed = files.length === 0 ? typedSetting(draft, controls) : null;
-    if (typed && sessionLive) {
+    if (typed) {
+      if (!sessionLive) {
+        setNotice({ kind: "not-live", ...typed });
+        return;
+      }
       onDraft("");
       void choose(typed.category, typed.value);
       return;

@@ -476,7 +476,7 @@ export type SessionControls = {
   pending: { category: PickedCategory; value: string } | null;
   /** Why a kept pick could not be applied when the session opened, by category. */
   problems: Partial<Record<PickedCategory, { value: string; reason: string }>>;
-  /** Values this session refused because they cannot run the home's permission mode, with why. */
+  /** Values this session refused because they cannot run the home's permission mode, with why, keyed `category:value`. */
   unfit: Record<string, string>;
   /** The captain's picks kept for this home, applied again after every start. */
   picks: Partial<Record<PickedCategory, string>>;

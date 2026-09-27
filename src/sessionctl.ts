@@ -72,6 +72,11 @@ export function optionOf(controls: SessionControls | null, category: PickedCateg
   return controls?.options?.find((option) => option.category === category) ?? null;
 }
 
+/** Why this session refused a value of a category as unable to run the home's permission mode, if it did. */
+export function unfitReason(controls: SessionControls | null, category: PickedCategory, value: string): string | null {
+  return controls?.unfit[`${category}:${value}`] ?? null;
+}
+
 /** A value's name as the session gives it, without the adapter's "(recommended)". */
 export function valueName(option: SessionOption, value: string) {
   const entry = option.options.find((candidate) => candidate.value === value);

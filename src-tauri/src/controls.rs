@@ -51,8 +51,14 @@ pub(crate) struct Controls {
     pub pending: Option<(String, String)>,
     /// Why a kept pick could not be applied when the session opened, by category.
     pub problems: Map<String, Value>,
-    /// Values this session refused because they cannot run the home's permission mode, with why.
+    /// Values this session refused because they cannot run the home's permission mode, with why,
+    /// keyed by `unfit_key`: model and effort share value ids such as `default`.
     pub unfit: HashMap<String, String>,
+}
+
+/// The key `Controls::unfit` keeps a refused value under.
+pub(crate) fn unfit_key(category: &str, value: &str) -> String {
+    format!("{category}:{value}")
 }
 
 impl Controls {
@@ -289,7 +295,7 @@ pub(crate) async fn apply_picks(
             Ok(after) => options = after,
             Err(refused) => {
                 if refused.unfit {
-                    unfit.insert(value.to_string(), refused.reason.clone());
+                    unfit.insert(unfit_key(category, value), refused.reason.clone());
                 }
                 if let Some(after) = refused.options {
                     options = after;
@@ -442,6 +448,15 @@ mod tests {
         assert_eq!(problems["model"]["reason"], "this session no longer offers gone-model");
         assert_eq!(problems["thought_level"]["reason"], "Invalid value for config option effort: high");
         assert_eq!(after, opus_options(), "nothing is shown that the adapter did not confirm");
+    }
+
+    #[tokio::test]
+    async fn an_unfit_model_is_kept_under_its_category_not_its_bare_value() {
+        let adapter = FakeAdapter::new(opus_options());
+        let (_, problems, unfit) = apply_picks(&adapter, "s1", opus_options(), &picks(&[("model", "haiku")]), "auto", None).await;
+        assert!(problems["model"]["reason"].as_str().unwrap().contains("can't run this home's auto permissions"));
+        assert_eq!(unfit.keys().collect::<Vec<_>>(), [&unfit_key("model", "haiku")]);
+        assert!(!unfit.contains_key(&unfit_key("thought_level", "haiku")) && !unfit.contains_key("haiku"));
     }
 
     #[tokio::test]

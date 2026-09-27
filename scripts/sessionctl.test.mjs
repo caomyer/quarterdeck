@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { fill, ghostHint, optionOf, palette, pillState, routeOf, sortedCommands, typedSetting, valueLabel } from "../src/sessionctl.ts";
+import { fill, ghostHint, optionOf, palette, pillState, routeOf, sortedCommands, typedSetting, unfitReason, valueLabel } from "../src/sessionctl.ts";
 
 const captured = JSON.parse(readFileSync(new URL("../src/fixtures/session-controls.json", import.meta.url), "utf8"));
 /** As the host keeps them: controls.rs `commands_of`. */
@@ -87,4 +87,11 @@ test("the pills say only what the session last stated", () => {
   const effort = pillState(controls(), "thought_level");
   assert.equal(effort.label, "Default");
   assert.equal(effort.pending, null, "a model change is not the effort's");
+});
+
+test("a model refused as unfit never marks an effort that shares its value", () => {
+  const refused = controls(undefined, { unfit: { "model:default": "Default can't run this home's auto permissions" } });
+  assert.equal(unfitReason(refused, "model", "default"), "Default can't run this home's auto permissions");
+  assert.equal(unfitReason(refused, "thought_level", "default"), null);
+  assert.equal(unfitReason(controls(), "model", "default"), null);
 });

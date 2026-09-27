@@ -1732,7 +1732,7 @@ impl Host {
             let _ = reply.send(Err(format!("{category} is not a setting the captain changes here")));
             return;
         }
-        if let Some(reason) = self.controls.unfit.get(&value) {
+        if let Some(reason) = self.controls.unfit.get(&controls::unfit_key(&category, &value)) {
             let _ = reply.send(Err(reason.clone()));
             return;
         }
@@ -1789,7 +1789,7 @@ impl Host {
                     self.controls.options = Some(options);
                 }
                 if refused.unfit {
-                    self.controls.unfit.insert(value, refused.reason.clone());
+                    self.controls.unfit.insert(controls::unfit_key(&category, &value), refused.reason.clone());
                 }
                 Err(refused.reason)
             }
