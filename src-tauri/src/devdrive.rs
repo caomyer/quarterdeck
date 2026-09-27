@@ -10,7 +10,8 @@
 //! - `{"eval": "<script>", "deadline_ms": <epoch ms>}` runs the script in the
 //!   window as the body of an async function, so it may `await` and `return`;
 //!   the value comes back as JSON, or the error's text when it throws. Past its
-//!   deadline it does not run at all;
+//!   deadline it does not run at all. `"frame": n` runs it in the window's nth
+//!   child frame instead, such as the artifact page under review;
 //! - `{"snapshot": "<absolute path>.png", "size": [width, height]}` writes what
 //!   the window shows, the artifact frames included, through WebKit's own
 //!   snapshot. `size` is the page's viewport: the webview reaches further than
@@ -59,7 +60,7 @@ pub(crate) fn start(app: AppHandle) {
             // request. A script that does nothing, now and then, keeps it warm.
             if warmed.elapsed() > KEEP_WARM {
                 if let Some(window) = app.get_webview_window("main") {
-                    eval(&window, dir.clone(), String::new(), "return 0");
+                    eval(&window, dir.clone(), String::new(), "return 0", None);
                 }
                 warmed = std::time::Instant::now();
             }
@@ -98,7 +99,8 @@ fn handle(app: &AppHandle, dir: &Path, id: &str, request: Value) {
             Some(deadline) => format!("if (Date.now() > {deadline}) throw new Error(\"expired before the page could run it\");\n{script}"),
             None => script.to_string(),
         };
-        eval(&window, dir.to_path_buf(), id.to_string(), &script);
+        let frame = request["frame"].as_u64().map(|frame| frame as usize);
+        eval(&window, dir.to_path_buf(), id.to_string(), &script, frame);
     } else if let Some(path) = request["snapshot"].as_str() {
         let size = request["size"].as_array().and_then(|size| Some((size.first()?.as_f64()?, size.get(1)?.as_f64()?)));
         snapshot(&window, dir.to_path_buf(), id.to_string(), PathBuf::from(path), size);
@@ -171,16 +173,17 @@ fn stay_awake(_app: &AppHandle) {}
 /// hands back the result: nothing of the app's own IPC is involved, and nothing
 /// is exposed to the page.
 #[cfg(target_os = "macos")]
-fn eval(window: &tauri::WebviewWindow, dir: PathBuf, id: String, script: &str) {
+fn eval(window: &tauri::WebviewWindow, dir: PathBuf, id: String, script: &str, frame: Option<usize>) {
     use block2::RcBlock;
-    use objc2::runtime::AnyObject;
-    use objc2::MainThreadMarker;
-    use objc2_foundation::{NSError, NSString};
-    use objc2_web_kit::{WKContentWorld, WKWebView};
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{msg_send, sel, MainThreadMarker};
+    use objc2_foundation::{NSArray, NSError, NSString};
+    use objc2_web_kit::{WKContentWorld, WKFrameInfo, WKWebView};
 
     // The value comes back as JSON text, so WebKit only ever converts a string.
     let body = format!(
-        "try {{ const value = await (async () => {{ {script}\n }})(); return JSON.stringify({{ ok: true, value: value === undefined ? null : value }}); }} catch (error) {{ return JSON.stringify({{ ok: false, value: String(error && error.stack ? error.stack : error) }}); }}"
+        "try {{ const value = await (async () => {{ {script}\n }})(); return JSON.stringify({{ ok: true, value: value === undefined ? null : value }}); }} catch (error) {{ return JSON.stringify({{ ok: false, value: String(error) }}); }}"
     );
     let fail_dir = dir.clone();
     let fail_id = id.clone();
@@ -188,28 +191,55 @@ fn eval(window: &tauri::WebviewWindow, dir: PathBuf, id: String, script: &str) {
         let Some(mtm) = MainThreadMarker::new() else {
             return answer(&dir, &id, false, json!("the window was reached off its main thread"));
         };
+        let reply_dir = dir.clone();
+        let reply_id = id.clone();
         let done = RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
             // SAFETY: WebKit hands the block a result or an error, each alive
             // for the block's call; the script returns a string or throws.
             let (value, error) = unsafe { (value.as_ref(), error.as_ref()) };
             let text = value.and_then(|value| value.downcast_ref::<NSString>()).map(NSString::to_string);
             match (text.and_then(|text| serde_json::from_str::<Value>(&text).ok()), error) {
-                (Some(reply), _) => answer(&dir, &id, reply["ok"].as_bool().unwrap_or(false), reply["value"].clone()),
-                (None, Some(error)) => answer(&dir, &id, false, json!(error.localizedDescription().to_string())),
-                (None, None) => answer(&dir, &id, false, json!("the script returned nothing WebKit could hand back")),
+                (Some(reply), _) => answer(&reply_dir, &reply_id, reply["ok"].as_bool().unwrap_or(false), reply["value"].clone()),
+                (None, Some(error)) => answer(&reply_dir, &reply_id, false, json!(error.localizedDescription().to_string())),
+                (None, None) => answer(&reply_dir, &reply_id, false, json!("the script returned nothing WebKit could hand back")),
             }
         });
         // SAFETY: on macOS the platform webview is a WKWebView, and this runs
         // on the main thread, where `with_webview` calls it.
+        let wk: Retained<WKWebView> = unsafe { Retained::retain(webview.inner().cast()) }.expect("the webview");
+        let body = NSString::from_str(&body);
+        let world = unsafe { WKContentWorld::pageWorld(mtm) };
+        let Some(index) = frame else {
+            // SAFETY: as above; no frame is the main frame.
+            unsafe { wk.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(&body, None, None, &world, Some(&done)) };
+            return;
+        };
+        // A page the app frames, such as an artifact under review, is a child
+        // frame of another origin: WebKit's frame tree names it, and a script
+        // runs in it as in the window. `_frames:` is WebKit's own debug SPI.
+        let (spi_dir, spi_id) = (dir.clone(), id.clone());
+        let target = wk.clone();
+        let found = RcBlock::new(move |tree: *mut AnyObject| {
+            // SAFETY: WebKit hands the block its frame tree, whose nodes each carry
+            // the frame's `info`, alive for the block's call.
+            unsafe {
+                let children: Option<Retained<NSArray<AnyObject>>> = tree.as_ref().map(|tree| msg_send![tree, childFrames]);
+                let node = children.filter(|children| index >= 1 && index <= children.count()).map(|children| children.objectAtIndex(index - 1));
+                let info: Option<Retained<WKFrameInfo>> = node.map(|node| msg_send![&*node, info]);
+                match info {
+                    Some(info) => target.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(&body, None, Some(&info), &world, Some(&done)),
+                    None => answer(&dir, &id, false, json!(format!("the window has no frame {index}"))),
+                }
+            }
+        });
+        // SAFETY: the selector is checked before it is sent.
         unsafe {
-            let wk: &WKWebView = &*webview.inner().cast();
-            wk.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
-                &NSString::from_str(&body),
-                None,
-                None,
-                &WKContentWorld::pageWorld(mtm),
-                Some(&done),
-            );
+            let exists: Bool = msg_send![&*wk, respondsToSelector: sel!(_frames:)];
+            if exists.as_bool() {
+                let _: () = msg_send![&*wk, _frames: &*found];
+            } else {
+                answer(&spi_dir, &spi_id, false, json!("this WebKit cannot name the window's frames"));
+            }
         }
     });
     if let Err(error) = result {
@@ -218,7 +248,7 @@ fn eval(window: &tauri::WebviewWindow, dir: PathBuf, id: String, script: &str) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn eval(_window: &tauri::WebviewWindow, dir: PathBuf, id: String, _script: &str) {
+fn eval(_window: &tauri::WebviewWindow, dir: PathBuf, id: String, _script: &str, _frame: Option<usize>) {
     answer(&dir, &id, false, json!("the drive runs only on macOS"));
 }
 

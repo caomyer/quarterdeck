@@ -7,15 +7,20 @@
 //   eval '<script>'        runs the script in the window as an async function body
 //   text [selector]        the visible text of the page, or of the first match
 //   click '<text>' [sel]   clicks the innermost visible control whose text or
-//                          aria-label contains <text> (buttons, links, tabs, options)
+//                          aria-label contains <text> (buttons, links, tabs, options);
+//                          '=<text>' matches only a control whose words are exactly that
 //   type '<sel>' '<text>'  types into the input, textarea or contenteditable at <sel>
 //   key '<sel>' '<key>'    presses a key (Enter, Escape, ...) on the element at <sel>
 //   shot <file.png>        saves what the window shows, artifact frames included
 //   wait '<text>' [s]      waits until the page's visible text contains <text>
+//   select '<text>'        selects those words on the page, as a captain's drag would
+//
+// --frame <n> runs the command in the window's nth child frame instead, such as
+// the artifact page under review, which is another origin (shot ignores it).
 //
 // The drive directory is --dir, else QD_DRIVE, else devtest's default folder.
 // Scripts run with a `qd` helper in scope: qd.find(text, sel), qd.click(text, sel),
-// qd.type(sel, text), qd.key(sel, key), qd.text(sel), qd.sleep(ms).
+// qd.type(sel, text), qd.key(sel, key), qd.text(sel), qd.select(text), qd.sleep(ms).
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
@@ -34,7 +39,12 @@ const qd = {
   },
   find(text, sel) {
     const pool = [...document.querySelectorAll(sel || "button, a, [role=button], [role=tab], [role=option], [role=menuitem], summary, label, input[type=checkbox], input[type=radio]")]
-      .filter((el) => qd.visible(el) && qd.label(el).toLowerCase().includes(String(text).toLowerCase()));
+      .filter((el) => {
+        if (!qd.visible(el)) return false;
+        // "=Text" matches a control whose own words are exactly that, ignoring its label.
+        if (String(text).startsWith("=")) return el.innerText.trim() === String(text).slice(1);
+        return qd.label(el).toLowerCase().includes(String(text).toLowerCase());
+      });
     // The innermost match: a card holding a button of that name is not the button.
     return pool.find((el) => !pool.some((other) => other !== el && el.contains(other))) || null;
   },
@@ -71,23 +81,47 @@ const qd = {
     if (!el) throw new Error("nothing matches " + sel);
     return el.innerText;
   },
+  select(text) {
+    // Selects the first run of words containing the text, then lets go of the mouse, as a captain would.
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = node.data.indexOf(text);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + text.length);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const box = range.getBoundingClientRect();
+      const at_ = { bubbles: true, clientX: box.right, clientY: box.bottom };
+      // A drag within one element ends in mouseup and then click, as here.
+      node.parentElement.dispatchEvent(new MouseEvent("mouseup", at_));
+      node.parentElement.dispatchEvent(new MouseEvent("click", at_));
+      document.dispatchEvent(new Event("selectionchange"));
+      return selection.toString();
+    }
+    throw new Error("no text on the page says " + JSON.stringify(text));
+  },
   sleep(ms) { return new Promise((r) => setTimeout(r, ms)); },
 };
 `;
 
 function usage(message) {
   if (message) console.error(`drive: ${message}`);
-  console.error(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(1, 22).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+  console.error(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(1, 24).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
   process.exit(2);
 }
 
 const args = process.argv.slice(2);
 let dir = process.env.QD_DRIVE || join(homedir(), ".buzz/.scratch/qd-devtest/devtest/drive");
 let timeout = 120;
+let frame;
 while (args[0]?.startsWith("--")) {
   const flag = args.shift();
   if (flag === "--dir") dir = args.shift();
   else if (flag === "--timeout") timeout = Number(args.shift());
+  else if (flag === "--frame") frame = Number(args.shift());
   else usage(`unknown flag ${flag}`);
 }
 if (!existsSync(join(dir, "in"))) usage(`${dir} is not a drive folder; is the app up (scripts/devtest.sh up)?`);
@@ -114,7 +148,7 @@ async function request(body, seconds = timeout) {
 }
 
 // The deadline goes with the script, so one this side gave up on never runs later.
-const run = (script, seconds = timeout) => request({ eval: `${HELPERS}\n${script}`, deadline_ms: Date.now() + seconds * 1000 }, seconds);
+const run = (script, seconds = timeout) => request({ eval: `${HELPERS}\n${script}`, deadline_ms: Date.now() + seconds * 1000, frame }, seconds);
 const print = (value) => console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
 const q = JSON.stringify;
 
@@ -132,6 +166,9 @@ try {
       break;
     case "type":
       print(await run(`return qd.type(${q(rest[0])}, ${q(rest[1] ?? "")})`));
+      break;
+    case "select":
+      print(await run(`return qd.select(${q(rest[0])})`));
       break;
     case "key":
       print(await run(`return qd.key(${q(rest[0])}, ${q(rest[1])})`));
