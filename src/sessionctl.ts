@@ -96,17 +96,23 @@ export function valueLabel(option: SessionOption, value: string) {
   return lead && lead !== name ? `${name} · ${lead}` : name;
 }
 
+/** A typed `/model <x>` or `/effort <x>`, whatever the session offers: the category it sets and the argument as written. */
+export function typedCommand(draft: string): { category: PickedCategory; value: string } | null {
+  const match = /^\/(model|effort)\s+(\S+)\s*$/i.exec(draft.trim());
+  return match ? { category: ROUTES[match[1].toLowerCase()], value: match[2] } : null;
+}
+
 /**
  * A typed `/model <x>` or `/effort <x>` whose argument the session offers, by value or by name: the composer sets it
  * through the control rather than sending words the session's options would never hear of.
  */
 export function typedSetting(draft: string, controls: SessionControls | null): { category: PickedCategory; value: string } | null {
-  const match = /^\/(model|effort)\s+(\S+)\s*$/i.exec(draft.trim());
-  if (!match) return null;
-  const category = ROUTES[match[1].toLowerCase()];
+  const typed = typedCommand(draft);
+  if (!typed) return null;
+  const { category } = typed;
   const option = optionOf(controls, category);
   if (!option) return null;
-  const wanted = match[2].toLowerCase();
+  const wanted = typed.value.toLowerCase();
   const entry = option.options.find((candidate) => candidate.value.toLowerCase() === wanted)
     ?? option.options.find((candidate) => valueName(option, candidate.value).toLowerCase() === wanted);
   return entry ? { category, value: entry.value } : null;

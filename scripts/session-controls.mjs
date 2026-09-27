@@ -261,6 +261,24 @@ for (const [state, words] of [["waiting", "Commands appear once the first mate h
   await page.close();
 }
 
+// A first mate not yet started has stated no options: a typed /effort is still held, never sent as text.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+  page.on("pageerror", (error) => failures.push(`?not-started: ${error.message}`));
+  await page.goto(`${baseUrl}/?not-started`);
+  await page.waitForFunction(() => !document.querySelector(".app-loading"));
+  await page.getByRole("button", { name: /^Chat/ }).first().click();
+  check((await page.locator(".session-pill[data-category]").count()) === 0, "not started: no session has stated its options");
+  const before = await page.locator(".captain-message").count();
+  await type(page, "/effort high");
+  await composer(page).press("Enter");
+  await notice(page).waitFor();
+  check((await notice(page).innerText()).includes("The switch to high can be made once the first mate is running, so nothing was sent."), "a typed /effort before any options says it waits for the first mate");
+  check((await composer(page).inputValue()) === "/effort high" && (await page.locator(".captain-message").count()) === before, "and keeps the draft rather than sending it as text");
+  await shot(page, "typed-no-options");
+  await page.close();
+}
+
 // 7. Calm: a turn at five moments, Calm off beside Calm on.
 const MOMENTS = ["sent", "first-tools", "still-working", "reply-arriving", "settled"];
 for (const [index, moment] of MOMENTS.entries()) {

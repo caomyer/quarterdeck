@@ -73,7 +73,7 @@ import { Usage } from "./UsagePanel";
 import { calmHidden } from "./calm";
 import type { CalmRead, PickedCategory, SessionCommand, SessionControls } from "./host/types";
 import { CalmPill, GhostHint, type SessionNotice, SessionNotices, SessionPills, SlashPalette, WorkingRow } from "./SessionControls";
-import { fill, ghostHint, palette as paletteFor, routeOf, typedSetting } from "./sessionctl";
+import { fill, ghostHint, palette as paletteFor, routeOf, typedCommand, typedSetting } from "./sessionctl";
 
 type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
 /** Which page the review screen shows: the artifact, and the revision picked (the latest when none is). */
@@ -2188,12 +2188,13 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
     composer.current?.focus();
   };
   const submit = () => {
-    const typed = files.length === 0 ? typedSetting(draft, controls) : null;
+    const command = files.length === 0 ? typedCommand(draft) : null;
+    if (command && !sessionLive) {
+      setNotice({ kind: "not-live", ...(typedSetting(draft, controls) ?? command) });
+      return;
+    }
+    const typed = command ? typedSetting(draft, controls) : null;
     if (typed) {
-      if (!sessionLive) {
-        setNotice({ kind: "not-live", ...typed });
-        return;
-      }
       onDraft("");
       void choose(typed.category, typed.value);
       return;
