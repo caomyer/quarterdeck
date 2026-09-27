@@ -343,6 +343,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-backlog-parse-lib.sh
+. "$SCRIPT_DIR/fm-backlog-parse-lib.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -448,22 +450,60 @@ strip_axi_help() {
   awk '/^help\[/ { exit } { print }'
 }
 
+# Each queued row's place in start order, "<id>=<rank>" space-separated on one
+# line (an awk -v value cannot hold a newline everywhere), from the one
+# owner of that rule, bin/fm-backlog-parse-lib.sh. Nothing when the backlog
+# cannot be read, which leaves tasks-axi's own order standing.
+ready_start_ranks() {  # <backlog-path>
+  local path=$1 archive archived='[]'
+  if archive=$(fm_tasks_axi_archive_resolve "${DATA%/*}" "$path" 2>/dev/null); then
+    archived=$(fm_backlog_archived_ids "$archive" 2>/dev/null) || archived='[]'
+  fi
+  # shellcheck disable=SC2094 # the path is only a label; the file is read once
+  fm_backlog_parse_json "$path" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 14 "$archived" < "$path" 2>/dev/null \
+    | jq -r '[.records[] | select(.structured and .start_rank != null) | "\(.id)=\(.start_rank)"] | join(" ")' 2>/dev/null || true
+}
+
 # Bound the dispatchable-now listing without rewriting the tool's own rendering:
 # `tasks-axi ready` rows are the indented lines under its ready[N]{...} header,
 # and every other line it prints (its count, its public-followup line) passes
-# through untouched. Whatever is cut is disclosed exactly.
+# through untouched. Rows are put in start order first, the order the first
+# mate dispatches by (a row with no known place keeps its own, after the rest),
+# so the bound keeps the work that starts next. Whatever is cut is disclosed
+# exactly.
 print_ready_queued_bounded() {
-  local ready=$1
-  printf '%s\n' "$ready" | awk -v max="$QUEUED_LIMIT" '
-    /^help\[/ { exit }
+  local ready=$1 ranks=${2-}
+  printf '%s\n' "$ready" | awk -v max="$QUEUED_LIMIT" -v ranks="$ranks" '
+    BEGIN {
+      count = split(ranks, pairs, " ")
+      for (i = 1; i <= count; i++) if (split(pairs[i], pair, "=") == 2) rank[pair[1]] = pair[2] + 0
+    }
+    function flush(   i, j, key, row) {
+      for (i = 2; i <= held; i++) {
+        key = keys[i]; row = rows_held[i]
+        for (j = i - 1; j >= 1 && keys[j] > key; j--) { keys[j + 1] = keys[j]; rows_held[j + 1] = rows_held[j] }
+        keys[j + 1] = key; rows_held[j + 1] = row
+      }
+      for (i = 1; i <= held; i++) {
+        total++
+        if (shown < max) { print rows_held[i]; shown++ }
+      }
+      held = 0
+    }
+    /^help\[/ { flush(); exit }
     /^ready\[/ { rows = 1; print; next }
     rows && /^[[:space:]]/ {
-      total++
-      if (shown < max) { print; shown++ }
+      id = $0
+      sub(/^[[:space:]]+/, "", id)
+      sub(/,.*/, "", id)
+      held++
+      rows_held[held] = $0
+      keys[held] = (id in rank ? rank[id] : 1000000000) * 100000 + held
       next
     }
-    { rows = 0; print }
+    { if (rows) flush(); rows = 0; print }
     END {
+      flush()
       if (total > 0) {
         printf "(shown %d of %d ready queued item(s))\n", shown, total
         if (total > shown) {
@@ -493,8 +533,8 @@ print_backlog_tasks_axi_compact() {
     printf '%s\n' "$held" | strip_axi_help
     printf '\nblocked queued:\n'
     printf '%s\n' "$blocked" | strip_axi_help
-    printf '\nready queued (dispatchable now):\n'
-    print_ready_queued_bounded "$ready"
+    printf '\nready queued (dispatchable now, in start order: priority, then oldest filed):\n'
+    print_ready_queued_bounded "$ready" "$(ready_start_ranks "$path")"
     return 0
   fi
   printf 'tasks-axi compact listing failed; falling back to title-line rendering.\n'

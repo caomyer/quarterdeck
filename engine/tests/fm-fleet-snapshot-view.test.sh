@@ -631,8 +631,12 @@ EOF
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
   assert_contains "$view" "| bold-task | done / status-log | scout | alpha | tmux | present | $data/bold-task/report.md" \
     "view should render bold in-flight row from snapshot"
-  assert_contains "$view" "| blocked-reason | Blocked Reason | beta | ship | queued-comma - waits on queued-comma | - |" \
+  assert_contains "$view" "| blocked-reason | P2 | blocked | Blocked Reason | beta | ship | queued-comma - waits on queued-comma |" \
     "view should render blocked reason without title metadata"
+  # Queued work is listed in start order: ready rows first, then blocked, then held.
+  assert_equals "queued-comma blocked-reason" \
+    "$(printf '%s\n' "$view" | awk -F' [|] ' '/^[|] [0-9]+ [|] (queued-comma|blocked-reason) /{ printf "%s%s", sep, $2; sep=" " }')" \
+    "view should list queued work in start order"
   assert_contains "$view" "| done-bracket-pr | Done Bracket PR | gamma | ship | - | https://github.com/kunchenguid/firstmate/pull/43 |" \
     "view should render bracketed PR artifact outside the title"
   assert_contains "$view" "| done-note | Done Note | delta | ship | - | local main |" \
@@ -742,8 +746,8 @@ test_view_renders_snapshot() {
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
   assert_contains "$view" "| ship-task | working / pane | ship | alpha | tmux | present | https://github.com/kunchenguid/firstmate/pull/9" \
     "view should render ship row from snapshot"
-  assert_contains "$view" "| queued-task | Queued Task | alpha | ship | ship-task | -" \
-    "view should render queued backlog row"
+  assert_contains "$view" "| queued-task | P2 | blocked | Queued Task | alpha | ship | ship-task |" \
+    "view should render queued backlog row with its priority and standing"
   assert_contains "$view" "| done-task | Done Task | alpha | ship | - | https://github.com/kunchenguid/firstmate/pull/7 |" \
     "view should render done backlog row"
   assert_contains "$view" "bin/fm-send.sh fm-secondmate-task" \

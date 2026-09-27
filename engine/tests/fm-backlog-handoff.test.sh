@@ -839,6 +839,42 @@ EOF
   pass "handoff reports a moved item whose public commitment still binds this home"
 }
 
+# A task in a group carries a `part-of:` body line naming it, and the group is
+# an In flight row a handoff never moves. tasks-axi guards dependencies, not body
+# lines, so the handoff must name the group each moved task leaves behind.
+test_handoff_names_the_group_a_moved_item_leaves_behind() {
+  local home="$TMP_ROOT/group-main"
+  local sub="$TMP_ROOT/group-sub"
+  setup_homes "$home" "$sub"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] g-worker-truth - Trust what the app says about workers (repo: alpha) (kind: program)
+
+## Queued
+- [ ] member-item - a task in the group (repo: alpha)
+  the body the captain wrote
+  part-of: g-worker-truth
+- [ ] loose-item - a task in no group (repo: alpha)
+
+## Done
+EOF
+
+  local out rc=0
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design member-item loose-item 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "naming a group must not fail the handoff: $out"
+  assert_contains "$out" "handed off 2 item(s)" "the move itself must still be reported"
+  assert_grep 'part-of: g-worker-truth' "$sub/data/backlog.md" "the moved task lost its group line"
+  assert_grep 'g-worker-truth - Trust what the app says' "$home/data/backlog.md" "the group row must stay in this home"
+  assert_contains "$out" "member-item is part of the group g-worker-truth (Trust what the app says about workers), which stays in this home" \
+    "the handoff did not name the group the moved task left behind"
+  assert_contains "$out" "bin/fm-task-edit.sh group member-item none" "the handoff did not say how to drop the line"
+  case "$out" in
+    *"loose-item is part of"*) fail "a task in no group must not be named" ;;
+  esac
+
+  pass "handoff names the group a moved task leaves behind"
+}
+
 # A home that never opted into the relay must pay nothing and say nothing here.
 test_handoff_is_silent_about_public_commitments_without_the_relay() {
   local home="$TMP_ROOT/pf-silent-main"
@@ -1369,5 +1405,6 @@ test_registry_home_with_pre_home_parentheses
 test_registry_home_missing_field_fails_cleanly
 test_handoff_warns_when_a_moved_item_still_owes_a_public_reply
 test_handoff_is_silent_about_public_commitments_without_the_relay
+test_handoff_names_the_group_a_moved_item_leaves_behind
 
 echo "ALL TESTS PASSED"

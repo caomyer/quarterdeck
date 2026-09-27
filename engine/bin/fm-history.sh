@@ -219,7 +219,8 @@ if [ -e "$ARCHIVE" ] || [ -L "$ARCHIVE" ]; then
   fi
 fi
 
-backlog_json=$(printf '%s\n' "$backlog_text" | fm_backlog_parse_json "$BACKLOG" "$NOW" "$AGE_DAYS") \
+archived=$(fm_backlog_archived_ids "$ARCHIVE") || archived='[]'
+backlog_json=$(printf '%s\n' "$backlog_text" | fm_backlog_parse_json "$BACKLOG" "$NOW" "$AGE_DAYS" "$archived") \
   || fail "cannot parse the backlog at $BACKLOG"
 combined_json='{"records":[]}'
 if [ -n "$archive_text" ]; then

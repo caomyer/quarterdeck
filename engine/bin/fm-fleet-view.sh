@@ -58,6 +58,11 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     else "\($r.blocked_by) - \($r.blocked_reason)" end;
   def backlog_row($r):
     "| \($r.id // "-") | \(dash($r.title // $r.raw)) | \(dash($r.repo)) | \(dash($r.kind)) | \(blocker($r)) | \(dash($r.pr_url // $r.report_path // $r.local_note)) |";
+  # Queued work in start order, the order the first mate dispatches by, which
+  # bin/fm-backlog-parse-lib.sh owns: an older snapshot without start_rank keeps
+  # the order written.
+  def queued_row($r):
+    "| \(dash($r.start_rank)) | \($r.id // "-") | \(if $r.priority_level == null then "-" else "P\($r.priority_level)" end) | \(dash($r.standing)) | \(dash($r.title // $r.raw)) | \(dash($r.repo)) | \(dash($r.kind)) | \(blocker($r)) |";
 
   "# Fleet View",
   "",
@@ -77,9 +82,9 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
   (if ([.backlog.records[]? | select(.state == "queued")] | length) == 0 then
     "No queued backlog records found."
    else
-    "| ID | Title | Repo | Kind | Blocked By | Artifact |",
-    "| --- | --- | --- | --- | --- | --- |",
-    (.backlog.records[] | select(.state == "queued") | backlog_row(.))
+    "| Start | ID | Priority | Standing | Title | Repo | Kind | Blocked By |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ([.backlog.records[] | select(.state == "queued")] | sort_by(.start_rank // 1e9) | .[] | queued_row(.))
    end),
   "",
   "## Done",

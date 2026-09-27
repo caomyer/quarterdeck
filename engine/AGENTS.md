@@ -546,6 +546,10 @@ When a main-side thread such as a pending captain decision or relay reminder is 
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
 When the automatic transition gate applies, dispatch and completion move the item themselves - `bin/fm-spawn.sh` and `bin/fm-teardown.sh` own those transitions and refuse rather than report success without them - so what remains yours is filing the item before dispatch, recording decisions, and keeping notes current; `docs/configuration.md` owns gate applicability and the manual-backend exception.
 Re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.
+Dispatch ready work in start order - priority, then oldest filed - which the session-start digest and `bin/fm-fleet-view.sh` list and `bin/fm-backlog-parse-lib.sh` owns.
+Priority runs 0 to 4, and a row without one counts as 2: P0 urgent, start it now even past the usual concurrency; P1 high, first when a slot frees; P2 normal; P3 low, only when no P0 to P2 work is ready; P4 someday, never started unasked.
+Change a task's priority, title, dependencies, project, kind, put-off date or group only through `bin/fm-task-edit.sh`, which the captain's edits in Quarterdeck also use and whose header owns what it refuses.
+A group is a `kind: program` row no worker runs, and its tasks carry a `part-of: <group-id>` body line that only that command writes.
 
 `.tasks.toml`, `docs/configuration.md`, and current `tasks-axi --help` own the backlog schema, compatibility, retention, and routine command syntax.
 Use compatible `tasks-axi` when the configured backend selects it, always through `bin/fm-tasks-axi.sh` so the call reaches this home's backlog from any directory, and the documented manual path otherwise; keep only the configured recent Done entries.
@@ -553,6 +557,7 @@ Use compatible `tasks-axi` when the configured backend selects it, always throug
 
 Keep free-form notes free of temporary paths, moving versions, ephemeral identifiers, and copied state that will rot.
 Inspect the current task note before replacing its considered body, and archive the superseded body when recoverability matters rather than appending by default.
+A rewritten body keeps every line a script owns there: `source-link:`, `part-of:`, the captain-hold stamp and resolution records.
 Verify volatile details against their authoritative config, live system, or API before acting, and correct or delete stale prose immediately.
 Preserve durable structured identifiers, dependencies, and completion artifact links, and route reusable knowledge to section 6 rather than scattering it through task notes.
 
