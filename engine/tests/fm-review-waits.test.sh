@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Each library check below runs in its own subshell with its own FM_HOME on purpose.
+# shellcheck disable=SC2030,SC2031
 # Behavior tests for what happens after the captain reviews a task page:
 # bin/fm-artifact.sh's verdict intake, review waits, and the record of what the
 # first mate did about a review; bin/fm-teardown.sh and bin/fm-tasks-axi.sh
@@ -328,6 +330,13 @@ test_a_captain_hold_survives_the_retention_and_the_verdict() {
   show=$(tasks_in "$home" show t1 --full)
   assert_contains "$show" "held: yes" "a review released the captain's hold"
   assert_contains "$show" "hold_kind: captain" "a review changed the captain's hold"
+  # Even a captain hold worded exactly like the review hold is never lifted.
+  add_task "$home" t2
+  present "$home" "$T0" t2 plan one
+  in_home "$home" "$ROOT/bin/fm-captain-hold.sh" hold t2 --reason "waiting for the captain to review a presented page" >/dev/null \
+    || fail "setup error: hold t2"
+  art "$home" "$T1" verdict --task t2 --name plan --rev 1 --verdict approve >/dev/null || fail "verdict failed"
+  assert_contains "$(tasks_in "$home" show t2 --full)" "hold_kind: captain" "a verdict lifted a captain hold that shared the review hold's words"
   pass "fm-artifact.sh verdict: a task held for the captain takes a review without its hold being released"
 }
 
@@ -383,12 +392,12 @@ test_done_is_refused_while_a_page_waits() {
   home=$(make_home done-guard)
   add_task "$home" t1
   present "$home" "$T0" t1 plan one
-  out=$(in_home "$home" "$ROOT/bin/fm-tasks-axi.sh" done t1 2>&1); rc=$?
+  out=$(in_home "$home" "$ROOT/bin/fm-tasks-axi.sh" "done" t1 2>&1); rc=$?
   expect_code 2 "$rc" "done on a task whose page is unread"
   assert_contains "$out" "plan rev 1" "the refusal does not name the page"
   assert_not_contains "$(tasks_in "$home" show t1 --full)" "state: done" "the refused close still closed the row"
   art "$home" "$T1" verdict --task t1 --name plan --rev 1 --verdict approve >/dev/null || fail "approve failed"
-  in_home "$home" "$ROOT/bin/fm-tasks-axi.sh" done t1 >/dev/null 2>&1 || fail "done on a reviewed task was refused"
+  in_home "$home" "$ROOT/bin/fm-tasks-axi.sh" "done" t1 >/dev/null 2>&1 || fail "done on a reviewed task was refused"
   pass "fm-tasks-axi.sh: done refuses a task whose page the captain has not reviewed, and only that"
 }
 

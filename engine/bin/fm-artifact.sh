@@ -400,7 +400,7 @@ cmd_mode() {
 
 cmd_present() {
   local task='' chat=0 file='' name='' title='' note='' assets='' accept_layout=0 scope art_dir stage digest latest latest_sha source_bytes
-  local n tries entry bytes presented_by rev_dir now layout answered='' replies='[]' reply_id reply_body id covers= fyi=0
+  local n tries entry bytes presented_by rev_dir now layout answered='' replies='[]' reply_id reply_body id covers='' fyi=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --task) [ $# -ge 2 ] || usage; task=$2; shift 2 ;;
@@ -935,6 +935,7 @@ compute_reviews() {  # <task or ''> <calls-json file or ''> <want-waits 0|1>
     [ -f "$dir/review.jsonl" ] && printf '%s\n' "$dir/review.jsonl"
   done)
   if [ -n "$files" ]; then
+    # shellcheck disable=SC2016 # jq, not the shell, expands $line, $file, $e, and $schema.
     printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 jq -cnR --arg schema "$REVIEW_SCHEMA" '
       [inputs as $line | input_filename as $file | ($line | fromjson?) as $e
        | select($e | type == "object")

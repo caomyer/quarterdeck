@@ -115,7 +115,7 @@ command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi is not on PATH; run bin/
 # a task with a page still waiting for the captain's review is refused, exactly as
 # bin/fm-teardown.sh keeps that row open. Withdrawing the page with a reason the
 # captain can read is the way to let it go.
-if [ "${ARGS[0]:-}" = done ] && [ -n "${ARGS[1]:-}" ]; then
+if [ "${ARGS[0]:-}" = "done" ] && [ -n "${ARGS[1]:-}" ]; then
   case "${ARGS[1]}" in
     -*) ;;
     *)

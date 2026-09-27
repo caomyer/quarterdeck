@@ -606,7 +606,7 @@ EOF
 # mate acts, and a failure never changes the drain's exit status. Nothing here
 # dispatches: whether and how the work starts stays the first mate's call.
 print_unhandled_reviews_section() {
-  local reviews task name rev verdict threads author at line shown=0 omitted=0 bound minutes
+  local reviews task name rev verdict threads at line shown=0 omitted=0 bound minutes
   local output='' used=0 bytes item_bytes=300 global_bytes=2400
 
   bound=${FM_DIVERGENCE_TIMEOUT:-20}
@@ -617,7 +617,7 @@ print_unhandled_reviews_section() {
   reviews=$(FM_STATE_OVERRIDE="$STATE" fm_run_timed "$bound" "$SCRIPT_DIR/fm-artifact.sh" reviews --owed --older-than "$minutes" 2>/dev/null) || return 0
   [ -n "$reviews" ] || return 0
 
-  while IFS=$(printf '\t') read -r task name rev verdict threads author at; do
+  while IFS=$(printf '\t') read -r task name rev verdict threads _author at; do
     [ -n "$task" ] || continue
     if [ "$verdict" = approve ]; then
       line="$task: the captain approved page $name rev $rev at $at"
