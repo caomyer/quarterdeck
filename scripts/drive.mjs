@@ -113,7 +113,8 @@ async function request(body, seconds = timeout) {
   throw new Error(`no answer in ${seconds}s; is the app up?`);
 }
 
-const run = (script, seconds) => request({ eval: `${HELPERS}\n${script}` }, seconds);
+// The deadline goes with the script, so one this side gave up on never runs later.
+const run = (script, seconds = timeout) => request({ eval: `${HELPERS}\n${script}`, deadline_ms: Date.now() + seconds * 1000 }, seconds);
 const print = (value) => console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
 const q = JSON.stringify;
 

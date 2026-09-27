@@ -7,9 +7,10 @@
 //! build it reads requests from `<dir>/in/<id>.json` and answers each in
 //! `<dir>/out/<id>.json` as `{"ok": bool, "value": ...}`:
 //!
-//! - `{"eval": "<script>"}` runs the script in the window as the body of an
-//!   async function, so it may `await` and `return`; the value comes back as
-//!   JSON, or the error's text when it throws;
+//! - `{"eval": "<script>", "deadline_ms": <epoch ms>}` runs the script in the
+//!   window as the body of an async function, so it may `await` and `return`;
+//!   the value comes back as JSON, or the error's text when it throws. Past its
+//!   deadline it does not run at all;
 //! - `{"snapshot": "<absolute path>.png", "size": [width, height]}` writes what
 //!   the window shows, the artifact frames included, through WebKit's own
 //!   snapshot. `size` is the page's viewport: the webview reaches further than
@@ -91,7 +92,13 @@ fn handle(app: &AppHandle, dir: &Path, id: &str, request: Value) {
         return answer(dir, id, false, json!("the app has no main window"));
     };
     if let Some(script) = request["eval"].as_str() {
-        eval(&window, dir.to_path_buf(), id.to_string(), script);
+        // A script whose caller stopped waiting must not run later, when the
+        // page wakes: a message typed and sent then would go twice.
+        let script = match request["deadline_ms"].as_u64() {
+            Some(deadline) => format!("if (Date.now() > {deadline}) throw new Error(\"expired before the page could run it\");\n{script}"),
+            None => script.to_string(),
+        };
+        eval(&window, dir.to_path_buf(), id.to_string(), &script);
     } else if let Some(path) = request["snapshot"].as_str() {
         let size = request["size"].as_array().and_then(|size| Some((size.first()?.as_f64()?, size.get(1)?.as_f64()?)));
         snapshot(&window, dir.to_path_buf(), id.to_string(), PathBuf::from(path), size);
