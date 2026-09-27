@@ -3,6 +3,7 @@ mod attach;
 mod calls;
 mod calm;
 mod controls;
+mod devdrive;
 mod engine;
 mod envpath;
 mod host;
@@ -53,8 +54,14 @@ pub fn run() {
       // leaves a fixed 1440x900 window taller than a smaller screen, with the
       // sidebar's footer behind the Dock. Asking once the window exists works.
       if let Some(window) = app.get_webview_window("main") {
-        let _ = window.maximize();
+        if devdrive::requested().is_some() {
+          // A driven window keeps one size, so every run's snapshots compare.
+          let _ = window.set_size(tauri::LogicalSize::new(1440.0, 900.0));
+        } else {
+          let _ = window.maximize();
+        }
       }
+      devdrive::start(app.handle().clone());
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -116,6 +123,7 @@ pub fn run() {
       update::update_restart,
       update::update_cancel,
       update::update_seen,
+      devdrive::devdrive_done,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application");

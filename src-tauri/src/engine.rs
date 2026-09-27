@@ -51,16 +51,13 @@ fn check_engine(dir: &Path) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-/// The home the app owns, in its data folder: `QUARTERDECK_HOME_DIR` replaces it.
+/// The home the app owns, in its own folder: `QUARTERDECK_HOME_DIR` replaces it.
 /// The folder need not exist yet; laying it out is `prepare_home`'s work.
 pub(crate) fn managed_home<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     if let Some(dir) = override_dir("QUARTERDECK_HOME_DIR") {
         return Ok(dir);
     }
-    tauri::Manager::path(app)
-        .app_data_dir()
-        .map(|dir| dir.join("home"))
-        .map_err(|e| format!("no app data folder: {e}"))
+    crate::settings::settings_dir(app).map(|dir| dir.join("home"))
 }
 
 /// Lays the home out from the engine, and returns what the script reported.
