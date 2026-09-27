@@ -424,7 +424,7 @@ const call = page.locator(".decision-card[data-call-id='res-model-download']");
 await call.waitFor();
 check(await call.getAttribute("data-argued") === "true", "a call with a page to argue it says so");
 check(await call.locator(".suggestion-chips").count() === 0, "its options wait behind Answer now");
-check((await call.locator("[data-testid='argued-by']").innerText()) === "Argued by When may the app download the speech model?", "the call names the page that argues it");
+check((await call.locator("[data-testid='argued-by']").textContent()) === "Argued by When may the app download the speech model?page", "the call names the page that argues it, and that it is a page");
 check((await call.innerText()).includes("3 options · Recommended: Wi-Fi only, with visible progress"), "the call says how many options and which is recommended");
 check(await call.locator("[data-testid='decision-reason']").count() === 0, "a question the title already asks is not said twice");
 await shot(page, "13-call-with-page");
@@ -483,7 +483,8 @@ await page.locator(".back-button").click();
 await page.locator(".nav-item", { hasText: "Bearings" }).click();
 const quick = page.locator(".decision-card[data-call-id='res-transcripts-source']");
 await quick.waitFor();
-check((await quick.locator("[data-testid='argued-by']").innerText()) === "Argued by Which episodes already carry a transcript?", "a call raised before its page existed is argued by the page its origin presented");
+// Its scout's report opens that same page, so it is not named a second time.
+check((await quick.locator("[data-testid='argued-by']").textContent()) === "Argued by Which episodes already carry a transcript?page", "a call raised before its page existed is argued by the page its origin presented");
 check((await quick.locator(".decision-actions button").last().innerText()).includes("Read the argument"), "reading the argument is the primary action");
 await quick.locator("button", { hasText: "Answer now" }).click();
 const panel = quick.locator("[data-testid='answer-fields']");

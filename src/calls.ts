@@ -45,15 +45,32 @@ export function awaitsCaptain(call: Call) {
   return isOpen(call) && replyOf(call) === null;
 }
 
-/** One piece of what argues a call, resolved to something the captain can open. */
+/**
+ * One piece of what argues a call, resolved to something the captain can open. A report opens the page its task
+ * presented, as a finished scout's own card does; the app has no reader for a report without one, so that goes to the
+ * first mate as a question.
+ */
 export type Evidence =
   | { ref: string; kind: "page"; title: string; artifact: Artifact }
-  | { ref: string; kind: "report"; title: string; task: string }
+  | { ref: string; kind: "report"; title: string; task: string; page: Artifact | null }
   | { ref: string; kind: "url"; title: string; url: string };
+
+/** A task's newest presented page, which is what reading its report opens. */
+export function latestTaskPage(artifacts: Artifact[], task: string): Artifact | undefined {
+  return artifacts
+    .filter((artifact) => artifact.scope === "task" && artifact.task === task)
+    .sort((a, b) => b.latest.presented_at.localeCompare(a.latest.presented_at))[0];
+}
+
+/** The page a piece of evidence opens, if it opens one. */
+export function pageOf(item: Evidence): Artifact | null {
+  return item.kind === "page" ? item.artifact : item.kind === "report" ? item.page : null;
+}
 
 /**
  * What argues a call, in the order firstmate gives it: its explicit evidence first, then what its origin produced.
- * A page that is not among the presented pages cannot be opened, so it is left out rather than shown dead.
+ * A page that is not among the presented pages cannot be opened, so it is left out rather than shown dead. A report
+ * whose page is already listed would open that same page, so it is not listed twice.
  */
 export function resolveEvidence(call: Call, artifacts: Artifact[], taskTitle: (id: string) => string): Evidence[] {
   const out: Evidence[] = [];
@@ -66,18 +83,36 @@ export function resolveEvidence(call: Call, artifacts: Artifact[], taskTitle: (i
     }
     const report = ref.match(/^report:(.+)$/);
     if (report) {
-      out.push({ ref, kind: "report", title: `the report on “${taskTitle(report[1])}”`, task: report[1] });
+      out.push({ ref, kind: "report", title: `the report on “${taskTitle(report[1])}”`, task: report[1], page: latestTaskPage(artifacts, report[1]) ?? null });
       continue;
     }
     const url = ref.match(/^url:(https?:\/\/\S+)$/);
     if (url) out.push({ ref, kind: "url", title: linkLabel(url[1]), url: url[1] });
   }
-  return out;
+  const listed = new Set(out.flatMap((item) => item.kind === "page" ? [item.artifact] : []));
+  return out.filter((item) => item.kind !== "report" || !item.page || !listed.has(item.page));
 }
 
-/** The one piece to read first: the first page, since that is written to be read; otherwise whatever comes first. */
+/** The one piece to read first: the first that opens a page, since a page is written to be read; otherwise whatever comes first. */
 export function argumentOf(evidence: Evidence[]) {
-  return evidence.find((item) => item.kind === "page") ?? evidence[0];
+  return evidence.find((item) => pageOf(item) !== null) ?? evidence[0];
+}
+
+/** What opening a piece of evidence does, in the few words beside its title. */
+export function evidenceAction(item: Evidence) {
+  if (item.kind === "page") return "page";
+  if (item.kind === "report") return item.page ? "report" : "ask the first mate";
+  return "link";
+}
+
+/** What the button that opens the argument says: a report with no page can only be asked for. */
+export function readLabel(argument: Evidence) {
+  return argument.kind === "report" && !argument.page ? "Ask for the report" : "Read the argument";
+}
+
+/** What else argues a call beside the page on screen, which the page itself need not repeat. */
+export function evidenceBeside(evidence: Evidence[], page: Artifact) {
+  return evidence.filter((item) => pageOf(item) !== page);
 }
 
 /** Calls the first mate settled for the captain, newest first. */

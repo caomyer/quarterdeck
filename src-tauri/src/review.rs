@@ -373,9 +373,10 @@ fn crew_author(revision: &Value) -> Option<&str> {
 
 /// Who a revision came from, in a sentence the first mate can act on: for a
 /// crewmate's page, how to pass the review on without rewording where each
-/// comment sits.
-fn author_line(revision: &Value, relay: Option<&Path>) -> String {
+/// comment sits, unless that crewmate has no worker left to take it.
+fn author_line(revision: &Value, relay: Option<&Path>, gone: bool) -> String {
     match (crew_author(revision), relay) {
+        (Some(task), _) if gone => format!("Written by {task}, which has finished and has no worker left, so do not relay this review: act on it yourself."),
         (Some(task), Some(relay)) => {
             let file = relay.to_string_lossy().replace('\'', "'\\''");
             format!("Written by {task}. Relay this review to it unchanged, since its lines say where on the page each comment sits: bin/fm-send.sh {task} \"$(cat '{file}')\". Add any framing of your own in a separate message.")
@@ -517,10 +518,11 @@ pub fn review_block(revision: &Value, verdict: &str, threads: &[Value], log: &Pa
 /// with how to pass it on and the answers already recorded added after its
 /// first line. The log path is included so the author can read the whole review
 /// rather than only what fits here.
-pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Value], log: &Path, relay: Option<&Path>) -> Result<String, String> {
+/// `gone` says a crewmate's page has no worker left to take it.
+pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Value], log: &Path, relay: Option<&Path>, gone: bool) -> Result<String, String> {
     let block = review_block(revision, verdict, threads, log)?;
     let (header, rest) = block.split_once('\n').unwrap_or((block.as_str(), ""));
-    let mut lines = vec![header.to_string(), author_line(revision, relay)];
+    let mut lines = vec![header.to_string(), author_line(revision, relay, gone)];
     let (keyed, worded): (Vec<Value>, Vec<Value>) = answers.iter().cloned().partition(is_keyed);
     lines.extend(recorded_lines(&keyed));
     lines.extend(worded_lines(&worded));
@@ -895,7 +897,11 @@ pub fn note_outcomes(log: &Path, answers: &[Keyed], outcomes: &[Outcome]) -> Res
 /// made of, so what goes out and what is noted as sent cannot drift apart.
 /// Composed after the intake has run: of the options, only those it recorded
 /// are in it, and every answer in words is.
-pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>, Vec<Value>), String> {
+///
+/// `state` is the home's state folder, where a crewmate with a worker left has
+/// its task record; given one, a review on the page of a crewmate that has none
+/// is not handed to it. Without one, the author is taken to be there.
+pub fn draft(dir: &Path, rev: u64, verdict: &str, state: Option<&Path>) -> Result<(String, Vec<Value>, Vec<Value>), String> {
     let log = dir.join("review.jsonl");
     let current = view(&log);
     let threads: Vec<Value> = current["threads"]
@@ -904,9 +910,14 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
         .unwrap_or_default();
     let answers = answers_where(&log, goes_with_review);
     let revision = revision_record(dir, rev)?;
+    // Teardown keeps a task's pages but removes its record, so a page can outlive the worker that would take the review.
+    let gone = match (crew_author(&revision), state) {
+        (Some(task), Some(state)) => !state.join(format!("{task}.meta")).is_file(),
+        _ => false,
+    };
     // A crewmate's page gets the review through firstmate, as a file, so nothing about where a comment sits is retold.
     let relay = match crew_author(&revision) {
-        Some(_) => {
+        Some(_) if !gone => {
             let folder = dir.join("review-files");
             std::fs::create_dir_all(&folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
             let count = current["sent"].as_array().map_or(0, Vec::len);
@@ -915,9 +926,9 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
             std::fs::write(&file, format!("{block}\n")).map_err(|e| format!("could not write {}: {e}", file.display()))?;
             Some(file)
         }
-        None => None,
+        _ => None,
     };
-    let text = compose(&revision, verdict, &threads, &answers, &log, relay.as_deref())?;
+    let text = compose(&revision, verdict, &threads, &answers, &log, relay.as_deref(), gone)?;
     Ok((text, threads, answers))
 }
 
@@ -990,8 +1001,8 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
     let replied = reply_worded(home, &log).await?;
     let sent_with = |message: &str| name_replies(home, &replied, message.to_string());
     let (text, threads, answers) = {
-        let (dir, verdict) = (dir.clone(), verdict.clone());
-        blocking(move || draft(&dir, rev, &verdict)).await?
+        let (dir, verdict, state) = (dir.clone(), verdict.clone(), home.join("state"));
+        blocking(move || draft(&dir, rev, &verdict, Some(&state))).await?
     };
     let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
@@ -1622,7 +1633,7 @@ mod tests {
         for key in ["scene", "scene_file", "picture", "preview"] {
             assert!(anchor.get(key).is_none(), "{key} survived: {anchor}");
         }
-        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &path, None).unwrap();
+        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &path, None, false).unwrap();
         assert!(!text.contains("id_rsa"), "{text}");
         // Nothing to quote is a comment on the page as a whole.
         let current = add_comment(&path, 1, "Overall.", Some(json!({"quote": ""})), None, None).unwrap();
@@ -1691,7 +1702,7 @@ mod tests {
             json!({"id": "t1", "rev": 2, "anchor": anchor("Runs after transcription, free, private."), "comments": [{"body": "Say what happens on an older phone."}, {"body": "And on a metered hotspot."}]}),
             json!({"id": "t2", "rev": 1, "anchor": anchor(&"a very long quote ".repeat(20)), "comments": [{"body": "Still open from the last round."}]}),
         ];
-        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), None).unwrap();
+        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), None, false).unwrap();
         assert!(text.starts_with("Captain's review of \"AI titles for snips\" (task res-titles-scout, rev 2): Requests changes.\n"), "{text}");
         assert!(text.contains("Written by res-titles-scout. Relay this review to it unchanged."), "{text}");
         assert!(text.contains("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), "{text}");
@@ -1700,15 +1711,15 @@ mod tests {
         assert!(text.contains("…\" (rev 1): Still open from the last round."), "{text}");
 
         let chat = json!({"scope": "chat", "task": null, "rev": 1, "title": "A decision", "presented_by": {"role": "firstmate"}});
-        let text = compose(&chat, "approve", &[], &[], Path::new("/home/data/.artifacts/a/review.jsonl"), None).unwrap();
+        let text = compose(&chat, "approve", &[], &[], Path::new("/home/data/.artifacts/a/review.jsonl"), None, false).unwrap();
         assert!(text.contains("(shared in chat, rev 1): Approved."), "{text}");
         assert!(text.contains("Written by you."), "{text}");
         assert!(text.contains("No comments on the page itself."), "{text}");
-        assert!(compose(&chat, "merge", &[], &[], Path::new("/x"), None).is_err());
+        assert!(compose(&chat, "merge", &[], &[], Path::new("/x"), None, false).is_err());
 
         // An answer the intake recorded is stated as done, so the first mate follows up instead of recording it.
         let answers = vec![json!({"decision": "res-model-download", "option": "wifi-only", "label": "Wi-Fi only, with visible progress"})];
-        let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl"), None).unwrap();
+        let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl"), None, false).unwrap();
         assert!(text.contains("Answers already recorded with bin/fm-captain-hold.sh; do the follow-up"), "{text}");
         assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only, with visible progress\")"), "{text}");
         assert!(!text.contains("to record"), "{text}");
@@ -1827,7 +1838,7 @@ mod tests {
         assert_eq!(current["staged_answers"], 1);
         assert!(staged(&log).is_empty());
 
-        let (text, threads, told) = draft(&dir, 1, "comment").unwrap();
+        let (text, threads, told) = draft(&dir, 1, "comment", None).unwrap();
         assert!(text.contains("Recorded: res-model-download = wifi-only"), "{text}");
         assert!(!text.contains("res-model-cellular"), "a skipped answer is never claimed: {text}");
         record_sent(&log, "comment", 1, &threads, &told, "out-1", "A review").unwrap();
@@ -1892,7 +1903,7 @@ mod tests {
         let refused = view(&log)["answers"].as_array().unwrap().iter().find(|a| a["decision"] == "res-refused").unwrap()["reply"].clone();
         assert_eq!(refused, json!({"result": "not_kept", "detail": "call res-refused is already closed"}));
 
-        let (text, threads, carried) = draft(&dir, 1, "approve").unwrap();
+        let (text, threads, carried) = draft(&dir, 1, "approve", None).unwrap();
         assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only\")\n  The captain added: Say so in Settings."), "{text}");
         assert!(text.contains("\nAnswered in words, kept on each call as the captain's reply; nothing has recorded them. Record one with bin/fm-captain-hold.sh answer only if"), "{text}");
         assert!(text.contains("Never infer an answer from the words alone."), "{text}");
@@ -1928,7 +1939,7 @@ mod tests {
         assert_eq!(page["sent"][0]["answers"][1]["note"], "Pause, but tell the user why.");
         assert_eq!(page["sent"][0]["answers"][2]["defer"], "2026-10-03");
         // The answer again goes with the next review.
-        let (text, threads, carried) = draft(&dir, 1, "comment").unwrap();
+        let (text, threads, carried) = draft(&dir, 1, "comment", None).unwrap();
         assert!(text.contains("\nres-model-cellular: Finish on cellular after all."), "{text}");
         assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-11-01."), "{text}");
         record_sent(&log, "comment", 1, &threads, &carried, "out-2", &text).unwrap();
@@ -2028,7 +2039,7 @@ mod tests {
                        "picture": "/home/data/.artifacts/a/review-files/t1.png"},
             "comments": [{"body": "Moved \"Title the snip\" below \"Transcribe\"; added \"Retry\"."}],
         })];
-        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/.artifacts/a/review.jsonl"), None).unwrap();
+        let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/.artifacts/a/review.jsonl"), None, false).unwrap();
         assert!(text.contains("t1 on the diagram \"Snip pipeline\": Moved"), "{text}");
         assert!(text.contains("  proposed scene: /home/data/.artifacts/a/review-files/t1.excalidraw"), "{text}");
         assert!(text.contains("  picture of it: /home/data/.artifacts/a/review-files/t1.png"), "{text}");
@@ -2118,6 +2129,26 @@ mod tests {
     }
 
     #[test]
+    fn a_review_on_the_page_of_a_torn_down_crewmate_goes_to_the_first_mate_not_to_the_crewmate() {
+        let (dir, log) = crew_page("torn-down", "under pace");
+        add_comment(&log, 1, "drop this column", None, None, None).unwrap();
+        let state = scratch("torn-down-state");
+        std::fs::create_dir_all(&state).unwrap();
+
+        // Its record is gone: teardown kept the page, so the review is the first mate's to act on.
+        let (text, _, _) = draft(&dir, 1, "changes", Some(&state)).unwrap();
+        assert!(text.contains("Written by qd-usage-design-1, which has finished and has no worker left, so do not relay this review: act on it yourself."), "{text}");
+        assert!(!text.contains("fm-send.sh"), "nothing tells the first mate to send it to a crewmate that is gone: {text}");
+        assert!(!dir.join("review-files/review-1.md").exists(), "no copy is written for a crewmate that cannot read it");
+        assert!(text.contains("drop this column"), "{text}");
+
+        // With its record there, the crewmate still gets it unchanged.
+        std::fs::write(state.join("qd-usage-design-1.meta"), "kind=scout\n").unwrap();
+        let (text, _, _) = draft(&dir, 1, "changes", Some(&state)).unwrap();
+        assert!(text.contains("bin/fm-send.sh qd-usage-design-1"), "{text}");
+    }
+
+    #[test]
     fn the_captains_t2_reaches_the_crewmate_saying_which_row_and_how_to_see_it() {
         let (dir, log) = crew_page("t2", "under pace: lasts past the reset");
         let current = add_comment(&log, 1, "what does underpace mean? is this really helpful? I think can remove this column for simplicity?", Some(t2_anchor()), None, picture(data_url("jpeg", &tiny_jpeg(337, 255)))).unwrap();
@@ -2127,7 +2158,7 @@ mod tests {
         assert!(dir.join("review-files/t1-r1.jpg").is_file(), "the picture is kept beside the review");
         assert_eq!(thread["anchor"]["occurrence"], json!({"n": 1, "of": 4, "shown": 2}));
 
-        let (text, _, _) = draft(&dir, 1, "changes").unwrap();
+        let (text, _, _) = draft(&dir, 1, "changes", None).unwrap();
         let relay = dir.join("review-files/review-1.md");
         let block = std::fs::read_to_string(&relay).expect("the review the crewmate receives is a file");
         // The first mate is told to pass the file on, not to retell it.
@@ -2183,7 +2214,7 @@ mod tests {
         }
         assert!(!dir.join("review-files").exists() || std::fs::read_dir(dir.join("review-files")).unwrap().next().is_none(), "nothing refused is written");
         let skipped = add_comment(&log, 1, "Again.", Some(json!({"quote": "Intro"})), None, Some(CommentPicture { skipped: Some("the page could not draw itself".into()), ..Default::default() })).unwrap();
-        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", &skipped["threads"].as_array().unwrap()[3..], &[], &log, None).unwrap();
+        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", &skipped["threads"].as_array().unwrap()[3..], &[], &log, None, false).unwrap();
         assert!(text.contains("  picture  none (the page could not draw itself)"), "{text}");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2211,7 +2242,7 @@ mod tests {
     fn an_anchor_from_before_the_page_described_itself_says_only_its_words() {
         let log = scratch("old-anchor").join("review.jsonl");
         let current = add_comment(&log, 1, "Say more.", Some(anchor("Wi-Fi only")), None, None).unwrap();
-        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &log, None).unwrap();
+        let text = compose(&json!({"scope": "chat", "rev": 1, "title": "t"}), "comment", current["threads"].as_array().unwrap(), &[], &log, None, false).unwrap();
         assert!(text.contains("t1 on \"Wi-Fi only\": Say more."), "{text}");
         for absent in ["  match", "  element", "  near", "  box", "  picture"] {
             assert!(!text.contains(absent), "{absent} in {text}");
@@ -2224,7 +2255,7 @@ mod tests {
         add_comment(&log, 1, "what does underpace mean?", Some(t2_anchor()), None, picture(data_url("jpeg", &tiny_jpeg(20, 20)))).unwrap();
         stage_answer(&log, "qd-usage-design-1", Some("strip"), Some("One quiet strip in the sidebar footer"), Some("release"), &Words::default()).unwrap();
         append(&log, &json!({"at": 2, "kind": "recorded", "decision": "qd-usage-design-1", "result": "closed", "detail": ""})).unwrap();
-        let (text, threads, told) = draft(&dir, 1, "changes").unwrap();
+        let (text, threads, told) = draft(&dir, 1, "changes", None).unwrap();
         record_sent(&log, "changes", 1, &threads, &told, "m1790147648486-20", &text).unwrap();
         let data = dir.parent().unwrap().parent().unwrap().parent().unwrap();
         let page = &summary(data)["task/qd-usage-design-1/usage-panel"];
