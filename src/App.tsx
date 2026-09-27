@@ -71,10 +71,13 @@ import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionV
 import { useCalm } from "./host/use-calm";
 import { useQuota } from "./host/use-quota";
 import { useUpdate } from "./host/use-update";
+import { useOnboarding } from "./host/use-onboarding";
+import { AgentList, type AgentListProps, Welcome } from "./Welcome";
+import { showWelcome } from "./agents";
 import { UpdateNotice } from "./UpdateNotice";
 import { Usage } from "./UsagePanel";
 import { calmHidden } from "./calm";
-import type { CalmRead, PickedCategory, SessionCommand, SessionControls } from "./host/types";
+import type { AgentId, CalmRead, PickedCategory, SessionCommand, SessionControls } from "./host/types";
 import { CalmPill, GhostHint, type SessionNotice, SessionNotices, SessionPills, SlashPalette, WorkingRow } from "./SessionControls";
 import { fill, ghostHint, palette as paletteFor, routeOf, typedCommand, typedSetting } from "./sessionctl";
 
@@ -145,6 +148,18 @@ export function App() {
   const appUpdate = useUpdate(host);
   const { bearings, fleet, messages, outbox, runtime } = bridge;
   const calm = useCalm(host, bridge.home, runtime.state);
+  const onboarding = useOnboarding(host, bridge.home);
+  /** The captain asked to meet their first mate from the welcome; chat says how its first start goes. */
+  const [meeting, setMeeting] = useState(false);
+  // Signing in is on the welcome, so a first start that stops for it goes back there.
+  useEffect(() => {
+    if (meeting && runtime.reasonKind === "signed_out" && onboarding.greeted === false) {
+      setMeeting(false);
+      void onboarding.check();
+    }
+  }, [meeting, runtime.reasonKind, onboarding.greeted, onboarding.check]);
+  /** The agent the first mate runs on, as the captain calls it, for what a failed start says. */
+  const firstMateLabel = agentLabel(runtime.harness ?? onboarding.status?.firstMate);
   const [view, setView] = useState<View>("bearings");
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<FleetTask | null>(null);
@@ -677,6 +692,23 @@ export function App() {
     />;
   }
 
+  /** The agents on this Mac and the ways through them, for the welcome and Settings alike. */
+  function agentListProps() {
+    return {
+      status: onboarding.status,
+      checking: onboarding.checking,
+      problem: onboarding.problem,
+      installs: onboarding.installs,
+      signingIn: onboarding.signingIn,
+      choosing: onboarding.choosing,
+      onCheck: () => void onboarding.check(),
+      onInstall: (agent: AgentId) => void onboarding.install(agent),
+      onSignIn: (agent: AgentId) => void onboarding.signIn(agent),
+      onConfirmSignIn: (agent: AgentId) => void onboarding.confirmSignIn(agent),
+      onChoose: (agent: AgentId) => void onboarding.chooseFirstMate(agent),
+    };
+  }
+
   async function chooseHomeAndStart() {
     if (await bridge.chooseHome()) void bridge.start();
   }
@@ -685,7 +717,7 @@ export function App() {
   function hostBanners(onAskStorm: (question: string) => void) {
     return <>
       {hasProblem
-        ? <ProblemBanner kind={runtime.reasonKind} details={problemDetails} homeProblem={bridge.homeProblem} onStart={() => void bridge.start()} onChoose={() => void chooseHomeAndStart()} />
+        ? <ProblemBanner kind={runtime.reasonKind} details={problemDetails} homeProblem={bridge.homeProblem} agent={firstMateLabel} onStart={() => void bridge.start()} onChoose={() => void chooseHomeAndStart()} onSignIn={() => void onboarding.signIn(runtime.harness ?? onboarding.status?.firstMate ?? "claude")} onAgents={() => setSettingsOpen(true)} />
         : notRunning && <OfflineBanner onStart={() => void bridge.start()} />}
       {runtime.state === "locked_by_other" && <LockedBanner holder={runtime.holder} onCheck={() => void bridge.start()} />}
       {bridge.rewakeStorm && <StormBanner storm={bridge.rewakeStorm} onAsk={() => onAskStorm(stormQuestion(bridge.rewakeStorm!))} onRestart={() => void bridge.restart()} />}
@@ -701,6 +733,11 @@ export function App() {
 
   if (!bridge.homeChecked) return <div className="app-loading">Opening firstmate…</div>;
   if (!bridge.home) return <HomeSetup problem={bridge.homeProblem} choosing={bridge.choosingHome} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} />;
+  // Whether this home has met its first mate is known at once; until then, nothing is drawn that might be the wrong screen.
+  if (!bridge.homeChosen && onboarding.greeted === null) return <div className="app-loading">Opening firstmate…</div>;
+  if (showWelcome({ home: bridge.home, chosen: bridge.homeChosen, greeted: onboarding.greeted, meeting })) {
+    return <Welcome {...agentListProps()} onMeet={() => { setMeeting(true); navigate("chat"); void bridge.start(); }} />;
+  }
 
   return (
     <div className="app-shell">
@@ -753,7 +790,7 @@ export function App() {
           <div className={`content-scroll bearings-page ${bridge.refreshing ? "snapshot-refreshing" : ""}`} data-screen="bearings" aria-busy={bridge.refreshing}>
             {hostBanners((question) => { navigate("chat"); void bridge.send(question); })}
             {bridge.snapshotHealth.errors.length > 0 && <SnapshotBanner health={bridge.snapshotHealth} refreshing={bridge.refreshing} onRetry={() => void bridge.refreshSnapshot()} />}
-            <NeedsBanner needs={bridge.needs} problem={bridge.needsProblem} checking={bridge.checkingTools} onCheck={() => void bridge.checkTools()} />
+            <NeedsBanner needs={bridge.needs} problem={bridge.needsProblem} checking={bridge.checkingTools} onCheck={() => void bridge.checkTools()} onAsk={draftInChat} />
             {approvalCount > 0 && view === "bearings" && <ApprovalBanner count={approvalCount} onOpen={() => navigate("chat")} />}
             {!bearings && bridge.snapshotHealth.errors.length === 0 && <EmptyState label="Taking fresh bearings of this home…" />}
             {bearings && <>
@@ -835,7 +872,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} controls={bridge.controls} onSetOption={bridge.setOption} turnSince={bridge.turnSince} calm={calm.calm} calmSaving={calm.saving} calmError={calm.error} onCalm={(on) => void calm.setOn(on)} onDismissCalmError={calm.dismissError} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} firstStart={meeting && onboarding.greeted === false && !hasProblem ? <FirstStartCard runtime={runtime.state} /> : undefined} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} controls={bridge.controls} onSetOption={bridge.setOption} turnSince={bridge.turnSince} calm={calm.calm} calmSaving={calm.saving} calmError={calm.error} onCalm={(on) => void calm.setOn(on)} onDismissCalmError={calm.dismissError} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(backlogRecords, name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -909,7 +946,7 @@ export function App() {
       </main>
 
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
-      {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} projects={projects.map((project) => project.name)} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => { setSettingsOpen(false); void bridge.refreshSnapshot(); }} />}
+      {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} projects={projects.map((project) => project.name)} agents={agentListProps()} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => { setSettingsOpen(false); void bridge.refreshSnapshot(); }} />}
       {queuedRecord && phase && (queuedTask && fleet && LAUNCH_PHASES.has(phase)
         ? <TaskDrawer task={queuedTask} title={withinProject(queuedRecord.title, selectedProject ?? "")} record={queuedRecord} now={now} reviews={reviews} onAskReport={() => { setQueuedId(null); draftInChat(askAboutReport(taskTitle(queuedTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setQueuedId(null); setShowEverything(false); }}
             launch={{ phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, onDraft: draftInChat }} upstream={upstreamFor(queuedRecord, false)} details={taskSections(queuedRecord, runningLock(queuedRecord))} />
@@ -937,49 +974,84 @@ function NavButton({ active, icon, label, detail, count, countTitle, quietCount,
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}><span className="nav-icon" aria-hidden="true">{icon}</span><span className="nav-label"><strong>{label}</strong>{detail && <small>{detail}</small>}</span>{count !== undefined ? <em className={quietCount ? "quiet" : ""} title={countTitle}>{count}</em> : status}</button>;
 }
 
+/** What the captain calls an agent, for a banner that has only its id. */
+function agentLabel(agent: AgentId | undefined) {
+  return agent === "codex" ? "Codex" : "Claude Code";
+}
+
+/**
+ * A first mate's first start, in chat until its first words arrive: the host's own states, not a timer. It reads what
+ * this Mac has before it says anything, and on a new Mac that takes a while; an empty chat would read as broken.
+ */
+function FirstStartCard({ runtime }: { runtime: HostRuntimeState }) {
+  const started = runtime !== "starting" && runtime !== "stopped" && runtime !== "restarting";
+  const step = (done: boolean, active: boolean, label: string) => <li className={done ? "done" : active ? "active" : "pending"}>
+    <span className="step-dot" aria-hidden="true">{done ? "✓" : active ? <i className="spinner" /> : null}</span>{label}
+  </li>;
+  return <section className="first-start" data-testid="first-start" role="status" aria-live="polite">
+    <strong>Your first mate is getting its bearings</strong>
+    <ul>
+      {step(started, !started, "Started")}
+      {step(false, started, "Reading this Mac and its home")}
+      {step(false, false, "Saying hello")}
+    </ul>
+    <p>A first start takes a minute or two. It reads what this Mac has before it says anything, so what it tells you is true.</p>
+  </section>;
+}
+
 function HomeSetup({ problem, choosing, onChoose, onUseApp }: { problem: string | null; choosing: boolean; onChoose: () => void; onUseApp: () => void }) {
   return <div className="home-setup"><section><div className="brand-mark">Q</div><h1>Where does firstmate live on this Mac?</h1><p>The app ships its own first mate and keeps it in the app's folder. It could not set that up this time, so you can point it at a firstmate folder of your own: the one with <code>AGENTS.md</code> and <code>bin</code> inside.</p>{problem && <HomeProblem problem={problem} />}<div className="home-actions"><button className="home-choose" disabled={choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose folder…"}</button><button className="home-revert" disabled={choosing} onClick={onUseApp}>Try the app's own again</button></div></section></div>;
 }
 
-/// What the first mate says this machine still needs, in its own order.
+/// What the first mate says this machine still needs, grouped by who can act on it:
+/// what the captain installs by hand, and what the first mate installs once they say so.
 ///
 /// The live region is always here, empty when there is nothing to say: a region
 /// that appears already full is not announced, because there was no change
 /// inside it to announce.
-function NeedsBanner({ needs, problem, checking, onCheck }: { needs: Needed[]; problem: string | null; checking: boolean; onCheck: () => void }) {
+function NeedsBanner({ needs, problem, checking, onCheck, onAsk }: { needs: Needed[]; problem: string | null; checking: boolean; onCheck: () => void; onAsk: (text: string) => void }) {
   // Only a named tool is a thing the captain can go and get. The rest is what
   // the first mate had to say, and counting it as a thing to install would be
   // telling them a branch name is something to install.
   const tools = needs.filter((needed) => needed.kind !== "other");
+  const manual = tools.filter((needed) => needed.kind === "manual");
+  const installable = tools.filter((needed) => needed.kind === "install");
   const said = needs.filter((needed) => needed.kind === "other");
   const headline = problem ? "The first mate could not check this Mac"
     : tools.length === 0 ? "The first mate has something to say about this Mac"
-    : tools.length === 1 ? "The first mate needs one more thing on this Mac"
-    : `The first mate needs ${tools.length} more things on this Mac`;
-  const row = (needed: Needed) => <li key={needed.says}>
-    {needed.tool ? <><code className="needs-tool">{needed.tool}</code>{needed.kind === "manual"
-      ? <span>install it yourself: {needed.how ? <a href={needed.how} target="_blank" rel="noreferrer noopener">{needed.how}</a> : "no instructions were offered"}</span>
-      : needed.how ? <code className="needs-how">{needed.how}</code> : <span>no install command was offered</span>}</>
-      : <span className="needs-says">{needed.says}</span>}
-  </li>;
+    : "Crew work isn't ready on this Mac yet";
+  const sub = problem ? "Until it can, what is missing here is unknown."
+    : tools.length === 0 ? "Nothing here is a thing to install."
+    : `The first mate can talk, but it can't send a crewmate until ${tools.length === 1 ? "this is" : `these ${tools.length} are`} here. It asks before installing any of them.`;
+  const ask = `Set up what this Mac still needs for crew work: ${[...manual, ...installable].map((needed) => needed.tool).join(", ")}.`;
   return <div className="needs-region" role="status" aria-live="polite" aria-label="What this Mac still needs">
     {(needs.length > 0 || problem) && <section className="needs-banner">
       <header>
         <CircleAlert size={16} />
         <div>
           <strong>{headline}</strong>
-          <small>{problem ? "Until it can, what is missing here is unknown." : tools.length === 0 ? "Nothing here is a thing to install." : "It runs without them, but the work that uses them will stop."}</small>
+          <small>{sub}</small>
         </div>
         <button className="icon-button" onClick={onCheck} disabled={checking} title="Check this Mac again">
           <RefreshCw size={16} />
         </button>
       </header>
       {problem ? <p className="needs-problem">{problem}</p> : <>
-        {tools.length > 0 && <ul>{tools.map(row)}</ul>}
+        {manual.length > 0 && <>
+          <h5 className="needs-group">Yours to install</h5>
+          <div className="needs-chips">{manual.map((needed) => needed.how
+            ? <a key={needed.says} className="needs-tool" href={needed.how} target="_blank" rel="noreferrer noopener" title={`Install it yourself: ${needed.how}`}>{needed.tool}</a>
+            : <code key={needed.says} className="needs-tool" title="No instructions were offered">{needed.tool}</code>)}</div>
+        </>}
+        {installable.length > 0 && <>
+          <h5 className="needs-group">The first mate can install, with your OK</h5>
+          <div className="needs-chips">{installable.map((needed) => <code key={needed.says} className="needs-tool" title={needed.how ?? "No install command was offered"}>{needed.tool}</code>)}</div>
+        </>}
         {said.length > 0 && <>
           <p className="needs-aside">{tools.length > 0 ? "And some things it could not put a name to:" : "It could not put a name to these:"}</p>
-          <ul>{said.map(row)}</ul>
+          <ul>{said.map((needed) => <li key={needed.says}><span className="needs-says">{needed.says}</span></li>)}</ul>
         </>}
+        {tools.length > 0 && <div className="needs-actions"><button className="btn-heavy" onClick={() => onAsk(ask)}>Ask the first mate to set these up</button></div>}
       </>}
     </section>}
   </div>;
@@ -989,13 +1061,18 @@ function HomeProblem({ problem }: { problem: string }) {
   return <div className="home-problem" role="alert"><CircleAlert size={16} /><span>{problem}</span></div>;
 }
 
-function SettingsDialog({ home, problem, running, choosing, chosen, projects, onChoose, onUseApp, onClose }: { home: string; problem: string | null; running: boolean; choosing: boolean; chosen: boolean; projects: string[]; onChoose: () => void; onUseApp: () => void; onClose: () => void }) {
+function SettingsDialog({ home, problem, running, choosing, chosen, projects, agents, onChoose, onUseApp, onClose }: { home: string; problem: string | null; running: boolean; choosing: boolean; chosen: boolean; projects: string[]; agents: AgentListProps; onChoose: () => void; onUseApp: () => void; onClose: () => void }) {
+  // The agents are read when this opens, not at every launch.
+  const { status, onCheck } = agents;
+  useEffect(() => {
+    if (!status) onCheck();
+  }, [status, onCheck]);
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
-  return <div className="drawer-backdrop" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>Settings</span><h2>The first mate</h2></div><button className="icon-button" onClick={onClose} title="Close settings"><X size={18} /></button></header><div className="settings-body"><h3>firstmate folder</h3><p>{chosen ? "The first mate runs in the folder you chose, and Bearings is read from there." : "The app keeps its own first mate here, and Bearings is read from here."}</p><code className="settings-path" title={home}>{home}</code>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={running || choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose a different folder…"}</button>{chosen && <button className="home-revert" disabled={running || choosing} onClick={onUseApp}>Use the app's own first mate again</button>}{running && <small>Stop the first mate before changing which folder it runs in.</small>}{home && <RoutingSettings key={home} host={host} />}{home && <SourcesSettings key={`sources ${home}`} host={host} projects={projects} />}</div></section></div>;
+  return <div className="drawer-backdrop" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}><header className="drawer-header"><div><span>Settings</span><h2>The first mate</h2></div><button className="icon-button" onClick={onClose} title="Close settings"><X size={18} /></button></header><div className="settings-body"><h3>Agents</h3><p>Every agent here can take crew work. One of them runs the first mate: moving it to another starts the first mate again there, and each keeps its own conversation.</p><AgentList {...agents} /><h3>firstmate folder</h3><p>{chosen ? "The first mate runs in the folder you chose, and Bearings is read from there." : "The app keeps its own first mate here, and Bearings is read from here."}</p><code className="settings-path" title={home}>{home}</code>{problem && <HomeProblem problem={problem} />}<button className="home-choose" disabled={running || choosing} onClick={onChoose}><FolderOpen size={16} /> {choosing ? "Choosing…" : "Choose a different folder…"}</button>{chosen && <button className="home-revert" disabled={running || choosing} onClick={onUseApp}>Use the app's own first mate again</button>}{running && <small>Stop the first mate before changing which folder it runs in.</small>}{home && <RoutingSettings key={home} host={host} />}{home && <SourcesSettings key={`sources ${home}`} host={host} projects={projects} />}</div></section></div>;
 }
 
 const SNAPSHOT_SOURCES: Record<string, { label: string; part: "bearingsAt" | "fleetAt" }> = {
@@ -2294,7 +2371,7 @@ function ChatAnswer({ message, answer, call, title, outbox, running, from }: { m
   return <AnswerCard callId={answer.call} view={title ? { ...view, title } : view} time={!status && !message.past ? formatTime(message.createdAt) : null} sent={message.text} />;
 }
 
-function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart, controls, onSetOption, turnSince, calm, calmSaving, calmError, onCalm, onDismissCalmError }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void; controls: SessionControls | null; onSetOption: (category: PickedCategory, value: string) => Promise<unknown>; turnSince: number | null; calm: CalmRead | null; calmSaving: boolean; calmError: string | null; onCalm: (on: boolean) => void; onDismissCalmError: () => void }) {
+function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, firstStart, approvals, onAnswer, onDraft, onSend, onResend, onRestart, controls, onSetOption, turnSince, calm, calmSaving, calmError, onCalm, onDismissCalmError }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; /** A first mate's first start, shown where its first words will land until they do. */ firstStart?: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void; controls: SessionControls | null; onSetOption: (category: PickedCategory, value: string) => Promise<unknown>; turnSince: number | null; calm: CalmRead | null; calmSaving: boolean; calmError: string | null; onCalm: (on: boolean) => void; onDismissCalmError: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate, or type / for its commands" : "The first mate isn't running. It'll read this when it starts.";
@@ -2411,7 +2488,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
     const element = scroller.current;
     if (element) following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
   };
-  return <div className="chat-view">{banners}<div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
+  return <div className="chat-view">{banners}<div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{firstStart}{!firstStart && messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
     ? <div key={item.id} className={`day-label ${index > 0 ? "later" : ""}`}>{item.text}</div>
     : item.type === "artifact"
       ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} reviews={reviews} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
@@ -2493,7 +2570,7 @@ function OfflineBanner({ onStart }: { onStart: () => void }) {
   return <section className="offline-banner"><CircleAlert size={18} /><div><strong>The first mate isn't running, so nothing gets checked, merged or answered.</strong><span>Work already underway keeps going.</span></div><button onClick={onStart}>Start the first mate</button></section>;
 }
 
-type ProblemCopy = { title: string; hint: string; action: string; choose?: boolean };
+type ProblemCopy = { title: string; hint: string; action: string; choose?: boolean; signIn?: boolean; agents?: boolean };
 
 const TRY_AGAIN = "Try again";
 const START_AGAIN = "Start it again";
@@ -2504,19 +2581,22 @@ const PROBLEMS: Record<ReasonKind, ProblemCopy> = {
   permission_mode: { title: "The first mate can't start: this home's permission setting isn't one it recognizes.", hint: "Check config/claude-permission-mode in your firstmate folder, then try again.", action: TRY_AGAIN },
   lock_unconfirmed: { title: "The first mate didn't start: it couldn't check that no other first mate is using this home.", hint: "Nothing was started, so two can't run at once. Try again in a moment.", action: TRY_AGAIN },
   lock_unclaimed: { title: "The first mate isn't running: it started, but didn't claim this home in time.", hint: "It was stopped so it can't run unclaimed. Try again.", action: TRY_AGAIN },
-  adapter_missing: { title: "The first mate can't start: claude-agent-acp isn't installed on this Mac.", hint: "Install it where your login shell can find it, then try again.", action: TRY_AGAIN },
+  adapter_missing: { title: "The first mate can't start: the ACP adapter for {agent} isn't installed on this Mac.", hint: "Settings lists the agents on this Mac and installs what the first mate needs.", action: "Open agents", agents: true },
   adapter_crashed: { title: "The first mate crashed.", hint: "Your messages are kept. Anything it hadn't finished goes to it again when it starts.", action: START_AGAIN },
   timeout: { title: "The first mate took too long to start, so it was stopped.", hint: "Try again. If it keeps happening, the details say where it got stuck.", action: TRY_AGAIN },
   exited: { title: "The first mate stopped on its own.", hint: "Your messages are kept. Start it to pick up where it left off.", action: START_AGAIN },
+  signed_out: { title: "The first mate can't start: {agent} isn't signed in on this Mac.", hint: "Its own sign-in opens in Terminal. Your messages are kept, and go once it starts.", action: "Sign in", signIn: true },
 };
 
 const UNKNOWN_PROBLEM: ProblemCopy = { title: "The first mate couldn't start.", hint: "Nothing gets checked, merged or answered until it runs. Work already underway keeps going.", action: TRY_AGAIN };
 
-function ProblemBanner({ kind, details, homeProblem, onStart, onChoose }: { kind?: ReasonKind; details: string; homeProblem: string | null; onStart: () => void; onChoose: () => void }) {
+function ProblemBanner({ kind, details, homeProblem, agent, onStart, onChoose, onSignIn, onAgents }: { kind?: ReasonKind; details: string; homeProblem: string | null; /** The agent the first mate runs on, as the captain calls it. */ agent: string; onStart: () => void; onChoose: () => void; onSignIn: () => void; onAgents: () => void }) {
   const [open, setOpen] = useState(false);
   const copy = (kind && PROBLEMS[kind]) || UNKNOWN_PROBLEM;
+  const title = copy.title.replace("{agent}", agent);
+  const act = copy.choose ? onChoose : copy.signIn ? onSignIn : copy.agents ? onAgents : onStart;
   // A folder the captain just chose here that doesn't check out says why right here.
-  return <section className="offline-banner problem-banner" role="alert" data-reason-kind={kind}><CircleAlert size={18} /><div><strong>{copy.title}</strong><span>{copy.hint}</span>{copy.choose && homeProblem && <HomeProblem problem={homeProblem} />}{open && <pre className="banner-details">{details || "No further details were reported."}</pre>}</div><div className="banner-actions"><button aria-expanded={open} onClick={() => setOpen((current) => !current)}>{open ? "Hide details" : "Show details"}</button><button onClick={copy.choose ? onChoose : onStart}>{copy.action}</button></div></section>;
+  return <section className="offline-banner problem-banner" role="alert" data-reason-kind={kind}><CircleAlert size={18} /><div><strong>{title}</strong><span>{copy.hint}</span>{copy.choose && homeProblem && <HomeProblem problem={homeProblem} />}{open && <pre className="banner-details">{details || "No further details were reported."}</pre>}</div><div className="banner-actions"><button aria-expanded={open} onClick={() => setOpen((current) => !current)}>{open ? "Hide details" : "Show details"}</button>{copy.signIn && <button onClick={onStart}>{START_AGAIN}</button>}<button onClick={act}>{copy.action}</button></div></section>;
 }
 
 function LockedBanner({ holder, onCheck }: { holder?: string; onCheck: () => void }) {

@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CopyResult, PickResult } from "../attachments";
 import { artifactPath } from "./types";
 import type { CalmRead, PickedCategory, SessionControls } from "./types";
+import type { AgentId, AgentStatus, InstallEvent, OnboardingStatus } from "./types";
 import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CallReplied, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskEdit, TaskEdited, TaskFile, TaskNotes, TaskSource } from "./types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
@@ -24,6 +25,7 @@ const EVENT_NAMES = [
   "host_health",
   "snapshot",
   "session_controls",
+  "greeted",
 ] as const;
 
 /** What the commands answer with, in the backend's own spelling. */
@@ -245,6 +247,32 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<HomeReply>("home_use_app").then(homeStatus);
   }
 
+  onboardingGreeted() {
+    return invoke<boolean>("onboarding_greeted");
+  }
+
+  onboardingStatus() {
+    return invoke<OnboardingReply>("onboarding_status").then(onboardingStatus);
+  }
+
+  agentInstall(agent: AgentId) {
+    return invoke<unknown>("agent_install", { harness: agent }).then(() => undefined);
+  }
+
+  agentSignIn(agent: AgentId) {
+    return invoke<void>("agent_sign_in", { harness: agent });
+  }
+
+  firstMateSet(agent: AgentId) {
+    return invoke<{ first_mate: AgentId; restarted: boolean }>("first_mate_set", { harness: agent })
+      .then((answer) => ({ firstMate: answer.first_mate, restarted: answer.restarted }));
+  }
+
+  onInstall(listener: (event: InstallEvent) => void) {
+    const dispose = listen<InstallEvent>("agent_install", ({ payload }) => listener(payload));
+    return () => { void dispose.then((stop) => stop()); };
+  }
+
   toolsMissing() {
     return invoke<{ missing: Needed[]; problem: string | null }>("tools_missing");
   }
@@ -322,6 +350,36 @@ export class TauriHostAdapter implements HostAdapter {
     })).then(() => undefined);
     return this.listening;
   }
+}
+
+/** `onboarding_status` in the backend's own spelling. */
+type OnboardingReply = {
+  agents: { id: AgentId; label: string; installed: boolean; version: string | null; signed_in: AgentStatus["signedIn"]; install: string | null; sign_in: string | null; adapter: { program: string; package: string; version: string; node_floor: number; path: string | null; command: string } }[];
+  problem: string | null;
+  node: { version: string | null; major: number | null };
+  brew: boolean;
+  first_mate: AgentId;
+  greeted: boolean;
+};
+
+function onboardingStatus(reply: OnboardingReply): OnboardingStatus {
+  return {
+    agents: reply.agents.map((agent) => ({
+      id: agent.id,
+      label: agent.label,
+      installed: agent.installed,
+      version: agent.version,
+      signedIn: agent.signed_in,
+      install: agent.install,
+      signIn: agent.sign_in,
+      adapter: { program: agent.adapter.program, package: agent.adapter.package, version: agent.adapter.version, nodeFloor: agent.adapter.node_floor, path: agent.adapter.path, command: agent.adapter.command },
+    })),
+    problem: reply.problem,
+    node: reply.node,
+    brew: reply.brew,
+    firstMate: reply.first_mate,
+    greeted: reply.greeted,
+  };
 }
 
 function text(value: unknown) {

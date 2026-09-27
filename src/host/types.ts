@@ -446,7 +446,7 @@ export type HostRuntimeState = "stopped" | "starting" | "idle" | "prompt_turn" |
 export type OutboxStatus = "queued" | "sent" | "likely_started" | "picked_up" | "requeued" | "failed";
 
 /** Why the host refused to start or the first mate died. Banners pick their copy from this, never from `reason`'s text. */
-export type ReasonKind = "not_a_home" | "permission_mode" | "lock_unconfirmed" | "lock_unclaimed" | "adapter_missing" | "adapter_crashed" | "timeout" | "exited";
+export type ReasonKind = "not_a_home" | "permission_mode" | "lock_unconfirmed" | "lock_unclaimed" | "adapter_missing" | "adapter_crashed" | "timeout" | "exited" | "signed_out";
 
 /** One item of the conversation a resumed session had before, oldest first. */
 export type HistoryItem = { who: "captain" | "mate" | "step"; text: string };
@@ -462,7 +462,7 @@ export type HostEvent =
   | { type: "session"; payload: { mode: "new" | "loaded"; session_id: string; can_load?: boolean; prompt_queueing?: boolean; /** With `mode: "new"`: the host tried to resume the previous session and couldn't. */ previous_session_lost?: boolean } }
   /** Sent once right after a session resumes: the whole earlier conversation, in order. */
   | { type: "history"; payload: { items: HistoryItem[] } }
-  | { type: "state"; payload: { state: HostRuntimeState; origin?: string; derived?: boolean; holder?: string; holder_command?: string; reason?: string; reason_kind?: ReasonKind; /** Set on `starting`: the home the host is starting in. */ home?: string } }
+  | { type: "state"; payload: { state: HostRuntimeState; origin?: string; derived?: boolean; holder?: string; holder_command?: string; reason?: string; reason_kind?: ReasonKind; /** Set on `starting`: the home the host is starting in. */ home?: string; /** On a failed start: the agent it was on. */ harness?: AgentId } }
   | { type: "text"; payload: { chunk: string; origin: "prompt" | "agent" | "prompt_or_agent" } }
   | { type: "tool_call"; payload: ToolStep }
   | { type: "tool_update"; payload: ToolStep }
@@ -475,7 +475,9 @@ export type HostEvent =
   | { type: "permission_resolved"; payload: { id: string; option_id: string } }
   | { type: "host_health"; payload: { warning?: string; rewake_storm?: boolean; [key: string]: unknown } }
   | { type: "snapshot"; payload: SnapshotEvent }
-  | { type: "session_controls"; payload: SessionControls };
+  | { type: "session_controls"; payload: SessionControls }
+  /** The first words a first mate ever said in this home: the captain has met it. */
+  | { type: "greeted"; payload: { home?: string; harness?: AgentId } };
 
 /** The first mate's context window, as the host reads the adapter's usage updates. `null`s until the first reading. */
 export type ContextReading = {
@@ -630,6 +632,54 @@ export type HostStateSnapshot = {
 /** The captain's firstmate home: `home` once chosen and still valid, `problem` when a choice doesn't check out. */
 export type HomeStatus = { home: string | null; problem: string | null; /** The captain left the first mate running in this home when the app last closed, so the app starts it again. */ startOnLaunch?: boolean; /** True when this is a folder the captain chose, false when it is the home the app owns. */ chosen?: boolean };
 
+/** An agent the app can run the first mate on, in firstmate's own name for it. */
+export type AgentId = "claude" | "codex";
+
+/**
+ * One agent on this Mac, as firstmate's `bin/fm-agents.sh` reports it, with the ACP adapter the app talks to it
+ * through. Whether it is installed and signed in, and how to install and sign it in, are firstmate's; the adapter is the
+ * app's, pinned to the version it was tested with.
+ */
+export type AgentStatus = {
+  id: AgentId;
+  label: string;
+  installed: boolean;
+  version: string | null;
+  /** From the agent's own status command; `unknown` when it has none, is missing, or would not say. */
+  signedIn: "signed-in" | "signed-out" | "unknown";
+  /** The command that installs it, as firstmate knows it; `null` when it knows none. */
+  install: string | null;
+  /** The command a person runs in a terminal to sign it in. */
+  signIn: string | null;
+  adapter: { program: string; package: string; version: string; nodeFloor: number; path: string | null; command: string };
+};
+
+/** What this Mac has of what a first mate needs, for the welcome. Reads only. */
+export type OnboardingStatus = {
+  agents: AgentStatus[];
+  /** Why the agents could not be read; the list is then empty. */
+  problem: string | null;
+  node: { version: string | null; major: number | null };
+  /** Whether Homebrew is here, which decides whether a `brew` line is worth offering. */
+  brew: boolean;
+  /** The agent the captain chose to run the first mate on in this home. */
+  firstMate: AgentId;
+  /** A first mate has already said something in this home, or the home was in use before: no welcome. */
+  greeted: boolean;
+};
+
+/** How an install the captain asked for is going: each step starts, prints lines, and finishes or fails. */
+export type InstallEvent = {
+  harness: AgentId;
+  step: number;
+  steps: number;
+  state: "running" | "line" | "done" | "failed";
+  title?: string;
+  command?: string;
+  line?: string;
+  error?: string;
+};
+
 /** One thing the first mate says this machine still needs. */
 export type Needed = {
   /** The tool's name, or null for a line that names no tool. */
@@ -717,6 +767,21 @@ export interface HostAdapter {
   useAppHome(): Promise<HomeStatus>;
   /** What the first mate says this machine still needs. Reads only; changes nothing. */
   toolsMissing(): Promise<{ missing: Needed[]; problem: string | null }>;
+  /** Whether a first mate has answered in this home, or the home was in use before: at once, without probing the agents. */
+  onboardingGreeted(): Promise<boolean>;
+  /** The agents on this Mac and what else a first mate needs here. Reads only. */
+  onboardingStatus(): Promise<OnboardingStatus>;
+  /**
+   * Installs an agent and, for the first mate, its ACP adapter: the commands the captain was shown, and nothing else.
+   * Resolves when every step is done; rejects with where it stopped. `onInstall` follows it step by step.
+   */
+  agentInstall(agent: AgentId): Promise<void>;
+  /** Opens the agent's own sign-in in Terminal. */
+  agentSignIn(agent: AgentId): Promise<void>;
+  /** Chooses the agent the first mate runs on in this home; a first mate running on another is started again on it. */
+  firstMateSet(agent: AgentId): Promise<{ firstMate: AgentId; restarted: boolean }>;
+  /** Every step of every install. Returns what stops listening. */
+  onInstall(listener: (event: InstallEvent) => void): () => void;
   /** Where crew routing stands in the chosen home. */
   routingGet(): Promise<Routing>;
   /** Turns routing on. Refused, with why, when it already is. */

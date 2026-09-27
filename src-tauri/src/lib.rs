@@ -5,10 +5,12 @@ mod calm;
 mod controls;
 mod engine;
 mod envpath;
+mod harness;
 mod host;
 #[cfg(test)]
 mod host_e2e;
 mod notes;
+mod onboarding;
 mod quota;
 mod review;
 mod routing;
@@ -36,6 +38,10 @@ pub fn run() {
         )?;
       }
       // Resolve the login shell PATH off the main thread before the first child needs it.
+      // The app installs an agent's ACP adapter here, beside its settings, and looks here after PATH.
+      if let Ok(dir) = settings::settings_dir(app.handle()) {
+        envpath::set_tools_dir(dir.join("tools"));
+      }
       std::thread::spawn(|| {
         let _ = envpath::search_path();
       });
@@ -73,6 +79,11 @@ pub fn run() {
       settings::home_choose,
       settings::home_use_app,
       settings::tools_missing,
+      onboarding::onboarding_greeted,
+      onboarding::onboarding_status,
+      onboarding::agent_install,
+      onboarding::agent_sign_in,
+      onboarding::first_mate_set,
       routing::routing_get,
       routing::routing_enable,
       routing::routing_save,

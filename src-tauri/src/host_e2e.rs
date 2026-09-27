@@ -12,6 +12,7 @@
 //! one live run per home may be in flight, and `LiveRun` enforces it.
 //!
 //! `FM_E2E_HOME` picks the home (default `~/.buzz/.scratch/fm-probe/firstmate`).
+//! `FM_E2E_HARNESS` picks the agent the first mate runs on: `claude`, the default, or `codex`.
 //! It must be a scratch home that no other host is using, never a live one.
 //! Every event is recorded with step markers to
 //! `~/.buzz/.scratch/firstmate-desktop-e2e/recording-<ms>.jsonl`, the stream
@@ -21,7 +22,14 @@
 //! exercised when the session never produced its conditions. Only a failure fails
 //! the run, and the run finishes every step so one failure does not hide the rest.
 
+use crate::harness::Harness;
 use crate::host::{group_members, Cmd, HostEnv, HostHandle};
+
+/// The agent a live run starts the first mate on, from `FM_E2E_HARNESS`.
+fn e2e_harness() -> Harness {
+    let named = std::env::var("FM_E2E_HARNESS").unwrap_or_else(|_| "claude".to_string());
+    Harness::parse(&named).unwrap_or_else(|| panic!("FM_E2E_HARNESS names no agent the app can run the first mate on: {named}"))
+}
 use crate::review;
 use serde_json::{json, Value};
 use std::io::Write as _;
@@ -362,7 +370,7 @@ async fn host_e2e_live_scratch_home() {
     // 1. Start with the lock free: session, then idle or an agent turn.
     recorder.mark("1", "host_start with the lock free");
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
     let ready = match session {
         Some(i) => events.find(i, Duration::from_secs(5), host_state(&["idle", "agent_turn"])).await,
@@ -548,7 +556,7 @@ async fn host_e2e_live_scratch_home() {
     let (held, answer, state, spawned) = {
         let holder = FakeHolder::hold(&home);
         let held = lock_status(&home);
-        let answer = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+        let answer = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
         let state = events.find(from, Duration::from_secs(10), host_state(&["locked_by_other", "refused"])).await;
         let to = events.now();
         let spawned = !host.live_groups().is_empty() || events.any_between(from, to, |e, _| e == "session");
@@ -620,7 +628,7 @@ async fn host_lock_claim_probe() {
     let _cleanup = StopOnDrop(host.clone());
     println!("lock before start: {}", lock_status(&home));
     let asked = Instant::now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     println!("start={started:?} after {:.1}s; groups={:?}", asked.elapsed().as_secs_f32(), host.live_groups());
     for second in 0..45 {
         let members = host.live_groups().first().map(|g| group_members(*g));
@@ -769,7 +777,7 @@ async fn host_e2e_live_relaunch() {
     let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
     let cleanup = StopOnDrop(host.clone());
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let sent = send(&host, format!("Captain here. {GUARD} Reply with one word: aye.")).await;
     let id = sent.clone().unwrap_or_default();
     let picked = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
@@ -851,7 +859,7 @@ async fn host_e2e_live_relaunch() {
     let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
     let _cleanup = StopOnDrop(host.clone());
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
     let history = events.find(from, Duration::from_secs(5), |e, _| e == "history").await;
     let items = events.body(history)["items"].as_array().cloned().unwrap_or_default();
@@ -1032,7 +1040,7 @@ async fn review_e2e_live_decision() {
     // 1. The first mate is up.
     recorder.mark("1", "host_start against the home carrying the call");
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
     let ready = match session {
         Some(i) => events.find(i, Duration::from_secs(30), host_state(&["idle", "agent_turn"])).await,
@@ -1252,7 +1260,7 @@ async fn reply_e2e_live_scratch_home() {
     // 1. The first mate is up, and holding calls to reply to.
     recorder.mark("1", "host_start");
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let ready = events.find(from, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await;
     let running = started.is_ok() && ready.is_some();
     record(&mut steps, "start: the first mate is running", running, format!("start={started:?}"));
@@ -1294,7 +1302,7 @@ async fn reply_e2e_live_scratch_home() {
         let before = call_now(&home, &call);
         record(&mut steps, "words: calls[] carries the reply while the app is closed", before["reply"]["words"] == DISPUTING && before["state"] == "open", format!("reply={}", before["reply"]));
         let from = events.now();
-        let restarted = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+        let restarted = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
         let _ = events.find(from, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await;
         let after = call_now(&home, &call);
         record(
@@ -1467,7 +1475,7 @@ async fn attach_e2e_live_scratch_home() {
 
     recorder.mark("1", "host_start");
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
     let ready = match session {
         Some(i) => events.find(i, Duration::from_secs(30), host_state(&["idle", "agent_turn"])).await,
@@ -1606,7 +1614,7 @@ async fn compact_e2e_live_scratch_home() {
 
     recorder.mark("1", "host_start");
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
     let ready = match session {
         Some(i) => events.find(i, Duration::from_secs(30), host_state(&["idle", "agent_turn"])).await,
@@ -1714,7 +1722,7 @@ fn current_value(controls: &Value, category: &str) -> Option<String> {
 /// Starts the host and waits for it to be running, returning its controls as `get_state` reports them.
 async fn start_and_read(host: &HostHandle, home: &Path, events: &mut Events) -> (bool, Value, Value) {
     let from = events.now();
-    let started = ask(host, |reply| Cmd::Start { home: home.to_path_buf(), reply }).await;
+    let started = ask(host, |reply| Cmd::Start { home: home.to_path_buf(), harness: e2e_harness(), reply }).await;
     let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
     let ready = match session {
         Some(i) => events.find(i, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await,
@@ -1945,7 +1953,7 @@ async fn start_e2e_live_scratch_home() {
 
     recorder.mark("1", "host_start");
     let from = events.now();
-    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), reply }).await;
+    let started = ask(&host, |reply| Cmd::Start { home: home.clone(), harness: e2e_harness(), reply }).await;
     let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
     let ready = match session {
         Some(i) => events.find(i, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await,

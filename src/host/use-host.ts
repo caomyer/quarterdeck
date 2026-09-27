@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
+  AgentId,
   BearingsSnapshot,
   ContextReading,
   FleetSnapshot,
@@ -54,7 +55,7 @@ export type OutboxView = {
 
 export type RewakeStorm = { turns: number; windowSecs: number };
 
-export type RuntimeView = { state: HostRuntimeState; holder?: string; reason?: string; reasonKind?: ReasonKind };
+export type RuntimeView = { state: HostRuntimeState; holder?: string; reason?: string; reasonKind?: ReasonKind; /** The agent a failed start was on, when the host says. */ harness?: AgentId };
 
 /**
  * A host health warning. The kind picks the banner's action: `session_limit` has none, `kill_refused` offers Restart.
@@ -249,7 +250,7 @@ export function useHost(adapter: HostAdapter) {
       const { state } = event.payload;
       const previous = runtimeState.current;
       runtimeState.current = state;
-      setRuntime({ state, holder: event.payload.holder ?? event.payload.holder_command, reason: event.payload.reason, reasonKind: event.payload.reason_kind });
+      setRuntime({ state, holder: event.payload.holder ?? event.payload.holder_command, reason: event.payload.reason, reasonKind: event.payload.reason_kind, harness: event.payload.harness });
       if (event.payload.home) noteHostHome(event.payload.home);
       if (state !== "stopped" && state !== "dead") setStartError(null);
       // Ready again after a start or restart: a warning from before that start is behind it. One raised during this start is about this start, so it stays.

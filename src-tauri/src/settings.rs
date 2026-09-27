@@ -16,6 +16,7 @@
 //!
 //! Commands: `home_get`, `home_choose`.
 
+use crate::harness::Harness;
 use crate::host::{Cmd, HostHandle};
 use crate::snapshot::SnapshotHandle;
 use serde_json::{json, Value};
@@ -26,7 +27,7 @@ use tauri_plugin_dialog::DialogExt;
 const SETTINGS_FILE: &str = "settings.json";
 
 /// Host states in which a first mate is running for the current home.
-const RUNNING: [&str; 5] = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"];
+pub(crate) const RUNNING: [&str; 5] = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"];
 
 /// A firstmate home is a folder holding `AGENTS.md` and `bin/`. Returns the
 /// resolved path, or a sentence the captain can act on.
@@ -117,6 +118,31 @@ pub(crate) fn was_running(dir: &Path, home: &Path) -> bool {
         .and_then(|running| running.get(home_key(home)))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Which agent the captain chose to run the first mate on in this home. Claude Code
+/// until they choose, and for a choice this version of the app does not know.
+pub(crate) fn first_mate(dir: &Path, home: &Path) -> Harness {
+    read_settings(dir)
+        .pointer("/first_mate")
+        .and_then(|chosen| chosen.get(home_key(home)))
+        .and_then(Value::as_str)
+        .and_then(Harness::parse)
+        .unwrap_or(Harness::Claude)
+}
+
+pub(crate) fn remember_first_mate(dir: &Path, home: &Path, harness: Harness) -> Result<(), String> {
+    let mut settings = read_settings(dir);
+    if !settings.get("first_mate").is_some_and(Value::is_object) {
+        settings["first_mate"] = json!({});
+    }
+    settings["first_mate"][home_key(home)] = json!(harness.id());
+    write_settings(dir, &settings)
+}
+
+/// The host's side of `first_mate`: an unreadable settings folder is the default choice.
+pub(crate) fn first_mate_of<R: tauri::Runtime>(app: &AppHandle<R>, home: &Path) -> Harness {
+    settings_dir(app).map(|dir| first_mate(&dir, home)).unwrap_or(Harness::Claude)
 }
 
 /// For the host's Start and Stop: what the captain asked for is remembered, and a
@@ -393,6 +419,21 @@ mod tests {
         std::fs::write(dir.join(SETTINGS_FILE), "not json").unwrap();
         assert_eq!(read_saved_home(&dir), None);
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn the_first_mates_agent_is_chosen_per_home_and_claude_until_chosen() {
+        let dir = scratch("first-mate");
+        let (one, two) = (dir.join("one"), dir.join("two"));
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::create_dir_all(&two).unwrap();
+        assert_eq!(first_mate(&dir, &one), Harness::Claude);
+        remember_first_mate(&dir, &one, Harness::Codex).unwrap();
+        save_home(&dir, &two).unwrap();
+        assert_eq!(first_mate(&dir, &one), Harness::Codex, "kept alongside the rest of the file");
+        assert_eq!(first_mate(&dir, &two), Harness::Claude, "and only for the home it was chosen in");
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"first_mate": {"x": "gemini"}}"#).unwrap();
+        assert_eq!(first_mate(&dir, Path::new("x")), Harness::Claude, "an agent this app does not know is the default");
     }
 
     #[test]

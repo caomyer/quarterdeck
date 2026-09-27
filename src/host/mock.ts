@@ -5,12 +5,14 @@ import recordedStream from "./mock-event-stream.json";
 // The example firstmate ships, read from the engine itself, so turning routing on here starts from the same rules.
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
 import { MockUpdates } from "./mock-update";
+import { FIRST_WORDS, MockOnboarding } from "./mock-onboarding";
 import { mockUsage } from "./mock-usage";
 import { MockSession, STAGED_TURN } from "./mock-session";
 import { addRefusal, linkedBody, linkFixtureRow, mockIssues, mockSources } from "./mock-sources";
 import { applyTaskEdit, mockTaskRecords, reparse } from "./mock-tasks";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
+import type { AgentId, InstallEvent } from "./types";
 import type {
   PickedCategory,
   AnswerWords,
@@ -558,6 +560,7 @@ const MOCK_REASONS: Record<ReasonKind, string> = {
   adapter_crashed: "claude-agent-acp exited with signal 9 during a turn",
   timeout: "session/new did not answer within 60s",
   exited: "the first mate process exited",
+  signed_out: "Claude Code is not signed in: Authentication required",
 };
 
 /** `?history` also tells a resumed first mate what came before this window. */
@@ -703,7 +706,7 @@ export class MockHostAdapter implements HostAdapter {
   private timers = new Set<number>();
   private outstanding = new Set<string>();
   /** Like the real host, a refused or dead start only shows once the captain presses Start. */
-  private state: HostRuntimeState = reviewFlag("not-started") || reviewFlag("replay") || reviewFlag("relaunch") || this.problem() ? "stopped" : "idle";
+  private state: HostRuntimeState = reviewFlag("not-started") || reviewFlag("replay") || reviewFlag("relaunch") || reviewFlag("welcome") || this.problem() ? "stopped" : "idle";
   /** `?slow-start`: messages sent while starting, handed over once the first mate is ready. */
   private deferred: (() => void)[] = [];
   /** `?replay`: resolves the recorded send the replay is waiting on, with the id the host gave it. */
@@ -724,7 +727,9 @@ export class MockHostAdapter implements HostAdapter {
         ? [...(reviewFlag("chat-calls") ? CHAT_CALLS_HISTORY : EARLIER_CONVERSATION)]
         : [];
   private streaming = false;
-  private readonly snapshot = MockHostAdapter.fixtureSnapshot();
+  private readonly snapshot = reviewFlag("welcome") ? MockHostAdapter.newHomeSnapshot() : MockHostAdapter.fixtureSnapshot();
+  /** `?welcome=<scenario>`: the agents on a new captain's Mac (src/host/mock-onboarding.ts). */
+  private readonly onboarding = new MockOnboarding((ms, run) => this.later(ms, run));
   private routing = MockHostAdapter.initialRouting();
   private routingRevision = 1;
   /** `?update=<state>`: the app's own update (src/host/mock-update.ts). */
@@ -758,6 +763,15 @@ export class MockHostAdapter implements HostAdapter {
   private context: ContextReading | null = null;
   private keychainAllowed = false;
   private readonly openedAt = Date.now();
+
+  /** `?welcome`: a home nothing has been set up in yet, as a new captain's is. */
+  private static newHomeSnapshot() {
+    const base = MockHostAdapter.artifactSnapshot();
+    return {
+      bearings: { ...base.bearings, in_flight: [], decisions_open: [], landed: [], gates: [], reports: [] },
+      fleet: { ...base.fleet, tasks: [], backlog: { records: [] }, artifacts: [], calls: [] },
+    };
+  }
 
   private static fixtureSnapshot() {
     const base = MockHostAdapter.tasksSnapshot(MockHostAdapter.artifactSnapshot());
@@ -1153,6 +1167,7 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   async hostStart() {
+    if (this.onboarding.scenario !== null) return this.firstStart();
     const problem = this.problem();
     if (problem) {
       this.emit({ type: "state", payload: { state: problem.state, reason: problem.reason, reason_kind: problem.kind } });
@@ -1206,6 +1221,77 @@ export class MockHostAdapter implements HostAdapter {
     this.emit({ type: "state", payload: { state: "idle" } });
     this.session.opened();
     this.later(300, () => this.reportUsage());
+  }
+
+  /**
+   * `?welcome`: a first mate's first start in a new home, as the host reports it: starting, the session-start turn with
+   * the steps it takes reading this Mac, and its first words. `?welcome-start=signed-out` stops at the first prompt as a
+   * signed-out agent does; `?welcome-start=timeout` and `?welcome-start=crashed` fail as the host reports those; and
+   * `?welcome-start=slow` holds it in the session-start turn.
+   */
+  private firstStart() {
+    const how = reviewValue("welcome-start");
+    const label = this.onboarding.firstMate === "codex" ? "Codex" : "Claude Code";
+    this.state = "starting";
+    this.emit({ type: "state", payload: { state: "starting", home: this.snapshot.fleet.fm_home } });
+    this.later(600, () => {
+      if (how === "timeout") {
+        this.state = "dead";
+        this.emit({ type: "state", payload: { state: "dead", reason: "no answer to session/new within 60s", reason_kind: "timeout" } });
+        return;
+      }
+      if (how === "crashed") {
+        this.state = "dead";
+        this.emit({ type: "state", payload: { state: "dead", reason: "the first mate process exited", reason_kind: "adapter_crashed" } });
+        return;
+      }
+      this.emit({ type: "session", payload: { mode: "new", session_id: "first-start", previous_session_lost: false } });
+      this.state = "agent_turn";
+      this.emit({ type: "state", payload: { state: "agent_turn", origin: "session_start" } });
+      if (how === "signed-out") {
+        this.later(700, () => {
+          this.state = "dead";
+          this.emit({ type: "state", payload: { state: "dead", reason: `${label} is not signed in: Authentication required`, reason_kind: "signed_out" } });
+        });
+        return;
+      }
+      this.later(500, () => this.emit({ type: "tool_call", payload: { id: "fs-1", title: "bin/fm-session-start.sh", kind: "execute", status: "in_progress" } }));
+      if (how === "slow") return;
+      this.later(2200, () => this.emit({ type: "tool_update", payload: { id: "fs-1", status: "completed" } }));
+      this.later(2600, () => {
+        for (const chunk of FIRST_WORDS) this.emit({ type: "text", payload: { chunk, origin: "agent" } });
+        this.onboarding.greet();
+        this.emit({ type: "greeted", payload: { harness: this.onboarding.firstMate } });
+      });
+      this.later(3000, () => {
+        this.state = "idle";
+        this.emit({ type: "state", payload: { state: "idle" } });
+      });
+    });
+  }
+
+  onboardingGreeted() {
+    return this.onboarding.onboardingGreeted();
+  }
+
+  onboardingStatus() {
+    return this.onboarding.onboardingStatus();
+  }
+
+  agentInstall(agent: AgentId) {
+    return this.onboarding.agentInstall(agent);
+  }
+
+  agentSignIn(agent: AgentId) {
+    return this.onboarding.agentSignIn(agent);
+  }
+
+  firstMateSet(agent: AgentId) {
+    return this.onboarding.firstMateSet(agent);
+  }
+
+  onInstall(listener: (event: InstallEvent) => void) {
+    return this.onboarding.onInstall(listener);
   }
 
   /**
@@ -2141,7 +2227,8 @@ export class MockHostAdapter implements HostAdapter {
         if (item.type === "snapshot" && payload.phase === "ready") {
           payload.bearings = this.snapshot.bearings;
           payload.fleet = this.snapshot.fleet;
-          payload.projects = [
+          // `?welcome`: a new captain's home has no projects yet.
+          payload.projects = reviewFlag("welcome") ? [] : [
             // `?start`: resonance ships product work checked and internal tooling straight to a PR, as quarterdeck does.
             { name: "resonance", mode: reviewFlag("start") ? "no-mistakes-prod-only" : "no-mistakes", yolo: false, description: "Desktop podcast tools" },
             { name: "foreman", mode: "direct-PR", yolo: true, description: "Agent supervision" },

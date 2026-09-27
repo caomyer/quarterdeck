@@ -39,6 +39,7 @@
 //! that only in the words it streams.
 
 use crate::controls::{self, Controls};
+use crate::harness::Harness;
 use crate::envpath;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -93,6 +94,9 @@ const CLAIM_WAIT: Duration = Duration::from_secs(10);
 const SESSION_START_BODY: &str =
     "Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.";
 
+/// Beside a home's outbox once its first mate has said anything at all there.
+pub(crate) const GREETED_FILE: &str = "greeted.json";
+
 const PERMISSION_UNREADABLE: &str =
     "error: config/claude-permission-mode must be a readable regular file holding one of: bypass, auto";
 
@@ -108,7 +112,8 @@ fn now_ms() -> u64 {
 // ---------------------------------------------------------------- commands ---
 
 pub enum Cmd {
-    Start { home: PathBuf, reply: oneshot::Sender<Result<(), String>> },
+    /// Start the first mate in `home` on `harness`: a first mate already running is stopped first.
+    Start { home: PathBuf, harness: Harness, reply: oneshot::Sender<Result<(), String>> },
     Stop { reply: oneshot::Sender<Result<(), String>> },
     Restart { reply: oneshot::Sender<Result<(), String>> },
     Send { text: String, reply: oneshot::Sender<Result<String, String>> },
@@ -222,7 +227,8 @@ pub async fn host_start(
         Ok(outcome) => log::info!("presentation mode for {}: {outcome:?}", home.display()),
         Err(error) => log::warn!("could not record the presentation mode: {error}"),
     }
-    host.call(|reply| Cmd::Start { home, reply }).await?
+    let harness = crate::settings::first_mate_of(&app, &home);
+    host.call(|reply| Cmd::Start { home, harness, reply }).await?
 }
 
 #[tauri::command]
@@ -287,6 +293,13 @@ enum HostEvent {
     Stderr { gen: u64, line: String },
     PromptDone { gen: u64, outbox_id: String, result: RpcResult },
     SessionStartDone { gen: u64, result: RpcResult },
+    /// A captain message handed to a running Codex turn through `_session/steering`.
+    SteerDone { gen: u64, outbox_id: String, result: RpcResult },
+    /// What firstmate's turn-end guard said when a Codex turn ended: a reason to go on, with
+    /// it encoded as firstmate's operational input when that could be done, or nothing.
+    GuardDone { gen: u64, turn: u64, continuation: Option<(String, Option<String>)> },
+    /// A turn the host started for the guard's continuation came back.
+    ContinuationDone { gen: u64, result: RpcResult },
     OptionSet { gen: u64, category: String, value: String, outcome: Result<Vec<Value>, controls::Refused>, reply: oneshot::Sender<Result<Value, String>> },
 }
 
@@ -602,18 +615,21 @@ struct Spawned {
     history: Vec<Value>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn spawn_adapter(
     home: &Path,
+    harness: Harness,
     events: mpsc::UnboundedSender<HostEvent>,
     gen: u64,
     resume: Option<String>,
     groups: &Groups,
     auto_allow: bool,
 ) -> Result<Spawned, String> {
-    let name = std::env::var("ACP_ADAPTER").unwrap_or_else(|_| "claude-agent-acp".to_string());
+    let name = harness.adapter_program();
     let program = envpath::resolve(&name).ok_or_else(|| {
+        let package = harness.adapter().package;
         format!(
-            "{name} was not found on PATH or where these tools are installed. Install it with `npm i -g @agentclientprotocol/claude-agent-acp`, or start the app with its folder on PATH."
+            "{name} was not found on PATH or where these tools are installed. Install it with `npm i -g {package}`, or start the app with its folder on PATH."
         )
     })?;
     let mut child = envpath::command(&program)
@@ -815,7 +831,7 @@ async fn open_session(
 /// firstmate's `config/claude-permission-mode`, applied exactly as `fm-spawn.sh`
 /// applies it to Claude workers: absent or `bypass` is bypass, `auto` is auto,
 /// anything else refuses with the same message.
-fn permission_mode(home: &Path) -> Result<(&'static str, &'static str), String> {
+pub(crate) fn claude_permission_mode(home: &Path) -> Result<(&'static str, &'static str), String> {
     let file = home.join("config").join("claude-permission-mode");
     match std::fs::metadata(&file) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -892,9 +908,15 @@ async fn lock_status(home: &Path) -> Lock {
 /// `bin/fm-operational-input.sh`. Falls back to the plain text firstmate still
 /// recognizes when the encoder is missing or does not answer.
 async fn session_start_input(home: &Path) -> String {
+    operational_input(home, "session-start", SESSION_START_BODY).await.unwrap_or_else(|| SESSION_START_BODY.to_string())
+}
+
+/// `body` as firstmate's operational input of `kind`, built by `bin/fm-operational-input.sh`,
+/// or `None` when the encoder is missing or does not answer.
+async fn operational_input(home: &Path, kind: &str, body: &str) -> Option<String> {
     let encoded = async {
         let mut child = envpath::command(home.join("bin").join("fm-operational-input.sh"))
-            .args(["encode", "session-start"])
+            .args(["encode", kind])
             .env("FM_HOME", home)
             .current_dir(home)
             .stdin(Stdio::piped())
@@ -904,17 +926,44 @@ async fn session_start_input(home: &Path) -> String {
             .spawn()
             .ok()?;
         let mut stdin = child.stdin.take()?;
-        stdin.write_all(SESSION_START_BODY.as_bytes()).await.ok()?;
+        stdin.write_all(body.as_bytes()).await.ok()?;
         drop(stdin);
         let output = child.wait_with_output().await.ok()?;
         let text = String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string();
         (output.status.success() && !text.is_empty()).then_some(text)
     };
-    tokio::time::timeout(LOCK_WAIT, encoded)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| SESSION_START_BODY.to_string())
+    tokio::time::timeout(LOCK_WAIT, encoded).await.ok().flatten()
+}
+
+/// How long firstmate's turn-end guard may take: its own hook registration allows 30s.
+const GUARD_WAIT: Duration = Duration::from_secs(30);
+
+/// Runs the home's `bin/fm-turnend-guard.sh` on a Stop payload, as Codex's own Stop hook
+/// would. Exit 2 is its block, and what it printed is why the first mate should go on;
+/// anything else, including a guard that is missing, hangs or fails, lets the turn end.
+async fn turn_end_guard(home: &Path, payload: &Value) -> Option<String> {
+    let run = async {
+        let mut child = envpath::command(home.join("bin").join("fm-turnend-guard.sh"))
+            .env("FM_HOME", home)
+            .current_dir(home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .ok()?;
+        let mut stdin = child.stdin.take()?;
+        stdin.write_all(payload.to_string().as_bytes()).await.ok()?;
+        drop(stdin);
+        let output = child.wait_with_output().await.ok()?;
+        (output.status.code() == Some(2)).then(|| String::from_utf8_lossy(&output.stderr).trim().to_string())
+    };
+    let reason = tokio::time::timeout(GUARD_WAIT, run).await.ok().flatten()?;
+    Some(if reason.is_empty() {
+        "Work is under way and no supervision cycle is running: resume the supervision protocol for this harness before ending the turn.".to_string()
+    } else {
+        reason
+    })
 }
 
 enum LockClaim {
@@ -1169,6 +1218,21 @@ struct Host {
     /// Since when the session has been off that mode, and whether that was reported.
     mode_drift: Option<(Instant, bool)>,
     groups: Groups,
+    /// The agent this session runs on.
+    harness: Harness,
+    /// Codex says when its thread is working and when it is idle; that, not quiet, bounds its turns.
+    thread_active: bool,
+    /// Codex turns that have ended, so a guard's answer is matched to the turn it judged.
+    turns_ended: u64,
+    /// The running turn continues one the turn-end guard stopped: firstmate allows one
+    /// continuation per turn, as Codex does for its own Stop hook.
+    after_guard: bool,
+    /// A continuation turn the host started is running.
+    continuing: bool,
+    /// Codex refused a steer: what waits goes as a prompt once the turn ends, not as another steer.
+    hold_for_idle: bool,
+    /// The first mate has said something in this home, ever: the captain has met it.
+    greeted: bool,
 }
 
 /// Claude Code's own command for compacting a conversation, which the adapter
@@ -1272,6 +1336,13 @@ impl Host {
             controls: Controls::default(),
             posture: None,
             mode_drift: None,
+            harness: Harness::Claude,
+            thread_active: false,
+            turns_ended: 0,
+            after_guard: false,
+            continuing: false,
+            hold_for_idle: false,
+            greeted: false,
         }
     }
 
@@ -1283,6 +1354,7 @@ impl Host {
     }
 
     fn set_state(&mut self, state: State, detail: Value) {
+        let turn_ended = state == State::Idle && matches!(self.state, State::PromptTurn | State::AgentTurn);
         self.state = state;
         self.detail = detail.clone();
         let mut body = json!({"state": state.name()});
@@ -1290,6 +1362,66 @@ impl Host {
             target.extend(more);
         }
         self.emit("state", body);
+        if turn_ended && self.harness == Harness::Codex {
+            self.guard_turn_end();
+        }
+    }
+
+    /// A Codex turn ended. Codex under ACP runs none of the home's hooks, so the turn-end
+    /// guard its Stop hook would have run is run here, with the payload Codex gives it: a
+    /// first mate about to go quiet while work is under way is told to go on, once per turn.
+    fn guard_turn_end(&mut self) {
+        let (Some(home), Some(adapter)) = (self.home.clone(), self.adapter.as_ref()) else { return };
+        self.turns_ended += 1;
+        let turn = self.turns_ended;
+        let followed_a_block = std::mem::take(&mut self.after_guard);
+        let payload = json!({
+            "hook_event_name": "Stop",
+            "session_id": adapter.session_id,
+            "cwd": home.to_string_lossy(),
+            "stop_hook_active": followed_a_block,
+        });
+        let events = self.ev_tx.clone();
+        let gen = self.gen;
+        tauri::async_runtime::spawn(async move {
+            let continuation = match turn_end_guard(&home, &payload).await {
+                Some(reason) => {
+                    let input = operational_input(&home, "turn-end-guard", &reason).await;
+                    Some((reason, input))
+                }
+                None => None,
+            };
+            let _ = events.send(HostEvent::GuardDone { gen, turn, continuation });
+        });
+    }
+
+    /// The guard asked the first mate to go on. Only while nothing else is about to start a
+    /// turn: a waiting captain message is a turn of its own, which the guard judges again.
+    fn continue_after_guard(&mut self, turn: u64, reason: String, input: Option<String>) {
+        let queued = self.outbox.as_ref().is_some_and(|outbox| !outbox.queue.is_empty());
+        if turn != self.turns_ended || self.state != State::Idle || queued || !self.in_flight.is_empty() || self.helm {
+            return;
+        }
+        let Some(input) = input else {
+            self.emit("host_health", json!({"kind": "turn_end_guard", "error": "the guard's reason could not be encoded", "reason": reason}));
+            return;
+        };
+        let Some(adapter) = self.adapter.as_ref() else { return };
+        let rpc = adapter.rpc.clone();
+        let session_id = adapter.session_id.clone();
+        let events = self.ev_tx.clone();
+        let gen = self.gen;
+        self.after_guard = true;
+        self.continuing = true;
+        self.last_activity = Instant::now();
+        self.emit("host_health", json!({"kind": "turn_end_guard", "continued": true, "reason": reason}));
+        self.set_state(State::AgentTurn, json!({"origin": "turn_end_guard"}));
+        tauri::async_runtime::spawn(async move {
+            let result = rpc
+                .request("session/prompt", json!({"sessionId": session_id, "prompt": [{"type": "text", "text": input}]}))
+                .await;
+            let _ = events.send(HostEvent::ContinuationDone { gen, result });
+        });
     }
 
     fn record(&self, id: &str, text: Option<&str>, state: &str, extra: Value) {
@@ -1393,7 +1525,8 @@ impl Host {
 
     async fn handle_cmd(&mut self, cmd: Cmd, cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>, backlog: &mut VecDeque<Cmd>) {
         match cmd {
-            Cmd::Start { home, reply } => {
+            Cmd::Start { home, harness, reply } => {
+                self.harness = harness;
                 let result = self.start_interruptible(home, true, cmd_rx, backlog).await;
                 let _ = reply.send(result);
             }
@@ -1444,6 +1577,8 @@ impl Host {
                     "home": self.home.as_ref().map(|h| h.to_string_lossy().to_string()),
                     "session_id": self.adapter.as_ref().map(|a| a.session_id.clone()),
                     "permission_mode": self.permission,
+                    "harness": self.harness.id(),
+                    "greeted": self.greeted,
                     "in_flight": self.in_flight,
                     "queued": queued,
                     "agent_turns": self.agent_turns,
@@ -1490,6 +1625,7 @@ impl Host {
             self.report_kill(report, "leftover");
         }
         let outbox = Outbox::load(&host_dir.join("outbox.jsonl"));
+        self.greeted = host_dir.join(GREETED_FILE).exists();
         self.home = Some(home.clone());
         self.host_dir = Some(host_dir.clone());
         self.outbox = Some(outbox);
@@ -1497,7 +1633,7 @@ impl Host {
             self.announce_loaded();
         }
 
-        let (config_mode, mode_id) = match permission_mode(&home) {
+        let (config_mode, mode_id) = match self.harness.posture(&home) {
             Ok(mode) => mode,
             Err(reason) => {
                 self.set_state(State::Refused, json!({"reason": reason, "reason_kind": "permission_mode"}));
@@ -1525,16 +1661,20 @@ impl Host {
             Lock::Free => {}
         }
 
-        let resume = read_session_id(&host_dir);
+        let session_dir = session_dir_for(&host_dir, self.harness)?;
+        let resume = read_session_id(&session_dir);
         let had_previous = resume.is_some();
         self.gen += 1;
+        self.thread_active = false;
+        self.after_guard = false;
+        self.continuing = false;
         let auto_allow = config_mode == "bypass";
-        let spawned = match spawn_adapter(&home, self.ev_tx.clone(), self.gen, resume, &self.groups, auto_allow).await {
+        let spawned = match spawn_adapter(&home, self.harness, self.ev_tx.clone(), self.gen, resume, &self.groups, auto_allow).await {
             Ok(spawned) => spawned,
             Err(reason) => {
                 self.set_state(
                     State::Dead,
-                    json!({"reason": reason, "reason_kind": adapter_failure_kind(&reason)}),
+                    json!({"reason": reason, "reason_kind": adapter_failure_kind(&reason), "harness": self.harness.id()}),
                 );
                 return Err(reason);
             }
@@ -1566,7 +1706,7 @@ impl Host {
                 .await
                 .map(|_| ())
         } else {
-            Err(format!("the Claude Code adapter does not offer the {mode_id} mode"))
+            Err(format!("the {} adapter does not offer the {mode_id} mode", self.harness.label()))
         };
         if let Err(error) = applied {
             let report = adapter.kill_tree().await;
@@ -1581,7 +1721,10 @@ impl Host {
                 );
                 return Err(reason);
             }
-            let reason = format!("could not apply config/claude-permission-mode ({config_mode}): {error}");
+            let reason = match self.harness {
+                Harness::Claude => format!("could not apply config/claude-permission-mode ({config_mode}): {error}"),
+                other => format!("could not run {} with full access, as firstmate runs it for its crew: {error}", other.label()),
+            };
             self.set_state(State::Refused, json!({"reason": reason, "reason_kind": "permission_mode"}));
             return Err(reason);
         }
@@ -1594,7 +1737,7 @@ impl Host {
         // The captain's model and effort, applied again: a resumed session keeps a model only by
         // luck and a fresh one starts on the default. One that cannot be applied never stops the
         // start; the first mate runs on what the session chose, and the window says why.
-        let picks = controls::read_picks(&host_dir);
+        let picks = controls::read_picks(&session_dir);
         if !picks.is_empty() {
             let options = self.controls.options.clone().unwrap_or_default();
             let (options, problems, unfit) =
@@ -1635,12 +1778,13 @@ impl Host {
             ),
         }
 
-        write_session_id(&host_dir, &adapter.session_id, &home);
+        write_session_id(&session_dir, &adapter.session_id, &home);
         self.emit(
             "session",
             json!({
                 "mode": mode,
                 "session_id": adapter.session_id,
+                "harness": self.harness.id(),
                 "permission_mode": config_mode,
                 // An earlier conversation existed but could not be resumed.
                 "previous_session_lost": had_previous && mode == "new",
@@ -1695,6 +1839,10 @@ impl Host {
         self.last_turn_end = Some(Instant::now());
         let stop = result.as_ref().ok().and_then(|r| r.get("stopReason")).cloned().unwrap_or(Value::Null);
         let error = result.err();
+        if let Some(error) = error.as_deref().filter(|error| is_sign_in_required(error)) {
+            self.stop_signed_out(error);
+            return;
+        }
         if let Some(message) = error.as_deref().and_then(session_limit_message) {
             self.emit("host_health", json!({"kind": "session_limit", "id": "session-start", "warning": message}));
         }
@@ -1705,7 +1853,7 @@ impl Host {
 
     /// The session's controls as the window draws them.
     fn controls_view(&self) -> Value {
-        let picks = self.host_dir.as_deref().map(controls::read_picks).unwrap_or_default();
+        let picks = self.session_dir().map(|dir| controls::read_picks(&dir)).unwrap_or_default();
         self.controls.view(self.adapter.is_some() && self.state.live(), &picks)
     }
 
@@ -1744,7 +1892,7 @@ impl Host {
         let session_id = adapter.session_id.clone();
         let options = self.controls.options.clone().unwrap_or_default();
         let posture = self.posture.unwrap_or("bypassPermissions");
-        let picks = self.host_dir.as_deref().map(controls::read_picks).unwrap_or_default();
+        let picks = self.session_dir().map(|dir| controls::read_picks(&dir)).unwrap_or_default();
         let events = self.ev_tx.clone();
         let gen = self.gen;
         self.controls.pending = Some((category.clone(), value.clone()));
@@ -1779,7 +1927,7 @@ impl Host {
                 self.controls.options = Some(options);
                 self.controls.problems.remove(&category);
                 // The change stands either way; only applying it again at the next start is lost.
-                if let Some(Err(error)) = self.host_dir.as_deref().map(|dir| controls::keep_pick(dir, &category, &value)) {
+                if let Some(Err(error)) = self.session_dir().map(|dir| controls::keep_pick(&dir, &category, &value)) {
                     self.emit("host_health", json!({"kind": "session_pick_unsaved", "category": category, "error": error}));
                 }
                 Ok(())
@@ -1833,10 +1981,13 @@ impl Host {
         );
     }
 
+    /// Where this home's session on the running agent keeps its id and the captain's picks.
+    fn session_dir(&self) -> Option<PathBuf> {
+        self.host_dir.as_deref().and_then(|dir| session_dir_for(dir, self.harness).ok())
+    }
+
     fn host_dir_for(&self, home: &Path) -> Result<PathBuf, String> {
-        let digest = Sha256::digest(home.to_string_lossy().as_bytes());
-        let key: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-        let dir = self.env.data_dir()?.join("homes").join(key);
+        let dir = host_dir_in(&self.env.data_dir()?, home);
         std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
         Ok(dir)
     }
@@ -1957,6 +2108,18 @@ impl Host {
                 self.on_prompt_done(outbox_id, result)
             }
             HostEvent::SessionStartDone { gen, result } if gen == self.gen => self.on_session_start_done(result),
+            HostEvent::SteerDone { gen, outbox_id, result } if gen == self.gen => self.on_steer_done(outbox_id, result),
+            HostEvent::GuardDone { gen, turn, continuation: Some((reason, input)) } if gen == self.gen => {
+                self.continue_after_guard(turn, reason, input);
+            }
+            HostEvent::ContinuationDone { gen, result } if gen == self.gen => {
+                self.continuing = false;
+                self.last_turn_end = Some(Instant::now());
+                if let Err(error) = result {
+                    self.emit("host_health", json!({"kind": "turn_end_guard", "error": error}));
+                }
+                self.end_agent_turn(json!({"derived": "turn-end guard continuation done"}));
+            }
             HostEvent::OptionSet { gen, category, value, outcome, reply } => self.on_option_set(gen, category, value, outcome, reply),
             _ => {}
         }
@@ -1974,6 +2137,9 @@ impl Host {
             "session_info_update" | "available_commands_update" | "current_mode_update" | "config_option_update"
         );
         if meta {
+            if kind == "session_info_update" && self.harness == Harness::Codex {
+                self.note_thread_status(&update);
+            }
             if self.controls.note(&update) {
                 if kind == "current_mode_update" {
                     self.check_posture();
@@ -2004,7 +2170,8 @@ impl Host {
         if !trailer {
             self.last_activity = Instant::now();
             if self.in_flight.is_empty() {
-                if self.state == State::Idle {
+                // Codex says when its thread starts working; activity after a turn is only its tail.
+                if self.state == State::Idle && self.harness != Harness::Codex {
                     self.agent_turns += 1;
                     self.note_agent_turn();
                     self.set_state(
@@ -2044,6 +2211,9 @@ impl Host {
                     self.emit("compact", json!({"id": id, "state": "running"}));
                 }
                 self.emit("text", json!({"origin": origin, "text": text}));
+                if !self.greeted && !text.trim().is_empty() {
+                    self.note_greeted();
+                }
             }
             "tool_call" => {
                 let title = update.get("title").and_then(Value::as_str).unwrap_or("");
@@ -2059,6 +2229,95 @@ impl Host {
         if result_origin.as_deref().is_some_and(|origin| AUTONOMOUS_ORIGINS.contains(&origin)) {
             self.last_turn_end = Some(Instant::now());
             self.end_agent_turn(json!({"derived": "agent turn result", "result_origin": result_origin}));
+        }
+    }
+
+    /// The agent is not signed in, so no turn can run: stop, and say so in a way the window
+    /// can act on. Messages not yet answered wait in the outbox for the next start.
+    fn stop_signed_out(&mut self, error: &str) {
+        self.asked.clear();
+        self.end_storm();
+        self.helm = false;
+        self.requeue_in_flight();
+        if let Some(mut adapter) = self.adapter.take() {
+            let env = self.env.clone();
+            tauri::async_runtime::spawn(async move {
+                let report = adapter.kill_tree().await;
+                report_kill(env.as_ref(), report, "signed_out");
+            });
+        }
+        let reason = format!("{} is not signed in: {}", self.harness.label(), prompt_error_text(error));
+        self.set_state(State::Dead, json!({"reason": reason, "reason_kind": "signed_out", "harness": self.harness.id()}));
+    }
+
+    /// The first words a first mate ever says in a home: the captain has met it, and the
+    /// app's welcome for this home is done. Kept beside the home's outbox.
+    fn note_greeted(&mut self) {
+        let Some(host_dir) = self.host_dir.as_ref() else { return };
+        self.greeted = true;
+        if let Err(error) = std::fs::write(host_dir.join(GREETED_FILE), json!({"at_ms": now_ms(), "harness": self.harness.id()}).to_string()) {
+            self.emit("host_health", json!({"kind": "greeted_write_failed", "error": error.to_string()}));
+        }
+        self.emit("greeted", json!({"home": self.home.as_ref().map(|home| home.to_string_lossy().to_string()), "harness": self.harness.id()}));
+    }
+
+    /// Codex's own word on whether its thread is working. A thread that starts with no prompt
+    /// of ours running is a turn the first mate started, as a steer that found no turn does.
+    fn note_thread_status(&mut self, update: &Value) {
+        let Some(status) = update.pointer("/_meta/codex/threadStatus/type").and_then(Value::as_str) else { return };
+        match status {
+            "active" => {
+                self.thread_active = true;
+                self.last_activity = Instant::now();
+                if self.state == State::Idle && self.in_flight.is_empty() && !self.helm {
+                    self.agent_turns += 1;
+                    self.note_agent_turn();
+                    self.set_state(State::AgentTurn, json!({"origin": "agent", "turn": self.agent_turns, "first_update": "thread_active"}));
+                }
+            }
+            _ => {
+                self.thread_active = false;
+                if !self.continuing {
+                    self.end_agent_turn(json!({"derived": "codex thread idle"}));
+                }
+            }
+        }
+    }
+
+    /// A message handed to a running Codex turn. Joined to it, or starting a turn of its
+    /// own, it is the first mate's; refused, it waits for the next idle moment instead.
+    fn on_steer_done(&mut self, outbox_id: String, result: RpcResult) {
+        let outcome = result.as_ref().ok().and_then(|r| r.get("outcome")).and_then(Value::as_str).map(str::to_string);
+        match (outcome.as_deref(), result.as_ref().err()) {
+            (Some("injected" | "startedNewTurn"), _) => {
+                self.record(&outbox_id, None, "picked_up", json!({"via": "steering", "outcome": outcome}));
+                self.emit("outbox", json!({"id": outbox_id, "state": "picked_up", "via": "steering"}));
+                if outcome.as_deref() == Some("startedNewTurn") && self.state == State::Idle {
+                    self.set_state(State::AgentTurn, json!({"origin": "steering"}));
+                }
+            }
+            (_, Some(error)) if cut_off_by_exit(error) => {}
+            (_, error) => {
+                // Not taken: back to the front of the queue, to go as a prompt when the turn ends.
+                let why = error.cloned().unwrap_or_else(|| format!("steering answered {}", outcome.as_deref().unwrap_or("nothing")));
+                self.emit("host_health", json!({"kind": "steer_refused", "id": outbox_id, "error": why}));
+                if let Some(outbox) = self.outbox.as_mut() {
+                    let text = self
+                        .conversation
+                        .iter()
+                        .rev()
+                        .find(|item| item.get("messageId").and_then(Value::as_str) == Some(outbox_id.as_str()))
+                        .and_then(|item| item.pointer("/content/text").and_then(Value::as_str))
+                        .unwrap_or_default()
+                        .to_string();
+                    outbox.queue.push_front(Pending { id: outbox_id.clone(), text, ever_sent: true });
+                }
+                // It goes again from the queue, which records it in the conversation again.
+                self.conversation.retain(|item| item.get("messageId").and_then(Value::as_str) != Some(outbox_id.as_str()));
+                self.hold_for_idle = true;
+                self.record(&outbox_id, None, "queued", json!({"steer_refused": why}));
+                self.emit("outbox", json!({"id": outbox_id, "state": "queued"}));
+            }
         }
     }
 
@@ -2157,6 +2416,11 @@ impl Host {
             .unwrap_or(Value::Null);
         let usage = result.as_ref().ok().and_then(|r| r.get("usage")).cloned().unwrap_or(Value::Null);
         let error = result.as_ref().err().cloned();
+        if let Some(error) = error.as_deref().filter(|error| is_sign_in_required(error)) {
+            // Nobody read it: it goes again once the agent is signed in, like one cut off by an exit.
+            self.stop_signed_out(error);
+            return;
+        }
         match error.as_deref() {
             None => {
                 self.record(&outbox_id, None, "picked_up", json!({}));
@@ -2228,6 +2492,14 @@ impl Host {
         if self.state != State::AgentTurn || !self.in_flight.is_empty() || self.helm {
             return;
         }
+        // Codex says when its thread goes idle, and a foreground watcher checkpoint is minutes
+        // of quiet inside one turn, so its turns end on that and nothing else.
+        if self.harness == Harness::Codex {
+            if !self.thread_active && !self.continuing {
+                self.end_agent_turn(json!({"derived": "codex thread idle"}));
+            }
+            return;
+        }
         let quiet = self.last_activity.elapsed();
         if !self.marks_results {
             if quiet > AGENT_TURN_QUIET {
@@ -2247,8 +2519,21 @@ impl Host {
     /// During an agent turn they wait: the CLI folds a message that arrives mid-cycle into
     /// the running cycle, and the adapter never settles a prompt with that cycle's result,
     /// so the message would be answered and still read as waiting forever.
+    ///
+    /// Codex is different on both counts. A Codex first mate supervises inside one long turn,
+    /// so waiting for it to end would hold the captain's words for as long as work is under
+    /// way, and a prompt sent into a running turn is folded in and never answered either. So
+    /// a message for a running Codex turn goes through `_session/steering`, which says when
+    /// it has joined the turn; only an idle Codex is sent a prompt.
     fn dispatch(&mut self) {
-        if !self.state.live() || self.state == State::AgentTurn {
+        let codex = self.harness == Harness::Codex;
+        if !self.state.live() || (!codex && self.state == State::AgentTurn) {
+            return;
+        }
+        if self.state == State::Idle {
+            self.hold_for_idle = false;
+        }
+        if self.hold_for_idle {
             return;
         }
         let Some(adapter) = self.adapter.as_ref() else { return };
@@ -2257,24 +2542,39 @@ impl Host {
         while let Some(pending) = self.outbox.as_mut().and_then(|o| o.queue.pop_front()) {
             self.record(&pending.id, None, "sent", json!({}));
             self.emit("outbox", json!({"id": pending.id, "state": "sent", "while": self.state.name()}));
-            self.in_flight.push_back(pending.id.clone());
-            if is_compact_command(&pending.text) {
-                self.compaction = Some(Compaction { id: pending.id.clone(), from: self.context.used, running: false, failure: None });
-                self.emit("compact", json!({"id": pending.id, "state": "sent"}));
-            }
             // The adapter does not echo a prompt back, so the conversation records it here.
             self.conversation.push(json!({
                 "sessionUpdate": "user_message_chunk",
                 "messageId": pending.id,
                 "content": {"type": "text", "text": pending.text},
             }));
-            if self.state != State::PromptTurn {
-                self.set_state(State::PromptTurn, json!({"origin": "prompt"}));
-            }
             let rpc = rpc.clone();
             let session_id = session_id.clone();
             let events = self.ev_tx.clone();
             let gen = self.gen;
+            let turn_running = self.state != State::Idle || !self.in_flight.is_empty() || self.helm || self.continuing;
+            if codex && turn_running {
+                tauri::async_runtime::spawn(async move {
+                    let result = rpc
+                        .request(
+                            "_session/steering",
+                            json!({"sessionId": session_id, "prompt": [{"type": "text", "text": pending.text}]}),
+                        )
+                        .await;
+                    let _ = events.send(HostEvent::SteerDone { gen, outbox_id: pending.id, result });
+                });
+                continue;
+            }
+            // A captain message starts a turn of its own, which the turn-end guard judges afresh.
+            self.after_guard = false;
+            self.in_flight.push_back(pending.id.clone());
+            if is_compact_command(&pending.text) {
+                self.compaction = Some(Compaction { id: pending.id.clone(), from: self.context.used, running: false, failure: None });
+                self.emit("compact", json!({"id": pending.id, "state": "sent"}));
+            }
+            if self.state != State::PromptTurn {
+                self.set_state(State::PromptTurn, json!({"origin": "prompt"}));
+            }
             tauri::async_runtime::spawn(async move {
                 let result = rpc
                     .request(
@@ -2402,7 +2702,9 @@ fn is_operational_input(text: &str) -> bool {
 /// The kind of a failure to start the adapter, read from the host's own messages,
 /// so the UI can choose its words and action without matching text.
 fn adapter_failure_kind(reason: &str) -> &'static str {
-    if reason.contains("was not found on PATH") || reason.starts_with("could not start") {
+    if is_sign_in_required(reason) {
+        "signed_out"
+    } else if reason.contains("was not found on PATH") || reason.starts_with("could not start") {
         "adapter_missing"
     } else if reason.contains("no answer to") {
         "timeout"
@@ -2411,10 +2713,46 @@ fn adapter_failure_kind(reason: &str) -> &'static str {
     }
 }
 
+/// Whether an adapter refused because its agent is not signed in: ACP's `auth_required`,
+/// code -32000, which both claude-agent-acp (on the first prompt) and codex-acp (on
+/// session/new) send as "Authentication required".
+fn is_sign_in_required(error: &str) -> bool {
+    let error = error.trim();
+    let text = serde_json::from_str::<Value>(error.split_once(": ").map_or(error, |(_, rest)| rest))
+        .or_else(|_| serde_json::from_str::<Value>(error))
+        .ok();
+    match text {
+        Some(error) => {
+            error.get("code").and_then(Value::as_i64) == Some(-32000)
+                && error.get("message").and_then(Value::as_str).is_some_and(|m| m.contains("Authentication required"))
+        }
+        None => error.contains("\"code\":-32000") && error.contains("Authentication required"),
+    }
+}
+
 /// Whether a prompt error came from the adapter going away rather than from the
 /// turn itself. These are the errors `Rpc` produces when the adapter is gone.
 fn cut_off_by_exit(error: &str) -> bool {
     error.starts_with("the adapter exited") || error.starts_with("write failed")
+}
+
+/// Where the host keeps a home's outbox, session and marks, under the app's data folder.
+pub(crate) fn host_dir_in(data_dir: &Path, home: &Path) -> PathBuf {
+    let digest = Sha256::digest(home.to_string_lossy().as_bytes());
+    let key: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    data_dir.join("homes").join(key)
+}
+
+/// A session belongs to one agent, and so do the model and effort picked in it, so each
+/// agent keeps its own beside the home's outbox, which is the captain's whatever answers.
+/// Claude's stay where they always were, so a home that ran before keeps its conversation.
+fn session_dir_for(host_dir: &Path, harness: Harness) -> Result<PathBuf, String> {
+    let dir = match harness {
+        Harness::Claude => host_dir.to_path_buf(),
+        other => host_dir.join(other.id()),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
 fn read_session_id(host_dir: &Path) -> Option<String> {
@@ -2852,6 +3190,10 @@ while True:
     elif method == "session/prompt":
         text = "".join(part.get("text", "") for part in m["params"]["prompt"])
         open(os.path.join(home, "prompts.log"), "a").write(text + "\n")
+        # As claude-agent-acp answers a signed-out Mac: the session opens, the first prompt fails.
+        if os.path.exists(os.path.join(home, "signed-out")):
+            send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32000, "message": "Authentication required"}})
+            continue
         if "fail-me" in text:
             send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32603, "message": "Internal error: boom"}})
             continue
@@ -2957,7 +3299,7 @@ while True:
 
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         host.call(|reply| Cmd::Send { text: "go".into(), reply }).await.unwrap().expect("send");
         if let Some(answer) = answer {
             let request = wait_for(&log, Duration::from_secs(10), |e, _| e == "permission_request")
@@ -3089,10 +3431,10 @@ while True:
 
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("first start");
         host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
         let _ = std::fs::remove_file(home.join("adapter.pid"));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("second start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("second start");
         let history = wait_for(&log, Duration::from_secs(2), |e, _| e == "history").await;
         let _ = host.call(|reply| Cmd::Stop { reply }).await;
         let events = log.0.lock().unwrap().clone();
@@ -3133,7 +3475,7 @@ while True:
         std::fs::write(home.join("slow-set"), "").unwrap();
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         wait_for(&log, Duration::from_secs(5), |e, b| e == "session_controls" && b["commands"].is_array()).await.expect("the commands arrived");
         let answer = host.call(|reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await.unwrap();
         let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
@@ -3168,7 +3510,7 @@ while True:
         let home = fake_adapter_home("reapply");
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("first start");
         host.call(|reply| Cmd::SetOption { category: "thought_level".into(), value: "high".into(), reply }).await.unwrap().expect("effort");
         host.call(|reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await.unwrap().expect("model");
         host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
@@ -3176,7 +3518,7 @@ while True:
         let first = set_log(&home);
         log.0.lock().unwrap().clear();
         // A new adapter process: a fresh session on the defaults.
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("second start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("second start");
         let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
         let _ = host.call(|reply| Cmd::Stop { reply }).await;
         let events = log.0.lock().unwrap().clone();
@@ -3203,11 +3545,11 @@ while True:
         std::fs::write(home.join("can-load"), "").unwrap();
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("first start");
         host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
         let _ = std::fs::remove_file(home.join("adapter.pid"));
         log.0.lock().unwrap().clear();
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("resumed start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("resumed start");
         let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
         let _ = host.call(|reply| Cmd::Stop { reply }).await;
         let events = log.0.lock().unwrap().clone();
@@ -3226,7 +3568,7 @@ while True:
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
         let early = host.call(|reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await.unwrap();
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         let unknown = host.call(|reply| Cmd::SetOption { category: "thought_level".into(), value: "ultra".into(), reply }).await.unwrap();
         let refused = host.call(|reply| Cmd::SetOption { category: "thought_level".into(), value: "max".into(), reply }).await.unwrap();
         let mode = host.call(|reply| Cmd::SetOption { category: "mode".into(), value: "default".into(), reply }).await.unwrap();
@@ -3268,7 +3610,7 @@ while True:
         let home = fake_adapter_home("hold-during-agent-turn");
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         let first = host.call(|reply| Cmd::Send { text: "wake-me-after".into(), reply }).await.unwrap().expect("send");
         wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == first.as_str() && b["state"] == "picked_up")
             .await
@@ -3305,7 +3647,7 @@ while True:
         let home = fake_adapter_home("compact");
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         let send = |text: &str| {
             let text = text.to_string();
             host.call(|reply| Cmd::Send { text, reply })
@@ -3352,7 +3694,7 @@ while True:
         let home = fake_adapter_home("compact-no-shrink");
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         let send = |text: &str| {
             let text = text.to_string();
             host.call(|reply| Cmd::Send { text, reply })
@@ -3377,7 +3719,7 @@ while True:
         let home = fake_adapter_home("compact-behind");
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         let send = |text: &str| {
             let text = text.to_string();
             host.call(|reply| Cmd::Send { text, reply })
@@ -3409,10 +3751,10 @@ while True:
         std::fs::write(home.join("can-load"), "").unwrap();
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("first start");
         host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
         let _ = std::fs::remove_file(home.join("adapter.pid"));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("resumed start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("resumed start");
         let id = host.call(|reply| Cmd::Send { text: "plain hello".into(), reply }).await.unwrap().expect("send");
         wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == id.as_str() && b["state"] == "picked_up")
             .await
@@ -3458,7 +3800,7 @@ while True:
         std::env::set_var("ACP_ADAPTER", home.join("no-such-adapter"));
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        let started = host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap();
+        let started = host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap();
         let dead = wait_for(&log, Duration::from_secs(2), |e, b| e == "state" && b["state"] == "dead").await;
         let _ = std::fs::remove_dir_all(&home);
         assert!(started.is_err());
@@ -3484,7 +3826,7 @@ while True:
 
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         let id = host.call(|reply| Cmd::Send { text: "fail-me".into(), reply }).await.unwrap().expect("send");
         let failed = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == id.as_str() && b["state"] == "failed").await;
         let _ = std::fs::remove_file(home.join("adapter.pid"));
@@ -3521,12 +3863,12 @@ while True:
 
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("first start");
         host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
         // The lock now names a process that is gone, exactly as it does after a crash.
         let _ = std::fs::remove_file(home.join("adapter.pid"));
         let from = log.0.lock().unwrap().len();
-        let resumed = host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap();
+        let resumed = host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap();
         let idle = wait_for(&log, Duration::from_secs(2), |e, b| e == "state" && b["state"] == "idle").await;
         let _ = host.call(|reply| Cmd::Stop { reply }).await;
         let prompts = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default();
@@ -3566,14 +3908,14 @@ while True:
         let home = fake_adapter_home("helm");
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("start");
         // Sent while the session-start turn runs: it waits for that turn, then goes.
         let early = host.call(|reply| Cmd::Send { text: "plain early".into(), reply }).await.unwrap().expect("send");
         let read = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == early.as_str() && b["state"] == "picked_up").await;
         host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
         let _ = std::fs::remove_file(home.join("adapter.pid"));
         let _waiting = host.call(|reply| Cmd::Send { text: "plain waiting".into(), reply }).await.unwrap().expect("send");
-        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("second start");
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("second start");
         let idle = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["state"] == "picked_up" && b["id"] != early.as_str()).await;
         let _ = host.call(|reply| Cmd::Stop { reply }).await;
         let events = log.0.lock().unwrap().clone();
@@ -3605,7 +3947,7 @@ while True:
 
         let log = Arc::new(EventLog::default());
         let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
-        let started = host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap();
+        let started = host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap();
         let idle = wait_for(&log, Duration::from_secs(5), |e, b| e == "state" && b["state"] == "idle").await;
         let prompts = std::fs::read_to_string(home.join("prompts.log")).unwrap_or_default();
         let _ = host.call(|reply| Cmd::Stop { reply }).await;
@@ -3656,7 +3998,7 @@ while True:
         std::env::set_var("ACP_ADAPTER", &adapter);
 
         let host = HostHandle::spawn_with(Arc::new(QuietEnv(home.join("appdata"))));
-        let start = host.call(|reply| Cmd::Start { home: home.clone(), reply });
+        let start = host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply });
         let stop = async {
             let deadline = Instant::now() + Duration::from_secs(10);
             while host.groups.all().is_empty() && Instant::now() < deadline {
@@ -3680,5 +4022,219 @@ while True:
         assert!(group_members(pgid).unwrap().is_empty(), "{:?}", group_members(pgid));
         assert!(host.groups.all().is_empty());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Stands in for codex-acp as it was measured on 2026-09-27: its thread status says when a
+    /// turn runs, a plain prompt sent into a running turn is folded in and never answered,
+    /// `_session/steering` joins the running turn and says so, and a signed-out Mac cannot
+    /// open a session at all.
+    const FAKE_CODEX_ADAPTER: &str = r#"#!/usr/bin/env python3
+import json, os, sys, threading, time
+home = os.environ["FM_HOME"]
+out = threading.Lock()
+def send(message):
+    with out:
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+def update(u):
+    send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "c1", "update": u}})
+def thread(kind):
+    update({"sessionUpdate": "session_info_update", "_meta": {"codex": {"threadStatus": {"type": kind}}}})
+def log(line):
+    open(os.path.join(home, "codex.log"), "a").write(line + "\n")
+running = threading.Event()
+def turn(id, text):
+    running.set()
+    thread("active")
+    if "long" in text:
+        # A foreground watcher checkpoint: one step, quiet for longer than any quiet rule.
+        update({"sessionUpdate": "tool_call", "toolCallId": "k1", "title": "bin/fm-watch-checkpoint.sh", "status": "in_progress"})
+        time.sleep(6)
+        update({"sessionUpdate": "tool_call_update", "toolCallId": "k1", "status": "completed"})
+    update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "answered " + text[:40]}})
+    update({"sessionUpdate": "usage_update", "used": 10, "size": 1000})
+    running.clear()
+    thread("idle")
+    if id is not None:
+        send({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn"}})
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    m = json.loads(line)
+    method = m.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"agentCapabilities": {"loadSession": True}, "_meta": {"steering": {"supported": True}}}})
+    elif method == "session/new":
+        if os.path.exists(os.path.join(home, "signed-out")):
+            send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32000, "message": "Authentication required"}})
+            continue
+        open(os.path.join(home, "adapter.pid"), "w").write(str(os.getpid()))
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "c1", "modes": {"currentModeId": "agent", "availableModes": [{"id": "read-only"}, {"id": "agent"}, {"id": "agent-full-access"}]}, "configOptions": [{"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "agent", "options": [{"value": "read-only", "name": "Read-only"}, {"value": "agent", "name": "Agent"}, {"value": "agent-full-access", "name": "Agent (full access)"}]}]}})
+    elif method == "session/set_mode":
+        log("mode " + m["params"]["modeId"])
+        update({"sessionUpdate": "current_mode_update", "currentModeId": m["params"]["modeId"]})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+    elif method == "session/prompt":
+        text = "".join(part.get("text", "") for part in m["params"]["prompt"])
+        if running.is_set():
+            log("folded " + text)
+            continue
+        log("prompt " + text)
+        threading.Thread(target=turn, args=(m["id"], text)).start()
+    elif method == "_session/steering":
+        text = "".join(part.get("text", "") for part in m["params"]["prompt"])
+        if running.is_set():
+            log("steered " + text)
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"outcome": "injected"}})
+        else:
+            log("steer-started " + text)
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"outcome": "startedNewTurn"}})
+            threading.Thread(target=turn, args=(None, text)).start()
+"#;
+
+    /// A home for the Codex fake, with firstmate's operational-input encoder and a turn-end
+    /// guard that logs every payload and blocks, once, when `guard-block` exists.
+    fn fake_codex_home(name: &str) -> PathBuf {
+        let home = home_with_lock_script(
+            name,
+            Some(r#"if [ -f "$FM_HOME/adapter.pid" ]; then echo "lock: held by live harness pid $(cat "$FM_HOME/adapter.pid")"; else echo 'lock: free'; fi"#),
+        );
+        std::fs::write(home.join("AGENTS.md"), "scratch home for a host test\n").unwrap();
+        let script = |name: &str, body: &str| {
+            let path = home.join("bin").join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        script("fm-operational-input.sh", "#!/bin/sh\nprintf '\\342\\201\\243FIRSTMATE_OP: v1 %s: %s' \"$2\" \"$(cat)\"\n");
+        script(
+            "fm-turnend-guard.sh",
+            "#!/bin/sh\npayload=$(cat)\nprintf '%s\\n' \"$payload\" >> \"$FM_HOME/guard.log\"\ncase \"$payload\" in *'\"stop_hook_active\":true'*) exit 0 ;; esac\n[ -f \"$FM_HOME/guard-block\" ] || exit 0\necho 'resume the watcher checkpoint: work is under way' >&2\nexit 2\n",
+        );
+        let adapter = home.join("fake-codex.py");
+        std::fs::write(&adapter, FAKE_CODEX_ADAPTER).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ACP_ADAPTER", &adapter);
+        home
+    }
+
+    fn codex_log(home: &Path) -> Vec<String> {
+        std::fs::read_to_string(home.join("codex.log")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// Codex runs with full access, as firstmate runs its Codex crewmates, keeps its session
+    /// apart from Claude's, and a message sent while its turn runs joins that turn through
+    /// steering rather than being folded into it unanswered.
+    #[tokio::test]
+    async fn a_codex_first_mate_hears_a_message_sent_mid_turn() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_codex_home("codex-steer");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Codex, reply }).await.unwrap().expect("start");
+        let idle = wait_for(&log, Duration::from_secs(10), |e, b| e == "state" && b["state"] == "idle").await;
+        let long = host.call(|reply| Cmd::Send { text: "a long job".into(), reply }).await.unwrap().expect("send");
+        let running = wait_for(&log, Duration::from_secs(5), |e, b| e == "state" && b["state"] == "prompt_turn").await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let mid = host.call(|reply| Cmd::Send { text: "also this".into(), reply }).await.unwrap().expect("send");
+        let heard = wait_for(&log, Duration::from_secs(5), |e, b| e == "outbox" && b["id"] == mid.as_str() && b["state"] == "picked_up").await;
+        // Quiet for six seconds inside the turn: Codex's own status, not quiet, ends it.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let state_mid = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let done = wait_for(&log, Duration::from_secs(10), |e, b| e == "outbox" && b["id"] == long.as_str() && b["state"] == "picked_up").await;
+        let settled = wait_for(&log, Duration::from_secs(5), |e, b| e == "state" && b["state"] == "idle" && b.get("derived").is_none()).await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let codex = codex_log(&home);
+        let data = home.join("appdata");
+        let session_dir = std::fs::read_dir(data.join("homes")).unwrap().flatten().next().unwrap().path();
+        let codex_session = session_dir.join("codex").join("session.json").exists();
+        let claude_session = session_dir.join("session.json").exists();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(idle.is_some() && running.is_some() && done.is_some() && settled.is_some(), "{events:?}");
+        assert_eq!(codex.first().map(String::as_str), Some("mode agent-full-access"), "{codex:?}");
+        assert!(heard.is_some(), "the message sent mid-turn was never picked up: {events:?}");
+        assert!(codex.contains(&"steered also this".to_string()), "it went as a steer: {codex:?}");
+        assert!(!codex.iter().any(|line| line.starts_with("folded")), "nothing was folded in unanswered: {codex:?}");
+        assert_eq!(state_mid["state"], "prompt_turn", "a quiet step inside the turn did not end it: {state_mid}");
+        assert!(codex_session, "Codex keeps its own session");
+        assert!(!claude_session, "and leaves Claude's alone");
+        let session = events.iter().find(|(e, _)| e == "session").map(|(_, b)| b.clone()).unwrap();
+        assert_eq!(session["harness"], "codex", "{session}");
+    }
+
+    /// Codex runs none of the home's hooks under ACP, so the host runs the turn-end guard
+    /// itself when a turn ends, delivers a block as firstmate's own input, and passes the
+    /// guard's loop flag on the turn that follows so it blocks at most once.
+    #[tokio::test]
+    async fn a_codex_turn_that_ends_blind_is_sent_back_once_by_the_guard() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_codex_home("codex-guard");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Codex, reply }).await.unwrap().expect("start");
+        wait_for(&log, Duration::from_secs(10), |e, b| e == "state" && b["state"] == "idle").await.expect("idle after session start");
+        std::fs::write(home.join("guard-block"), "").unwrap();
+        host.call(|reply| Cmd::Send { text: "plain please".into(), reply }).await.unwrap().expect("send");
+        let continued = wait_for(&log, Duration::from_secs(10), |e, b| e == "state" && b["origin"] == "turn_end_guard").await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let codex = codex_log(&home);
+        let guard: Vec<Value> = std::fs::read_to_string(home.join("guard.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(continued.is_some(), "the guard's block was not delivered: {events:?}");
+        let prompts: Vec<&String> = codex.iter().filter(|line| line.starts_with("prompt ")).collect();
+        assert_eq!(prompts.len(), 3, "session start, the captain's message and one continuation: {codex:?}");
+        assert!(prompts[2].contains("\u{2063}FIRSTMATE_OP: v1 turn-end-guard: resume the watcher checkpoint"), "{codex:?}");
+        assert!(guard.len() >= 3, "the guard judged every turn: {guard:?}");
+        assert!(guard.iter().all(|payload| payload["hook_event_name"] == "Stop" && payload["session_id"] == "c1"), "{guard:?}");
+        let last = guard.last().unwrap();
+        assert_eq!(last["stop_hook_active"], true, "the turn after a block says so, and is allowed to end: {guard:?}");
+    }
+
+    /// A Mac not signed in to the agent: Codex refuses the session, Claude the first prompt.
+    /// Either way the first mate stops and says why, and nothing the captain wrote is lost.
+    #[tokio::test]
+    async fn an_agent_not_signed_in_stops_the_first_mate_and_says_so() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_codex_home("codex-signed-out");
+        std::fs::write(home.join("signed-out"), "").unwrap();
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        let codex = host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Codex, reply }).await.unwrap();
+        let codex_dead = wait_for(&log, Duration::from_secs(5), |e, b| e == "state" && b["state"] == "dead").await;
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let _ = std::fs::remove_dir_all(&home);
+
+        let home = fake_adapter_home("claude-signed-out");
+        std::fs::write(home.join("signed-out"), "").unwrap();
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        let waiting = host.call(|reply| Cmd::Send { text: "plain hello".into(), reply }).await.unwrap();
+        host.call(|reply| Cmd::Start { home: home.clone(), harness: Harness::Claude, reply }).await.unwrap().expect("claude opens its session");
+        let claude_dead = wait_for(&log, Duration::from_secs(10), |e, b| e == "state" && b["state"] == "dead").await;
+        let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let events = log.0.lock().unwrap().clone();
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(codex.is_err(), "Codex's start failed");
+        let codex_dead = codex_dead.expect("Codex stopped");
+        assert_eq!(codex_dead["reason_kind"], "signed_out", "{codex_dead}");
+        assert_eq!(codex_dead["harness"], "codex", "{codex_dead}");
+        let claude_dead = claude_dead.unwrap_or_else(|| panic!("Claude stopped: {events:?}"));
+        assert_eq!(claude_dead["reason_kind"], "signed_out", "{claude_dead}");
+        assert!(claude_dead["reason"].as_str().unwrap().starts_with("Claude Code is not signed in"), "{claude_dead}");
+        assert!(!events.iter().any(|(e, b)| e == "outbox" && b["state"] == "failed"), "nothing the captain wrote failed: {events:?}");
+        if let Ok(id) = waiting {
+            assert!(state["queued"].as_array().unwrap().iter().any(|queued| queued == id.as_str()), "the message waits for the next start: {state}");
+        }
     }
 }

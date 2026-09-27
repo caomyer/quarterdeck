@@ -10,11 +10,50 @@
 //! lookup that misses falls back to the places these tools are actually installed.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
 
 static SEARCH_PATH: OnceLock<String> = OnceLock::new();
+
+/// The app's own tools folder, where it installs an agent's ACP adapter: one folder per
+/// adapter, each an npm prefix. Set once at launch.
+static TOOLS_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_tools_dir(dir: PathBuf) {
+    let _ = TOOLS_DIR.set(dir);
+}
+
+pub fn tools_dir() -> Option<&'static Path> {
+    TOOLS_DIR.get().map(PathBuf::as_path)
+}
+
+/// The executables the app installed for itself, one `node_modules/.bin` per adapter.
+fn tool_bins() -> Vec<PathBuf> {
+    let Some(tools) = tools_dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(tools) else { return Vec::new() };
+    let mut bins: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path().join("node_modules").join(".bin"))
+        .filter(|bin| bin.is_dir())
+        .collect();
+    bins.sort();
+    bins
+}
+
+/// The search path with the places these tools are installed after it, for a child that
+/// must find an agent a captain installed where their login shell does not look.
+pub fn wide_path() -> String {
+    let mut path = search_path().to_string();
+    for dir in known_dirs() {
+        let dir = dir.to_string_lossy().to_string();
+        if !path.split(':').any(|entry| entry == dir) {
+            path.push(':');
+            path.push_str(&dir);
+        }
+    }
+    path
+}
 
 /// The PATH given to every child process: the login shell's entries first,
 /// then the inherited ones, without duplicates.
@@ -58,6 +97,8 @@ fn known_dirs() -> Vec<PathBuf> {
     }
     dirs.push(PathBuf::from("/opt/homebrew/bin"));
     dirs.push(PathBuf::from("/usr/local/bin"));
+    // Last: a copy the captain installed themselves wins over the app's own.
+    dirs.extend(tool_bins());
     dirs
 }
 

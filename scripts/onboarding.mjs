@@ -39,38 +39,38 @@ await page.waitForSelector(".needs-banner", { timeout: 20000 });
 const banner = page.locator(".needs-banner");
 // Four of the six lines name a tool; two name none. Counting all six would
 // tell the captain a branch name is something to install.
-check((await banner.innerText()).includes("needs 4 more things"), "the count is of things to install, not of lines");
-check((await banner.innerText()).includes("It runs without them"), "and says the first mate still runs without them");
-check((await banner.innerText()).includes("could not put a name to"), "what names no tool is kept apart from what does");
+const text = await banner.innerText();
+check(text.includes("Crew work isn't ready on this Mac yet"), "the headline says what is not ready, for a captain with no work yet");
+check(text.includes("these 4 are here"), "the count is of things to install, not of lines");
+check(text.includes("It asks before installing any of them"), "and says nothing is installed without the captain's OK");
+check(text.includes("could not put a name to"), "what names no tool is kept apart from what does");
 
-// Each name carries the remedy for it, and they are the first mate's own words.
+// Grouped by who acts: what the captain installs by hand, then what the first mate installs with their OK.
+const groups = await page.locator(".needs-group").allInnerTexts();
+check(groups.join(" | ").toLowerCase() === "yours to install | the first mate can install, with your ok", `grouped by who acts (${groups.join(" | ")})`);
 const tools = await page.locator(".needs-tool").allInnerTexts();
-check(tools.join(",") === "jq,no-mistakes,lavish-axi,herdr", `every missing tool is named (${tools.join(", ")})`);
-const commands = await page.locator(".needs-how").allInnerTexts();
-check(commands.some((command) => command.startsWith("brew install jq")), "an install command is shown beside its tool");
-// A tool named inside prose is still a tool with a command, not a paragraph.
-check(commands.includes("npm install -g lavish-axi && lavish-axi setup hooks"), "a tool named inside a longer line still gets its command");
+check(tools.join(",") === "herdr,jq,no-mistakes,lavish-axi", `every missing tool is named, in the first mate's order within its group (${tools.join(", ")})`);
+// A tool named inside prose is still a tool with a command, not a paragraph, and the command is one hover away.
+check(await page.locator(".needs-tool", { hasText: "lavish-axi" }).getAttribute("title") === "npm install -g lavish-axi && lavish-axi setup hooks", "a tool named inside a longer line still carries its command");
+check((await page.locator(".needs-tool", { hasText: "jq" }).getAttribute("title"))?.startsWith("brew install jq") === true, "an install command is carried by its tool");
 check(await page.locator(".needs-banner a").getAttribute("href") === "https://example.invalid/herdr", "a tool installed by hand links to its instructions");
 check((await page.locator(".needs-banner a").getAttribute("rel"))?.includes("noopener") === true, "and that link cannot reach back into the app");
 
 // The app does not drop what it has no shape for.
 const said = await page.locator(".needs-says").allInnerTexts();
 check(said.length === 2 && said.some((line) => line.startsWith("TANGLE:")), `a line the app has no shape for is shown in the first mate's words (${said.length})`);
-
-// The remedies line up in one column: a checklist is read down, not across.
-// A line that names no tool is not a remedy and starts further left, with the
-// names, because it belongs to no name.
-const columns = await page.locator(".needs-how, .needs-banner li > span:not(.needs-says)").evaluateAll((nodes) => [...new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().left)))]);
-check(columns.length === 1, `every remedy starts at the same place (${columns.join(", ")})`);
-const [remedy] = columns;
-const bare = await page.locator(".needs-says").first().evaluate((node) => Math.round(node.getBoundingClientRect().left));
-check(bare < remedy, `a line belonging to no tool starts left of the remedies (${bare} < ${remedy})`);
-const names = await page.locator(".needs-tool").evaluateAll((nodes) => [...new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().left)))]);
-check(names.length === 1 && names[0] === bare, `and in line with the names (${names.join(", ")})`);
 await shot("missing");
 
+// Asking the first mate drafts the ask in chat and sends nothing.
+await page.locator(".needs-actions button").click();
+await page.waitForSelector("textarea[aria-label='Message the first mate']", { timeout: 5000 });
+const draft = await page.locator("textarea[aria-label='Message the first mate']").inputValue();
+check(draft === "Set up what this Mac still needs for crew work: herdr, jq, no-mistakes, lavish-axi.", `the ask names every tool and waits in the composer (${draft})`);
+await page.goto(`${baseUrl}/?needs`);
+await page.waitForSelector(".needs-banner", { timeout: 20000 });
+
 // Asking again is the captain's move, and it is theirs to make at any time.
-await page.locator(".needs-banner button").click();
+await page.locator(".needs-banner header button").click();
 await page.waitForTimeout(300);
 check(await page.locator(".needs-banner").count() === 1, "checking again leaves the checklist in place");
 
