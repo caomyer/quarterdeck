@@ -856,6 +856,12 @@ test_every_mode_declares_validation_wait_in_dod() {
         "$kind ($verb) validation-wait line does not defer its meaning to rule 4"
       [ "$(grep -c "Before you sit on a long validation run" "$brief")" = 1 ] \
         || fail "$kind ($verb) brief renders the validation-wait line more than once"
+      # Reading the rule is not applying it: the no-mistakes worker is told
+      # again inside the sentence it reads as it backgrounds each round.
+      if [ "$kind" = no-mistakes ]; then
+        assert_grep "So append \`$verb: waiting on the no-mistakes round\` (rule 4), then background the drive call and poll" "$dod" \
+          "no-mistakes ($verb) background-and-poll sentence does not declare the wait it starts"
+      fi
       # Rule 4 stays the one owner of what the verb means.
       assert_grep "Use \`$verb: {why}\` - distinct from \`blocked:\`" "$brief" \
         "$kind ($verb) rule 4 no longer owns the meaning of the pause verb"
