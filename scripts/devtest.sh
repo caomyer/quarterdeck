@@ -35,7 +35,10 @@
 # - the folder is refused if it resolves inside that app data folder or
 #   ~/Documents/projects/firstmate.
 # What it shares with the machine: the Claude login, treehouse's worktree pools
-# (the project's pool is removed by `down`) and the no-mistakes daemon, which a
+# (the project's pool is removed by `down`), each crewmate's /tmp/fm-<task id>
+# (removed by `down` when the scratch backlog names it), the browser that
+# chrome-devtools-axi drives (a scratch first mate uses it to look at pages, and
+# a tab it leaves open outlives `down`), and the no-mistakes daemon, which a
 # scratch first mate must never be asked to use.
 #
 # `down` stops the app (which stops its first mate's process group), then the
@@ -160,14 +163,13 @@ launch_app() {
   local port
   port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   local config
-  # The window as tauri.conf.json makes it, at one fixed size on the main display
-  # (a window left on a display that sleeps or goes has nothing to snapshot), and never
+  # The window as tauri.conf.json makes it, at one fixed size, and never
   # suspended by WebKit while it is hidden, which is where a driven window sits.
   # shellcheck disable=SC2016 # the script is JavaScript; its ${} are its own.
   config=$(node -e '
     const conf = require(process.argv[1]);
     const port = process.argv[2];
-    const window = { ...conf.app.windows[0], width: 1440, height: 900, x: 0, y: 0, maximized: false, center: false, backgroundThrottling: "disabled" };
+    const window = { ...conf.app.windows[0], width: 1440, height: 900, maximized: false, center: false, backgroundThrottling: "disabled" };
     console.log(JSON.stringify({
       build: { devUrl: `http://127.0.0.1:${port}`, beforeDevCommand: `pnpm dev --port ${port} --strictPort` },
       app: { windows: [window] },
@@ -271,6 +273,13 @@ cmd_down() {
     done
     rm -rf "$pool"
   done
+  # Each crewmate's temp root, named by the scratch backlog and made since the scratch home was.
+  local id
+  while read -r id; do
+    if [ -n "$id" ] && [ -d "/tmp/fm-$id" ] && [ "/tmp/fm-$id" -nt "$ROOT/logs/home-init.log" ]; then
+      rm -rf "/tmp/fm-$id" && killed="$killed tmp:fm-$id"
+    fi
+  done < <(sed -n 's/^- \[.\] \([A-Za-z0-9._-]*\) - .*/\1/p' "$ROOT/home/data/backlog.md" 2>/dev/null)
   left=$(stragglers)
   if [ -n "$left" ]; then
     echo "devtest: still running in $ROOT, not removing it: $left" >&2
@@ -278,6 +287,7 @@ cmd_down() {
   fi
   [ -d "$ROOT/engine" ] && chmod -R u+w "$ROOT/engine"
   rm -rf "$ROOT"
+  rmdir "$SCRATCH" 2>/dev/null || true
   echo "devtest: $NAME down. stopped:${killed:- nothing was running}. removed $ROOT"
 }
 
