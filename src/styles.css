@@ -1701,7 +1701,7 @@ button.session-pill:hover:not(:disabled) { border-color: var(--control-hover); }
   .tl-search { max-width: none; flex-basis: 100%; }
   .tl-row, .tl:not(:has(.tl-check-cell)) .tl-row { grid-template-columns: 22px 34px minmax(0, 1fr) 14px; row-gap: 6px; }
   .tl-check-cell, .tl-age { display: none; }
-  .tl-chip { grid-column: 3; grid-row: 2; justify-self: start; }
+  .tl-chips { grid-column: 3; grid-row: 2; justify-self: start; }
   .tl-open { grid-column: 4; grid-row: 1; }
   .tl-label { padding-left: 38px; }
   .tl-label small { display: none; }
@@ -1716,7 +1716,7 @@ button.session-pill:hover:not(:disabled) { border-color: var(--control-hover); }
  * what the captain gave it folds under that, a page it presented carries a strip back to it, and its row a chip.
  */
 .to-list { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
-.to-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; color: var(--ink); background: transparent; text-align: left; }
+.to-row { box-sizing: border-box; display: grid; text-decoration: none; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; color: var(--ink); background: transparent; text-align: left; }
 .to-list > :last-child, .to-list > :last-child > .to-row { border-bottom: 0; }
 .to-row:not(.static):hover { background: var(--hover); cursor: pointer; }
 .to-row:focus-visible { outline: 0; box-shadow: inset 2px 0 0 var(--sea); }
@@ -1758,7 +1758,7 @@ button.pts-task:hover strong { color: var(--sea); }
 .pts-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .pts-copy strong { overflow: hidden; font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .pts-copy small { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.pts-copy small > span + span::before { margin-right: 8px; color: var(--ghost); content: "·"; }
+.pts-copy small > span:not(.tl-pri) + span:not(.tl-pri)::before { margin-right: 8px; color: var(--ghost); content: "·"; }
 .pts-tabs { display: flex; min-width: 0; flex: 1; justify-content: flex-end; gap: 2px; overflow-x: auto; padding: 3px; }
 .pts-tabs button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 0; border-radius: 7px; color: var(--ink-3); background: transparent; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
 .pts-tabs button:hover { color: var(--ink); background: var(--hover); }

@@ -9,9 +9,10 @@
  * A task waiting on another is drawn joined to it by a line in the list's left margin, and pointing at or focusing a
  * task lights its whole upstream chain, quietly, with a note when part of that chain is scrolled out of sight.
  */
-import { Check, ChevronRight, CircleCheck, Clock3, Search, X } from "lucide-react";
+import { Check, ChevronRight, CircleCheck, Clock3, ExternalLink, FileText, GitPullRequest, PanelsTopLeft, Search, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BacklogRecord, TaskEdit, TaskEdited } from "./host/types";
+import type { OutputChip } from "./produced";
 import {
   daysSince, downstreamOf, groupChoices, groupSections, type ListRow, priorityIsSet, priorityLevel, PRIORITIES, taskGraph, type TaskFilter,
   type TaskGrouping, taskRows, type TaskSort, type TaskView, upstreamOf, viewCounts,
@@ -35,6 +36,11 @@ type TaskListProps = {
   onOpen: (id: string) => void;
   onOpenGroup: (id: string) => void;
   onEdit: (edit: TaskEdit) => Promise<TaskEdited>;
+  /**
+   * The chip each row carries for what its task produced (`src/produced.ts`), and opening what it names. Without it
+   * the list draws no chips and has no To review view.
+   */
+  output?: { chips: Map<string, OutputChip>; review: Set<string>; onOpen: (id: string, chip: OutputChip) => void };
 };
 
 const VIEWS: { id: TaskView; label: string }[] = [
@@ -42,6 +48,7 @@ const VIEWS: { id: TaskView; label: string }[] = [
   { id: "ready", label: "Ready" },
   { id: "blocked", label: "Blocked" },
   { id: "held", label: "Put off" },
+  { id: "review", label: "To review" },
 ];
 
 const SORTS: { id: TaskSort; label: string; hint: string }[] = [
@@ -119,7 +126,7 @@ function edgePath(edge: Edge, places: Map<string, Place>) {
   return `M ${DOT_X - 5} ${from.mid} H ${x + r} Q ${x} ${from.mid} ${x} ${from.mid + r * down} V ${to.mid - r * down} Q ${x} ${to.mid} ${x + r} ${to.mid} H ${DOT_X - 5}`;
 }
 
-export function TaskList({ records, filter: mountedFilter, captainDay, now, underway, hidden, title, editing, onOpen, onOpenGroup, onEdit }: TaskListProps) {
+export function TaskList({ records, filter: mountedFilter, captainDay, now, underway, hidden, title, editing, onOpen, onOpenGroup, onEdit, output }: TaskListProps) {
   // Filters are for this visit only, as with the logbook's: a filter that sticks reads as work gone missing.
   const [filter, setFilter] = useState<TaskFilter>(mountedFilter);
   const [view, setView] = useState<TaskView>("open");
@@ -133,11 +140,12 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
   const [menu, setMenu] = useState<string | null>(null);
 
   const underwayIds = useMemo(() => new Set(underway.keys()), [underway]);
-  const input = { records, filter, search, underway: underwayIds, hidden, captainDay };
-  const rows = useMemo(() => taskRows({ ...input, view, sort }), [records, filter, search, underwayIds, hidden, captainDay, view, sort]);
-  const counts = useMemo(() => viewCounts(input), [records, filter, search, underwayIds, hidden, captainDay]);
+  const review = output?.review;
+  const input = { records, filter, search, underway: underwayIds, hidden, review, captainDay };
+  const rows = useMemo(() => taskRows({ ...input, view, sort }), [records, filter, search, underwayIds, hidden, review, captainDay, view, sort]);
+  const counts = useMemo(() => viewCounts(input), [records, filter, search, underwayIds, hidden, review, captainDay]);
   // The heading counts the work the list is mounted on, whatever the search box holds.
-  const totals = useMemo(() => viewCounts({ ...input, search: "" }), [records, filter, underwayIds, hidden, captainDay]);
+  const totals = useMemo(() => viewCounts({ ...input, search: "" }), [records, filter, underwayIds, hidden, review, captainDay]);
   const graph = useMemo(() => taskGraph(records), [records]);
   const byId = graph.byId;
   const sections = useMemo(() => grouping === "group"
@@ -258,6 +266,7 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
     const record = row.record;
     const lit = chain?.has(row.id) ?? false;
     const chip = standingChip(row, underway.get(row.id));
+    const made = output?.chips.get(row.id) ?? null;
     const blockers = graph.waitsOn.get(row.id) ?? [];
     const landedBlockers = (record.blocked_by_ids ?? []).filter((id) => !blockers.includes(id));
     const unblocks = row.standing === "landed" ? 0 : downstreamOf(graph, row.id).length;
@@ -307,20 +316,26 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
           {row.standing === "landed" && record.completion?.date && <span>{shortDate(record.completion.date)}</span>}
         </small>
       </span>
-      <span className={`tl-chip tone-${chip.tone}`}>{row.standing === "underway" ? underway.get(row.id)?.icon : null}{chip.label}</span>
+      <span className="tl-chips">
+        {made && <button type="button" className={`tl-out-chip${made.strong ? " strong" : ""}`} data-output={made.opens.kind} data-strong={made.strong || undefined} title={made.title} onClick={(event) => { event.stopPropagation(); output!.onOpen(row.id, made); }} onKeyDown={(event) => event.stopPropagation()}>
+          {made.opens.kind === "page" ? <PanelsTopLeft size={12} /> : made.opens.kind === "report" ? <FileText size={12} /> : <GitPullRequest size={12} />}{made.label}{made.opens.kind === "pr" && <ExternalLink size={11} />}
+        </button>}
+        <span className={`tl-chip tone-${chip.tone}`}>{row.standing === "underway" ? underway.get(row.id)?.icon : null}{chip.label}</span>
+      </span>
       <time className="tl-age" title={record.since ? `Filed ${shortDate(record.since)}` : "Undated"}>{age === null ? "" : `${age}d`}</time>
       <ChevronRight size={15} className="tl-open" aria-hidden="true" />
     </div>;
   };
 
   const emptyText = search.trim() ? "No task here matches." : view === "open" ? (filter.project ? "Nothing is underway or queued in this project." : "Nothing is underway or queued.")
-    : view === "ready" ? "Nothing is ready to start." : view === "blocked" ? "Nothing here waits on other work." : "Nothing is put off.";
+    : view === "ready" ? "Nothing is ready to start." : view === "blocked" ? "Nothing here waits on other work."
+    : view === "review" ? "Nothing any task here produced waits on you." : "Nothing is put off.";
 
   return <section className="dashboard-section tl" data-testid="task-list">
     <div className="section-heading"><span className="section-dot blue" aria-hidden="true" /><h2>Tasks</h2><span className="section-count-label tl-summary">{summary}</span></div>
     <div className="tl-toolbar">
       <div className="tl-views" role="tablist" aria-label="Which tasks">
-        {VIEWS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={view === item.id} className={view === item.id ? "on" : ""} onClick={() => setView(item.id)}>{item.label}<span>{counts[item.id]}</span></button>)}
+        {VIEWS.filter((item) => item.id !== "review" || output).map((item) => <button key={item.id} type="button" role="tab" aria-selected={view === item.id} className={view === item.id ? "on" : ""} onClick={() => setView(item.id)}>{item.label}<span>{counts[item.id]}</span></button>)}
       </div>
       <label className="logbook-search tl-search"><Search size={14} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks" aria-label={filter.project ? "Search this project's tasks" : "Search every task"} />{search && <button type="button" className="icon-button" aria-label="Clear the search" onClick={() => setSearch("")}><X size={13} /></button>}</label>
       <label className="tl-select"><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value as TaskSort)} aria-label="Sort">{SORTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>

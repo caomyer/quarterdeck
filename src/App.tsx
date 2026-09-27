@@ -415,6 +415,20 @@ export function App() {
     return taskOutput({ id, record, worker: fleet?.tasks.find((task) => task.id === id), artifacts, reviews, calls, backlog: records });
   }
 
+  /** Each row's output chip, and the rows whose output waits on the captain, for a task list. */
+  function listOutput(rows: BacklogRecord[]) {
+    const chips = new Map<string, OutputChip>();
+    const review = new Set<string>();
+    for (const record of rows) {
+      if (chips.has(record.id) || review.has(record.id)) continue;
+      const output = outputOf(record.id, records.get(record.id) ?? record);
+      const chip = outputChip(output);
+      if (chip) chips.set(record.id, chip);
+      if (waitsOnCaptain(output)) review.add(record.id);
+    }
+    return { chips, review, onOpen: openOutput };
+  }
+
   /** A row's chip, opened straight to what it names: a page to its review, a PR outside, a report in its drawer, read. */
   function openOutput(id: string, chip: OutputChip) {
     const item = chip.opens;
@@ -437,6 +451,32 @@ export function App() {
     if (record.captain_actionable) return { label: "Waiting on you", tone: "amber" };
     const standing = standingOf(record, fleet?.captain_day);
     return standing === "blocked" ? { label: "Blocked", tone: "amber" } : standing === "held" ? { label: record.hold_kind === "parked" ? "Put off" : "Held", tone: "muted" } : { label: "Queued", tone: "muted" };
+  }
+
+  /**
+   * The strip above a page a task presented: the task, which opens its drawer when the home still carries it, and the
+   * task's pages as tabs, oldest presented first so a tab keeps its place as more are presented.
+   */
+  function pageStrip(page: Artifact) {
+    const id = page.scope === "task" ? page.task : null;
+    if (!id) return null;
+    const record = records.get(id);
+    const worker = fleet?.tasks.find((task) => task.id === id);
+    const pages = artifacts.filter((item) => item.scope === "task" && item.task === id)
+      .sort((a, b) => a.revisions[0].presented_at.localeCompare(b.revisions[0].presented_at));
+    const project = record?.repo ?? (worker ? projectName(worker.project) : null);
+    return <PageTaskStrip
+      task={id}
+      title={record || worker ? withinProject(taskTitle(id), project ?? "") : id}
+      project={project}
+      standing={taskStanding(id)}
+      record={record && record.kind !== "captain" ? record : undefined}
+      pages={pages}
+      current={page}
+      needs={(item) => artifactStanding(item, artifacts, reviews[artifactKey(item)], records, calls) === "needs-you"}
+      onOpenTask={record || worker ? () => openListTask(id) : null}
+      onOpenPage={(item) => showArtifact(item)}
+    />;
   }
 
   /** What the task list and the drawers add for a task: its details, its chain, and what waits on it. */
@@ -488,7 +528,10 @@ export function App() {
     // Pin the revision being read. A revision presented while the captain is reading is announced,
     // never swapped in underneath them, which would lose their place and what they were comparing.
     setOpenArtifact({ scope: artifact.scope, task: artifact.task, name: artifact.name, rev: rev ?? artifact.latest.rev });
+    // A drawer opened over one page closes as it opens another, as it does when a page is opened from a list.
     setActiveTask(null);
+    setQueuedId(null);
+    setLogEntry(null);
     setShowEverything(false);
     setView("artifact");
     setMobileNavOpen(false);
@@ -903,6 +946,7 @@ export function App() {
             onOpen={openListTask}
             onOpenGroup={(id) => { setActiveTask(null); setQueuedId(null); setGroupId(id); }}
             onEdit={editTask}
+            output={listOutput(withWorkers(backlogRecords, underwayIn(selectedProjectData), selectedProjectData.name, taskTitle))}
           />}
           intake={<IntakeSection
             project={selectedProjectData.name}
@@ -938,6 +982,7 @@ export function App() {
               })}
               calls={callsArguedBy(calls, shownArtifact, artifacts)}
               evidenceOf={evidenceOf}
+              strip={pageStrip(shownArtifact)}
               onOpenEvidence={openEvidence}
               onAnswer={(call, answer) => host.reviewAnswer(artifactRef!, call.id, answer.option?.key, answer.option?.label, call.on_answer, answer.words).then(setReview)}
               onScene={(place, proposal) => host.reviewScene(artifactRef!, shownRevision.rev, place.file, place.label, place.path, proposal.summary, proposal.scene, proposal.png).then(setReview)}
@@ -3027,8 +3072,10 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, calls, evidenceOf, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onOpenEvidence, onScene }: {
+function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, calls, evidenceOf, strip, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onOpenEvidence, onScene }: {
   artifact: Artifact;
+  /** The strip back to the task that presented the page, above everything else; none for a page shared in chat. */
+  strip?: React.ReactNode;
   revision: ArtifactRevision;
   url: string;
   review: ReviewView | null;
@@ -3224,6 +3271,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
       : stake.hints[verdict];
 
   return <div className="artifact-review" data-screen="artifact">
+    {strip}
     <div className="artifact-toolbar">
       <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""}${seen !== null && item.rev > seen ? " · new" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
       {/* While commenting, the hint takes the note's place in the toolbar, so the page under the pointer never moves. */}

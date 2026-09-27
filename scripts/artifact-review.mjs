@@ -136,13 +136,15 @@ check(!(await drawer.innerText()).includes("harness busy"), "the drawer never sa
 check((await drawer.locator(".drawer-status").innerText()).includes("Busy in its terminal."), "the drawer says what the worker is doing in plain words");
 check(await drawer.locator("h3", { hasText: "Instructions" }).count() === 0, "the drawer does not call a status note the instructions");
 check((await drawer.locator(".drawer-section", { hasText: "Latest from the worker" }).innerText()).includes("Revising the titles plan."), "the drawer shows the worker's latest note, labelled as such");
-const sections = await drawer.locator(".drawer-section > h3").allInnerTexts();
-check(sections[0] === "What was asked" && sections[1] === "Latest from the worker", `what was asked comes before the worker's note (${sections.slice(0, 2).join(", ")})`);
+const sections = await drawer.locator(".drawer-section > h3, .drawer-section > .fold-toggle h3").allInnerTexts();
+check(sections[0] === "What it produced" && sections[1] === "What you gave it", `what the task produced leads, and what it was given follows (${sections.slice(0, 2).join(", ")})`);
+check(await drawer.locator("[data-testid='task-body']").count() === 0, "what it was given starts folded");
+await drawer.locator("[data-testid='task-gave'] .fold-toggle").click();
 check(await drawer.locator("[data-testid='task-body'] li").count() === 2, "the body keeps the filer's list");
 check(/^1 h 3\d min$/.test(await drawer.locator("[data-testid='drawer-age']").innerText()), "the drawer says how long the task has been going");
 check(await drawer.locator("h3", { hasText: /^PR$/ }).count() === 0, "a scout's drawer has no PR section");
 check(await drawer.locator(".worker-screen").count() === 0, "the worker's screen starts folded");
-await drawer.locator(".fold-toggle").click();
+await drawer.locator("[data-testid='worker-screen'] .fold-toggle").click();
 check(await drawer.locator(".worker-screen").count() === 1, "the worker's screen opens on request");
 await shot(page, "00-drawer");
 await page.keyboard.press("Escape");
@@ -287,7 +289,7 @@ check(await page.locator(".chat-view").count() === 1, "back returns to chat");
 // From the task drawer.
 await page.locator(".nav-item", { hasText: "Bearings" }).click();
 await page.locator(".task-row", { hasText: "AI titles for snips" }).click();
-const pages = page.locator(".task-drawer .drawer-pages .artifact-row");
+const pages = page.locator(".task-drawer [data-testid='task-output'] [data-output='page']");
 check(await pages.count() === 1, "the task drawer lists the task's pages");
 await shot(page, "06-drawer");
 await pages.first().click();

@@ -45,11 +45,11 @@ export function ProducedSection({ task, output, delivered, noPr, reportOpen, rea
             ? <PageLine key={`${item.artifact.name}`} item={item} onOpen={() => onOpenPage(item.artifact)} />
             : item.kind === "report"
             ? <ReportLine key="report" task={task} item={item} open={reportOpen} read={readReport} onAsk={onAskReport} />
-            : <button key="pr" type="button" className="to-row" data-output="pr" onClick={() => openOutside(item.url)} title={item.url}>
+            : <a key="pr" className="to-row" data-output="pr" href={item.url} target="_blank" rel="noreferrer noopener" onClick={(event) => { event.preventDefault(); openOutside(item.url); }} title={item.url}>
                 <span className="to-icon">{item.merged ? <GitMerge size={15} /> : <GitPullRequest size={15} />}</span>
                 <span className="to-copy"><strong>{item.number ? `PR #${item.number}` : "Its PR"}</strong><small>{item.merged ? "Merged" : item.url.replace(/^https?:\/\//, "")}</small></span>
                 <span className="to-act quiet">Open <ExternalLink size={12} /></span>
-              </button>)}
+              </a>)}
           {noPr && !output.some((item) => item.kind === "pr") && <div className="to-row static" data-output="no-pr">
             <span className="to-icon"><GitPullRequest size={15} /></span>
             <span className="to-copy"><strong>No PR yet</strong><small>It shows here when the worker opens one.</small></span>
