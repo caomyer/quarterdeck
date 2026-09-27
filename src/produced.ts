@@ -15,7 +15,7 @@
  * Pure functions only: no React, no host.
  */
 import type { Artifact, BacklogRecord, Call, FleetTask, ReviewSummary } from "./host/types";
-import { awaitsCaptain, callsArguedBy, isOpen, resolveEvidence } from "./calls";
+import { awaitsCaptain, callsArguedBy, isOpen, resolveEvidence } from "./calls.ts";
 
 export function artifactKey(artifact: Pick<Artifact, "scope" | "task" | "name">) {
   return artifact.scope === "chat" ? `chat/${artifact.name}` : `task/${artifact.task}/${artifact.name}`;
