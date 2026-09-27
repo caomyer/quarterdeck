@@ -748,17 +748,25 @@ a { color: var(--sea); }
 .approval-actions button.reject { padding: 0 10px; border-color: transparent; color: var(--brand-ink); background: transparent; }
 .approval-actions button.reject:hover:not(:disabled) { border-color: transparent; background: color-mix(in srgb, var(--brand) 16%, transparent); }
 
-.composer { display: flex; flex-direction: column; gap: 10px; margin: 0 max(36px, calc((100% - 760px) / 2)) 26px; padding: 14px 16px; border: 1px solid var(--control); border-radius: 14px; background: var(--surface); box-shadow: var(--lift); }
+.composer { position: relative; display: flex; flex-direction: column; gap: 10px; margin: 0 max(36px, calc((100% - 760px) / 2)) 26px; padding: 14px 16px; border: 1px solid var(--control); border-radius: 14px; background: var(--surface); box-shadow: var(--lift); }
 .composer:focus-within { border-color: var(--sea); }
 .composer textarea { display: block; width: 100%; height: 48px; resize: none; padding: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 14px; line-height: 1.55; }
 .composer textarea::placeholder { color: var(--fainter); }
-.composer > div { display: flex; align-items: center; gap: 8px; }
+.composer-bar { display: flex; align-items: center; gap: 8px; }
+.composer-draft { position: relative; }
+.composer-draft textarea { position: relative; }
+/* A chosen command's argument hint, drawn behind the draft in the same type until the captain types over it. */
+.composer-ghost { position: absolute; inset: 0; overflow: hidden; color: var(--fainter); font-size: 14px; line-height: 1.55; white-space: pre-wrap; pointer-events: none; }
+.composer-ghost span { color: transparent; }
 .chat-status { display: flex; flex: none; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+/* In the composer bar the state's words give way before the session's settings do; the dot and the tooltip keep it. */
+.composer-bar .chat-status { flex: 0 1 auto; overflow: hidden; }
+.composer-bar .chat-status i { flex: none; }
+.composer-bar .chat-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--status-running-chat); }
 .chat-status i.state-starting, .chat-status i.state-restarting { background: var(--amber); }
 .chat-status i.state-dead, .chat-status i.state-stopped, .chat-status i.state-refused, .chat-status i.state-locked_by_other { background: var(--status-stopped); }
-.composer-hint { flex: 1; overflow: hidden; color: var(--ghost); font-family: var(--mono); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
-.composer-hint::before { margin-right: 8px; color: var(--ghost); content: "·"; }
+.composer-grow { flex: 1; }
 .composer .icon-button { width: 34px; height: 34px; border-radius: 8px; }
 .attach-button { height: 34px; padding: 0 12px; border-radius: 8px; color: var(--muted); font-size: 12.5px; }
 .send-button { height: 34px; padding: 0 16px; border: 0; border-radius: 8px; color: var(--on-accent); background: var(--sea); font-size: 12.5px; font-weight: 600; }
@@ -1256,8 +1264,7 @@ a { color: var(--sea); }
   .needs-list .task-row { grid-template-columns: 18px minmax(0, 1fr); }
   .chat-messages { padding: 20px 14px; }
   .composer { margin: 0 14px 14px; }
-  .composer-hint { display: none; }
-  .composer > div { justify-content: flex-end; }
+  .composer-bar { flex-wrap: wrap; justify-content: flex-end; }
   .chat-status { margin-right: auto; }
   .approval-stack { padding: 0 14px 12px; }
   .approval-card, .step-group, .artifact-card, .call-chat-card { margin-left: 0; }
@@ -1401,6 +1408,74 @@ a.source-chip:hover { border-color: var(--control-hover); }
   .intake-row .intake-head { grid-template-columns: 18px minmax(0, 1fr); }
   .intake-actions { grid-column: 2; flex-wrap: wrap; }
   .intake-row .intake-panel, .intake-row > .start-problem { margin-left: 8px; }
+}
+
+/* The first mate's session in the composer: the slash palette, Model and Effort, and Calm. */
+.slash-palette { position: absolute; right: 0; bottom: calc(100% + 6px); left: 0; z-index: 20; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.palette-head { display: flex; justify-content: space-between; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--rule); color: var(--muted); font-size: 12px; }
+.palette-keys { flex: none; color: var(--faint); }
+.slash-palette ul { max-height: 264px; margin: 0; padding: 4px; overflow: auto; list-style: none; }
+.slash-command { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 10px; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+.slash-command.active { background: color-mix(in srgb, var(--sea) 12%, var(--surface)); }
+.slash-name { color: var(--ink); font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.slash-hint { overflow: hidden; color: var(--faint); font-family: var(--mono); font-size: 11.5px; line-height: 19px; text-overflow: ellipsis; white-space: nowrap; }
+.slash-desc { grid-column: 1 / -1; overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.slash-desc em { color: var(--sea); font-style: normal; }
+.palette-empty { padding: 14px 16px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.palette-empty b { display: block; margin-bottom: 2px; color: var(--ink-2); font-weight: 600; }
+
+.session-pill-wrap { position: relative; display: inline-flex; flex: none; }
+.session-pill { display: inline-flex; flex: none; align-items: center; gap: 6px; min-width: 0; height: 28px; padding: 0 10px; border: 1px solid var(--control); border-radius: 999px; color: var(--ink-2); background: var(--surface-2); font-size: 12.5px; white-space: nowrap; }
+button.session-pill:hover:not(:disabled) { border-color: var(--control-hover); }
+.session-pill .k { color: var(--muted); }
+.session-pill .v { overflow: hidden; text-overflow: ellipsis; }
+.session-pill .chev { flex: none; color: var(--faint); }
+.session-pill.open { border-color: var(--sea); }
+.session-pill.bad { border-color: var(--coral); }
+.session-pill.off, .session-pill.dis { border-style: dashed; color: var(--faint); background: transparent; }
+.session-pill.off .k { color: var(--faint); }
+.session-pill:disabled { opacity: 1; }
+.session-pill:disabled:not(.busy):not(.calm-pill) { color: var(--faint); }
+.session-pill.busy { color: var(--muted); }
+.session-spin { flex: none; width: 10px; height: 10px; border: 1.5px solid var(--control); border-top-color: var(--sea); border-radius: 50%; animation: step-spin .8s linear infinite; }
+.session-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 25; width: 340px; max-width: calc(100vw - 48px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.session-menu-head, .session-menu-foot { padding: 8px 14px; color: var(--muted); font-size: 12px; }
+.session-menu-head { border-bottom: 1px solid var(--rule); }
+.session-menu-foot { border-top: 1px solid var(--rule); color: var(--faint); font-size: 11.5px; }
+.session-menu ul { margin: 0; padding: 4px; list-style: none; }
+.session-menu button { position: relative; display: block; width: 100%; padding: 7px 32px 7px 10px; border: 0; border-radius: 8px; color: var(--ink); background: transparent; text-align: left; }
+.session-menu button:hover:not(:disabled), .session-menu button:focus-visible { outline: 0; background: var(--hover); }
+.session-menu button[aria-checked="true"] { background: color-mix(in srgb, var(--sea) 12%, var(--surface)); }
+.session-menu button small { display: block; color: var(--muted); font-size: 12px; }
+.session-menu button:disabled small { color: var(--coral); }
+.session-tick { position: absolute; top: 9px; right: 10px; color: var(--sea); }
+
+.calm-pill { gap: 8px; padding-right: 5px; }
+.calm-switch { position: relative; width: 26px; height: 15px; border-radius: 999px; background: var(--control); transition: background .15s; }
+.calm-switch i { position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--surface); transition: left .15s; }
+.calm-switch.on { background: var(--sea); }
+.calm-switch.on i { left: 13px; }
+.calm-pill.dis .calm-switch { opacity: .45; }
+
+.session-notices { display: flex; flex-direction: column; gap: 6px; margin-top: -2px; }
+.session-notice { margin: 0; padding: 8px 10px; border: 1px solid var(--coral-edge); border-radius: 8px; color: var(--ink-2); background: var(--coral-wash); font-size: 12.5px; line-height: 1.45; }
+.session-notice b { color: var(--coral); font-weight: 600; }
+.session-notice[role="status"] b { color: var(--ink-2); }
+.session-notice .link-button { font-size: 12.5px; }
+.session-note { margin: 0; color: var(--faint); font-size: 11.5px; }
+
+/* Calm's working row: the app's own boat on its own water, at Calm's slow pace. */
+.working-row { display: flex; align-items: center; gap: 12px; padding: 2px 0 2px 38px; color: var(--muted); font-size: 12.5px; }
+.working-sea { position: relative; flex: 1; min-width: 120px; max-width: 300px; height: 26px; }
+.working-water { position: absolute; right: 0; bottom: 2px; left: 0; height: 8px; background: var(--blue); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='8'%3E%3Cpath d='M0 5 Q10 1 20 5 T40 5' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E") repeat-x 0 0 / 40px 8px; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='8'%3E%3Cpath d='M0 5 Q10 1 20 5 T40 5' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E") repeat-x 0 0 / 40px 8px; animation: calm-swell 3.2s linear infinite; }
+.working-boat { position: absolute; bottom: 4px; left: 0; animation: calm-drift 16s ease-in-out infinite alternate; }
+.working-boat path { fill: var(--brand); }
+.working-row time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+@keyframes calm-swell { to { -webkit-mask-position: 40px 0; mask-position: 40px 0; } }
+@keyframes calm-drift { to { left: calc(100% - 22px); } }
+@media (prefers-reduced-motion: reduce) {
+  .working-water, .working-boat, .session-spin { animation: none; }
+  .working-boat { left: 40%; }
 }
 
 /*

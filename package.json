@@ -21,8 +21,9 @@
     "starts": "node scripts/start-work.mjs",
     "replies": "node scripts/call-replies.mjs",
     "calls": "node scripts/chat-calls.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/callviews.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs scripts/sources.test.mjs scripts/tasks.test.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/callviews.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs scripts/sources.test.mjs scripts/tasks.test.mjs scripts/sessionctl.test.mjs scripts/calm.test.mjs",
     "sources": "node scripts/task-sources.mjs",
+    "session": "node scripts/session-controls.mjs",
     "tasks": "node scripts/task-list.mjs"
   },
   "dependencies": {

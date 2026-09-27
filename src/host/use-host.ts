@@ -12,8 +12,10 @@ import type {
   HostRuntimeState,
   OutboxStatus,
   PermissionRequest,
+  PickedCategory,
   RateLimit,
   ReasonKind,
+  SessionControls,
   SnapshotError,
   SnapshotEvent,
   SnapshotProject,
@@ -35,6 +37,8 @@ export type ChatMessage = {
   before?: string;
   /** The session this belongs to, so a resumed session's history replaces only its own conversation. */
   session?: string | null;
+  /** For live mate words and steps: the turn they arrived in. */
+  turn?: number;
 };
 
 export type OutboxView = {
@@ -170,12 +174,18 @@ export function useHost(adapter: HostAdapter) {
   const [context, setContext] = useState<ContextReading | null>(null);
   const [rateLimit, setRateLimit] = useState<RateLimit | null>(null);
   const [compaction, setCompaction] = useState<Compaction | null>(null);
+  /** What the session offers and advertises, as the host last heard it from the adapter. */
+  const [controls, setControls] = useState<SessionControls | null>(null);
+  /** When the turn running now started, for the working row; null between turns. */
+  const [turnSince, setTurnSince] = useState<number | null>(null);
   const streamId = useRef<string | null>(null);
   const homeRef = useRef<string | null>(null);
   const hostHomeRef = useRef<string | null>(null);
   const resolvedApprovals = useRef(new Set<string>());
   const runtimeState = useRef<HostRuntimeState>("stopped");
   const session = useRef<string | null>(null);
+  /** Advances each time a turn starts, so a live message knows which turn it belongs to. */
+  const turn = useRef(0);
   /** The messages on screen when the current session opened: the ones its history may replace. */
   const onScreenAtSession = useRef(new Set<string>());
   /** Outbox states as they arrive, for merging history, which can't wait for a render. */
@@ -217,11 +227,13 @@ export function useHost(adapter: HostAdapter) {
     // Text after a new step belongs to a new message, so the chat reads in the order things happened.
     // Updates to earlier steps can land mid-reply and must not split it.
     if (isNew) streamId.current = null;
+    const at = session.current;
+    const arrivedIn = turn.current;
     setMessages((current) => {
       const index = current.findIndex((message) => message.who === "step" && message.id === step.id);
       if (index < 0) {
         if (!isNew) return current;
-        return [...current, { id: step.id, who: "step", text: step.title ?? "", kind: step.kind, status: step.status, createdAt: new Date().toISOString(), session: session.current }];
+        return [...current, { id: step.id, who: "step", text: step.title ?? "", kind: step.kind, status: step.status, createdAt: new Date().toISOString(), session: at, turn: arrivedIn }];
       }
       return current.map((message, position) => position === index ? {
         ...message,
@@ -249,6 +261,16 @@ export function useHost(adapter: HostAdapter) {
       // The adapter that asked is gone, so nothing is waiting on these answers anymore.
       if (state === "stopped" || state === "dead" || state === "restarting" || state === "starting") setPermissionRequests([]);
       if (state === "idle" || state === "dead") streamId.current = null;
+      const inTurn = (value: HostRuntimeState) => value === "prompt_turn" || value === "agent_turn";
+      if (inTurn(state) && !inTurn(previous)) {
+        turn.current += 1;
+        setTurnSince(Date.now());
+      } else if (!inTurn(state)) setTurnSince(null);
+      return;
+    }
+
+    if (event.type === "session_controls") {
+      setControls(event.payload);
       return;
     }
 
@@ -360,10 +382,11 @@ export function useHost(adapter: HostAdapter) {
       const activeId = streamId.current ?? `mate-${crypto.randomUUID()}`;
       streamId.current = activeId;
       const at = session.current;
+      const arrivedIn = turn.current;
       setMessages((current) => {
         const activeIndex = current.findIndex((message) => message.id === activeId);
         if (activeIndex < 0) {
-          return [...current, { id: activeId, who: "mate", text: event.payload.chunk, createdAt: new Date().toISOString(), session: at }];
+          return [...current, { id: activeId, who: "mate", text: event.payload.chunk, createdAt: new Date().toISOString(), session: at, turn: arrivedIn }];
         }
         return current.map((message, index) => index === activeIndex ? { ...message, text: message.text + event.payload.chunk } : message);
       });
@@ -430,6 +453,8 @@ export function useHost(adapter: HostAdapter) {
           return mergeHistory(ours, earlier.items, earlier.sessionId, onScreenAtSession.current, outboxStatuses.current);
         });
       }
+      if (initial.controls) setControls((current) => current ?? initial.controls!);
+      if (initial.state.state === "prompt_turn" || initial.state.state === "agent_turn") setTurnSince((current) => current ?? Date.now());
       if (initial.usage?.context) setContext((current) => current ?? initial.usage!.context);
       if (initial.usage?.rateLimit) setRateLimit((current) => current ?? initial.usage!.rateLimit);
       const waiting = (initial.permissionRequests ?? []).filter((request) => !resolvedApprovals.current.has(request.id));
@@ -553,6 +578,7 @@ export function useHost(adapter: HostAdapter) {
     setOutbox({});
     setContext(null);
     setCompaction(null);
+    setControls(null);
     outboxStatuses.current.clear();
     streamId.current = null;
     return status.home;
@@ -618,6 +644,16 @@ export function useHost(adapter: HostAdapter) {
     }
   }, [adapter, adoptHome]);
 
+  /**
+   * Changes the session's model or effort. The pill shows the new value only once the adapter confirms it: the answer
+   * carries the session's controls, and a refusal rejects with the adapter's reason for the pill to show.
+   */
+  const setOption = useCallback(async (category: PickedCategory, value: string) => {
+    const confirmed = await adapter.setSessionOption(category, value);
+    setControls(confirmed);
+    return confirmed;
+  }, [adapter]);
+
   const answerPermission = useCallback(async (id: string, optionId: string) => {
     const patch = (change: Partial<PermissionView>) => setPermissionRequests((current) => current.map((request) => request.id === id ? { ...request, ...change } : request));
     patch({ answering: true, error: undefined });
@@ -655,6 +691,9 @@ export function useHost(adapter: HostAdapter) {
     rateLimit,
     compaction,
     compactNow,
+    controls,
+    setOption,
+    turnSince,
     dismissCompaction,
     send,
     noteSent,
