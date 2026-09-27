@@ -146,6 +146,9 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Never publish a release to try something.
   A release build you launch must run with `QUARTERDECK_UPDATES=off`, or quitting it installs the latest release over it.
   Check the sidebar's update notice, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm updates`.
+- To play the captain in the real app against a real, scratch first mate: `scripts/devtest.sh up`, then `node scripts/drive.mjs text|click|type|shot|eval ...`, and always `scripts/devtest.sh down` before you finish, which kills everything it started and removes the scratch folder.
+  It runs the first mate on a bundled-style copy of `engine/`, with its own home, settings, tmux server and a seeded project, under `env -i`, so nothing reaches the captain's home; its header says what it still shares with the machine.
+  The drive is `src-tauri/src/devdrive.rs`, a debug-only remote control that evals in the window and saves WebKit's own snapshot, since the WKWebView takes no browser automation and a terminal usually cannot capture the screen.
 - App: `PATH="$HOME/.cargo/bin:$PATH" pnpm tauri dev`.
   The app remembers its home in its app data folder, which on James's Mac names his live home, so never launch it plainly.
   Set `QUARTERDECK_SETTINGS_DIR` to a folder under your scratch home holding `settings.json` with `{"home": "<scratch home>"}`, and the app uses that instead.
