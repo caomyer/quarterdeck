@@ -4,6 +4,7 @@
 # drive as the captain would (scripts/drive.mjs).
 #
 # Usage: scripts/devtest.sh up [name]      build and launch; waits until it can be driven
+#        scripts/devtest.sh restart [name] relaunch the app on the same home; crewmates keep running
 #        scripts/devtest.sh down [name]    stop everything it started and remove its folder
 #        scripts/devtest.sh status [name]  what runs, and where
 #        scripts/devtest.sh env [name]     the variables drive.mjs reads, to eval in a shell
@@ -152,10 +153,26 @@ cmd_up() {
   echo quarterdeck > "$ROOT/home/config/presentation"
   seed_project
   [ -d "$ROOT/home/projects/$PROJECT" ] || git clone -q "$ROOT/origin/$PROJECT.git" "$ROOT/home/projects/$PROJECT"
+  launch_app
+}
+
+launch_app() {
   local port
   port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   local config
-  config=$(printf '{"build":{"devUrl":"http://127.0.0.1:%s","beforeDevCommand":"pnpm dev --port %s --strictPort"}}' "$port" "$port")
+  # The window as tauri.conf.json makes it, at one fixed size on the main display
+  # (a window left on a display that sleeps or goes has nothing to snapshot), and never
+  # suspended by WebKit while it is hidden, which is where a driven window sits.
+  # shellcheck disable=SC2016 # the script is JavaScript; its ${} are its own.
+  config=$(node -e '
+    const conf = require(process.argv[1]);
+    const port = process.argv[2];
+    const window = { ...conf.app.windows[0], width: 1440, height: 900, x: 0, y: 0, maximized: false, center: false, backgroundThrottling: "disabled" };
+    console.log(JSON.stringify({
+      build: { devUrl: `http://127.0.0.1:${port}`, beforeDevCommand: `pnpm dev --port ${port} --strictPort` },
+      app: { windows: [window] },
+    }));
+  ' "$REPO/src-tauri/tauri.conf.json" "$port")
   echo "$port" > "$ROOT/run/port"
   rm -f "$ROOT/drive/in/"* "$ROOT/drive/out/"* 2>/dev/null || true
   (
@@ -164,7 +181,7 @@ cmd_up() {
     # can end Vite, Cargo and the app together by the group. launch_env execs,
     # so the background job's pid is the leader's.
     launch_env python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-      pnpm tauri dev --config "$config" > "$ROOT/logs/app.log" 2>&1 &
+      pnpm tauri dev --no-watch --config "$config" >> "$ROOT/logs/app.log" 2>&1 &
     echo $! > "$ROOT/run/pgid"
   )
   echo "devtest: $NAME launching (group $(cat "$ROOT/run/pgid"), port $port); log $ROOT/logs/app.log"
@@ -186,10 +203,9 @@ cmd_up() {
   echo "devtest: drive it with: node scripts/drive.mjs --dir $ROOT/drive <eval|shot|text|click|type> ..."
 }
 
-cmd_down() {
-  refuse_live
-  [ -d "$ROOT" ] || { echo "devtest: $NAME is not here ($ROOT)"; return 0; }
-  local pgid killed=''
+# Stops the app, then the process group it was started in; says what it stopped in $killed.
+stop_app() {
+  local pgid
   pgid=$(cat "$ROOT/run/pgid" 2>/dev/null || true)
   # The app first, alone: its exit stops the first mate's process group cleanly.
   local app
@@ -205,6 +221,25 @@ cmd_down() {
     kill -TERM -"$pgid" 2>/dev/null || true
     wait_gone "group_pids $pgid" 25 || kill -KILL -"$pgid" 2>/dev/null || true
   fi
+}
+
+# Relaunches the app on the same scratch home, as an update or a quit and reopen
+# would: crewmates on the scratch tmux server keep running, the first mate is
+# started again by the app, and a changed app or drive is built first.
+cmd_restart() {
+  refuse_live
+  [ -d "$ROOT/home" ] || { echo "devtest: $NAME is not up; scripts/devtest.sh up $NAME" >&2; exit 1; }
+  killed=''
+  stop_app
+  echo "devtest: stopped:${killed:- nothing was running}"
+  launch_app
+}
+
+cmd_down() {
+  refuse_live
+  [ -d "$ROOT" ] || { echo "devtest: $NAME is not here ($ROOT)"; return 0; }
+  killed=''
+  stop_app
   if [ -d "$ROOT/tmux" ] && scratch_tmux list-sessions > /dev/null 2>&1; then
     killed="$killed tmux:$(scratch_tmux list-windows -a -F '#S:#W' | tr '\n' ',' | sed 's/,$//')"
     scratch_tmux kill-server 2>/dev/null || true
@@ -212,6 +247,9 @@ cmd_down() {
   local left
   left=$(stragglers)
   if [ -n "$left" ]; then
+    # Named, not only numbered: something the app's exit did not stop is a finding.
+    echo "devtest: still running in $ROOT after the app and its tmux server stopped:" >&2
+    echo "$left" | xargs ps -o pid=,ppid=,pgid=,command= -p 2>/dev/null | cut -c1-240 >&2 || true
     killed="$killed stragglers:$(echo "$left" | tr '\n' ',' | sed 's/,$//')"
     echo "$left" | xargs kill -TERM 2>/dev/null || true
     wait_gone stragglers 25 || stragglers | xargs kill -KILL 2>/dev/null || true
@@ -260,8 +298,9 @@ cmd_env() {
 
 case "${1:-}" in
 up) cmd_up ;;
+restart) cmd_restart ;;
 down) cmd_down ;;
 status) cmd_status ;;
 env) cmd_env ;;
-*) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+*) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -6,7 +6,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { outputChip, pageSays, prNumber, taskOutput, waitsOnCaptain } from "../src/produced.ts";
+import { artifactStanding, outputChip, pageSays, prNumber, taskOutput, waitsOnCaptain } from "../src/produced.ts";
 
 const at = (minutesAgo) => new Date(Date.parse("2026-09-27T08:00:00Z") - minutesAgo * 60_000).toISOString();
 
@@ -78,6 +78,18 @@ test("a page says what is new since the captain looked, and what it asks of him"
   assert.deepEqual(says(seen(3, { open_threads: [{ id: "t1", rev: 2 }, { id: "t2", rev: 3 }], open_count: 2 })), ["1 of your comments answered", "1 comment with the author"]);
   assert.deepEqual(says(seen(3, { draft_count: 2 })), ["2 comments not sent"]);
   assert.deepEqual(says(seen(3), [call("c1", ["page:task/t/plan"]), call("c2", ["page:task/t/plan"], { state: "closed" })]), ["argues 1 call"]);
+});
+
+test("a new question under an answered call's name waits on the captain, not on the old answer", () => {
+  // The merge was answered in the page's review at 07:40; the first mate then asks, under the same call, whether to
+  // discard the worktree. The page's recorded answer is the merge's, so the page is the captain's move again.
+  const plan = page("t", "plan", 30);
+  const answered = seen(1, { answered: ["merge"], answered_at: { merge: Date.parse(at(20)) } });
+  const standing = (raisedMinutesAgo, review = answered) => artifactStanding(plan, [plan], review, new Map([["t", row("t")]]), [call("merge", ["page:task/t/plan"], { raised_at: at(raisedMinutesAgo) })]);
+  assert.equal(standing(25), "discussion");
+  assert.equal(standing(10), "needs-you");
+  // A review recorded before answers carried a time keeps the old reading.
+  assert.equal(standing(10, seen(1, { answered: ["merge"] })), "discussion");
 });
 
 test("a page whose task landed is settled, and says so", () => {

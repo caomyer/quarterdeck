@@ -1195,6 +1195,18 @@ pub fn summary(data: &Path) -> Value {
             .as_array()
             .map(|answers| answers.iter().filter(|answer| is_recorded(answer)).filter_map(|answer| answer["decision"].as_str()).collect())
             .unwrap_or_default();
+        // When each was given: a call asked again under the same name is a new question, which an
+        // answer given before it was raised does not answer.
+        let answered_at: serde_json::Map<String, Value> = current["answers"]
+            .as_array()
+            .map(|answers| {
+                answers
+                    .iter()
+                    .filter(|answer| is_recorded(answer))
+                    .filter_map(|answer| Some((answer["decision"].as_str()?.to_string(), answer["at"].clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
         // Each comment still open, with the revision it was written on: a later revision the author
         // presented may answer it, and then the next move is the captain's, not the author's.
         let open_threads: Vec<Value> = current["threads"]
@@ -1259,6 +1271,7 @@ pub fn summary(data: &Path) -> Value {
                 "draft_count": current["draft_count"],
                 "open_count": current["open_count"],
                 "answered": answered,
+                "answered_at": answered_at,
                 "open_threads": open_threads,
                 "sent": sent,
                 "threads": threads,
@@ -1834,6 +1847,9 @@ mod tests {
         let current = view(&log);
         assert_eq!(current["staged_answers"], 0);
         assert_eq!(summary(&home.join("data"))["chat/board"]["answered"], json!(["res-model-download"]));
+        // With when it was given, so a later ask under the same name is not taken as answered.
+        assert_eq!(summary(&home.join("data"))["chat/board"]["answered_at"]["res-model-download"], answer("res-model-download")["at"]);
+        assert!(answer("res-model-download")["at"].is_u64());
 
         // A recorded answer is on the record; a skipped one can be chosen again, and goes to the intake again.
         assert!(stage_answer(&log, "res-model-download", Some("prompt"), Some("Ask"), Some("done"), &Words::default()).is_err());

@@ -52,7 +52,7 @@ import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, answersThisAsk, answerOfMessage, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import { answerCardView, callCardView, callLine, type EarlierWords } from "./callviews";
 import { AnswerCard, CallLineCard, CallOpenCard, EvidenceLine } from "./CallCards";
@@ -714,7 +714,10 @@ export function App() {
     const pages = evidence.flatMap((item) => pageOf(item) ?? []);
     const argued = argument ? pageOf(argument) : null;
     // A review that already recorded an answer for it; the call leaves once the snapshot catches up.
-    const answeredIn = pages.find((artifact) => (reviews[artifactKey(artifact)]?.answered ?? []).includes(call.id));
+    const answeredIn = pages.find((artifact) => {
+      const review = reviews[artifactKey(artifact)];
+      return (review?.answered ?? []).includes(call.id) && answersThisAsk(call, review?.answered_at?.[call.id]);
+    });
     const seen = argued ? (reviews[artifactKey(argued)]?.seen_rev ?? null) !== null : null;
     const standing = callStanding(call, { answered: answered[call.id], answeredIn: answeredIn?.title });
     const onOpenPage = answeredIn ? () => showArtifact(answeredIn) : argued ? () => showArtifact(argued) : undefined;

@@ -370,6 +370,8 @@ export type ReviewSummary = Record<string, {
   open_count: number;
   /** Calls whose answer the intake recorded: on the record for good. */
   answered: string[];
+  /** When each of those answers was given, in epoch ms: one given before its call was last raised answers an earlier question. */
+  answered_at?: Record<string, number>;
   /** Each sent comment the captain has not settled, with the revision it was written on, so a later revision can answer it. */
   open_threads?: { id: string; rev: number }[];
   /** Each review sent, and every comment sent, so the chat can draw a review as a card rather than its text. */

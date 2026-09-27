@@ -15,7 +15,7 @@
  * Pure functions only: no React, no host.
  */
 import type { Artifact, BacklogRecord, Call, FleetTask, ReviewSummary } from "./host/types";
-import { awaitsCaptain, callsArguedBy, isOpen, resolveEvidence } from "./calls.ts";
+import { answersThisAsk, awaitsCaptain, callsArguedBy, isOpen, resolveEvidence } from "./calls.ts";
 
 export function artifactKey(artifact: Pick<Artifact, "scope" | "task" | "name">) {
   return artifact.scope === "chat" ? `chat/${artifact.name}` : `task/${artifact.task}/${artifact.name}`;
@@ -90,7 +90,8 @@ export function artifactStanding(artifact: Artifact, artifacts: Artifact[], revi
   if (seen === null || artifact.latest.rev > seen) return "needs-you";
   const answered = review?.answered ?? [];
   // A call the captain has replied to waits on the first mate, like one his review recorded an answer for.
-  if (waiting.some((call) => awaitsCaptain(call) && !answered.includes(call.id))) return "needs-you";
+  const answeredHere = (call: Call) => answered.includes(call.id) && answersThisAsk(call, review?.answered_at?.[call.id]);
+  if (waiting.some((call) => awaitsCaptain(call) && !answeredHere(call))) return "needs-you";
   // The author answered a comment: settling it or replying is the captain's move.
   if (comments.answered.length > 0) return "needs-you";
   if (waiting.length > 0) return "discussion";
