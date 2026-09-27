@@ -54,6 +54,8 @@ test("an older home is ordered by the same rule: ready, then blocked, then put o
     row("put-off", { priority: "0", hold_reason: "later", hold_kind: "parked", hold_until: "2026-10-09" }),
   ];
   assert.deepEqual(ids(taskRows(input(records))), ["urgent", "old-normal", "new-normal", "low", "urgent-blocked", "put-off"]);
+  const ranks = startRanks(records, "2026-09-26");
+  assert.deepEqual(["urgent", "old-normal", "new-normal", "low", "urgent-blocked", "put-off"].map((id) => ranks.get(id)), [1, 2, 3, 4, 5, 6], "each queued row's rank follows the same rule");
 });
 
 test("underway work leads, and the list keeps to its filter, its search and what is its to show", () => {

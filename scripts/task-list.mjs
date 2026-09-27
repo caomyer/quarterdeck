@@ -128,6 +128,7 @@ const BLOCKED = ["res-share-preview", "res-transcript-search", "res-foreman-hook
 
   await list(page).getByLabel("Search this project's tasks").fill("offline");
   check(JSON.stringify(await ids(page)) === JSON.stringify(["res-offline-queue"]), "search narrows the list");
+  check((await list(page).locator(".tl-summary").innerText()) === "1 underway · 10 queued · 3 put off", "while the heading still counts the project's work");
   await list(page).getByLabel("Search this project's tasks").fill("nothing like this");
   check((await list(page).innerText()).includes("No task here matches."), "a search with no match says so");
   await list(page).getByLabel("Search this project's tasks").fill("");

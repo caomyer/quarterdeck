@@ -383,7 +383,8 @@ export function App() {
   function openListTask(id: string) {
     const worker = fleet?.tasks.find((task) => task.id === id);
     setGroupId(null);
-    if (worker && records.get(id)?.state === "in_flight" && !readyIds.has(id)) {
+    // A worker the backlog carries no row for is shown by its live drawer alone.
+    if (worker && (records.get(id)?.state ?? "in_flight") === "in_flight" && !readyIds.has(id)) {
       setQueuedId(null);
       setActiveTask(worker);
     } else {
@@ -839,7 +840,7 @@ export function App() {
           onOpenEntry={setLogEntry}
           work={<TaskList
             key={selectedProjectData.name}
-            records={backlogRecords}
+            records={withWorkers(backlogRecords, underwayIn(selectedProjectData), selectedProjectData.name, taskTitle)}
             filter={{ project: selectedProjectData.name }}
             captainDay={fleet?.captain_day}
             now={now}
@@ -1714,6 +1715,18 @@ function withEdits(rows: BacklogRecord[], edited: Record<string, BacklogRecord>)
     return edit;
   });
   return [...merged, ...Object.values(edited).filter((row) => !placed.has(row.id) && !rows.some((item) => item.id === row.id))];
+}
+
+/**
+ * The rows, with a row for each worker underway that the backlog does not carry, such as work started before this
+ * home kept its tasks there, so the list still shows everything underway.
+ */
+function withWorkers(rows: BacklogRecord[], workers: FleetTask[], project: string, title: (id: string) => string) {
+  const known = new Set(rows.map((row) => row.id));
+  const missing = workers.filter((worker) => !known.has(worker.id)).map((worker): BacklogRecord => ({
+    id: worker.id, title: title(worker.id), hold_reason: null, current_role: "worker", state: "in_flight", kind: worker.kind, repo: project,
+  }));
+  return missing.length ? [...rows, ...missing] : rows;
 }
 
 /** Whether the snapshot's row is the row an edit returned: its line and its body as written. */

@@ -101,7 +101,7 @@ test_a_blocker_that_lands_and_is_archived_stays_resolved() {
   axi "$home" add t-old 'landed long ago' --repo demo --kind ship
   axi "$home" add t-after 'waits on it' --repo demo --kind ship
   axi "$home" block t-after --by t-old
-  axi "$home" done t-old
+  axi "$home" "done" t-old
   # tasks-axi keeps a few recent Done rows; the rest move to the archive.
   { printf '## Archived 2026-09-20\n'; grep -- '- \[x\] t-old ' "$home/data/backlog.md"; } > "$home/data/done-archive.md"
   awk '!/^- \[x\] t-old /' "$home/data/backlog.md" > "$home/data/backlog.tmp" && mv "$home/data/backlog.tmp" "$home/data/backlog.md"
@@ -129,7 +129,7 @@ test_dependencies_refuse_a_loop_however_long() {
   edit "$home" block t-c --by t-b | jq -e '.changed == false' >/dev/null || fail 'repeating an edge was not a no-op'
   edit "$home" unblock t-d --by t-c | jq -e '.changed and .record.blocked_by_ids == []' >/dev/null || fail 'unblock was not taken'
   edit "$home" block t-a --by t-d | jq -e '.changed' >/dev/null || fail 'once the loop is gone the edge is taken'
-  axi "$home" done t-d
+  axi "$home" "done" t-d
   assert_equals 'invalid' "$(refused "$home" block t-b --by t-d | cut -d'|' -f1)" 'waiting on landed work is refused'
   pass 'a dependency that would close a loop is refused, however long the loop'
 }
@@ -150,7 +150,7 @@ test_work_in_flight_keeps_what_its_worker_was_briefed_for() {
   edit "$home" title t-run 'running work, renamed' | jq -e '.record.title == "running work, renamed"' >/dev/null \
     || fail 'a title change in flight was refused'
   axi "$home" add t-closed 'finished' --repo demo --kind ship
-  axi "$home" done t-closed
+  axi "$home" "done" t-closed
   assert_equals 'closed' "$(refused "$home" priority t-closed 1 | cut -d'|' -f1)" 'a closed row is not edited'
   axi "$home" add t-call 'a call' --repo demo --kind captain
   assert_equals 'call' "$(refused "$home" priority t-call 1 | cut -d'|' -f1)" 'a call is answered, not edited'
@@ -217,7 +217,7 @@ source-link: fixture:w 42 fulfills'
   assert_equals 'open-members' "$(refused "$home" group-close "$group" | cut -d'|' -f1)" 'a group with open tasks stays open'
   edit "$home" group t-m1 none | jq -e '.record.part_of == null and (.record.body_lines | length) == 2' >/dev/null \
     || fail 'leaving a group did not drop only its line'
-  axi "$home" done t-m2
+  axi "$home" "done" t-m2
   edit "$home" group-close "$group" | jq -e '.record.state == "done"' >/dev/null || fail 'a group whose tasks have all closed did not close'
   pass 'a group is a program row, its tasks carry one part-of line, and it closes once they have'
 }

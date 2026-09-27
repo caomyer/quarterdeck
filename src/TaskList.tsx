@@ -136,6 +136,8 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
   const input = { records, filter, search, underway: underwayIds, hidden, captainDay };
   const rows = useMemo(() => taskRows({ ...input, view, sort }), [records, filter, search, underwayIds, hidden, captainDay, view, sort]);
   const counts = useMemo(() => viewCounts(input), [records, filter, search, underwayIds, hidden, captainDay]);
+  // The heading counts the work the list is mounted on, whatever the search box holds.
+  const totals = useMemo(() => viewCounts({ ...input, search: "" }), [records, filter, underwayIds, hidden, captainDay]);
   const graph = useMemo(() => taskGraph(records), [records]);
   const byId = graph.byId;
   const sections = useMemo(() => grouping === "group"
@@ -240,9 +242,11 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
     return next;
   });
 
-  const queued = counts.open - [...underwayIds].filter((id) => shown.some((row) => row.id === id)).length;
-  const heldCount = counts.held;
-  const summary = [`${rows.filter((row) => row.standing === "underway").length} underway`, `${Math.max(0, queued - heldCount)} queued`, heldCount ? `${heldCount} put off` : null].filter(Boolean).join(" · ");
+  const summary = [
+    `${totals.open - totals.ready - totals.blocked - totals.held} underway`,
+    `${totals.ready + totals.blocked} queued`,
+    totals.held ? `${totals.held} put off` : null,
+  ].filter(Boolean).join(" · ");
   const sortInfo = SORTS.find((item) => item.id === sort)!;
 
   const renderRow = (row: ListRow) => {
@@ -313,7 +317,7 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
       <div className="tl-views" role="tablist" aria-label="Which tasks">
         {VIEWS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={view === item.id} className={view === item.id ? "on" : ""} onClick={() => setView(item.id)}>{item.label}<span>{counts[item.id]}</span></button>)}
       </div>
-      <label className="logbook-search tl-search"><Search size={14} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={filter.project ? "Search this project's tasks" : "Search every task"} aria-label={filter.project ? "Search this project's tasks" : "Search every task"} />{search && <button type="button" className="icon-button" aria-label="Clear the search" onClick={() => setSearch("")}><X size={13} /></button>}</label>
+      <label className="logbook-search tl-search"><Search size={14} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks" aria-label={filter.project ? "Search this project's tasks" : "Search every task"} />{search && <button type="button" className="icon-button" aria-label="Clear the search" onClick={() => setSearch("")}><X size={13} /></button>}</label>
       <label className="tl-select"><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value as TaskSort)} aria-label="Sort">{SORTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
       <label className="tl-select"><span>Group</span><select value={grouping} onChange={(event) => setGrouping(event.target.value as TaskGrouping)} aria-label="Group by"><option value="none">None</option><option value="group">Group</option></select></label>
       {mountedFilter.project && (filter.project

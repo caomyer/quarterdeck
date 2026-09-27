@@ -113,8 +113,13 @@ async function wears(locator, icon) {
 
   await page.locator(".primary-nav .nav-item", { hasText: "Projects" }).click();
   await page.locator(".project-card", { hasText: "resonance" }).click();
-  const failed = page.locator(".project-page .task-row", { hasText: "task-failed" });
-  check(await colourOf(failed.locator(".task-state")) === await tokenColour(page, "--coral"), "a failed task on its project page is painted --coral");
+  const failed = page.locator("[data-testid='task-list'] .tl-row", { hasText: "task-failed" });
+  check(await colourOf(failed.locator(".tl-chip")) === await tokenColour(page, "--coral"), "a failed task on its project page is painted --coral");
+  check(await wears(failed.locator(".tl-chip"), "lucide-circle-x"), "and wears its own icon");
+  // These workers have no backlog row, as work started before a home kept its tasks there: each still opens.
+  await failed.locator(".tl-copy").click();
+  await page.locator(".drawer-status").waitFor();
+  check(await colourOf(page.locator(".drawer-status strong")) === await tokenColour(page, "--coral"), "a worker with no backlog row opens its own drawer, painted --coral");
   await page.close();
 }
 
