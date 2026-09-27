@@ -255,6 +255,17 @@ export type CallStanding =
   | { kind: "held" }
   | { kind: "closed" };
 
+/**
+ * Whether an answer a page's review recorded answers the call as it is asked now. The first mate may raise a new
+ * question under a call's name once the old one is answered, as when a task's merge is answered and its cleanup is
+ * then asked: the earlier answer is not this question's. `at` is when the answer was given, in epoch ms; an answer
+ * with no time, or a call with no raise time, is taken as the call's.
+ */
+export function answersThisAsk(call: Call, at: number | undefined) {
+  const raised = Date.parse(call.raised_at ?? "");
+  return at === undefined || !Number.isFinite(raised) || at >= raised;
+}
+
 export function callStanding(call: Call, known: { answered?: IntakeNote; answeredIn?: string } = {}): CallStanding {
   const { answeredIn } = known;
   const answered = known.answered && (known.answered.raised === undefined || known.answered.raised === (call.raised_at ?? null)) ? known.answered : undefined;

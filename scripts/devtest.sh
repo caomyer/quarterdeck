@@ -160,13 +160,14 @@ launch_app() {
   local port
   port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   local config
-  # The window as tauri.conf.json makes it, at one fixed size, and never
+  # The window as tauri.conf.json makes it, at one fixed size on the main display
+  # (a window left on a display that sleeps or goes has nothing to snapshot), and never
   # suspended by WebKit while it is hidden, which is where a driven window sits.
   # shellcheck disable=SC2016 # the script is JavaScript; its ${} are its own.
   config=$(node -e '
     const conf = require(process.argv[1]);
     const port = process.argv[2];
-    const window = { ...conf.app.windows[0], width: 1440, height: 900, maximized: false, center: false, backgroundThrottling: "disabled" };
+    const window = { ...conf.app.windows[0], width: 1440, height: 900, x: 0, y: 0, maximized: false, center: false, backgroundThrottling: "disabled" };
     console.log(JSON.stringify({
       build: { devUrl: `http://127.0.0.1:${port}`, beforeDevCommand: `pnpm dev --port ${port} --strictPort` },
       app: { windows: [window] },

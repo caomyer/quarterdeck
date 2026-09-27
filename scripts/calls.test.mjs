@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "../src/calls.ts";
+import { answerInWords, answerOfMessage, answersThisAsk, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "../src/calls.ts";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -66,6 +66,17 @@ test("evidence resolves to what can be opened, in firstmate's order", () => {
   assert.equal(argumentOf(evidence).title, "Which episodes already carry a transcript?");
   assert.equal(argumentOf(resolveEvidence(call("x", { evidence: ["report:res-transcripts-scout"] }), [], title)).kind, "report");
   assert.equal(argumentOf([]), undefined);
+});
+
+test("a page's recorded answer answers only the ask it was given to, not a later one under the same name", () => {
+  // The merge is answered from Bearings at 2:15 and noted on the page; the first mate then asks, under the same
+  // task's call, whether to discard the worktree. That question is new, and the merge answer is not its answer.
+  const answeredAt = Date.parse("2026-09-27T09:15:28Z");
+  assert.equal(answersThisAsk(call("merge", { raised_at: "2026-09-27T09:06:14Z" }), answeredAt), true);
+  assert.equal(answersThisAsk(call("merge", { raised_at: "2026-09-27T09:19:03Z" }), answeredAt), false);
+  // A summary from before answers carried a time, and a call with no raise time, keep the old reading.
+  assert.equal(answersThisAsk(call("merge", { raised_at: "2026-09-27T09:19:03Z" }), undefined), true);
+  assert.equal(answersThisAsk(call("merge"), answeredAt), true);
 });
 
 test("open calls are the live holds waiting on the captain", () => {
