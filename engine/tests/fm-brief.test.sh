@@ -821,6 +821,55 @@ test_ship_and_scout_teach_validation_round_pause() {
   pass "fm-brief.sh: ship and scout scaffolds teach validation-round pauses"
 }
 
+# The validation-wait case used to live only as the fourth example in rule 4's
+# parenthesised list, and four workers in one evening sat on long runs with
+# `working:` as their last line. So every mode's Definition of done - the block a
+# worker reads as it is about to wait - carries one sentence of its own, rendered
+# by fm_validation_wait_line, that points back at rule 4 rather than restating
+# what the verb means. fm_dod_block is also what bin/fm-promote.sh renders, so a
+# promoted scout receives it too.
+test_every_mode_declares_validation_wait_in_dod() {
+  local home kind id brief dod verb
+  home="$TMP_ROOT/validation-wait-dod-home"
+  mkdir -p "$home/data"
+
+  for verb in paused awaiting; do
+    for kind in no-mistakes direct-PR local-only scout; do
+      id="brief-validation-wait-$verb-$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')"
+      if [ "$kind" = scout ]; then
+        FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=$verb \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+      else
+        FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=$verb \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$kind" >/dev/null 2>&1
+      fi
+      brief="$home/data/$id/brief.md"
+      assert_present "$brief" "$kind brief was not scaffolded"
+      dod="$home/data/$id/dod.md"
+      awk '/^# Definition of done$/ { on = 1 } on' "$brief" > "$dod"
+      # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+      assert_grep "Before you sit on a long validation run of your own" "$dod" \
+        "$kind ($verb) Definition of done does not tell the worker to declare its validation wait"
+      assert_grep "append \`$verb: waiting on {what}\` first" "$dod" \
+        "$kind ($verb) validation-wait line does not name the configured pause verb"
+      assert_grep "rule 4 says what that line means" "$dod" \
+        "$kind ($verb) validation-wait line does not defer its meaning to rule 4"
+      [ "$(grep -c "Before you sit on a long validation run" "$brief")" = 1 ] \
+        || fail "$kind ($verb) brief renders the validation-wait line more than once"
+      # Rule 4 stays the one owner of what the verb means.
+      assert_grep "Use \`$verb: {why}\` - distinct from \`blocked:\`" "$brief" \
+        "$kind ($verb) rule 4 no longer owns the meaning of the pause verb"
+    done
+  done
+
+  for kind in no-mistakes direct-PR local-only; do
+    ( . "$ROOT/bin/fm-dod-lib.sh"; fm_dod_block "$kind" promote-probe ) \
+      | grep -F "Before you sit on a long validation run of your own" >/dev/null \
+      || fail "fm_dod_block $kind (the promotion path) lost the validation-wait line"
+  done
+  pass "fm-brief.sh: every mode's Definition of done declares the validation wait and defers to rule 4"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -1000,6 +1049,7 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_and_scout_teach_validation_round_pause
+test_every_mode_declares_validation_wait_in_dod
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_ship_and_scout_report_machine_level_changes
