@@ -12,7 +12,7 @@ def valid_record:
     and all(.seen[]; type == "string")
     and ((.notified // []) | type == "array" and all(.[]; type == "string"))
     and (.error == null or (.error | type == "string"))
-    and (.failure == null or (.failure | (.count | type == "number" and . >= 1)
+    and (.failure == null or (.failure | (.kind | IN("failed","not-read")) and (.count | type == "number" and . >= 1)
       and (.first_at | fromdateiso8601 | type == "number") and (.woke | type == "boolean")))
     and (.checked_at == null or (.checked_at | fromdateiso8601 | type == "number"))
     and (.last_read == null or (.last_read | (.at | fromdateiso8601 | type == "number")
