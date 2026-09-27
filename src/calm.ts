@@ -8,7 +8,7 @@
 // Hiding is presentation only: nothing is removed, and turning Calm off shows everything again.
 
 /** The shape of a chat message this needs. */
-type Said = { id: string; who: "mate" | "captain" | "step" | "notice"; text: string };
+type Said = { id: string; who: "mate" | "captain" | "step" | "notice"; text: string; turn?: number };
 
 /** At or over this many characters, a note is kept as a reply would be (the Claude Code mod's threshold). */
 export const KEPT_AT = 240;
@@ -20,19 +20,22 @@ export function readsAsNote(text: string) {
 
 /**
  * The ids Calm hides: every step, and every working note, which is the first mate's words followed by a step before
- * the captain speaks again.
+ * the captain speaks again or a new turn begins. Words from a resumed session's history carry no turn, so there only the
+ * captain and notices mark where a turn ends.
  */
 export function calmHidden(messages: Said[]): Set<string> {
   const hidden = new Set<string>();
   let stepAfter = false;
+  let stepTurn: number | undefined;
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
     if (message.who === "step") {
       hidden.add(message.id);
       stepAfter = true;
+      stepTurn = message.turn;
     } else if (message.who === "captain" || message.who === "notice") {
       stepAfter = false;
-    } else if (message.who === "mate" && stepAfter && readsAsNote(message.text)) {
+    } else if (message.who === "mate" && stepAfter && message.turn === stepTurn && readsAsNote(message.text)) {
       hidden.add(message.id);
     }
   }

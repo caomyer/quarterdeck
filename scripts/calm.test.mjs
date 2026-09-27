@@ -43,6 +43,22 @@ test("a step never makes a note of words from before the captain spoke", () => {
   assert.deepEqual([...calmHidden(afterNotice)], ["s1"]);
 });
 
+test("a turn's reply stays when the next turn begins with a step and no captain message", () => {
+  const live = (id, who, turn, text = id) => ({ id, who, text, turn });
+  const turns = [
+    said("q", "captain", "Anything waiting?"),
+    live("n1", "mate", 1, "Let me look."),
+    live("s1", "step", 1),
+    live("r1", "mate", 1, "Merged PR 41; nothing waiting on you."),
+    live("s2", "step", 2),
+    live("n2", "mate", 2, "Checking the crew."),
+    live("s3", "step", 2),
+    live("r2", "mate", 2, "Crew is idle."),
+    live("s4", "step", 3),
+  ];
+  assert.deepEqual([...calmHidden(turns)].sort(), ["n1", "n2", "s1", "s2", "s3", "s4"]);
+});
+
 test("the working row's elapsed time", () => {
   assert.equal(elapsed(2_400), "0:02");
   assert.equal(elapsed(72_000), "1:12");

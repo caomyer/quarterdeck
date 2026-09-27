@@ -37,6 +37,8 @@ export type ChatMessage = {
   before?: string;
   /** The session this belongs to, so a resumed session's history replaces only its own conversation. */
   session?: string | null;
+  /** For live mate words and steps: the turn they arrived in. */
+  turn?: number;
 };
 
 export type OutboxView = {
@@ -182,6 +184,8 @@ export function useHost(adapter: HostAdapter) {
   const resolvedApprovals = useRef(new Set<string>());
   const runtimeState = useRef<HostRuntimeState>("stopped");
   const session = useRef<string | null>(null);
+  /** Advances each time a turn starts, so a live message knows which turn it belongs to. */
+  const turn = useRef(0);
   /** The messages on screen when the current session opened: the ones its history may replace. */
   const onScreenAtSession = useRef(new Set<string>());
   /** Outbox states as they arrive, for merging history, which can't wait for a render. */
@@ -227,7 +231,7 @@ export function useHost(adapter: HostAdapter) {
       const index = current.findIndex((message) => message.who === "step" && message.id === step.id);
       if (index < 0) {
         if (!isNew) return current;
-        return [...current, { id: step.id, who: "step", text: step.title ?? "", kind: step.kind, status: step.status, createdAt: new Date().toISOString(), session: session.current }];
+        return [...current, { id: step.id, who: "step", text: step.title ?? "", kind: step.kind, status: step.status, createdAt: new Date().toISOString(), session: session.current, turn: turn.current }];
       }
       return current.map((message, position) => position === index ? {
         ...message,
@@ -256,8 +260,10 @@ export function useHost(adapter: HostAdapter) {
       if (state === "stopped" || state === "dead" || state === "restarting" || state === "starting") setPermissionRequests([]);
       if (state === "idle" || state === "dead") streamId.current = null;
       const inTurn = (value: HostRuntimeState) => value === "prompt_turn" || value === "agent_turn";
-      if (inTurn(state) && !inTurn(previous)) setTurnSince(Date.now());
-      else if (!inTurn(state)) setTurnSince(null);
+      if (inTurn(state) && !inTurn(previous)) {
+        turn.current += 1;
+        setTurnSince(Date.now());
+      } else if (!inTurn(state)) setTurnSince(null);
       return;
     }
 
@@ -377,7 +383,7 @@ export function useHost(adapter: HostAdapter) {
       setMessages((current) => {
         const activeIndex = current.findIndex((message) => message.id === activeId);
         if (activeIndex < 0) {
-          return [...current, { id: activeId, who: "mate", text: event.payload.chunk, createdAt: new Date().toISOString(), session: at }];
+          return [...current, { id: activeId, who: "mate", text: event.payload.chunk, createdAt: new Date().toISOString(), session: at, turn: turn.current }];
         }
         return current.map((message, index) => index === activeIndex ? { ...message, text: message.text + event.payload.chunk } : message);
       });
