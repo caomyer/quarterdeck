@@ -674,6 +674,8 @@ tests/fm-installed-home.test.sh 15000
 tests/fm-watch-served-harness.test.sh 20000
 tests/fm-sources.test.sh 50000
 tests/fm-source-github.test.sh 2000
+tests/fm-agents.test.sh 3000
+tests/fm-agents-live-e2e.test.sh 2000
 tests/fm-task-edit.test.sh 5000
 tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
