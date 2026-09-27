@@ -53,10 +53,8 @@ pub fn run() {
       // leaves a fixed 1440x900 window taller than a smaller screen, with the
       // sidebar's footer behind the Dock. Asking once the window exists works.
       if let Some(window) = app.get_webview_window("main") {
-        if devdrive::requested().is_some() {
-          // A driven window keeps one size, so every run's snapshots compare.
-          let _ = window.set_size(tauri::LogicalSize::new(1440.0, 900.0));
-        } else {
+        // A driven window keeps the size it was made with, so every run's snapshots compare.
+        if devdrive::requested().is_none() {
           let _ = window.maximize();
         }
       }
@@ -121,7 +119,6 @@ pub fn run() {
       update::update_restart,
       update::update_cancel,
       update::update_seen,
-      devdrive::devdrive_done,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application");

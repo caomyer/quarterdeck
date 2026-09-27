@@ -155,7 +155,18 @@ cmd_up() {
   local port
   port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   local config
-  config=$(printf '{"build":{"devUrl":"http://127.0.0.1:%s","beforeDevCommand":"pnpm dev --port %s --strictPort"}}' "$port" "$port")
+  # The window as tauri.conf.json makes it, at one fixed size, and never
+  # suspended by WebKit while it is hidden, which is where a driven window sits.
+  # shellcheck disable=SC2016 # the script is JavaScript; its ${} are its own.
+  config=$(node -e '
+    const conf = require(process.argv[1]);
+    const port = process.argv[2];
+    const window = { ...conf.app.windows[0], width: 1440, height: 900, maximized: false, center: false, backgroundThrottling: "disabled" };
+    console.log(JSON.stringify({
+      build: { devUrl: `http://127.0.0.1:${port}`, beforeDevCommand: `pnpm dev --port ${port} --strictPort` },
+      app: { windows: [window] },
+    }));
+  ' "$REPO/src-tauri/tauri.conf.json" "$port")
   echo "$port" > "$ROOT/run/port"
   rm -f "$ROOT/drive/in/"* "$ROOT/drive/out/"* 2>/dev/null || true
   (
@@ -164,7 +175,7 @@ cmd_up() {
     # can end Vite, Cargo and the app together by the group. launch_env execs,
     # so the background job's pid is the leader's.
     launch_env python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-      pnpm tauri dev --config "$config" > "$ROOT/logs/app.log" 2>&1 &
+      pnpm tauri dev --no-watch --config "$config" > "$ROOT/logs/app.log" 2>&1 &
     echo $! > "$ROOT/run/pgid"
   )
   echo "devtest: $NAME launching (group $(cat "$ROOT/run/pgid"), port $port); log $ROOT/logs/app.log"
@@ -212,6 +223,9 @@ cmd_down() {
   local left
   left=$(stragglers)
   if [ -n "$left" ]; then
+    # Named, not only numbered: something the app's exit did not stop is a finding.
+    echo "devtest: still running in $ROOT after the app and its tmux server stopped:" >&2
+    echo "$left" | xargs ps -o pid=,ppid=,pgid=,command= -p 2>/dev/null | cut -c1-240 >&2 || true
     killed="$killed stragglers:$(echo "$left" | tr '\n' ',' | sed 's/,$//')"
     echo "$left" | xargs kill -TERM 2>/dev/null || true
     wait_gone stragglers 25 || stragglers | xargs kill -KILL 2>/dev/null || true

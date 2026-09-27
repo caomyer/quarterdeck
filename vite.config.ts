@@ -52,4 +52,7 @@ function reviewPages(): Plugin {
 export default defineConfig(({ command }) => ({
   plugins: [react(), reviewPages()],
   publicDir: command === "serve" ? "src/fixtures/review-pages" : false,
+  // Every Cargo build copies the engine into src-tauri/target as the app's resources,
+  // and the window must not reload under the captain each time it does.
+  server: { watch: { ignored: ["**/src-tauri/**"] } },
 }));

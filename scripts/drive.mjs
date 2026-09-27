@@ -83,7 +83,7 @@ function usage(message) {
 
 const args = process.argv.slice(2);
 let dir = process.env.QD_DRIVE || join(homedir(), ".buzz/.scratch/qd-devtest/devtest/drive");
-let timeout = 60;
+let timeout = 120;
 while (args[0]?.startsWith("--")) {
   const flag = args.shift();
   if (flag === "--dir") dir = args.shift();
@@ -139,12 +139,21 @@ try {
       if (!rest[0]) usage("shot needs a file");
       const file = resolve(rest[0]);
       mkdirSync(join(file, ".."), { recursive: true });
-      print(await request({ snapshot: file }));
+      const size = await run("return [innerWidth, innerHeight]");
+      print(await request({ snapshot: file, size }));
       break;
     }
     case "wait": {
       const seconds = Number(rest[1] || timeout);
-      print(await run(`for (;;) { if (document.body.innerText.includes(${q(rest[0])})) return "seen"; await qd.sleep(250); }`, seconds));
+      // Polled from here, so a page that is slow to answer delays one check, not the wait.
+      const deadline = Date.now() + seconds * 1000;
+      for (;;) {
+        const seen = await run(`return document.body.innerText.includes(${q(rest[0])})`, 30).catch(() => false);
+        if (seen) break;
+        if (Date.now() > deadline) throw new Error(`${q(rest[0])} did not appear in ${seconds}s`);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      print("seen");
       break;
     }
     default:
