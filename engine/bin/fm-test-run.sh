@@ -1626,6 +1626,17 @@ families_for_changed_path() {
       families_for_test_reference git-config-helpers.sh lib.sh herdr-test-safety.sh \
         || printf '%s\n' "__unmapped__:$path"
       ;;
+    tests/fake-tmux-liveness.sh)
+      # Suites reach it through lib.sh's FM_TEST_FAKE_TMUX_LIVENESS, or through
+      # fixtures.sh, which sources it, so match those names as well.
+      families_for_test_reference fake-tmux-liveness.sh FM_TEST_FAKE_TMUX_LIVENESS fixtures.sh \
+        || printf '%s\n' "__unmapped__:$path"
+      ;;
+    tests/fake-tmux-typed.sh)
+      # Suites reach it through lib.sh's FM_TEST_FAKE_TMUX_TYPED.
+      families_for_test_reference fake-tmux-typed.sh FM_TEST_FAKE_TMUX_TYPED \
+        || printf '%s\n' "__unmapped__:$path"
+      ;;
     tests/fixtures/*/*)
       # A fixture belongs to whichever suite reads its directory, found by the
       # same reference scan used for shared helpers. Keyed on the directory
