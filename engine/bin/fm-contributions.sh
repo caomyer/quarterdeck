@@ -18,7 +18,8 @@
 #
 # This script owns fm-contributions.v1: one atomic file per durable task with
 # task and records[]. Each record contains url, kind, checked_at, error,
-# observation, verdict, seen event tokens, pending events, and notified tokens.
+# failure, observation, verdict, seen event tokens, pending events, and notified
+# tokens. failure counts consecutive failed reads: {count, first_at, woke}.
 # observation is one coherent forge read (a PR head is rechecked after fetching
 # checks/reviews). Checks are normalized by name, id, started_at, status and
 # conclusion; projection picks the newest attempt per distinct name. The last
@@ -34,11 +35,15 @@
 # and spends at most FM_CONTRIBUTIONS_BUDGET seconds on forge reads (default 20,
 # 1..25). Each gh call is bounded by the remaining budget and five seconds.
 # Oldest observations go first, so a large corpus progresses across polls.
-# Each distinct URL is observed once per poll and applied to every owner. When
-# the budget runs out mid-observation, the poll ends with that URL's records
-# untouched; only a genuine forge failure or head change records an error.
-# API failure leaves error evidence; an expired or absent observation is not
-# silence. FM_CONTRIBUTIONS_MAX_AGE (default 900 seconds) bounds freshness.
+# Each distinct URL is observed once per poll and applied to every owner.
+# A read either bound cuts short is "not read yet", never a failure: that URL's
+# records stay untouched, so it goes first next poll. When the budget runs out
+# the poll ends; when only the five-second slice ran out, the poll moves on.
+# A genuine forge failure or head change records an error at once, and wakes
+# only once it persists for FAIL_WAKE_COUNT reads or FAIL_WAKE_SECONDS, once
+# per failure; a successful read clears it. An expired or absent observation
+# is not silence: Bearings reports it as coverage the fleet must reconcile.
+# FM_CONTRIBUTIONS_MAX_AGE (default 900 seconds) bounds freshness.
 # FM_CONTRIBUTIONS_NOW supplies an ISO UTC clock for tests, otherwise UTC now.
 # FM_CONTRIBUTIONS_READY_LABEL selects the equivalent triage label, default
 # ready-for-pr. Labels are matched case-insensitively and exactly.
@@ -80,6 +85,9 @@ BUDGET=${FM_CONTRIBUTIONS_BUDGET:-20}
 case "$MAX_AGE" in ''|*[!0-9]*) fail 'invalid freshness bound' ;; esac
 case "$BUDGET" in ''|*[!0-9]*) fail 'invalid poll budget' ;; esac
 [ "$BUDGET" -ge 1 ] && [ "$BUDGET" -le 25 ] || fail 'poll budget must be 1..25 seconds'
+# The same persistence bar as fm-sources.sh's typed read failures.
+FAIL_WAKE_COUNT=3
+FAIL_WAKE_SECONDS=1800
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-contributions.XXXXXX")
 LOCK_HELD=0
 cleanup() {
@@ -177,8 +185,12 @@ forge() {
   if [ "$remaining" -le 5 ]; then bounded=1; else remaining=5; fi
   fm_run_timed "$remaining" env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
     gh "$@" 2> "$TMP/forge.err" || rc=$?
-  # A read killed at the budget's own deadline is budget exhaustion too.
-  [ "$rc" -ne 124 ] || [ "$bounded" -eq 0 ] || BUDGET_EXHAUSTED=1
+  # A read killed at either bound is not read yet, never evidence against the
+  # forge. Killed at the budget's own deadline, it is budget exhaustion too.
+  if [ "$rc" -eq 124 ]; then
+    NOT_READ=1
+    [ "$bounded" -eq 0 ] || BUDGET_EXHAUSTED=1
+  fi
   return "$rc"
 }
 
@@ -263,7 +275,7 @@ publish_pending() { # task canonical-url record-file
 }
 
 poll() {
-  local task url old kind error observed
+  local task url old kind error observed failing
   local -a row
   acquire
   get_input
@@ -281,11 +293,13 @@ poll() {
     [ "$(date +%s)" -lt "$DEADLINE" ] || break
     url=${row[0]}
     observed=0
+    NOT_READ=0
     observe "$url" || observed=$?
-    # An observation the budget cut short is unmeasured, not unavailable: keep
+    # An observation a bound cut short is unmeasured, not unavailable: keep
     # every owner's prior record so the URL is observed first next poll.
     [ "$BUDGET_EXHAUSTED" -eq 0 ] || break
-    [ "$observed" -eq 0 ] || printf 'contributions: observation unavailable for %s\n' "$url"
+    [ "$NOT_READ" -eq 0 ] || continue
+    failing=
     case "$url" in */issues/*) kind=issue ;; *) kind="pr" ;; esac
     for task in "${row[@]:1}"; do
       fm_pr_task_id_valid "$task" || { printf 'contributions: invalid durable task id\n'; continue; }
@@ -299,17 +313,26 @@ poll() {
           | ($o.events + (if $o.ready == true and $old.observation.ready != true and (any($o.events[]; .type == "ready-for-pr") | not) then
               [{token:("ready-for-pr:" + $now),type:"ready-for-pr",source:$old.url,head:null,body:"filed issue reached ready-for-pr"}]
               else [] end)) as $events
-          | $old + {checked_at:$now,error:null,
+          | $old + {checked_at:$now,error:null,failure:null,
             observation:($o + {absent_checks:((($old.observation.absent_checks // []) + [($old.observation.checks // [])[] | .name]) - [$o.checks[].name] | unique)}),
             seen:($events | map(.token)),
             pending:(($old.pending // []) + [$events[] | select(.token as $t | ($old.seen // [] | index($t)) == null)] | unique_by(.token))}' > "$TMP/row.json"
       else
         error='forge observation unavailable or changed during read'
-        jq --arg now "$NOW" --arg error "$error" '.checked_at=$now | .error=$error' "$old" > "$TMP/row.json"
+        jq --arg now "$NOW" --arg error "$error" '.checked_at=$now | .error=$error
+          | .failure=((.failure // {count:0,first_at:$now,woke:false}) | .count += 1)' "$old" > "$TMP/row.json"
+        if jq -e --argjson now "$EPOCH" --argjson n "$FAIL_WAKE_COUNT" --argjson s "$FAIL_WAKE_SECONDS" '
+            .failure as $f | ($f.woke | not)
+            and ($f.count >= $n or ($now - ($f.first_at | fromdateiso8601)) >= $s)' "$TMP/row.json" >/dev/null; then
+          failing=$(jq -r '"\(.failure.count) reads since \(.failure.first_at)"' "$TMP/row.json")
+          jq '.failure.woke = true' "$TMP/row.json" > "$TMP/woke.json"
+          mv "$TMP/woke.json" "$TMP/row.json"
+        fi
       fi
       write_record "$task" "$TMP/row.json"
       publish_pending "$task" "$url" "$TMP/row.json"
     done
+    [ -z "$failing" ] || printf 'contributions: observation failing for %s (%s)\n' "$url" "$failing"
   done < "$TMP/known.tsv"
 }
 
