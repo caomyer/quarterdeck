@@ -115,6 +115,7 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   The app installs only after showing the exact commands, and keeps only the ACP adapter, pinned in `src-tauri/src/harness.rs` and installed into its own tools folder (`src-tauri/src/onboarding.rs`).
   Check every state, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm welcome`.
   A new captain installs the app with `scripts/install.sh` (`docs/releasing.md`), since a browser download is refused until the app is notarized.
+  Live, spending no model tokens: `cd src-tauri && cargo test onboarding_live -- --ignored --nocapture` reads this Mac's agents through the engine's script and installs the pinned Codex adapter from npm into a scratch folder.
 - The first mate runs on Claude Code or Codex, chosen per home; switching is a relaunch, and each agent keeps its own session.
   Under ACP, Codex folds a prompt sent into a running turn and never answers it, so the host steers a running Codex turn through `_session/steering`, ends Codex turns on its thread status, and runs `bin/fm-turnend-guard.sh` itself at each turn end, because Codex runs none of the home's hooks there.
   The live tests run on either: `FM_E2E_HARNESS=codex` picks Codex.
