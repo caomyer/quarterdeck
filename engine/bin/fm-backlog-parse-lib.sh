@@ -2,7 +2,8 @@
 # The one backlog-row parser: markdown backlog text in, the fleet snapshot's
 # backlog object out.
 # Usage: . bin/fm-backlog-parse-lib.sh
-#        fm_backlog_parse_json <path> <now> <undated-hold-age-days> < <backlog-text>
+#        fm_backlog_parse_json <path> <now> <undated-hold-age-days> [<archived-ids-json>] < <backlog-text>
+#        fm_backlog_archived_ids <done-archive-path>
 #        fm_captain_day <now>
 #
 # ONE OWNER for how a backlog row reads. bin/fm-fleet-snapshot.sh emits this
@@ -17,7 +18,11 @@
 # read decides for itself what an absent one means. <now> (a UTC timestamp)
 # dates the captain-hold projection: hold_until against the captain's day at
 # <now>, hold_age_days against <now>, and an undated hold is "aged" once it is
-# at least <undated-hold-age-days> old.
+# at least <undated-hold-age-days> old. <archived-ids-json>, a JSON array that
+# defaults to [], names the tasks closed in the done archive
+# (fm_backlog_archived_ids prints it): a blocker resolves when its row here is
+# Done, or when it has no row here and was archived, which is how tasks-axi
+# ready judges it. A blocker named nowhere stays open.
 #
 # ONE OWNER for the captain's day. A deferral is a promise about a day on the
 # captain's own calendar: "ask me again on Sep 26" is due from the first moment
@@ -98,6 +103,15 @@ FM_BACKLOG_PARSE_JQ="$FM_CAPTAIN_DAY_JQ"'
       [ $lines[]
         | capture("^source-link:[[:space:]]+(?<source>[a-z][a-z0-9-]*:[^[:space:]]+)[[:space:]]+(?<item>[^[:space:]]+)[[:space:]]+(?<role>fulfills|contributes)$")? ]
       | unique_by([.source, .item]);
+    # A task in a group carries one body line naming the group, written only by
+    # bin/fm-task-edit.sh, in the same shape and for the same reason as a
+    # source link: `part-of: <group-id>`. The group is a `kind: program` row.
+    def part_of($lines):
+      first($lines[] | capture("^part-of:[[:space:]]+(?<id>[^[:space:]]+)$")? | .id) // null;
+    # Priority is 0 (urgent) to 4 (someday), as tasks-axi stores it; a row
+    # without one, or with a value tasks-axi would refuse, counts as 2.
+    def priority_level($p):
+      if ($p | type) == "string" and ($p | test("^[0-4]$")) then ($p | tonumber) else 2 end;
     def strip_trailing_metadata:
       reduce range(0; 20) as $_ (.;
         sub("[[:space:]]*\\([[:space:]]*(?:(?:repo|kind|priority|hold|hold-kind|hold-until):[[:space:]]*[^)]*|(?:since|merged|reported|done)[[:space:]]+[^)]*)[[:space:]]*\\)[[:space:]]*$"; ""));
@@ -177,7 +191,8 @@ FM_BACKLOG_PARSE_JQ="$FM_CAPTAIN_DAY_JQ"'
              raw:$line,
              body_lines:[],
              body_excerpt:null,
-             source_links:[]}
+             source_links:[],
+             part_of:null}
         end;
     reduce inputs as $line
       ({path:$path,present:true,records:[],section:null,order:0};
@@ -207,17 +222,20 @@ FM_BACKLOG_PARSE_JQ="$FM_CAPTAIN_DAY_JQ"'
                   end))
           | .body_excerpt = ((.body_lines | join(" "))[:240])
           | .source_links = source_links(.body_lines)
+          | .part_of = part_of(.body_lines)
         else . end)
     | captain_day($now) as $today
     | .records as $records
     | (reduce ($records[] | select(.structured)) as $record ({};
          .[$record.id] = ((.[$record.id] // true) and ($record.state == "done")))) as $resolved_ids
+    | (reduce $archived[] as $id ({}; .[$id] = true)) as $archived_ids
     | .records |= map(
         if .structured then
           . as $record
           | .unresolved_blocker_ids = [
               $record.blocked_by_ids[] as $blocker
-              | select($resolved_ids[$blocker] != true)
+              | select((if $resolved_ids | has($blocker) then $resolved_ids[$blocker]
+                        else ($archived_ids[$blocker] // false) end) != true)
               | $blocker
             ]
           | .current_role =
@@ -240,12 +258,42 @@ FM_BACKLOG_PARSE_JQ="$FM_CAPTAIN_DAY_JQ"'
                     and .hold_age_days >= $age_days then "aged"
                else "live" end)
           | .captain_actionable = (.hold_bucket == "live")
+          | .priority_level = priority_level(.priority)
+          # Where a queued row stands for dispatch, as tasks-axi ready judges
+          # it: a hold is active until its date, and any open blocker holds it
+          # back. Held wins over blocked: someone chose to put it off.
+          | .standing =
+              (if .state != "queued" then null
+               elif .hold_reason != null and (.hold_until == null or .hold_until > $today) then "held"
+               elif (.unresolved_blocker_ids | length) > 0 then "blocked"
+               else "ready" end)
         else . end)
+    # ONE OWNER for start order, which the first mate dispatches by and the app
+    # draws: ready, then blocked, then held; within each, priority, then the
+    # oldest filed, then the order written. start_rank numbers queued rows from
+    # 1 in that order; any other row carries null.
+    | ([ .records[] | select(.structured and .state == "queued") ]
+       | sort_by([({ready:0, blocked:1, held:2}[.standing]), .priority_level, (.since // "9999-12-31"), .order])
+       | reduce .[] as $record ({rank:0, of:{}};
+           if .of[$record.id] == null then .rank += 1 | .of[$record.id] = .rank else . end)
+       | .of) as $start_rank
+    | .records |= map(if .structured then .start_rank = (if .state == "queued" then $start_rank[.id] else null end) else . end)
     | del(.section,.order)
 '
 
-fm_backlog_parse_json() {  # <path> <now> <undated-hold-age-days>  (backlog text on stdin)
-  jq -Rn --arg path "$1" --arg now "$2" --argjson age_days "$3" "$FM_BACKLOG_PARSE_JQ"
+fm_backlog_parse_json() {  # <path> <now> <undated-hold-age-days> [<archived-ids-json>]  (backlog text on stdin)
+  jq -Rn --arg path "$1" --arg now "$2" --argjson age_days "$3" --argjson archived "${4:-[]}" "$FM_BACKLOG_PARSE_JQ"
+}
+
+# The ids of every task closed in a done archive, as a JSON array; [] when the
+# archive is absent or unreadable, which leaves its tasks' dependents blocked.
+fm_backlog_archived_ids() {  # <done-archive-path>
+  if [ -f "$1" ] && [ -r "$1" ]; then
+    awk '/^[-*][[:space:]]+\[[xX]\][[:space:]]+[^[:space:]]+[[:space:]]+-/ { sub(/^[-*][[:space:]]+\[[xX]\][[:space:]]+/, ""); sub(/[[:space:]].*/, ""); print }' "$1" \
+      | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
+  else
+    printf '[]\n'
+  fi
 }
 
 fm_captain_day() {  # <now>: the captain's YYYY-MM-DD at that UTC timestamp

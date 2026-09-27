@@ -60,4 +60,5 @@ test("a row read without its lines falls back to its excerpt, unless that is boo
 test("a link to an item elsewhere is bookkeeping: the drawer shows it as its chip, never as something the filer wrote", () => {
   assert.deepEqual(bodyBlocks(["Keep this line.", "source-link: github:o/r I_kwDO17 fulfills"]), [{ type: "paragraph", label: null, spans: plain("Keep this line.") }]);
   assert.deepEqual(bodyBlocks(["source-link: fixture:w 10001 contributes"], "source-link: fixture:w 10001 contributes"), []);
+  assert.deepEqual(bodyBlocks(["Keep this line.", "part-of: g-share-snips-anywhere"]), [{ type: "paragraph", label: null, spans: plain("Keep this line.") }], "a group line is the group's, shown in Details");
 });

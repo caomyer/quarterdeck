@@ -29,7 +29,11 @@
 #     relay reply bound to main/<key>, or when this home has an open public loop
 #     with nothing owed, because routing work out does not close that loop. The
 #     move is not blocked: rebinding or rechain is a relay-side decision the
-#     caller makes.
+#     caller makes;
+#   - naming, after a successful move, the group each moved key belongs to. Its
+#     `part-of:` body line (bin/fm-task-edit.sh) moves with it, but the group
+#     is an In flight row that never moves, and tasks-axi guards dependencies,
+#     not body lines, so the receiver holds a group it only knows by id.
 #
 # What `tasks-axi mv <id>... --to <dest>` owns: moving each full item BLOCK
 # byte-exact (header, body lines, blank separators, and indented pseudo-headings
@@ -94,6 +98,8 @@ MAIN_BACKLOG="$DATA/backlog.md"
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-backlog-parse-lib.sh
+. "$SCRIPT_DIR/fm-backlog-parse-lib.sh"
 
 RECEIVER_WAKE_MESSAGE='New routed work is in your backlog. Run bin/fm-session-start.sh now, then act on the routed task.'
 
@@ -344,6 +350,32 @@ warn_stale_public_commitments() { # <secondmate-id> <moved-key>...
       "$id" >&2
   fi
   # Reporting never changes the handoff's own success: the move already landed.
+  return 0
+}
+
+# The group of each key about to move, read before the move while the group row
+# is still beside it: one "<key><TAB><group-id><TAB><group title>" line per
+# key in a group. Nothing when the backlog cannot be parsed; naming is advisory.
+moved_groups() { # <key>...
+  local parsed
+  # shellcheck disable=SC2094 # the path is only a label; the file is read once
+  parsed=$(fm_backlog_parse_json "$MAIN_BACKLOG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 14 < "$MAIN_BACKLOG" 2>/dev/null) || return 0
+  printf '%s\n' "$parsed" | jq -r '
+    ([.records[] | select(.structured and .kind == "program") | {key:.id, value:.title}] | from_entries) as $titles
+    | .records[] | select(.structured and .state == "queued" and .part_of != null)
+    | select(.id as $id | $ARGS.positional | index($id) != null)
+    | [.id, .part_of, ($titles[.part_of] // "not in this backlog")] | @tsv' --args "$@" 2>/dev/null || true
+}
+
+# Name each moved key's group, which stays behind. Never changes the handoff's
+# own success: the move already landed.
+name_moved_groups() { # <secondmate-id> <moved-groups-lines>
+  local id=$1 key group title
+  while IFS=$'\t' read -r key group title; do
+    [ -n "$key" ] || continue
+    printf 'warning: %s is part of the group %s (%s), which stays in this home, so secondmate:%s knows it only by id; tell it what the group is for, or drop the line there with bin/fm-task-edit.sh group %s none.\n' \
+      "$key" "$group" "$title" "$id" "$key" >&2
+  done <<< "$2"
   return 0
 }
 
@@ -756,7 +788,7 @@ remove_interrupted_source_duplicates() { # <outbox> <keys...>
 }
 
 remote_handoff() { # <secondmate-id> <keys...>
-  local id=$1 outbox section main_section out_section key mv_out
+  local id=$1 outbox section main_section out_section key mv_out groups
   local -a requested to_move already missing in_flight done_items not_queued
   shift
   requested=("$@")
@@ -823,6 +855,8 @@ remote_handoff() { # <secondmate-id> <keys...>
     }
   fi
   seed_backlog_scaffold "$outbox"
+  groups=
+  [ "${#to_move[@]}" -eq 0 ] || groups=$(moved_groups "${to_move[@]}")
   if [ "${#to_move[@]}" -gt 0 ]; then
     if ! mv_out=$(tasks-axi mv "${to_move[@]}" --file "$MAIN_BACKLOG" --to "$outbox" 2>&1); then
       [ -z "$mv_out" ] || printf '%s\n' "$mv_out" >&2
@@ -838,6 +872,7 @@ remote_handoff() { # <secondmate-id> <keys...>
   echo "handed off ${#requested[@]} item(s) to remote secondmate $id: ${requested[*]}"
   [ "${#already[@]}" -eq 0 ] || echo "  already staged (recovered): ${already[*]}"
   warn_stale_public_commitments "$id" "${requested[@]}"
+  name_moved_groups "$id" "$groups"
 }
 
 with_remote_route_locks() { # <secondmate-id> <function> <args...>
@@ -1069,6 +1104,7 @@ fi
 # together and, on any failure, neither backlog's content changes - the only
 # cleanup is a scaffold we just created. tasks-axi writes both its success and
 # error output to stdout, so capture it and surface it only on failure.
+MOVED_GROUPS=$(moved_groups "${TO_MOVE[@]}")
 if ! MV_OUT=$(tasks-axi mv "${TO_MOVE[@]}" --file "$MAIN_BACKLOG" --to "$SUB_BACKLOG" 2>&1); then
   if [ "$SUB_CREATED" -eq 1 ]; then
     rm -f "$SUB_BACKLOG"
@@ -1095,3 +1131,4 @@ if [ "${#ALREADY[@]}" -gt 0 ]; then
   echo "  already present (skipped): ${ALREADY[*]}"
 fi
 warn_stale_public_commitments "$ID" "${TO_MOVE[@]}"
+name_moved_groups "$ID" "$MOVED_GROUPS"

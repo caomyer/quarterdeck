@@ -113,8 +113,26 @@ async function wears(locator, icon) {
 
   await page.locator(".primary-nav .nav-item", { hasText: "Projects" }).click();
   await page.locator(".project-card", { hasText: "resonance" }).click();
-  const failed = page.locator(".project-page .task-row", { hasText: "task-failed" });
-  check(await colourOf(failed.locator(".task-state")) === await tokenColour(page, "--coral"), "a failed task on its project page is painted --coral");
+  const failed = page.locator("[data-testid='task-list'] .tl-row", { hasText: "task-failed" });
+  check(await colourOf(failed.locator(".tl-chip")) === await tokenColour(page, "--coral"), "a failed task on its project page is painted --coral");
+  check(await wears(failed.locator(".tl-chip"), "lucide-circle-x"), "and wears its own icon");
+  // These workers have no backlog row, as work started before a home kept its tasks there: each still opens.
+  await failed.locator(".tl-copy").click();
+  await page.locator(".drawer-status").waitFor();
+  check(await colourOf(page.locator(".drawer-status strong")) === await tokenColour(page, "--coral"), "a worker with no backlog row opens its own drawer, painted --coral");
+  await page.close();
+}
+
+// A worker with no backlog row, in a home whose first mate edits tasks: there is no row to edit, so none is offered.
+{
+  const page = await open("?tasks", { busy: true });
+  await page.locator(".task-row").first().waitFor();
+  await page.locator(".primary-nav .nav-item", { hasText: "Projects" }).click();
+  await page.locator(".project-card", { hasText: "resonance" }).click();
+  const taskList = page.locator("[data-testid='task-list']");
+  await taskList.locator(".tl-row", { hasText: "task-failed" }).waitFor();
+  check(await taskList.locator(".tl-pri-button").count() > 0, "the home's own rows can be edited");
+  check(await taskList.locator(".tl-row", { hasText: "task-failed" }).locator(".tl-check, .tl-pri-button").count() === 0, "a worker with no backlog row offers no checkbox and no priority to change");
   await page.close();
 }
 

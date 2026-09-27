@@ -35,7 +35,7 @@ async function openQueued(flags, id) {
   await page.locator(".project-shortcuts button", { hasText: "resonance" }).click();
   // The project's posture comes with the first mate's first snapshot.
   if (!flags.includes("not-started")) await page.locator(".page-heading span", { hasText: "Product work fully checked" }).waitFor();
-  await page.locator(`[data-testid='project-queue'] .task-row[data-id='${id}']`).click();
+  await page.locator(`[data-testid='task-list'] .tl-row[data-id='${id}']`).click();
   const drawer = page.locator("[data-testid='queued-drawer']");
   await drawer.waitFor();
   return { page, drawer };
@@ -262,7 +262,7 @@ for (const [outcome, words] of Object.entries(REFUSALS)) {
     check(await drawer.locator("[data-testid='start-panel']").isVisible(), "Start work… asks again from the same drawer");
   }
   await neverWorking(drawer, outcome);
-  const queueRow = page.locator(`[data-testid='project-queue'] .task-row[data-id='${SCOUT}']`);
+  const queueRow = page.locator(`[data-testid='task-list'] .tl-row[data-id='${SCOUT}']`);
   check(await queueRow.count() === 1, `${outcome}: the row is still queued on the project page`);
   await page.locator(".primary-nav .nav-item", { hasText: "Chat" }).click();
   const chat = await page.locator("[data-testid='chat-messages']").innerText();
@@ -339,7 +339,7 @@ for (const [outcome, words] of Object.entries(REFUSALS)) {
   check(await label() === "done" && await phaseOf(drawer) === "underway", "a finished worker's drawer shows its own done state");
   await tone(page, drawer, "--green", "lucide-circle-check", "Finished");
   check(await drawer.locator(".pr-block a[href='https://github.com/caomyer/Resonance/pull/31']").count() === 1, "and the PR it opened");
-  check(await page.locator(`[data-testid='project-queue'] .task-row[data-id='${SHIP}']`).count() === 0, "the finished row has left the queue");
+  check(await page.locator(`[data-testid='task-list'] .tl-row[data-id='${SHIP}']`).count() === 0, "the finished row has left the queue");
   await shot(page, "d2-finished");
   await page.close();
 }

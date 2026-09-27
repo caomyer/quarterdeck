@@ -201,7 +201,7 @@ async function openDrawer(page, selector) {
 // C: a linked task in flight, and one that landed: the chip, the as-filed copy, and what was written back.
 {
   const page = await openProject("sources");
-  const drawer = await openDrawer(page, "[data-testid='project-underway'] .task-row:has-text('Share snips from the share sheet')");
+  const drawer = await openDrawer(page, "[data-testid='task-list'] .tl-row[data-standing='underway']:has-text('Share snips from the share sheet')");
   check(/^GitHub #2 open · as last read 3 min ago$/.test((await drawer.locator(".source-chip").innerText()).trim()), "a working task's chip names its issue");
   const text = await drawer.locator("[data-testid='upstream-lines']").innerText();
   check(text.includes("Commented: the PR is up") && text.includes("pull/31"), "Upstream shows the PR comment that was posted");
@@ -212,7 +212,7 @@ async function openDrawer(page, selector) {
 }
 {
   const page = await openProject("sources=cancelled");
-  const drawer = await openDrawer(page, "[data-testid='project-underway'] .task-row:has-text('Share snips from the share sheet')");
+  const drawer = await openDrawer(page, "[data-testid='task-list'] .tl-row[data-standing='underway']:has-text('Share snips from the share sheet')");
   const note = drawer.locator("[data-testid='upstream-divergence']");
   check((await note.innerText()).startsWith("#2 was cancelled on GitHub."), "an issue cancelled upstream while its task is in flight is told");
   check((await note.innerText()).includes("asks you if it should stop; nothing here changes until then"), "and says nothing here changes until the captain answers");
@@ -223,7 +223,7 @@ async function openDrawer(page, selector) {
 }
 {
   const page = await openProject("sources=edited");
-  const drawer = await openDrawer(page, "[data-testid='project-queue'] .task-row[data-id='res-ai-titles']");
+  const drawer = await openDrawer(page, "[data-testid='task-list'] .tl-row[data-id='res-ai-titles']");
   check((await drawer.locator("h3", { hasText: "As filed, and changed since" }).count()) === 1, "an issue edited upstream shows as filed, and changed since");
   const filed = await drawer.locator("[data-testid='as-filed'] blockquote").allInnerTexts();
   check(filed.length === 2 && filed[0].includes("Suggest a title for each snip") && filed[1].includes("one-line note"), "both the text as filed and the text now");
@@ -245,14 +245,14 @@ async function openDrawer(page, selector) {
 }
 {
   const page = await openProject("sources=unconnected");
-  const drawer = await openDrawer(page, "[data-testid='project-queue'] .task-row[data-id='res-other-link']");
+  const drawer = await openDrawer(page, "[data-testid='task-list'] .tl-row[data-id='res-other-link']");
   check((await drawer.locator(".source-chip").innerText()).trim() === "github:caomyer/podcast-kit · not connected in this home", "a link to a source this home does not have says so");
   check((await drawer.locator("[data-testid='upstream-lines']").innerText()).includes("waits here until it is"), "and that what is owed waits here");
   await page.close();
 }
 {
   const page = await openProject("sources=lost");
-  const drawer = await openDrawer(page, "[data-testid='project-underway'] .task-row:has-text('Share snips from the share sheet')");
+  const drawer = await openDrawer(page, "[data-testid='task-list'] .tl-row[data-standing='underway']:has-text('Share snips from the share sheet')");
   check((await drawer.locator("[data-testid='as-filed']").innerText()).startsWith("As filed: unknown."), "a lost as-filed copy is said to be lost, never pretended");
   await page.close();
 }
@@ -282,7 +282,7 @@ async function openDrawer(page, selector) {
 // E: linking a task that exists, in its drawer; and Settings.
 {
   const page = await openProject("sources");
-  const drawer = await openDrawer(page, "[data-testid='project-queue'] .task-row:not([data-id='res-ai-titles'])");
+  const drawer = await openDrawer(page, "[data-testid='task-list'] .tl-row[data-id='res-lockscreen']");
   const field = drawer.locator("[data-testid='link-field']");
   check(await field.count() === 1, "a queued task with no link offers to link an issue");
   await field.getByLabel("Link an issue").fill("#99");
@@ -334,7 +334,7 @@ async function openDrawer(page, selector) {
   const page = await openProject("sources", 700);
   await noSideways(page, "the intake at 700px");
   await shot(page, "f1-narrow");
-  const drawer = await openDrawer(page, "[data-testid='project-underway'] .task-row:has-text('Share snips from the share sheet')");
+  const drawer = await openDrawer(page, "[data-testid='task-list'] .tl-row[data-standing='underway']:has-text('Share snips from the share sheet')");
   await drawer.locator(".source-chip").waitFor();
   await noSideways(page, "a linked drawer at 700px");
   await page.close();

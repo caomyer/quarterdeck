@@ -9,9 +9,10 @@
 
 /**
  * Backlog body lines that are bookkeeping rather than anything a person wrote about the task. A `source-link:` line is
- * a link to an item elsewhere, which `bin/fm-sources.sh` writes and the drawer shows as its chip and Upstream section.
+ * a link to an item elsewhere, which `bin/fm-sources.sh` writes and the drawer shows as its chip and Upstream section;
+ * a `part-of:` line names the task's group, which `bin/fm-task-edit.sh` writes and the drawer shows in its Details.
  */
-export const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:|Answer key:|Answered by:|Answered via:|source-link: )/;
+export const BOOKKEEPING = /^(Captain hold set:|Resolution recorded by|Decision digest:|Resolution mode:|Captain decision:|Reconciliation evidence:|Answer key:|Answered by:|Answered via:|source-link: |part-of: )/;
 
 /** A run of text, plain or code. */
 export type Span = { code: boolean; text: string };

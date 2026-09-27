@@ -27,8 +27,13 @@
 #     normalized current_role, requires_child_metadata, blocked_by_ids,
 #     unresolved_blocker_ids, captain_actionable, hold_set, hold_age_days,
 #     and hold_bucket fields.
-#     Repeated blocker tokens remain ordered; a blocker resolves only when its
-#     structured record is Done, and missing ids stay open.
+#     Repeated blocker tokens remain ordered; a blocker resolves when its
+#     structured record is Done, or when it has no record here and is closed
+#     in the done archive; any other missing id stays open.
+#     Structured rows also carry priority_level (0-4, 2 when unset), part_of
+#     (the group a `part-of:` body line names, else null), standing (a queued
+#     row's "ready", "blocked" or "held", else null) and start_rank (a queued
+#     row's place in start order from 1, else null); the parser owns both rules.
 #     There is no separate decision type: any captain-held task is the same
 #     primitive, whatever kind its row carries.
 #     hold_bucket is the single classification for every captain hold, decided
@@ -243,6 +248,9 @@ esac
 # shellcheck source=bin/fm-backlog-parse-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-parse-lib.sh"  # fm_backlog_parse_json: the one backlog-row parser
+# shellcheck source=bin/fm-tasks-axi-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-tasks-axi-lib.sh"  # fm_tasks_axi_archive_resolve: where the done archive lives
 # shellcheck source=bin/fm-landed-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
@@ -407,8 +415,14 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
     return 0
   fi
 
+  # A blocker closed long enough ago to be archived is resolved, as tasks-axi
+  # ready judges it; an archive that cannot be found resolves nothing.
+  local archive archived='[]'
+  if archive=$(fm_tasks_axi_archive_resolve "${DATA%/*}" "$backlog" 2>/dev/null); then
+    archived=$(fm_backlog_archived_ids "$archive") || archived='[]'
+  fi
   # shellcheck disable=SC2094 # the path is only a label; the file is read once
-  fm_backlog_parse_json "$backlog" "$SNAPSHOT_NOW" "$FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS" < "$backlog"
+  fm_backlog_parse_json "$backlog" "$SNAPSHOT_NOW" "$FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS" "$archived" < "$backlog"
 }
 
 SNAPSHOT_TASK_DIR=
