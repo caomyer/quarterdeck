@@ -32,6 +32,7 @@ make_spawn_fakebin() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
@@ -79,7 +80,7 @@ case "${1:-}" in
           -t) skip_next=1; continue ;;
           -l) continue ;;
           Enter|C-m) continue ;;
-          *) printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
+          *) printf '%s\n' "$(fm_fake_tmux_typed "$a")" >> "$FM_FAKE_LAUNCH_LOG" ;;
         esac
       done
     fi
@@ -428,7 +429,8 @@ test_relaunch_reuses_recorded_carrier() {
 
   # Relaunch the same task: the recorded carrier must be reused verbatim for both
   # the meta and the injected export, so an observer keeps one identity across
-  # restarts.
+  # restarts. The first incarnation's window is gone by then.
+  rm -f "$FAKEBIN_DIR/.fake-tmux-windows"
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "relaunch spawn should succeed"
@@ -563,6 +565,8 @@ test_two_routed_tasks_through_one_secondmate_root_distinct_traces() {
 
   # Same environment, same task: a relaunch must reuse task A's recorded
   # carrier verbatim, so the per-task boundary never costs recovery identity.
+  # The first incarnation's window is gone by then.
+  rm -f "$fakebin/.fake-tmux-windows"
   out=$(TRACEPARENT="$sm_tp" run_spawn "$sm" "$wt_a" "$fakebin" "$log_a" "$id_a" "$proj_a")
   status=$?
   expect_code 0 "$status" "routed task A relaunch should succeed"

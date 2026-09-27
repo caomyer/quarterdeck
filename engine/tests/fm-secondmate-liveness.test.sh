@@ -263,7 +263,8 @@ SH
 
 # make_liveness_tmux <dir>: a controllable tmux stub. FM_TEST_PANE_CMD may be
 # a foreground command, `missing` (readable inventory omits the window), or
-# `unreadable` (both pane and inventory reads fail).
+# `unreadable` (both pane and inventory reads fail). A window the stub creates
+# is listed and runs codex, so a respawn's launch reads as a running agent.
 make_liveness_tmux() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -276,6 +277,7 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in
         *pane_current_command*)
+          [ ! -e "${FM_TMUX_CALL_LOG:?}.created" ] || { printf '%s\n' codex; exit 0; }
           case "$mode" in
             missing) printf '%s\n' node; exit 0 ;;
             unreadable) exit 1 ;;
@@ -288,7 +290,11 @@ case "${1:-}" in
     ;;
   list-windows)
     case "$mode" in
-      missing) printf '%s\n' main; exit 0 ;;
+      missing)
+        printf '%s\n' main
+        [ ! -e "${FM_TMUX_CALL_LOG:?}.created" ] || printf '%s\n' fm-sm1
+        exit 0
+        ;;
       unreadable) exit 1 ;;
       *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] || printf '%s\n' fm-sm1; exit 0 ;;
     esac
@@ -297,7 +303,7 @@ case "${1:-}" in
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
     [ "${1:-}" = kill-window ] && : > "${FM_TMUX_CALL_LOG}.killed"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && [ "${1:-}" = new-window ] && exit 1
-    [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed"
+    [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed" && : > "${FM_TMUX_CALL_LOG}.created"
     exit 0
     ;;
   has-session) exit 0 ;;

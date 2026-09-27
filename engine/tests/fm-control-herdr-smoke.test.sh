@@ -154,11 +154,19 @@ STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
   || version_fail "a malformed endpoint target does not stay unreadable"
 pass "real herdr $HERDR_VERSION: a gone session reads recoverable while a live pane and a malformed target do not"
 
+# The inert harness stays running as a process named codex, because a spawn
+# reports a launch delivered only once the pane runs one: it records that it
+# launched and its pid, then execs a symlink named codex to a real long-running
+# binary (a symlink, never a copy: a copied platform binary fails code signing
+# on macOS arm64).
 FAKEBIN="$SCRATCH/fakebin"
-mkdir -p "$FAKEBIN"
+mkdir -p "$FAKEBIN" "$SCRATCH/codexbin"
+ln -s "$(command -v sleep)" "$SCRATCH/codexbin/codex"
 cat > "$FAKEBIN/codex" <<EOF
 #!/usr/bin/env bash
+printf '%s\n' "\$\$" > "$SCRATCH/codex-pid"
 : > "$SCRATCH/codex-launched"
+exec "$SCRATCH/codexbin/codex" 600
 EOF
 chmod +x "$FAKEBIN/codex"
 printf -v FAKEBIN_Q '%q' "$FAKEBIN"
@@ -188,6 +196,14 @@ done
   || fail "the Herdr relaunch replaced its endpoint instead of reusing it"
 herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
   || fail "the Herdr relaunch removed the endpoint it was required to reuse"
+# Stop the inert harness again: the cases below need the agent-free shell.
+kill "$(cat "$SCRATCH/codex-pid")" 2>/dev/null || true
+for _ in $(seq 1 50); do
+  [ "$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")" = dead ] && break
+  sleep 0.1
+done
+[ "$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")" = dead ] \
+  || fail "the inert harness did not stop, leaving the pane '$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")'"
 awk -F= '$1 == "harness" {$0="harness=claude"} {print}' "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"

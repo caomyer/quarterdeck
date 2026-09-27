@@ -454,6 +454,7 @@ make_agy_fakebin() {
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >> "$FM_FAKE_TMUX_CALL_LOG"
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 state=$(cat "$FM_FAKE_AGY_STATE" 2>/dev/null || true)
 fake_screen() {
   case "$state" in
@@ -490,7 +491,7 @@ case "${1:-}" in
     literal=
     prev=
     for arg in "$@"; do
-      if [ "$prev" = -l ]; then literal=$arg; break; fi
+      if [ "$prev" = -l ]; then literal=$(fm_fake_tmux_typed "$arg"); break; fi
       prev=$arg
     done
     if [ -n "$literal" ]; then

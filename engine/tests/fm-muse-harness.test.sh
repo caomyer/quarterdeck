@@ -72,6 +72,7 @@ make_spawn_fakebin() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
@@ -88,6 +89,7 @@ case "${1:-}" in
     prev=
     for arg in "$@"; do
       if [ "$prev" = -l ]; then
+        arg=$(fm_fake_tmux_typed "$arg")
         printf '%s\n' "$arg" >> "$FM_FAKE_LAUNCH_LOG"
         if [ "${FM_FAKE_EXECUTE_MUSE_LAUNCH:-}" = 1 ]; then
           case "$arg" in
@@ -450,6 +452,7 @@ make_send_case() {  # <name> <harness>
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 case "${1:-}" in
   display-message) printf 'fakepane\n'; exit 0 ;;
   has-session) exit 0 ;;
