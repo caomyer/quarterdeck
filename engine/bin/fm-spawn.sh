@@ -333,7 +333,11 @@
 # script performs the transition under the task's own meta lock before it reports
 # success. A ship or scout dispatch therefore REFUSES up front, before any
 # endpoint, worktree, or record exists, unless the home's backlog has an
-# unheld, unblocked Queued or In flight item for the id; a transition that fails
+# unheld, unblocked Queued or In flight item for the id - or, for a task held for
+# the captain, one whose page came back with a comments or changes review nobody
+# has acted on (bin/fm-backlog-transition-lib.sh's
+# fm_backlog_row_dispatchable_for_review), which is dispatched with its hold in
+# place so answering the review never releases the call; a transition that fails
 # after publication removes the record it just wrote rather than leaving a
 # worker the backlog does not own. A relaunch re-reads the row instead of
 # re-running the transition, so an eligible In-flight item is left untouched.
@@ -2831,8 +2835,13 @@ if fm_backlog_transition_applies "$CONFIG" "$DATA" "$KIND"; then
     exit 1
   fi
   if ! fm_backlog_row_dispatchable "$BACKLOG_ROW_STATE"; then
-    echo "error: this home's backlog item $ID is not dispatchable in state $BACKLOG_ROW_STATE; refusing before creating its endpoint or local copy" >&2
-    exit 1
+    if fm_backlog_row_dispatchable_for_review "$BACKLOG_ROW_STATE" "$FM_BACKLOG_ROW_HOLD_KIND" "$DATA" "$ID"; then
+      FM_BACKLOG_DISPATCH_FOR_REVIEW=1
+      echo "note: $ID stays held for the captain; it is dispatched only to answer the captain's review of its page, and its call is not released" >&2
+    else
+      echo "error: this home's backlog item $ID is not dispatchable in state $BACKLOG_ROW_STATE; refusing before creating its endpoint or local copy" >&2
+      exit 1
+    fi
   fi
 else
   BACKLOG_GATE_STATUS=$?

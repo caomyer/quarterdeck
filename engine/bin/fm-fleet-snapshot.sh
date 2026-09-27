@@ -93,6 +93,12 @@
 #     window, which ends at this snapshot's generated time. It is handed this
 #     snapshot's parsed backlog, so each call's bucket and captain_actionable
 #     are the backlog records' own and the listing costs one process.
+#   reviews[]: every task page's review standing - whether its latest revision
+#     waits for the captain (and in which bucket), the newest verdict, the newest
+#     review no one has acted on, and what an approval carried into the build -
+#     exactly as `bin/fm-artifact.sh reviews --json` reports its pages array;
+#     that script owns the shape and is handed this snapshot's calls[], so a page
+#     an open call carries reads as that call's rather than a second ask.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
 #     (orphan structured in-flight ids with no state/<id>.meta, and unstructured
@@ -1888,6 +1894,10 @@ FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-artifact.sh" list --
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CAPTAIN_HOLD_NOW="$SNAPSHOT_NOW" \
   "$SCRIPT_DIR/fm-captain-hold.sh" list --json --backlog-json "$BACKLOG_JSON_FILE" > "$CALLS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: call listing failed" >&2; exit 1; }
+REVIEWS_JSON_FILE="$JSON_TRANSPORT_DIR/reviews.json"
+FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_ARTIFACT_NOW="$SNAPSHOT_NOW" \
+  "$SCRIPT_DIR/fm-artifact.sh" reviews --json --calls-json "$CALLS_JSON_FILE" > "$REVIEWS_JSON_FILE" \
+  || { echo "fm-fleet-snapshot: review listing failed" >&2; exit 1; }
 SOURCES_JSON_FILE="$JSON_TRANSPORT_DIR/sources.json"
 # A source that cannot be read must not blank the fleet: it reads as an error.
 FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
@@ -1919,6 +1929,7 @@ jq -n \
   --slurpfile scout_reports "$SCOUT_REPORTS_JSON_FILE" \
   --slurpfile artifacts "$ARTIFACTS_JSON_FILE" \
   --slurpfile calls "$CALLS_JSON_FILE" \
+  --slurpfile reviews "$REVIEWS_JSON_FILE" \
   --slurpfile sources "$SOURCES_JSON_FILE" \
   --slurpfile secondmate_current "$SECONDMATE_CURRENT_JSON_FILE" \
   --slurpfile secondmate_landed "$SECONDMATE_LANDED_JSON_FILE" \
@@ -1944,6 +1955,7 @@ jq -n \
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      artifacts:$artifacts[0].artifacts,
      calls:$calls[0].calls,
+     reviews:$reviews[0].pages,
      sources:$sources[0],
      secondmate_current:$secondmate_current,
      secondmate_landed:$secondmate_landed,
