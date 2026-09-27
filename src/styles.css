@@ -1503,11 +1503,7 @@ a.source-chip:hover { border-color: var(--control-hover); }
 .tl-group:hover, .tl-group:focus-visible { outline: 0; background: var(--surface-3); }
 .tl-group strong { overflow: hidden; color: var(--ink); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .tl-group .tl-id { flex: none; font: 11.5px var(--mono); }
-.tl-bar { position: relative; display: inline-block; flex: none; width: 88px; height: 5px; overflow: hidden; margin-left: auto; border-radius: 3px; background: var(--surface-3); }
-.tl-group .tl-bar { background: var(--control); }
-.tl-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--green); }
-.tl-bar.wide { width: 96px; margin-left: 0; align-self: center; }
-.tl-group-count { flex: none; color: var(--muted); font: 11.5px var(--mono); }
+.tl-group-count { flex: none; margin-left: auto; color: var(--muted); font: 11.5px var(--mono); }
 .tl-empty { display: flex; align-items: center; gap: 10px; padding: 18px 16px 18px 64px; color: var(--faint); font-size: 13.5px; }
 .tl-empty svg { color: var(--ghost); }
 .tl-out { position: sticky; z-index: 3; display: flex; align-items: flex-start; justify-content: center; height: 0; pointer-events: none; }
@@ -1615,6 +1611,7 @@ a.source-chip:hover { border-color: var(--control-hover); }
 .td-waiting > button:hover { background: var(--hover); }
 .td-waiting .td-more { margin-left: 8px; align-self: flex-start; }
 .td-waiting .td-quiet { margin: 4px 8px; }
+.gd-members .td-quiet { margin: 6px 8px 2px; }
 .gd-members { display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .gd-members > button { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px; border: 0; border-radius: 8px; color: var(--ink); background: transparent; text-align: left; }
 .gd-members > button:hover { background: var(--hover); }
@@ -1630,7 +1627,7 @@ a.source-chip:hover { border-color: var(--control-hover); }
   .tl-label { padding-left: 38px; }
   .tl-label small { display: none; }
   .tl-group { flex-wrap: wrap; padding-left: 32px; }
-  .tl-bar { margin-left: 0; }
+  .tl-group-count { margin-left: 0; }
   .td-attrs { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .td-key { padding-top: 6px; }
 }

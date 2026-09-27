@@ -316,8 +316,11 @@ const BLOCKED = ["res-share-preview", "res-transcript-search", "res-foreman-hook
   const page = await openList("&tasks");
   await list(page).getByLabel("Group by").selectOption("group");
   const heads = list(page).locator(".tl-group");
-  check(JSON.stringify(await heads.evaluateAll((nodes) => nodes.map((node) => node.dataset.groupId))) === JSON.stringify(["g-share-snips-anywhere", "g-audio-that-sounds-right"]), "groups lead, by their own priority");
-  check((await heads.first().innerText()).includes("1 of 5 landed"), "each says how far through its tasks it is");
+  check(JSON.stringify(await heads.evaluateAll((nodes) => nodes.map((node) => node.dataset.groupId))) === JSON.stringify(["g-share-snips-anywhere", "g-audio-that-sounds-right", "g-episode-artwork"]), "groups lead, by their own priority");
+  check((await heads.first().innerText()).includes("4 open"), "each says how many of its tasks are open");
+  check(!/ of \d+ landed|No tasks yet/.test(await list(page).innerText()), "and never how far through them, which the archive hides");
+  const archived = list(page).locator(".tl-group[data-group-id='g-episode-artwork']");
+  check((await archived.innerText()).includes("Nothing open"), "a group whose tasks have all been archived says nothing is open, not that it is empty");
   check(!/proposed/i.test(await list(page).innerText()), "no row or group carries a proposed tag");
   check((await list(page).locator(".tl-label", { hasText: "Not in a group" }).count()) === 1, "work in no group follows");
   await shot(page, "f1-group-by");
@@ -327,7 +330,15 @@ const BLOCKED = ["res-share-preview", "res-transcript-search", "res-foreman-hook
   check(await drawer.locator("[data-testid='group-members'] > button").count() === 5, "a group's drawer lists its tasks, landed ones too");
   check(await drawer.getByRole("button", { name: "Close the group" }).isDisabled(), "a group with open tasks cannot close");
   check((await drawer.innerText()).includes("It closes once its 4 open tasks have landed."), "and says when it can");
+  check((await drawer.innerText()).includes("in the project's logbook"), "and where its older landed tasks are");
+  check(!/ of \d+ landed/.test(await drawer.innerText()), "and never how far through them it is");
   await shot(page, "f2-group-drawer");
+  await page.keyboard.press("Escape");
+  await archived.click();
+  await drawer.waitFor();
+  check(await drawer.locator("[data-testid='group-members'] > button").count() === 0, "a group whose tasks were all archived lists none");
+  check((await drawer.innerText()).includes("Nothing open") && !/No tasks|Nothing yet/.test(await drawer.innerText()), "and says nothing is open, never that it is empty");
+  check(!(await drawer.getByRole("button", { name: "Close the group" }).isDisabled()), "and can close");
   await page.keyboard.press("Escape");
   await list(page).getByLabel("Group by").selectOption("none");
 
@@ -345,7 +356,22 @@ const BLOCKED = ["res-share-preview", "res-transcript-search", "res-foreman-hook
   await page.waitForFunction(() => document.querySelectorAll(".tl-dep.group").length >= 7);
   check((await row(page, "res-widget-theme").locator(".tl-dep.group").innerText()) === "Widgets and polish", "each row names its new group");
   await list(page).getByLabel("Group by").selectOption("group");
-  check((await list(page).locator(".tl-group[data-group-id='g-widgets-and-polish']").innerText()).includes("0 of 2 landed"), "and Group by shows it");
+  check((await list(page).locator(".tl-group[data-group-id='g-widgets-and-polish']").innerText()).includes("2 open"), "and Group by shows it");
+  await page.close();
+}
+
+// F2: a bulk Put off names each selected task it could not put off, and why.
+{
+  const page = await openList("&tasks");
+  await scrollTo(page, "res-lockscreen");
+  await row(page, "res-lockscreen").locator(".tl-check").check();
+  await row(page, "res-widget-theme").locator(".tl-check").check();
+  const bulk = page.locator("[data-testid='bulk-bar']");
+  await bulk.getByLabel("Put off until").fill(await bulk.getByLabel("Put off until").getAttribute("min"));
+  await bulk.getByRole("button", { name: "Put off" }).click();
+  await list(page).locator(".tl-notice").waitFor();
+  const said = await list(page).locator(".tl-notice").innerText();
+  check(said === "1 changed. Not changed: res-lockscreen: the first mate holds it", `a task the first mate holds is named as not put off (${said})`);
   await page.close();
 }
 

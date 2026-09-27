@@ -1570,7 +1570,7 @@ export class MockHostAdapter implements HostAdapter {
 
   /**
    * One edit through firstmate's `fm-task-edit.sh`, here by its rules (src/host/mock-tasks.ts). The result comes back
-   * at once and the snapshot follows a moment later, as the home's watcher brings the backlog's change.
+   * at once and the snapshot follows a moment later, generated then, as the home's watcher brings the backlog's change.
    */
   async taskEdit(edit: TaskEdit): Promise<TaskEdited> {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -1584,8 +1584,11 @@ export class MockHostAdapter implements HostAdapter {
     if (staleUsed) this.staleEditUsed = true;
     if (records !== fleet.backlog?.records) {
       // The backlog changes at once, as the script's write does; the snapshot that reads it arrives a moment later.
-      this.snapshot.fleet = { ...this.snapshot.fleet, generated: new Date().toISOString(), backlog: { ...this.snapshot.fleet.backlog, records } as FleetSnapshot["backlog"] };
-      this.later(300, () => this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } }));
+      this.snapshot.fleet = { ...this.snapshot.fleet, backlog: { ...this.snapshot.fleet.backlog, records } as FleetSnapshot["backlog"] };
+      this.later(300, () => {
+        this.snapshot.fleet = { ...this.snapshot.fleet, generated: new Date().toISOString() };
+        this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+      });
     }
     return result;
   }

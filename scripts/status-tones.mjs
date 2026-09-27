@@ -123,6 +123,19 @@ async function wears(locator, icon) {
   await page.close();
 }
 
+// A worker with no backlog row, in a home whose first mate edits tasks: there is no row to edit, so none is offered.
+{
+  const page = await open("?tasks", { busy: true });
+  await page.locator(".task-row").first().waitFor();
+  await page.locator(".primary-nav .nav-item", { hasText: "Projects" }).click();
+  await page.locator(".project-card", { hasText: "resonance" }).click();
+  const taskList = page.locator("[data-testid='task-list']");
+  await taskList.locator(".tl-row", { hasText: "task-failed" }).waitFor();
+  check(await taskList.locator(".tl-pri-button").count() > 0, "the home's own rows can be edited");
+  check(await taskList.locator(".tl-row", { hasText: "task-failed" }).locator(".tl-check, .tl-pri-button").count() === 0, "a worker with no backlog row offers no checkbox and no priority to change");
+  await page.close();
+}
+
 // A Captain's Call reply: kept on the call and not recorded, and refused, are two facts with two looks, and neither is
 // the green of an answer firstmate recorded. `pnpm replies` walks every state; this pins the tones.
 {

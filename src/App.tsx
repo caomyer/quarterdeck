@@ -181,13 +181,14 @@ export function App() {
     }));
   }, [bridge.projects, fleet]);
 
-  // An edit's row shows at once, until the snapshot carries the same row: the backlog's change reaches it a moment later.
-  const [edited, setEdited] = useState<Record<string, BacklogRecord>>({});
+  // An edit's row shows at once, until a snapshot generated after the edit returned: that one carries the backlog's change.
+  const [edited, setEdited] = useState<Record<string, { record: BacklogRecord; at: number }>>({});
   const backlogRecords = useMemo(() => withEdits(fleet?.backlog?.records ?? [], edited), [fleet, edited]);
   useEffect(() => {
-    const fresh = fleet?.backlog?.records ?? [];
+    const generated = Date.parse(fleet?.generated ?? "");
+    if (Number.isNaN(generated)) return;
     setEdited((current) => {
-      const kept = Object.fromEntries(Object.entries(current).filter(([id, record]) => !fresh.some((row) => row.id === id && sameRow(row, record))));
+      const kept = Object.fromEntries(Object.entries(current).filter(([, edit]) => edit.at >= generated));
       return Object.keys(kept).length === Object.keys(current).length ? current : kept;
     });
   }, [fleet]);
@@ -196,7 +197,7 @@ export function App() {
   const editing = useMemo(() => (fleet?.backlog?.records ?? []).some((record) => "standing" in record), [fleet]);
   async function editTask(edit: TaskEdit): Promise<TaskEdited> {
     const result = await host.taskEdit(edit);
-    if (result.ok) setEdited((current) => ({ ...current, [result.task]: result.record }));
+    if (result.ok) setEdited((current) => ({ ...current, [result.task]: { record: result.record, at: Date.now() } }));
     return result;
   }
   const [groupId, setGroupId] = useState<string | null>(null);
@@ -1705,16 +1706,16 @@ function useProjectHistory(project: string | null, stamp: string | undefined) {
 type ProjectReport = { task: FleetTask; page?: Artifact; report: string | null };
 
 /** The snapshot's rows with the rows the captain's edits returned in their place, and any group an edit filed. */
-function withEdits(rows: BacklogRecord[], edited: Record<string, BacklogRecord>) {
+function withEdits(rows: BacklogRecord[], edited: Record<string, { record: BacklogRecord }>) {
   if (Object.keys(edited).length === 0) return rows;
   const placed = new Set<string>();
   const merged = rows.map((row) => {
     const edit = edited[row.id];
     if (!edit || placed.has(row.id) || row.state === "done") return row;
     placed.add(row.id);
-    return edit;
+    return edit.record;
   });
-  return [...merged, ...Object.values(edited).filter((row) => !placed.has(row.id) && !rows.some((item) => item.id === row.id))];
+  return [...merged, ...Object.values(edited).map((edit) => edit.record).filter((row) => !placed.has(row.id) && !rows.some((item) => item.id === row.id))];
 }
 
 /**
@@ -1727,12 +1728,6 @@ function withWorkers(rows: BacklogRecord[], workers: FleetTask[], project: strin
     id: worker.id, title: title(worker.id), hold_reason: null, current_role: "worker", state: "in_flight", kind: worker.kind, repo: project,
   }));
   return missing.length ? [...rows, ...missing] : rows;
-}
-
-/** Whether the snapshot's row is the row an edit returned: its line and its body as written. */
-function sameRow(a: BacklogRecord, b: BacklogRecord) {
-  const raw = (row: BacklogRecord) => (row as { raw?: string }).raw ?? "";
-  return raw(a) === raw(b) && JSON.stringify(a.body_lines ?? []) === JSON.stringify(b.body_lines ?? []) && a.state === b.state;
 }
 
 /** While the first mate is writing a brief from the row, its project and kind stay as they are. */
@@ -1752,7 +1747,6 @@ function GroupDrawer({ group, records, now, editing, details, onOpen, onEdit, on
   const members = [...new Map(records.filter((record) => record.part_of === group.id).map((record) => [record.id, record])).values()]
     .sort((a, b) => Number(a.state === "done") - Number(b.state === "done") || (a.start_rank ?? 1e9) - (b.start_rank ?? 1e9));
   const open = members.filter((record) => record.state !== "done");
-  const landed = members.length - open.length;
   const closed = group.state === "done";
   async function close() {
     setClosing(true);
@@ -1768,19 +1762,19 @@ function GroupDrawer({ group, records, now, editing, details, onOpen, onEdit, on
   }
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="group-drawer">
     <header className="drawer-header"><div><span>{group.repo ?? "Group"}</span><h2 data-testid="drawer-title">{group.title}</h2><small className="drawer-id">{group.id}</small></div><button className="icon-button" onClick={onClose} title="Close group details"><X size={18} /></button></header>
-    <div className="drawer-status"><span className="task-state tone-sea"><ListPlus size={16} /></span><div><strong className="tone-sea">{closed ? "Closed" : "Group"}</strong><span>{members.length ? `${landed} of ${members.length} landed` : "No tasks in it yet. Add one from a task's details, or several from the list."}</span></div>{members.length > 0 && <span className="tl-bar wide" aria-hidden="true"><i style={{ width: `${(100 * landed) / members.length}%` }} /></span>}</div>
+    <div className="drawer-status"><span className="task-state tone-sea"><ListPlus size={16} /></span><div><strong className="tone-sea">{closed ? "Closed" : "Group"}</strong><span>{open.length ? `${open.length} open` : "Nothing open"}</span></div></div>
     <div className="drawer-scroll">
       {details}
       <DrawerSection title="Tasks in it"><div className="gd-members" data-testid="group-members">
-        {members.length === 0 && <p className="td-quiet">Nothing yet.</p>}
         {members.map((record) => <button key={record.id} type="button" className={record.state === "done" ? "landed" : ""} onClick={() => onOpen(record.id)}>
           <PriorityBadge record={record} dim={record.state === "done"} />
           <span className="td-node-copy"><strong>{withinProject(record.title, group.repo ?? "")}</strong><small>{record.id}{record.state === "done" && record.completion?.date ? ` · landed ${shortDay(record.completion.date, now)}` : ""}</small></span>
           <span className={`td-node-chip tone-${record.state === "done" ? "muted" : record.state === "in_flight" ? "blue" : standingOf(record) === "ready" ? "green" : standingOf(record) === "blocked" ? "amber" : "muted"}`}>{record.state === "done" ? "Landed" : record.state === "in_flight" ? "Underway" : standingOf(record) === "ready" ? "Ready" : standingOf(record) === "blocked" ? "Blocked" : "Put off"}</span>
         </button>)}
+        <p className="td-quiet">Tasks in it that landed a while ago are in the project's logbook.</p>
       </div></DrawerSection>
       {editing && !closed && <DrawerSection title="Close the group"><div className="brief-block start-block">
-        <p>{open.length ? `It closes once its ${open.length === 1 ? "last open task has" : `${open.length} open tasks have`} landed.` : "Every task in it has landed."}</p>
+        <p>{open.length ? `It closes once its ${open.length === 1 ? "last open task has" : `${open.length} open tasks have`} landed.` : "Nothing in it is open."}</p>
         <div className="start-actions"><button type="button" className="btn-base" disabled={open.length > 0 || closing} onClick={() => void close()}>{closing ? "Closing…" : "Close the group"}</button></div>
         {refusal && <p className="start-problem" role="alert">{refusal}</p>}
       </div></DrawerSection>}

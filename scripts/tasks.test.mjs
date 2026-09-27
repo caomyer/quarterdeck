@@ -98,6 +98,16 @@ test("the other orders: what unblocks most, what has waited longest, what was fi
   assert.deepEqual(ids(taskRows(input(records, { sort: "newest" }))), ["leaf", "root", "mid", "alone"]);
 });
 
+test("tasks filed the same day keep start order under Newest filed", () => {
+  const records = [
+    row("someday", { priority: "4", start_rank: 3 }),
+    row("put-off", { hold_reason: "later", hold_until: "2026-10-01", start_rank: 4 }),
+    row("urgent", { priority: "0", start_rank: 1 }),
+    row("waits", { unresolved_blocker_ids: ["urgent"], start_rank: 2 }),
+  ];
+  assert.deepEqual(ids(taskRows(input(records, { sort: "newest" }))), ["urgent", "someday", "waits", "put-off"]);
+});
+
 test("a task's whole upstream chain, and everything downstream of it, however deep", () => {
   const records = [
     row("a"), row("b", { unresolved_blocker_ids: ["a"] }), row("c", { unresolved_blocker_ids: ["b", "x"] }),
@@ -137,7 +147,7 @@ test("every loop is found once, and a task can say which loop it is in", () => {
   assert.deepEqual(startHere(graph, "a"), [], "a loop has nowhere to start");
 });
 
-test("groups gather their tasks, keep landed ones at the foot until the group closes, and count them", () => {
+test("groups gather their tasks, keep landed ones at the foot until the group closes, and count the open ones", () => {
   const records = [
     row("g-truth", { kind: "program", state: "in_flight", title: "Trust what the app says", priority: "1" }),
     row("g-empty", { kind: "program", state: "in_flight", title: "Nothing yet", priority: "2" }),
@@ -149,11 +159,28 @@ test("groups gather their tasks, keep landed ones at the foot until the group cl
   ];
   const rows = taskRows(input(records));
   const groups = groupsFor(records, { project: "resonance" }, rows);
-  assert.deepEqual(groups.map((group) => [group.id, group.landed, group.total]), [["g-truth", 1, 3], ["g-empty", 0, 0]]);
+  assert.deepEqual(groups.map((group) => [group.id, group.open]), [["g-truth", 2], ["g-empty", 0]]);
   const sections = groupSections(records, { project: "resonance" }, rows, true);
   assert.deepEqual(sections.map((section) => [section.group?.id ?? null, ids(section.rows)]), [["g-truth", ["m2", "m1", "m-landed"]], ["g-empty", []], [null, ["loose"]]]);
   assert.equal(sections[0].rows[2].standing, "landed");
   assert.deepEqual(groupSections(records, { project: "resonance" }, taskRows(input(records, { view: "ready" })), false)[0].rows.map((item) => item.id), ["m2", "m1"], "a view other than Open shows no landed tasks");
+});
+
+test("a group whose landed tasks have left for the archive counts only what the backlog proves: its open tasks", () => {
+  const partly = [
+    row("g-part", { kind: "program", state: "in_flight" }),
+    row("open-1", { part_of: "g-part", start_rank: 1 }),
+    row("open-2", { part_of: "g-part", start_rank: 2 }),
+    row("recent", { part_of: "g-part", state: "done" }),
+  ];
+  const partGroups = groupsFor(partly, { project: "resonance" }, taskRows(input(partly)));
+  assert.deepEqual(partGroups.map((group) => [group.id, group.open]), [["g-part", 2]]);
+  assert.deepEqual(Object.keys(partGroups[0]).sort(), ["id", "open", "record"], "no landed or total count a lost archive could make wrong");
+  assert.deepEqual(ids(groupSections(partly, { project: "resonance" }, taskRows(input(partly)), true)[0].rows), ["open-1", "open-2", "recent"]);
+  const archived = [row("g-gone", { kind: "program", state: "in_flight" }), row("loose", { start_rank: 1 })];
+  const goneGroups = groupsFor(archived, { project: "resonance" }, taskRows(input(archived)));
+  assert.deepEqual(goneGroups.map((group) => [group.id, group.open]), [["g-gone", 0]]);
+  assert.deepEqual(groupSections(archived, { project: "resonance" }, taskRows(input(archived)), true).map((section) => [section.group?.id ?? null, ids(section.rows)]), [["g-gone", []], [null, ["loose"]]]);
 });
 
 test("a list mounted with no filter shows every group, and a group elsewhere when one of its rows is listed", () => {

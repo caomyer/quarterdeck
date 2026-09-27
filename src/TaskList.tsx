@@ -203,17 +203,22 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
   }, [chain, hovered]);
 
   const choices = useMemo(() => groupChoices(records, filter.project), [records, filter.project]);
-  const editable = (record: BacklogRecord) => editing && record.state !== "done" && record.kind !== "captain" && record.kind !== "program";
+  // A row firstmate parsed carries `standing`; a worker the backlog does not carry has no row to edit.
+  const editable = (record: BacklogRecord) => editing && "standing" in record && record.state !== "done" && record.kind !== "captain" && record.kind !== "program";
 
-  async function run(ids: string[], build: (record: BacklogRecord) => TaskEdit | null, done: string) {
+  /** Runs each edit in turn; a builder returns, instead of an edit, why that row is not changed. */
+  async function run(ids: string[], build: (record: BacklogRecord) => TaskEdit | string, done: string) {
     setNotice(null);
     setPending((current) => new Set([...current, ...ids]));
     const refusals: string[] = [];
     let changed = 0;
     for (const id of ids) {
       const record = byId.get(id);
-      const edit = record && build(record);
-      if (!edit) continue;
+      const edit = record ? build(record) : "it is no longer in the backlog";
+      if (typeof edit === "string") {
+        refusals.push(ids.length > 1 ? `${id}: ${edit}` : edit);
+        continue;
+      }
       try {
         const result = await onEdit(edit);
         if (result.ok) changed += Number(result.changed);
@@ -232,7 +237,7 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
   const setGroup = (ids: string[], group: string) =>
     run(ids, (record) => ({ verb: "group", task: record.id, value: group, expect: record.part_of ?? "none" }), group === "none" ? "Group cleared" : "Group set");
   const putOff = (ids: string[], until: string) =>
-    run(ids, (record) => record.hold_kind === "parked" || !record.hold_reason ? { verb: "park", task: record.id, until, expect: record.hold_kind === "parked" ? record.hold_until ?? "none" : "none" } : null, `Put off until ${shortDate(until)}`);
+    run(ids, (record) => record.hold_kind === "parked" || !record.hold_reason ? { verb: "park", task: record.id, until, expect: record.hold_kind === "parked" ? record.hold_until ?? "none" : "none" } : record.hold_kind === "captain" ? "it waits on a call" : "the first mate holds it", `Put off until ${shortDate(until)}`);
 
   const selectable = shown.filter((row) => row.standing !== "landed" && editable(row.record));
   const allSelected = selectable.length > 0 && selectable.every((row) => selected.has(row.id));
@@ -359,8 +364,7 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
           <PriorityBadge record={section.group.record} />
           <strong>{title(section.group.record.title)}</strong>
           <span className="tl-id">{section.group.id}</span>
-          <span className="tl-bar" aria-hidden="true"><i style={{ width: `${section.group.total ? (100 * section.group.landed) / section.group.total : 0}%` }} /></span>
-          <span className="tl-group-count">{section.group.total ? `${section.group.landed} of ${section.group.total} landed` : "No tasks yet"}</span>
+          <span className="tl-group-count">{section.group.open ? `${section.group.open} open` : "Nothing open"}</span>
           <ChevronRight size={15} className="tl-open" aria-hidden="true" />
         </div>}
         {grouping === "group" && !section.group && section.rows.length > 0 && sections.length > 1 && <div className="tl-label">Not in a group <span>{section.rows.length}</span></div>}

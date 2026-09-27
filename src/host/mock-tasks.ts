@@ -24,6 +24,8 @@ const day = (offset: number) => {
 /** The groups this backlog files its work under. */
 export const SHARING_GROUP = "g-share-snips-anywhere";
 export const AUDIO_GROUP = "g-audio-that-sounds-right";
+/** A group whose landed tasks have all left the backlog for its archive, so the backlog names none of them. */
+export const ARTWORK_GROUP = "g-episode-artwork";
 
 /** The backlog rows `?tasks` adds to the home, before the parser's fields are derived. */
 export function mockTaskRecords(row: Row, variant: string | null): BacklogRecord[] {
@@ -33,6 +35,7 @@ export function mockTaskRecords(row: Row, variant: string | null): BacklogRecord
   const records = [
     row(SHARING_GROUP, "Share snips anywhere", { kind: "program", current_role: "program", priority: "1", since: day(-9), body_lines: ["Everything that gets a snip out of the app and in front of someone."] }),
     row(AUDIO_GROUP, "Audio that sounds right", { kind: "program", current_role: "program", priority: "2", since: day(-12) }),
+    row(ARTWORK_GROUP, "Episode artwork", { kind: "program", current_role: "program", priority: "3", since: day(-40) }),
     queued("res-import-crash", "Resonance: a 12-hour episode crashes the import", { priority: "0", since: day(0), body_lines: ["The importer reads the whole file into memory. Stream it."] }),
     queued("res-offline-queue", "Resonance: keep snips made offline and send them when back online", { priority: "1", since: day(-6), ...member(SHARING_GROUP) }),
     queued("res-share-sheet", "Resonance: share a snip from the share sheet", { priority: "2", since: day(-5), ...member(SHARING_GROUP, ["Use the system share sheet; no account needed."]) }),

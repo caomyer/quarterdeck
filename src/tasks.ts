@@ -266,28 +266,24 @@ export function taskRows(input: ListInput & { view: TaskView; sort: TaskSort }):
     unblocks: (a, b) => (unblocks.get(b.id) ?? 0) - (unblocks.get(a.id) ?? 0) || byStart(a, b),
     // Undated rows have waited for an unknown time, so they go last.
     waiting: (a, b) => (since(a) || "9999").localeCompare(since(b) || "9999") || byStart(a, b),
-    newest: (a, b) => since(b).localeCompare(since(a)) || byStart(b, a),
+    newest: (a, b) => since(b).localeCompare(since(a)) || byStart(a, b),
   };
   return rows.sort((a, b) => underwayFirst(a, b) || compare[input.sort](a, b));
 }
 
-/** A group as the list draws it: its own row, and how far through its tasks it is. */
-export type GroupInfo = { id: string; record: BacklogRecord; total: number; landed: number };
+/**
+ * A group as the list draws it: its own row, and how many of its tasks are open. The backlog keeps only its few recent
+ * landed rows and the archive's rows are not read, so how many have landed is never known.
+ */
+export type GroupInfo = { id: string; record: BacklogRecord; open: number };
 
 /** The open groups a list shows: every group of its project, and any other group one of its rows is in. */
 export function groupsFor(records: BacklogRecord[], filter: TaskFilter, rows: ListRow[]): GroupInfo[] {
   const named = new Set(rows.map((row) => row.record.part_of).filter(Boolean));
   const open = [...openById(records).values()].filter((record) => isGroup(record) && (!filter.project || record.repo === filter.project || named.has(record.id)));
-  const members = (id: string) => {
-    const ids = new Map<string, BacklogRecord>();
-    for (const record of records) if (structured(record) && record.part_of === id && !ids.has(record.id)) ids.set(record.id, record);
-    return [...ids.values()];
-  };
+  const members = [...openById(records).values()];
   return open
-    .map((record) => {
-      const all = members(record.id);
-      return { id: record.id, record, total: all.length, landed: all.filter((member) => member.state === "done").length };
-    })
+    .map((record) => ({ id: record.id, record, open: members.filter((member) => member.part_of === record.id).length }))
     .sort((a, b) => priorityLevel(a.record) - priorityLevel(b.record) || (a.record.since ?? "").localeCompare(b.record.since ?? ""));
 }
 
