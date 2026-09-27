@@ -3398,13 +3398,41 @@ spawn_write_launch_file() {  # <launch-command>
 # a warning rather than failing a worker that may well be running. A raw launch
 # command names no harness the classifier knows, so it is not gated, and
 # neither is a backend without a classifier.
+#
+# Herdr's recovery read calls a pane `alive` only once Herdr has registered an
+# agent on it, and a freshly launched harness may not be registered yet - or
+# ever, for a harness Herdr does not recognise - while its process is plainly
+# running. So on Herdr anything short of `alive` or `missing` is settled from
+# the pane's processes instead (fm_backend_herdr_pane_process_state, the same
+# process-level probe the recovery read verifies a registration against): a
+# harness process is a running agent, and only a pane holding nothing but its
+# shell is a launch that produced none.
+spawn_launch_state() {
+  local state
+  state=$(fm_backend_agent_state "$BACKEND" "$T")
+  if [ "$BACKEND" != herdr ]; then
+    printf '%s' "$state"
+    return 0
+  fi
+  case "$state" in
+    alive | missing) printf '%s' "$state"; return 0 ;;
+  esac
+  fm_backend_herdr_parse_target "$T" || { printf 'unreadable'; return 0; }
+  case "$(fm_backend_herdr_pane_process_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+    agent) printf 'alive' ;;
+    shell) printf 'dead' ;;
+    other) printf 'ambiguous' ;;
+    *) printf 'unreadable' ;;
+  esac
+}
+
 spawn_wait_for_live_agent() {
   local i=0 max=${FM_SPAWN_LIVE_POLLS:-40} interval=${FM_SPAWN_LIVE_POLL_INTERVAL:-0.5}
   SPAWN_LAUNCH_STATE=
   [ "$RAW_LAUNCH" = 0 ] || return 0
   fm_control_backend_state_verified "$BACKEND" || return 0
   while :; do
-    SPAWN_LAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$T")
+    SPAWN_LAUNCH_STATE=$(spawn_launch_state)
     [ "$SPAWN_LAUNCH_STATE" != alive ] || return 0
     i=$((i + 1))
     [ "$i" -lt "$max" ] || break

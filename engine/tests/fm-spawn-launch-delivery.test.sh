@@ -157,7 +157,6 @@ new_case() {  # <id> -> worktree path
 agent_state() {  # <id>
   (
     PATH="$FAKEBIN:$PATH"
-    FM_BACKEND_LIB_DIR="$ROOT/bin"
     # shellcheck source=bin/fm-backend.sh
     . "$ROOT/bin/fm-backend.sh"
     fm_backend_agent_state tmux "firstmate:fm-$1"

@@ -158,7 +158,7 @@ remote_launch_snapshot() {
   local f
   {
     cat "$HERDR_LOG"
-    for f in $(grep -o '/tmp/fm-[A-Za-z0-9._-]*/launch\.sh' "$HERDR_LOG" | sort -u); do
+    grep -o '/tmp/fm-[A-Za-z0-9._-]*/launch\.sh' "$HERDR_LOG" | sort -u | while IFS= read -r f; do
       cat "$f"
     done
   } | grep -o 'FM_TRACE_CONTEXT=[a-z]*' | tail -1 | cut -d= -f2
