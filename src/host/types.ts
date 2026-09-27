@@ -166,6 +166,9 @@ export type TaskFile = { name: string; path: string; bytes: number; original: st
 /** One note on a task: evidence, a change of scope, or a decision about the work, for whoever works it. */
 export type TaskNote = { id: string; at: string; by: string; scope: boolean; body: string; files: TaskFile[] };
 
+/** A task's report as its worker wrote it to `data/<id>/report.md`, read by `src-tauri/src/report.rs`; cut past 1 MiB. */
+export type TaskReport = { task: string; path: string; text: string; bytes: number; truncated: boolean };
+
 /** Every note a task carries, oldest first, as `bin/fm-task-note.sh show --json` prints them. */
 export type TaskNotes = { schema: string; task: string; notes: TaskNote[] };
 
@@ -701,6 +704,8 @@ export interface HostAdapter {
   paneCapture(taskId: string): Promise<PaneCapture>;
   /** A task's notes, oldest first; `null` from a firstmate that cannot keep them. */
   taskNotes(taskId: string): Promise<TaskNotes | null>;
+  /** A task's report, to read in its drawer; `null` when it has written none. A refusal rejects with the reason. */
+  taskReport(taskId: string): Promise<TaskReport | null>;
   /**
    * Adds the captain's note to a task through firstmate's writer: words, files the captain picked, or both. Returns
    * the task's notes after it; a refusal rejects with the reason.
