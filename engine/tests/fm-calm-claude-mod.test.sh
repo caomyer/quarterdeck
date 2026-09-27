@@ -19,6 +19,12 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# js_string <text>: the text as a JavaScript string literal, for the modules this
+# test writes. Portable to the stock macOS Bash 3.2, which has no ${var@Q}.
+js_string() {
+  node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"
+}
+
 MOD="$ROOT/.claude/mods/firstmate-calm"
 PI_SHIP="$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts"
 PI_SPRITE="$ROOT/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
@@ -47,7 +53,7 @@ test_plugin_shape() {
   [ ! -e "$MOD/SKILL.md" ] || fail "the mod carries a SKILL.md and would load as a skill on every harness"
   cat >"$TMP_ROOT/shape.mjs" <<JS
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-const mod = ${MOD@Q};
+const mod = $(js_string "$MOD");
 const manifest = JSON.parse(readFileSync(\`\${mod}/.claude-plugin/plugin.json\`, "utf8"));
 if (manifest.name !== "firstmate-calm") throw new Error(\`manifest name \${manifest.name}\`);
 for (const key of ["commands", "agents", "skills", "hooks", "mcpServers", "lspServers", "outputStyles"]) {
@@ -75,8 +81,8 @@ test_shared_sprite_and_pi_rendering() {
   local out
   cat >"$TMP_ROOT/sprite.mjs" <<JS
 import { pathToFileURL } from "node:url";
-const pi = await import(pathToFileURL(${PI_SHIP@Q}).href);
-const core = await import(pathToFileURL(${MOD@Q} + "/lib/fm-calm-working-ship-sprite.ts").href);
+const pi = await import(pathToFileURL($(js_string "$PI_SHIP")).href);
+const core = await import(pathToFileURL($(js_string "$MOD") + "/lib/fm-calm-working-ship-sprite.ts").href);
 const ESC = "\\u001b";
 const ANSI = { water: ESC + "[34m", boat: ESC + "[33m" };
 const RESET = ESC + "[39m";
@@ -150,8 +156,8 @@ test_raster_packing() {
   cat >"$TMP_ROOT/raster.mjs" <<JS
 import { pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
-const raster = await import(pathToFileURL(${MOD@Q} + "/lib/fm-calm-ship-raster.ts").href);
-const core = await import(pathToFileURL(${MOD@Q} + "/lib/fm-calm-working-ship-sprite.ts").href);
+const raster = await import(pathToFileURL($(js_string "$MOD") + "/lib/fm-calm-ship-raster.ts").href);
+const core = await import(pathToFileURL($(js_string "$MOD") + "/lib/fm-calm-working-ship-sprite.ts").href);
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 for (let length = 0; length <= 80; length += 1) {
   const bytes = new Uint8Array(randomBytes(length));
@@ -233,7 +239,7 @@ test_presentation_policy() {
   local out
   cat >"$TMP_ROOT/policy.mjs" <<JS
 import { pathToFileURL } from "node:url";
-const policy = await import(pathToFileURL(${MOD@Q} + "/lib/fm-calm-presentation.ts").href);
+const policy = await import(pathToFileURL($(js_string "$MOD") + "/lib/fm-calm-presentation.ts").href);
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const plugin = "/repo/.claude/mods/firstmate-calm";
 check(policy.calmPreferencePath({}, plugin) === "/repo/config/calm", "plugin-root fallback");
@@ -365,8 +371,8 @@ test_classifier_parity_with_shell_owner() {
   cat >"$TMP_ROOT/classify.mjs" <<JS
 import { pathToFileURL } from "node:url";
 import { readFileSync, writeFileSync } from "node:fs";
-const port = await import(pathToFileURL(${MOD@Q} + "/lib/fm-operational-input.ts").href);
-const corpus = ${corpus@Q};
+const port = await import(pathToFileURL($(js_string "$MOD") + "/lib/fm-operational-input.ts").href);
+const corpus = $(js_string "$corpus");
 const count = ${count};
 const lines = [];
 for (let index = 1; index <= count; index += 1) {

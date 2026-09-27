@@ -1704,6 +1704,144 @@ async fn compact_e2e_live_scratch_home() {
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
 
+// ------------------------------------------------------- session controls ---
+
+/// The current value of the option of a category in the host's controls.
+fn current_value(controls: &Value, category: &str) -> Option<String> {
+    controls["options"].as_array()?.iter().find(|o| o["category"] == category)?["currentValue"].as_str().map(str::to_string)
+}
+
+/// Starts the host and waits for it to be running, returning its controls as `get_state` reports them.
+async fn start_and_read(host: &HostHandle, home: &Path, events: &mut Events) -> (bool, Value, Value) {
+    let from = events.now();
+    let started = ask(host, |reply| Cmd::Start { home: home.to_path_buf(), reply }).await;
+    let session = events.find(from, Duration::from_secs(5), |e, _| e == "session").await;
+    let ready = match session {
+        Some(i) => events.find(i, Duration::from_secs(60), host_state(&["idle", "agent_turn"])).await,
+        None => None,
+    };
+    // The commands follow the session a moment after it opens.
+    let _ = events.find(from, Duration::from_secs(20), |e, b| e == "session_controls" && b["commands"].is_array()).await;
+    let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap_or(Value::Null);
+    (started.is_ok() && ready.is_some(), events.body(session), state["controls"].clone())
+}
+
+/// Live test of the first mate's model and effort, which spends model tokens: each
+/// start runs firstmate's session-start turn. It changes both through the real
+/// adapter's `session/set_config_option`, then relaunches twice, once resuming the
+/// session and once on a fresh one, and checks the host applied both picks again.
+/// A resumed session drops effort to its default and a fresh one starts on the
+/// default model, so only the host's re-apply brings them back.
+///
+/// ```sh
+/// cd src-tauri && FM_E2E_HOME=<scratch home> cargo test session_e2e_live_scratch_home -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "live: runs the real claude-agent-acp against a firstmate scratch home"]
+async fn session_e2e_live_scratch_home() {
+    let buzz = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".buzz");
+    let home = std::env::var("FM_E2E_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| buzz.join(".scratch/fm-probe/firstmate"));
+    let home = std::fs::canonicalize(&home).expect("the scratch home exists");
+    assert!(home.starts_with(buzz.join(".scratch")), "only scratch homes");
+    let before = lock_status(&home);
+    assert!(
+        before == "lock: free" || before.starts_with("lock: stale"),
+        "the scratch home's lock is not free ({before}); another host may be using it"
+    );
+
+    let out = buzz.join(".scratch/firstmate-desktop-e2e");
+    std::fs::create_dir_all(&out).expect("create the run folder");
+    let _live = LiveRun::take(&out, &home).await;
+    let run = now_ms();
+    let data_dir = out.join(format!("appdata-session-{run}"));
+    std::fs::create_dir_all(&data_dir).expect("create the app data folder");
+    let recording = out.join(format!("session-{run}.jsonl"));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let recorder = Arc::new(Recorder {
+        started: Instant::now(),
+        file: Mutex::new(std::fs::File::create(&recording).expect("create the recording")),
+        data_dir: data_dir.clone(),
+        tx,
+    });
+    println!("home: {}\nrecording: {}", home.display(), recording.display());
+    let host = Arc::new(HostHandle::spawn_with(recorder.clone()));
+    let _cleanup = StopOnDrop(host.clone());
+    let mut events = Events { rx, seen: Vec::new() };
+    let mut steps = Vec::new();
+
+    recorder.mark("1", "host_start: the session states its options and advertises its commands");
+    let (running, _, controls) = start_and_read(&host, &home, &mut events).await;
+    let commands = controls["commands"].as_array().map(Vec::len).unwrap_or(0);
+    record(
+        &mut steps,
+        "start: model and effort offered, commands advertised",
+        running && current_value(&controls, "model").is_some() && current_value(&controls, "thought_level").is_some() && commands > 0,
+        format!("model={:?}; effort={:?}; commands={commands}", current_value(&controls, "model"), current_value(&controls, "thought_level")),
+    );
+
+    // 2. The captain's picks, confirmed by the adapter itself.
+    let mut picked = false;
+    if running {
+        recorder.mark("2", "set effort high, then the model to sonnet, through session/set_config_option");
+        let effort = ask(&host, |reply| Cmd::SetOption { category: "thought_level".into(), value: "high".into(), reply }).await;
+        let model = ask(&host, |reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await;
+        let after = model.as_ref().cloned().unwrap_or(Value::Null);
+        picked = current_value(&after, "model").as_deref() == Some("sonnet") && current_value(&after, "thought_level").as_deref() == Some("high");
+        record(
+            &mut steps,
+            "set: the adapter confirms Sonnet at High",
+            effort.is_ok() && picked,
+            format!("effort={:?}; model={:?}; now model={:?} effort={:?}", effort.as_ref().err(), model.as_ref().err(), current_value(&after, "model"), current_value(&after, "thought_level")),
+        );
+        let refused = ask(&host, |reply| Cmd::SetOption { category: "model".into(), value: "nonexistent-model-xyz".into(), reply }).await;
+        record(&mut steps, "set: a value the session does not offer is refused before it", refused.is_err(), format!("{refused:?}"));
+    } else {
+        not_exercised(&mut steps, "set: the adapter confirms Sonnet at High", "the host did not start".into());
+    }
+
+    // 3. Relaunch, resuming the session: effort would come back as the default without the re-apply.
+    if picked {
+        recorder.mark("3", "stop and start again, resuming the session");
+        let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+        let (running, session, controls) = start_and_read(&host, &home, &mut events).await;
+        record(
+            &mut steps,
+            "resumed: Sonnet at High applied again",
+            running && current_value(&controls, "model").as_deref() == Some("sonnet") && current_value(&controls, "thought_level").as_deref() == Some("high") && controls["problems"] == json!({}),
+            format!("session={session}; model={:?}; effort={:?}; problems={}", current_value(&controls, "model"), current_value(&controls, "thought_level"), controls["problems"]),
+        );
+    } else {
+        not_exercised(&mut steps, "resumed: Sonnet at High applied again", "no pick was confirmed".into());
+    }
+
+    // 4. Relaunch on a fresh session, which starts on the default model.
+    if picked {
+        recorder.mark("4", "stop, forget the session, and start a fresh one");
+        let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+        for dir in std::fs::read_dir(data_dir.join("homes")).into_iter().flatten().flatten() {
+            let _ = std::fs::remove_file(dir.path().join("session.json"));
+        }
+        let (running, session, controls) = start_and_read(&host, &home, &mut events).await;
+        record(
+            &mut steps,
+            "fresh: Sonnet at High applied again",
+            running && session["mode"] == "new" && current_value(&controls, "model").as_deref() == Some("sonnet") && current_value(&controls, "thought_level").as_deref() == Some("high"),
+            format!("session={session}; model={:?}; effort={:?}; problems={}", current_value(&controls, "model"), current_value(&controls, "thought_level"), controls["problems"]),
+        );
+        let drifted = events.seen.iter().any(|(e, b)| e == "host_health" && b["kind"] == "mode_changed");
+        record(&mut steps, "the home's permission mode held throughout", !drifted, format!("mode_changed reported: {drifted}"));
+    } else {
+        not_exercised(&mut steps, "fresh: Sonnet at High applied again", "no pick was confirmed".into());
+    }
+
+    let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+    println!("\nrecording: {}", recording.display());
+    let failed: Vec<&str> = steps.iter().filter(|step| matches!(step.outcome, Outcome::Failed)).map(|step| step.name).collect();
+    assert!(failed.is_empty(), "failed: {failed:?}");
+}
+
 // --------------------------------------------------------------- start ---
 
 /// Where a queued task's drawer stands, worked out by `src/start.ts` itself from

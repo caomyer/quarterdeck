@@ -474,7 +474,8 @@ export type HostEvent =
   | { type: "permission_request"; payload: PermissionRequest }
   | { type: "permission_resolved"; payload: { id: string; option_id: string } }
   | { type: "host_health"; payload: { warning?: string; rewake_storm?: boolean; [key: string]: unknown } }
-  | { type: "snapshot"; payload: SnapshotEvent };
+  | { type: "snapshot"; payload: SnapshotEvent }
+  | { type: "session_controls"; payload: SessionControls };
 
 /** The first mate's context window, as the host reads the adapter's usage updates. `null`s until the first reading. */
 export type ContextReading = {
@@ -486,6 +487,40 @@ export type ContextReading = {
   /** The last compaction: the size it compacted from, what it left, and when. */
   compacted: { from: number; to: number; at_ms: number } | null;
 };
+
+/** One value a session option offers, as the adapter names it. */
+export type SessionOptionValue = { value: string; name: string; description?: string };
+
+/** One of the session's config options, whole, as the adapter last stated it (`configOptions`). */
+export type SessionOption = { id: string; name: string; description?: string; category?: string; type?: string; currentValue: string; options: SessionOptionValue[] };
+
+/** A slash command the session advertises in `available_commands_update`. */
+export type SessionCommand = { name: string; description: string; hint: string | null };
+
+/** The categories the captain changes from the composer: the model, and the adapter's Effort. */
+export type PickedCategory = "model" | "thought_level";
+
+/**
+ * What the first mate's session offers and advertises, as the host last heard it from the adapter
+ * (`src-tauri/src/controls.rs`). `options` is null before any session opened, `commands` until the session sent them.
+ */
+export type SessionControls = {
+  live: boolean;
+  options: SessionOption[] | null;
+  commands: SessionCommand[] | null;
+  mode: string | null;
+  /** A change on its way, not yet confirmed. */
+  pending: { category: PickedCategory; value: string } | null;
+  /** Why a kept pick could not be applied when the session opened, by category. */
+  problems: Partial<Record<PickedCategory, { value: string; reason: string }>>;
+  /** Values this session refused because they cannot run the home's permission mode, with why, keyed `category:value`. */
+  unfit: Record<string, string>;
+  /** The captain's picks kept for this home, applied again after every start. */
+  picks: Partial<Record<PickedCategory, string>>;
+};
+
+/** This home's Calm choice, through `bin/fm-calm.sh`. `available` is false for a firstmate that predates it. */
+export type CalmRead = { available: boolean; on: boolean; problem: string | null };
 
 /** The adapter's `_claude/rateLimit`: the Claude plan limit the first mate runs under, as its session last reported it. */
 export type RateLimit = {
@@ -588,6 +623,8 @@ export type HostStateSnapshot = {
   conversation?: { sessionId: string; items: HistoryItem[] } | null;
   /** The context window and the Claude plan limit as last reported, for a window that opened after them. */
   usage?: { context: ContextReading | null; rateLimit: RateLimit | null };
+  /** The session's options and commands as last stated, for a window that opened after them. */
+  controls?: SessionControls | null;
 };
 
 /** The captain's firstmate home: `home` once chosen and still valid, `problem` when a choice doesn't check out. */
@@ -711,6 +748,15 @@ export interface HostAdapter {
   /** The last finished snapshot, for a window that subscribed after it was emitted. Waits for a read in progress. */
   latestSnapshot(): Promise<SnapshotEvent | null>;
   answerPermission(id: string, optionId: string): Promise<void>;
+  /**
+   * Changes the session's model or effort. Resolves with the session's controls once the adapter confirmed the change;
+   * rejects with the adapter's reason, or the host's when no session can take it.
+   */
+  setSessionOption(category: PickedCategory, value: string): Promise<SessionControls>;
+  /** This home's Calm choice, through firstmate's own command. */
+  calmGet(): Promise<CalmRead>;
+  /** Sets it; rejects with the command's reason when it could not be kept. */
+  calmSet(on: boolean): Promise<CalmRead>;
   /** Where the review frame loads a revision's page from. Its relative links resolve inside the same revision. */
   artifactUrl(revision: ArtifactRevision): string;
   /** The review of one page: every thread, and what has been sent. */
