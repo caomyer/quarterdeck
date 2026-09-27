@@ -22,7 +22,7 @@ Agents do not work there and do not branch from it: each agent clones the remote
 It was its own repository at `caomyer/firstmate` until 2026-09-20, when it moved here with all 720 of its commits, paths rewritten, so `git log` and `git blame` read its whole past from this repo.
 It is not a vendored dependency and not a submodule: it is ours, edited here, and a change that crosses the line between the app and the first mate is one commit.
 
-- Its checks are its own, and they run from `engine/`: `cd engine && bin/fm-test-run.sh --changed` for what your change touches, `bin/fm-lint.sh` for the shell, `bin/fm-test-run.sh --all` for the full 221-script regression.
+- Its checks are its own, and they run from `engine/`: `cd engine && bin/fm-test-run.sh --changed` for what your change touches, `bin/fm-lint.sh` for the shell, `bin/fm-test-run.sh --all` for the full regression.
   They need pinned ShellCheck and actionlint on PATH; `engine/bin/fm-install-shellcheck.sh <dir>` and `engine/bin/fm-install-actionlint.sh <dir>` fetch the versions CI uses.
 - GitHub runs workflows only from a repository root, so the engine's live at `.github/workflows/engine.yml`, running from `engine/` and firing only on changes under it.
   `.github/workflows/app.yml` is the app's own, and skips a change confined to `engine/`.
