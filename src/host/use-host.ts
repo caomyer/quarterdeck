@@ -227,11 +227,13 @@ export function useHost(adapter: HostAdapter) {
     // Text after a new step belongs to a new message, so the chat reads in the order things happened.
     // Updates to earlier steps can land mid-reply and must not split it.
     if (isNew) streamId.current = null;
+    const at = session.current;
+    const arrivedIn = turn.current;
     setMessages((current) => {
       const index = current.findIndex((message) => message.who === "step" && message.id === step.id);
       if (index < 0) {
         if (!isNew) return current;
-        return [...current, { id: step.id, who: "step", text: step.title ?? "", kind: step.kind, status: step.status, createdAt: new Date().toISOString(), session: session.current, turn: turn.current }];
+        return [...current, { id: step.id, who: "step", text: step.title ?? "", kind: step.kind, status: step.status, createdAt: new Date().toISOString(), session: at, turn: arrivedIn }];
       }
       return current.map((message, position) => position === index ? {
         ...message,
@@ -380,10 +382,11 @@ export function useHost(adapter: HostAdapter) {
       const activeId = streamId.current ?? `mate-${crypto.randomUUID()}`;
       streamId.current = activeId;
       const at = session.current;
+      const arrivedIn = turn.current;
       setMessages((current) => {
         const activeIndex = current.findIndex((message) => message.id === activeId);
         if (activeIndex < 0) {
-          return [...current, { id: activeId, who: "mate", text: event.payload.chunk, createdAt: new Date().toISOString(), session: at, turn: turn.current }];
+          return [...current, { id: activeId, who: "mate", text: event.payload.chunk, createdAt: new Date().toISOString(), session: at, turn: arrivedIn }];
         }
         return current.map((message, index) => index === activeIndex ? { ...message, text: message.text + event.payload.chunk } : message);
       });
