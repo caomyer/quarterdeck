@@ -108,9 +108,16 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Run it after changing the project page or the mock's history.
 - Check what the app tells a captain their Mac still needs, in both themes: start Vite on your own port, then
   `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm onboarding`.
-  It checks the checklist the first mate's own detection produces, the remedy beside each name, a line the app has no shape for shown in the first mate's words, a check that could not be made, and a Mac with nothing missing saying nothing.
+  It checks the checklist the first mate's own detection produces, grouped by who acts on it, a line the app has no shape for shown in the first mate's words, a check that could not be made, and a Mac with nothing missing saying nothing.
   The list is never kept here: `bin/fm-bootstrap.sh` owns what a home needs, and the app asks it for detection only with the network phase skipped, so the check reads the machine and changes nothing.
   Run it after changing that banner or what the backend reads from bootstrap.
+- A new captain meets a welcome (`src/Welcome.tsx`, read by `src/agents.ts`) on the app's own home until a first mate has answered there: the agents on this Mac, from `engine/bin/fm-agents.sh` alone, which owns whether each is installed and signed in and how to install and sign it in.
+  The app installs only after showing the exact commands, and keeps only the ACP adapter, pinned in `src-tauri/src/harness.rs` and installed into its own tools folder (`src-tauri/src/onboarding.rs`).
+  Check every state, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm welcome`.
+  A new captain installs the app with `scripts/install.sh` (`docs/releasing.md`), since a browser download is refused until the app is notarized.
+- The first mate runs on Claude Code or Codex, chosen per home; switching is a relaunch, and each agent keeps its own session.
+  Under ACP, Codex folds a prompt sent into a running turn and never answers it, so the host steers a running Codex turn through `_session/steering`, ends Codex turns on its thread status, and runs `bin/fm-turnend-guard.sh` itself at each turn end, because Codex runs none of the home's hooks there.
+  The live tests run on either: `FM_E2E_HARNESS=codex` picks Codex.
 - Files the captain attaches travel as words: picking one only checks it, and the host copies each into the home's `data/.attachments/` when the message is sent (`src-tauri/src/attach.rs`), and `src/attachments.ts` alone writes and reads the block naming those copies in the message, so the outbox, re-sends and history stay text.
   Check the composer, the sent message and the refusals, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm attach`.
   Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test attach_e2e_live_scratch_home -- --ignored --nocapture` has a real first mate read an attached file, and read it again after a restart mid-turn.

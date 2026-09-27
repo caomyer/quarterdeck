@@ -117,6 +117,18 @@ A Developer ID certificate, which needs the Apple Developer Program ($99 a year)
 When it arrives: replace `QUARTERDECK_SIGNING_P12` and its password with the Developer ID certificate, turn on `bundle.macOS.hardenedRuntime` in `src-tauri/tauri.conf.json`, and add the notarization credentials to `release.yml`.
 Moving to a new certificate changes the designated requirement once, so macOS asks for each permission one last time.
 
+## Installing it on another Mac
+
+Until the app is notarized, a copy downloaded in a browser is refused by Gatekeeper, so a new Mac installs it from Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/caomyer/quarterdeck/main/scripts/install.sh | sh
+```
+
+`scripts/install.sh` reads the same `latest.json` the updater reads, installs the Apple Silicon build into Applications all or nothing, and opens it; its header says what it refuses.
+A file curl fetches carries no quarantine flag, which is why it opens.
+Every release's page carries the same line.
+
 ## Installing the first release by hand
 
 The app installed today was built and copied by hand and cannot update itself.

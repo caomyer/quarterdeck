@@ -113,6 +113,15 @@ jobs:
           body="$RUNNER_TEMP/body.md"
           cp "$RUNNER_TEMP/notes.md" "$body"
           printf '\nBuilt from %s.\n' "$GITHUB_SHA" >>"$body"
+          # Until the app is notarized, a browser download is refused by Gatekeeper; a file curl fetches is not.
+          cat >>"$body" <<'INSTALL'
+
+          To install on an Apple Silicon Mac, paste this into Terminal. A copy downloaded in a browser will not open until the app is notarized.
+
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/caomyer/quarterdeck/main/scripts/install.sh | sh
+          ```
+          INSTALL
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Quarterdeck $VERSION" --notes-file "$body" --draft \
             "$TARBALL" "$TARBALL.sig" "$RUNNER_TEMP/latest.json"
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
