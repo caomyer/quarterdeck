@@ -14,7 +14,9 @@
 # Every URL explicitly linked by a structured backlog row or a task's pr= is
 # owned. Previously observed URLs remain in data/<task>/contributions.json after
 # endpoint teardown. Repository-wide PR discovery never establishes ownership.
-# GitHub PRs and issues are supported; other forges remain visibly unmeasured.
+# GitHub PRs and issues are supported. poll skips a URL on any other forge: it
+# is never read, never counted toward a streak and never woken, only given a
+# record that keeps its ownership, and Bearings reports it as unmeasured.
 #
 # This script owns fm-contributions.v1: one atomic file per durable task with
 # task and records[]. Each record contains url, kind, checked_at, error,
@@ -207,11 +209,14 @@ forge() {
   return "$rc"
 }
 
-observe() { # canonical GitHub URL -> normalized JSON
+supported_forge() { # canonical URL -> whether observe can read it
+  case "$1" in https://github.com/*/pull/*|https://github.com/*/issues/*) return 0 ;; *) return 1 ;; esac
+}
+
+observe() { # supported canonical URL -> normalized JSON
   local url=$1 part number kind endpoint head after label
-  case "$url" in https://github.com/*) ;; *) printf 'unsupported forge\n' > "$TMP/forge.err"; return 1 ;; esac
   part=${url#https://github.com/}; number=${part##*/}; part=${part%/*}; kind=${part##*/}; part=${part%/*}
-  case "$kind" in pull) endpoint="repos/$part/pulls/$number" ;; issues) endpoint="repos/$part/issues/$number" ;; *) printf 'unsupported forge\n' > "$TMP/forge.err"; return 1 ;; esac
+  if [ "$kind" = pull ]; then endpoint="repos/$part/pulls/$number"; else endpoint="repos/$part/issues/$number"; fi
   forge api "$endpoint" > "$TMP/core.json" || return 1
   jq -e '(.state == "open" or .state == "closed") and (.user.login | type == "string")' "$TMP/core.json" >/dev/null || return 1
   forge api "repos/$part/issues/$number/comments?per_page=100" --paginate --slurp > "$TMP/comments.json" || return 1
@@ -304,8 +309,19 @@ poll() {
   BUDGET_EXHAUSTED=0
   while IFS=$'\t' read -r -a row; do
     [ "${#row[@]}" -ge 2 ] || continue
-    [ "$(date +%s)" -lt "$DEADLINE" ] || break
     url=${row[0]}
+    case "$url" in */issues/*) kind=issue ;; *) kind="pr" ;; esac
+    if ! supported_forge "$url"; then
+      for task in "${row[@]:1}"; do
+        fm_pr_task_id_valid "$task" || { printf 'contributions: invalid durable task id\n'; continue; }
+        jq -e --arg task "$task" --arg url "$url" 'any(.[]; .task == $task and any(.records[]; .url == $url))' "$TMP/saved.json" >/dev/null && continue
+        jq -n --arg url "$url" --arg kind "$kind" \
+          '{url:$url,kind:$kind,checked_at:null,observation:null,verdict:null,seen:[],pending:[],notified:[]}' > "$TMP/row.json"
+        write_record "$task" "$TMP/row.json"
+      done
+      continue
+    fi
+    [ "$(date +%s)" -lt "$DEADLINE" ] || break
     observed=0
     NOT_READ=0
     FORGE_RC=
@@ -323,7 +339,6 @@ poll() {
          else ($err | gsub("\\s+";" ") | ltrimstr(" ") | rtrimstr(" ") | .[:300]
            | if . == "" then "forge answer failed validation" else . end) end)}' > "$TMP/last-read.json"
     failing=
-    case "$url" in */issues/*) kind=issue ;; *) kind="pr" ;; esac
     for task in "${row[@]:1}"; do
       fm_pr_task_id_valid "$task" || { printf 'contributions: invalid durable task id\n'; continue; }
       old="$TMP/old.json"
