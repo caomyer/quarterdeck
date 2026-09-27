@@ -3,6 +3,7 @@ mod attach;
 mod calls;
 mod calm;
 mod controls;
+mod devdrive;
 mod engine;
 mod envpath;
 mod host;
@@ -10,6 +11,7 @@ mod host;
 mod host_e2e;
 mod notes;
 mod quota;
+mod report;
 mod review;
 mod routing;
 mod settings;
@@ -52,8 +54,12 @@ pub fn run() {
       // leaves a fixed 1440x900 window taller than a smaller screen, with the
       // sidebar's footer behind the Dock. Asking once the window exists works.
       if let Some(window) = app.get_webview_window("main") {
-        let _ = window.maximize();
+        // A driven window keeps the size it was made with, so every run's snapshots compare.
+        if devdrive::requested().is_none() {
+          let _ = window.maximize();
+        }
       }
+      devdrive::start(app.handle().clone());
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -87,6 +93,7 @@ pub fn run() {
       snapshot::project_history,
       notes::task_notes,
       notes::task_note_add,
+      report::task_report,
       review::review_get,
       review::review_comment,
       review::review_discard,

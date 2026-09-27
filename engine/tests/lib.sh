@@ -68,6 +68,13 @@ unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# The liveness model every fake `tmux` stub in a spawn test sources, so a spawn
+# can prove its launch produced a running agent (tests/fake-tmux-liveness.sh).
+export FM_TEST_FAKE_TMUX_LIVENESS="$ROOT/tests/fake-tmux-liveness.sh"
+# What a pane shell runs for a typed literal, for stubs that model the pane
+# themselves (tests/fake-tmux-typed.sh).
+export FM_TEST_FAKE_TMUX_TYPED="$ROOT/tests/fake-tmux-typed.sh"
+
 # --- reporters --------------------------------------------------------------
 
 fail() {

@@ -226,6 +226,7 @@ make_spawn_record_fakebin() {
 #!/usr/bin/env bash
 set -u
 [ -n "${FM_TMUX_REC:-}" ] && printf 'tmux %s\n' "$*" >> "$FM_TMUX_REC"
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac

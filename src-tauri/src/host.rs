@@ -49,7 +49,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State as TauriState};
+use tauri::{AppHandle, Emitter, State as TauriState};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -133,7 +133,7 @@ impl HostEnv for TauriEnv {
     }
 
     fn data_dir(&self) -> Result<PathBuf, String> {
-        self.0.path().app_data_dir().map_err(|e| format!("no app data folder: {e}"))
+        crate::settings::settings_dir(&self.0)
     }
 }
 

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model sizes</title>
+<style>
+  :root { color-scheme: light dark; --ink: #1f2430; --muted: #5d6475; --line: #dde1e8; --accent: #2f855a; --soft: #f3f8f5; --page: #fff; }
+  @media (prefers-color-scheme: dark) { :root { --ink: #e7e9ee; --muted: #a3a9b6; --line: #343a46; --accent: #6fcf97; --soft: #1b2320; --page: #14171c; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: var(--page); }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 28px 64px; }
+  .eyebrow { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  h1 { margin: 6px 0 10px; font-size: 30px; line-height: 1.15; }
+  p.lead { margin: 0 0 24px; color: var(--muted); font-size: 17px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  td.num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body><main>
+<div class="eyebrow">resonance · AI titles for snips</div>
+<h1>Model sizes</h1>
+<p class="lead">Three on-device models, measured on an iPhone 12, against the server model the titles plan compares them with.</p>
+<table>
+  <thead><tr><th>Model</th><th>Download</th><th>Title in</th><th>Titles kept</th></tr></thead>
+  <tbody>
+    <tr><td>Small</td><td class="num">48 MB</td><td class="num">0.4 s</td><td class="num">61%</td></tr>
+    <tr><td>Medium</td><td class="num">150 MB</td><td class="num">0.9 s</td><td class="num">78%</td></tr>
+    <tr><td>Large</td><td class="num">410 MB</td><td class="num">2.6 s</td><td class="num">81%</td></tr>
+    <tr><td>Server</td><td class="num">none</td><td class="num">1.3 s</td><td class="num">84%</td></tr>
+  </tbody>
+</table>
+</main></body>
+</html>

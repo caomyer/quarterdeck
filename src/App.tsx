@@ -52,7 +52,7 @@ import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, answersThisAsk, answerOfMessage, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import { answerCardView, callCardView, callLine, type EarlierWords } from "./callviews";
 import { AnswerCard, CallLineCard, CallOpenCard, EvidenceLine } from "./CallCards";
@@ -63,6 +63,8 @@ import { IntakeSection, LinkField, SourceChips, SourcesSettings, UpstreamSection
 import { PriorityBadge, TaskList, type UnderwayStatus } from "./TaskList";
 import { type DetailsLock, TaskChain, TaskDetails, WaitingOnThis } from "./TaskDetails";
 import { standingOf } from "./tasks";
+import { artifactKey, artifactStanding, type ArtifactStanding, authorAnswers, type Output, type OutputChip, outputChip, reviewChip, taskOutput, waitsOnCaptain } from "./produced";
+import { GaveSection, PageTaskStrip, ProducedSection, type ReadReport, type TaskStanding } from "./TaskOutput";
 import { askKey, linkViews, offerRows, type OfferRow, sourcesOf } from "./sources";
 
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
@@ -83,6 +85,8 @@ type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifa
 type OpenArtifact = ArtifactRef & { rev?: number };
 
 const host = createHostAdapter();
+/** A task's report, read by the host for its drawer. */
+const readReport: ReadReport = (task) => host.taskReport(task);
 
 function projectName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? "untitled-project";
@@ -126,7 +130,7 @@ function taskStatus(state: string, size = 16): { tone: Tone; icon: React.ReactNo
 function runtimeLabel(state: HostRuntimeState, pending: number, approvals: number) {
   if (approvals > 0 && ["idle", "prompt_turn", "agent_turn"].includes(state)) return "Waiting for your OK";
   if (state === "prompt_turn") return `Working on your ${pending > 1 ? `${pending} messages` : "message"}`;
-  if (state === "agent_turn") return "Handling a fleet update";
+  if (state === "agent_turn") return "Working on its own";
   if (state === "restarting") return "Restarting…";
   if (state === "starting") return "Starting…";
   if (state === "locked_by_other") return "Running elsewhere";
@@ -250,6 +254,9 @@ export function App() {
   // A queued row is kept by id, so its drawer reads each new snapshot's row rather than the one it opened with.
   const [queuedId, setQueuedId] = useState<string | null>(null);
   useEffect(() => setQueuedId(null), [view, selectedProject]);
+  // The task whose report a row's chip asked to read, so its drawer opens with the report open.
+  const [reportFor, setReportFor] = useState<string | null>(null);
+  useEffect(() => { if (reportFor && queuedId !== reportFor && activeTask?.id !== reportFor) setReportFor(null); }, [reportFor, queuedId, activeTask]);
   // Every task's latest ask to start it, read from the home, so a relaunch still knows what the captain asked.
   const [asks, setAsks] = useState<Record<string, StartAsk>>({});
   useEffect(() => {
@@ -400,6 +407,78 @@ export function App() {
     }
   }
 
+  /**
+   * What a task produced, read from what outlives its worker (`src/produced.ts`): the drawer leads with it, the list's
+   * row chip opens its first item, and the list's To review view is the tasks it says wait on the captain.
+   */
+  function outputOf(id: string, record = records.get(id)) {
+    return taskOutput({ id, record, worker: fleet?.tasks.find((task) => task.id === id), artifacts, reviews, calls, backlog: records });
+  }
+
+  /** Each row's output chip, and the rows whose output waits on the captain, for a task list. */
+  function listOutput(rows: BacklogRecord[]) {
+    const chips = new Map<string, OutputChip>();
+    const review = new Set<string>();
+    for (const record of rows) {
+      if (chips.has(record.id) || review.has(record.id)) continue;
+      const output = outputOf(record.id, records.get(record.id) ?? record);
+      const chip = outputChip(output);
+      if (chip) chips.set(record.id, chip);
+      if (waitsOnCaptain(output)) review.add(record.id);
+    }
+    return { chips, review, onOpen: openOutput };
+  }
+
+  /** A row's chip, opened straight to what it names: a page to its review, a PR outside, a report in its drawer, read. */
+  function openOutput(id: string, chip: OutputChip) {
+    const item = chip.opens;
+    if (item.kind === "page") showArtifact(item.artifact);
+    else if (item.kind === "pr") window.open(item.url, "_blank", "noreferrer");
+    else {
+      setReportFor(id);
+      openListTask(id);
+    }
+  }
+
+  /** Where a task stands, in the word its drawer leads with: its worker's state while one is registered, else its row's. */
+  function taskStanding(id: string): TaskStanding | null {
+    const worker = fleet?.tasks.find((task) => task.id === id);
+    const record = records.get(id);
+    if (worker && record?.state !== "done") return { label: stateLabel(worker.current_state.state), tone: taskStatus(worker.current_state.state).tone };
+    if (!record) return null;
+    if (record.state === "done") return { label: record.completion?.verb === "merged" ? "Merged" : "Landed", tone: "muted" };
+    if (record.state === "in_flight") return { label: "In flight", tone: "blue" };
+    if (record.captain_actionable) return { label: "Waiting on you", tone: "amber" };
+    const standing = standingOf(record, fleet?.captain_day);
+    return standing === "blocked" ? { label: "Blocked", tone: "amber" } : standing === "held" ? { label: record.hold_kind === "parked" ? "Put off" : "Held", tone: "muted" } : { label: "Queued", tone: "muted" };
+  }
+
+  /**
+   * The strip above a page a task presented: the task, which opens its drawer when the home still carries it, and the
+   * task's pages as tabs, oldest presented first so a tab keeps its place as more are presented.
+   */
+  function pageStrip(page: Artifact) {
+    const id = page.scope === "task" ? page.task : null;
+    if (!id) return null;
+    const record = records.get(id);
+    const worker = fleet?.tasks.find((task) => task.id === id);
+    const pages = artifacts.filter((item) => item.scope === "task" && item.task === id)
+      .sort((a, b) => a.revisions[0].presented_at.localeCompare(b.revisions[0].presented_at));
+    const project = record?.repo ?? (worker ? projectName(worker.project) : null);
+    return <PageTaskStrip
+      task={id}
+      title={record || worker ? withinProject(taskTitle(id), project ?? "") : id}
+      project={project}
+      standing={taskStanding(id)}
+      record={record && record.kind !== "captain" ? record : undefined}
+      pages={pages}
+      current={page}
+      needs={(item) => artifactStanding(item, artifacts, reviews[artifactKey(item)], records, calls) === "needs-you"}
+      onOpenTask={record || worker ? () => openListTask(id) : null}
+      onOpenPage={(item) => showArtifact(item)}
+    />;
+  }
+
   /** What the task list and the drawers add for a task: its details, its chain, and what waits on it. */
   function taskSections(record: BacklogRecord | undefined, lock: DetailsLock | null) {
     if (!record) return null;
@@ -449,7 +528,10 @@ export function App() {
     // Pin the revision being read. A revision presented while the captain is reading is announced,
     // never swapped in underneath them, which would lose their place and what they were comparing.
     setOpenArtifact({ scope: artifact.scope, task: artifact.task, name: artifact.name, rev: rev ?? artifact.latest.rev });
+    // A drawer opened over one page closes as it opens another, as it does when a page is opened from a list.
     setActiveTask(null);
+    setQueuedId(null);
+    setLogEntry(null);
     setShowEverything(false);
     setView("artifact");
     setMobileNavOpen(false);
@@ -632,7 +714,10 @@ export function App() {
     const pages = evidence.flatMap((item) => pageOf(item) ?? []);
     const argued = argument ? pageOf(argument) : null;
     // A review that already recorded an answer for it; the call leaves once the snapshot catches up.
-    const answeredIn = pages.find((artifact) => (reviews[artifactKey(artifact)]?.answered ?? []).includes(call.id));
+    const answeredIn = pages.find((artifact) => {
+      const review = reviews[artifactKey(artifact)];
+      return (review?.answered ?? []).includes(call.id) && answersThisAsk(call, review?.answered_at?.[call.id]);
+    });
     const seen = argued ? (reviews[artifactKey(argued)]?.seen_rev ?? null) !== null : null;
     const standing = callStanding(call, { answered: answered[call.id], answeredIn: answeredIn?.title });
     const onOpenPage = answeredIn ? () => showArtifact(answeredIn) : argued ? () => showArtifact(argued) : undefined;
@@ -762,7 +847,7 @@ export function App() {
                 <div>
                   <span>Ahoy</span>
                   <h2>{nothingYet ? "Welcome aboard." : `Welcome back. ${openCallCount ? `${capitalize(countWord(openCallCount, "thing"))} ${openCallCount === 1 ? "wants" : "want"} your word.` : "Nothing needs your word."}`}</h2>
-                  <p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : `${openCallCount ? "Everything else is moving. " : ""}The first mate can walk you through what changed since you were last here${openCallCount ? ", then take you through what's waiting" : ""}.`}</p>
+                  <p>{nothingYet ? "Nothing has been asked of the first mate here yet. Say hello and it will take you from the top." : `${openCallCount && underway.length ? "Everything else is moving. " : ""}The first mate can walk you through what changed since you were last here${openCallCount ? ", then take you through what's waiting" : ""}.`}</p>
                 </div>
                 <div className="ahoy-actions"><button onClick={runAhoy}>{nothingYet ? "Ahoy" : "Catch me up"}</button><button onClick={() => setAhoyVisible(false)}>Not now</button></div>
               </section>
@@ -864,6 +949,7 @@ export function App() {
             onOpen={openListTask}
             onOpenGroup={(id) => { setActiveTask(null); setQueuedId(null); setGroupId(id); }}
             onEdit={editTask}
+            output={listOutput(withWorkers(backlogRecords, underwayIn(selectedProjectData), selectedProjectData.name, taskTitle))}
           />}
           intake={<IntakeSection
             project={selectedProjectData.name}
@@ -899,6 +985,7 @@ export function App() {
               })}
               calls={callsArguedBy(calls, shownArtifact, artifacts)}
               evidenceOf={evidenceOf}
+              strip={pageStrip(shownArtifact)}
               onOpenEvidence={openEvidence}
               onAnswer={(call, answer) => host.reviewAnswer(artifactRef!, call.id, answer.option?.key, answer.option?.label, call.on_answer, answer.words).then(setReview)}
               onScene={(place, proposal) => host.reviewScene(artifactRef!, shownRevision.rev, place.file, place.label, place.path, proposal.summary, proposal.scene, proposal.png).then(setReview)}
@@ -911,9 +998,9 @@ export function App() {
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
       {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} projects={projects.map((project) => project.name)} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => { setSettingsOpen(false); void bridge.refreshSnapshot(); }} />}
       {queuedRecord && phase && (queuedTask && fleet && LAUNCH_PHASES.has(phase)
-        ? <TaskDrawer task={queuedTask} title={withinProject(queuedRecord.title, selectedProject ?? "")} record={queuedRecord} now={now} reviews={reviews} onAskReport={() => { setQueuedId(null); draftInChat(askAboutReport(taskTitle(queuedTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setQueuedId(null); setShowEverything(false); }}
+        ? <TaskDrawer task={queuedTask} title={withinProject(queuedRecord.title, selectedProject ?? "")} record={queuedRecord} now={now} output={outputOf(queuedTask.id)} reportOpen={reportFor === queuedTask.id} onAskReport={() => { setQueuedId(null); draftInChat(askAboutReport(taskTitle(queuedTask.id))); }} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setQueuedId(null); setShowEverything(false); }}
             launch={{ phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, onDraft: draftInChat }} upstream={upstreamFor(queuedRecord, false)} details={taskSections(queuedRecord, runningLock(queuedRecord))} />
-        : <QueuedDrawer record={queuedRecord} project={queuedRecord.repo ?? selectedProject ?? ""} details={taskSections(queuedRecord, queuedLock(queuedRecord, phase, queuedAsk, now) ?? (queuedRecord.state === "in_flight" && queuedRecord.kind !== "program" ? runningLock(queuedRecord) : null))} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedRecord.id)} reviews={reviews} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onClose={() => setQueuedId(null)}
+        : <QueuedDrawer record={queuedRecord} project={queuedRecord.repo ?? selectedProject ?? ""} details={taskSections(queuedRecord, queuedLock(queuedRecord, phase, queuedAsk, now) ?? (queuedRecord.state === "in_flight" && queuedRecord.kind !== "program" ? runningLock(queuedRecord) : null))} now={now} output={outputOf(queuedRecord.id, queuedRecord)} reportOpen={reportFor === queuedRecord.id} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onAskReport={() => { setQueuedId(null); draftInChat(askAboutReport(taskTitle(queuedRecord.id))); }} onClose={() => setQueuedId(null)}
             upstream={upstreamFor(queuedRecord, queuedRecord.state === "queued")}
             start={{
               phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined,
@@ -925,8 +1012,8 @@ export function App() {
               onOpenCall: (id) => { navigate("bearings"); setFocusedCall(id); },
               onDraft: draftInChat,
             }} />)}
-      {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} upstream={upstreamFor(logEntry.record, false)} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
-      {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} upstream={upstreamFor(records.get(activeTask.id), false)} details={taskSections(records.get(activeTask.id), runningLock(records.get(activeTask.id)))} />}
+      {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} output={outputOf(logEntry.id, logEntry.record)} source={history.schema} upstream={upstreamFor(logEntry.record, false)} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
+      {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} output={outputOf(activeTask.id)} reportOpen={reportFor === activeTask.id} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} upstream={upstreamFor(records.get(activeTask.id), false)} details={taskSections(records.get(activeTask.id), runningLock(records.get(activeTask.id)))} />}
       {groupId && records.get(groupId) && <GroupDrawer group={records.get(groupId)!} records={backlogRecords} now={now} editing={editing} onOpen={openListTask} onEdit={editTask} onClose={() => setGroupId(null)} details={taskSections(records.get(groupId), null)} />}
     </div>
   );
@@ -1986,7 +2073,7 @@ const START_QUESTIONS = {
  * already carries. From here the captain can hand it to the first mate, and the drawer then follows that ask
  * until a worker is registered, when the live task drawer takes over.
  */
-function QueuedDrawer({ record, project, now, artifacts, reviews, source, start, upstream, details, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; start: QueuedStart; upstream?: DrawerUpstream; details?: React.ReactNode; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
+function QueuedDrawer({ record, project, now, output, reportOpen, source, start, upstream, details, onOpenArtifact, onAskReport, onClose }: { record: BacklogRecord; project: string; now: number; output: Output[]; reportOpen?: boolean; source: string | null; start: QueuedStart; upstream?: DrawerUpstream; details?: React.ReactNode; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; onClose: () => void }) {
   const body = bodyBlocks(record.body_lines, record.body_excerpt);
   const kind = KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task";
   const closed = record.state === "done";
@@ -2011,13 +2098,14 @@ function QueuedDrawer({ record, project, now, artifacts, reviews, source, start,
     <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(record.title, project)}</h2><small className="drawer-id">{record.id}</small>{upstream?.chips}</div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status" data-testid="start-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{status.label}</strong><span>{status.detail}</span></div>{status.since !== undefined && <time className="drawer-age" title={formatWhen(new Date(status.since).toISOString())}>{shortAge(clock - status.since)}</time>}</div>
     <div className="drawer-scroll">
+      {/* A queued task has usually produced nothing, and then its drawer is as it was; anything it did produce leads. */}
+      {output.length > 0 && <ProducedSection task={record.id} output={output} delivered={closed} reportOpen={reportOpen} readReport={readReport} onOpenPage={onOpenArtifact} onAskReport={onAskReport} />}
       <StartSection record={record} start={start} ship={ship} />
       {details}
       {upstream?.sections}
       <TaskFiles taskId={record.id} notes={notes.notes} />
       {body.length > 0 ? <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection> : <DrawerSection title="What was asked"><div className="brief-block"><p>The row says nothing more than its title.</p></div></DrawerSection>}
       <TaskNotesThread read={notes} running={record.state === "in_flight"} closed={closed} />
-      {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">
         <div><span className="timeline-icon"><GitBranch size={15} /></span><span><strong>Filed</strong><small>{kind}</small></span><time>{record.since ? shortDay(record.since, now) : "Undated"}</time></div>
         {ask && <AskedLine ask={ask} delivery={delivery} />}
@@ -2086,7 +2174,7 @@ function StartSection({ record, start, ship }: { record: BacklogRecord; start: Q
 }
 
 /** A closed task, read from its backlog row: what was asked, what it left behind, and how it closed. */
-function LogbookDrawer({ entry, project, now, artifacts, reviews, source, upstream, onOpenArtifact, onAskReport, onClose }: { entry: LogEntry; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; upstream?: DrawerUpstream; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; onClose: () => void }) {
+function LogbookDrawer({ entry, project, now, output, reportOpen, source, upstream, onOpenArtifact, onAskReport, onClose }: { entry: LogEntry; project: string; now: number; output: Output[]; reportOpen?: boolean; source: string | null; upstream?: DrawerUpstream; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; onClose: () => void }) {
   const look = LOG_LOOK[entry.kind];
   const record = entry.record;
   const call = entry.call;
@@ -2098,17 +2186,23 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, upstre
     <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(entry.title, project)}</h2><small className="drawer-id">{entry.id}</small>{upstream?.chips}</div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status"><span className={`task-state tone-${look.tone}`}>{look.icon}</span><div><strong className={`tone-${look.tone}`}>{outcomeLine(entry, now)}</strong><span>{KIND_NAMES[record.kind ?? ""] ?? look.chip}{days !== null && days >= 0 && ` · ${tookLine(entry.kind, days)}`}</span></div></div>
     <div className="drawer-scroll">
+      {output.length > 0 && <ProducedSection task={entry.id} output={output} delivered reportOpen={reportOpen} readReport={readReport} onOpenPage={onOpenArtifact} onAskReport={onAskReport} />}
       {call && <DrawerSection title="The call"><div className="brief-block log-call">
         {call.question && <p>{call.question}</p>}
         {call.answer && <dl><dt>Answer</dt><dd>{call.answer.label}</dd>{call.decided?.why && <><dt>Why</dt><dd>{call.decided.why}</dd></>}</dl>}
       </div></DrawerSection>}
-      <TaskFiles taskId={entry.id} notes={notes.notes} />
-      {body.length > 0 && <DrawerSection title={call ? "From the backlog" : "What was asked"}><TaskBody blocks={body} /></DrawerSection>}
-      <TaskNotesThread read={notes} running={false} closed />
-      {entry.pr && <DrawerSection title="PR"><div className="pr-block"><a href={entry.pr} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {entry.pr}</a></div></DrawerSection>}
+      {call
+        ? <>
+            <TaskFiles taskId={entry.id} notes={notes.notes} />
+            {body.length > 0 && <DrawerSection title="From the backlog"><TaskBody blocks={body} /></DrawerSection>}
+            <TaskNotesThread read={notes} running={false} closed />
+          </>
+        : <GaveSection asked={body.length > 0} notes={notes.notes.length} files={fileCount(notes.notes)}>
+            <TaskFiles taskId={entry.id} notes={notes.notes} />
+            {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}
+            <TaskNotesThread read={notes} running={false} closed />
+          </GaveSection>}
       {upstream?.sections}
-      {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
-      {entry.report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={entry.report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">
         {record.since && <div><span className="timeline-icon"><GitBranch size={15} /></span><span><strong>Filed</strong><small>{KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task"}</small></span><time>{shortDay(record.since, now)}</time></div>}
         <div><span className="timeline-icon">{look.icon}</span><span><strong>{call?.answer && entry.kind === "decision" ? answeredBy(call.answer) : CLOSED_AS[entry.kind](entry)}</strong><small>{call?.answer && entry.kind === "decision" ? call.answer.label : KIND_NAMES[record.kind ?? ""] ?? look.chip}</small></span><time>{entry.date ? shortDay(entry.date, now) : "Undated"}</time></div>
@@ -2561,7 +2655,7 @@ function launchStatus(phase: StartPhase, task: FleetTask, clock: number, note: s
   return null;
 }
 
-function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose, launch, upstream, details }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void; launch?: LaunchView; upstream?: DrawerUpstream; details?: React.ReactNode }) {
+function TaskDrawer({ task, title, record, now, output, reportOpen, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose, launch, upstream, details }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; output: Output[]; reportOpen?: boolean; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void; launch?: LaunchView; upstream?: DrawerUpstream; details?: React.ReactNode }) {
   const [capture, setCapture] = useState<{ text: string; observed_at?: string } | null>(null);
   // A worker with no agent in it is shown with its screen open: the screen is the evidence.
   const [screenOpen, setScreenOpen] = useState(launch?.phase === "didnt_start");
@@ -2616,16 +2710,16 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
       {launch?.phase === "didnt_start" && <DrawerSection title="What to do"><div className="brief-block start-block bad" data-testid="start-work"><p>The first mate may already be fixing it. If it hasn't said so in chat, ask it.</p><div className="start-actions"><button className="btn-base primary" onClick={() => launch.onDraft(START_QUESTIONS.relaunch(task.id))}>Ask the first mate to relaunch</button></div></div></DrawerSection>}
       {how && <DrawerSection title="How it ships"><div className="brief-block" data-testid="how-it-ships"><p><span className="mode-chip">{task.mode}</span> {how}</p>{why && <p className="start-why">{why}</p>}</div></DrawerSection>}
       {(launch?.phase === "didnt_start" || launch?.phase === "unconfirmed") && screen_}
+      <ProducedSection task={task.id} output={output} delivered={record?.state === "done"} noPr={prApplies} reportOpen={reportOpen} readReport={readReport} onOpenPage={onOpenArtifact} onAskReport={onAskReport} />
+      <GaveSection asked={body.length > 0} notes={notes.notes.length} files={fileCount(notes.notes)}>
+        <TaskFiles taskId={task.id} notes={notes.notes} />
+        {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}
+        <TaskNotesThread read={notes} running={LIVE_STATES.has(task.current_state.state)} closed={false} />
+      </GaveSection>
       {details}
       {upstream?.sections}
-      <TaskFiles taskId={task.id} notes={notes.notes} />
-      {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}
       <DrawerSection title="Latest from the worker"><div className="brief-block"><p>{lastEvent.note || "The worker hasn't written a note yet."}</p></div></DrawerSection>
-      <TaskNotesThread read={notes} running={LIVE_STATES.has(task.current_state.state)} closed={false} />
-      {artifacts.length > 0 && <DrawerSection title="Pages"><div className="drawer-pages">{artifacts.map((artifact) => <ArtifactRow key={artifact.name} artifact={artifact} detail={revisionLine(artifact)} review={reviews[artifactKey(artifact)]} landed={record?.state === "done"} onOpen={() => onOpenArtifact(artifact)} />)}</div></DrawerSection>}
-      {report && artifacts.length === 0 && <DrawerSection title="Report"><div className="pr-block report-block"><span title={report}><FileText size={15} /> The report is written, without a page.</span><button className="landed-link" onClick={onAskReport}><MessageSquareText size={13} /> Ask the first mate for it</button></div></DrawerSection>}
       <DrawerSection title="Timeline"><div className="timeline">{timeline.map((item) => <div key={item.key}><span className="timeline-icon">{item.icon}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></div>)}</div></DrawerSection>
-      {prApplies && <DrawerSection title="PR"><div className="pr-block">{task.pr.url ? <a href={task.pr.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> {task.pr.url}</a> : <span><GitBranch size={15} /> No PR yet</span>}</div></DrawerSection>}
       {launch?.phase !== "didnt_start" && launch?.phase !== "unconfirmed" && screen_}
       <button className="show-everything" onClick={onToggle}><ChevronDown size={16} className={expanded ? "rotated" : ""} /><span>Show everything</span></button>
       {expanded && <div className="machine-details"><dl><dt>Task</dt><dd>{task.id}</dd><dt>Branch</dt><dd>none recorded</dd><dt>Isolated copy</dt><dd>{task.paths.worktree.present ? task.paths.worktree.path : "missing"}</dd><dt>Worker runtime</dt><dd>{task.harness} on {task.backend}</dd><dt>Spawn</dt><dd>{task.spawn_gen ?? "not recorded"}</dd><dt>Status line</dt><dd>{task.current_state.raw}</dd><dt>Log</dt><dd>{lastEvent.raw}</dd>{report && <><dt>Report</dt><dd>{report}</dd></>}</dl><div className="step-chips"><span>Registered</span><span>{task.current_state.freshness}</span><span>Endpoint {task.endpoint.status}</span><span>PR {task.pr.source}</span><span>Report {task.paths.report.present ? "ready" : "none"}</span></div></div>}
@@ -2658,48 +2752,6 @@ function layoutNote(revision: ArtifactRevision) {
   return { issues, label: narrowOnly ? "May look off in a narrow window" : "May look off", narrowOnly };
 }
 
-/**
- * What a page's review says about it in one chip: unsent work first, then what
- * is new, then what is waiting. A landed page says none of that, since nothing
- * on it is waiting on anyone any more; your own unsent words still show, because
- * they are yours and would otherwise disappear without being read.
- */
-function reviewChip(review?: ReviewSummary[string], artifact?: Artifact, landed = false) {
-  if (!artifact) return null;
-  if (review && review.draft_count > 0) return { label: review.draft_count === 1 ? "1 comment not sent" : `${review.draft_count} comments not sent`, tone: "draft" };
-  if (landed) return null;
-  const seen = review?.seen_rev ?? null;
-  if (seen === null) return { label: "Not looked at yet", tone: "new" };
-  if (artifact.latest.rev > seen) return { label: `Rev ${artifact.latest.rev} is new`, tone: "new" };
-  const { waiting, answered } = openComments(artifact, review);
-  if (answered.length > 0) return { label: answered.length === 1 ? "1 comment answered" : `${answered.length} comments answered`, tone: "new" };
-  if (waiting.length > 0) return { label: waiting.length === 1 ? "1 comment waiting" : `${waiting.length} comments waiting`, tone: "open" };
-  return null;
-}
-
-/** What the author says each later revision does about the captain's comments: their claim, by thread. */
-function authorAnswers(artifact: Artifact) {
-  const found: Record<string, { rev: number; reply?: string }> = {};
-  for (const item of artifact.revisions) {
-    for (const id of item.answers?.addressed ?? []) found[id] = { ...found[id], rev: item.rev };
-    for (const reply of item.answers?.replies ?? []) found[reply.thread] = { rev: item.rev, reply: reply.body };
-  }
-  return found;
-}
-
-/**
- * The captain's open comments, split by whose move they are: one a later revision changed or replied to
- * is answered and waits on the captain to settle or reply; the rest wait on the author.
- */
-function openComments(artifact: Artifact, review?: ReviewSummary[string]) {
-  const answers = authorAnswers(artifact);
-  const open = review?.open_threads ?? [];
-  const answered = open.filter((thread) => (answers[thread.id]?.rev ?? 0) > thread.rev).map((thread) => thread.id);
-  // An older app's summary counts open comments without naming them; those can only be read as waiting.
-  const waiting = open.length > 0 || !review ? open.filter((thread) => !answered.includes(thread.id)).map((thread) => thread.id) : Array.from({ length: review.open_count }, (_, index) => `open-${index}`);
-  return { waiting, answered };
-}
-
 function ArtifactRow({ artifact, detail, review, landed, stake, card, onOpen }: { artifact: Artifact; detail: string; review?: ReviewSummary[string]; landed?: boolean; stake?: { label: string; tone: string }; card?: boolean; onOpen: () => void }) {
   const note = layoutNote(artifact.latest);
   const chip = reviewChip(review, artifact, landed);
@@ -2712,46 +2764,6 @@ function ArtifactRow({ artifact, detail, review, landed, stake, card, onOpen }: 
     </span>
   </button>;
   return <button className="artifact-row" onClick={onOpen}><span className="artifact-icon"><PanelsTopLeft size={16} /></span><span className="artifact-copy"><strong>{artifact.title}</strong><small>{detail}</small></span><span className="artifact-chips">{chip && <span className={`review-chip ${chip.tone}`}>{chip.label}</span>}{note && <span className="artifact-flag" title={note.issues.map((issue) => issue.detail).join("\n")}>{note.label}</span>}</span><ChevronRight size={17} /></button>;
-}
-
-function artifactKey(artifact: Artifact) {
-  return artifact.scope === "chat" ? `chat/${artifact.name}` : `task/${artifact.task}/${artifact.name}`;
-}
-
-/** Where a page stands: who the next move belongs to. */
-export type ArtifactStanding = "needs-you" | "discussion" | "settled";
-
-/**
- * Which of the three the page belongs in.
- *
- * The backlog owns whether a task landed, so a page files itself away when its
- * work is done rather than waiting for anyone to archive it. Everything before
- * that is a question of whose move it is: unread, revised, half-written, or
- * arguing a call still waiting on the captain means the move is yours; anything
- * else that is still going belongs with its author.
- */
-export function artifactStanding(artifact: Artifact, artifacts: Artifact[], review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>, calls: Call[]): ArtifactStanding {
-  const task = artifact.scope === "task" ? artifact.task : null;
-  if (task && backlog.get(task)?.state === "done") return "settled";
-  if (review && review.draft_count > 0) return "needs-you";
-  const comments = openComments(artifact, review);
-  const argued = callsArguedBy(calls, artifact, artifacts);
-  // A call this page argues: yours until you answer or reply to it, then firstmate's until it records or asks again.
-  const waiting = argued.filter(isOpen);
-  // A chat page that argued calls exists for them, so once every one is closed it has done its work,
-  // read or not, unless a comment on it is still going back and forth.
-  if (!task && argued.length > 0 && waiting.length === 0 && comments.waiting.length === 0 && comments.answered.length === 0) return "settled";
-  const seen = review?.seen_rev ?? null;
-  if (seen === null || artifact.latest.rev > seen) return "needs-you";
-  const answered = review?.answered ?? [];
-  // A call the captain has replied to waits on the first mate, like one his review recorded an answer for.
-  if (waiting.some((call) => awaitsCaptain(call) && !answered.includes(call.id))) return "needs-you";
-  // The author answered a comment: settling it or replying is the captain's move.
-  if (comments.answered.length > 0) return "needs-you";
-  if (waiting.length > 0) return "discussion";
-  if (comments.waiting.length > 0) return "discussion";
-  // A chat page has no work to finish, so once it is read and quiet it is done.
-  return task ? "discussion" : "settled";
 }
 
 const STANDINGS: { id: ArtifactStanding; title: string; blank: string }[] = [
@@ -3063,8 +3075,10 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, calls, evidenceOf, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onOpenEvidence, onScene }: {
+function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, calls, evidenceOf, strip, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onOpenEvidence, onScene }: {
   artifact: Artifact;
+  /** The strip back to the task that presented the page, above everything else; none for a page shared in chat. */
+  strip?: React.ReactNode;
   revision: ArtifactRevision;
   url: string;
   review: ReviewView | null;
@@ -3260,6 +3274,7 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
       : stake.hints[verdict];
 
   return <div className="artifact-review" data-screen="artifact">
+    {strip}
     <div className="artifact-toolbar">
       <label className="revision-picker"><span className="sr-only">Revision</span><select value={revision.rev} onChange={(event) => onRevision(Number(event.target.value))}>{newest.map((item) => <option key={item.rev} value={item.rev}>{`Rev ${item.rev}${item.rev === artifact.latest.rev ? " · latest" : ""}${seen !== null && item.rev > seen ? " · new" : ""} · ${formatWhen(item.presented_at)}`}</option>)}</select><ChevronDown size={14} /></label>
       {/* While commenting, the hint takes the note's place in the toolbar, so the page under the pointer never moves. */}
@@ -3542,6 +3557,11 @@ function PictureView({ src, alt, onClose }: { src: string; alt: string; onClose:
  * Every file the task's notes carry, newest last: a picture as a thumbnail that opens whole, anything else by name.
  * Each shows the path a worker is handed, since that is what the file is to whoever works the task.
  */
+/** How many files a task's notes carry. */
+function fileCount(notes: TaskNote[]) {
+  return notes.reduce((count, note) => count + note.files.length, 0);
+}
+
 function TaskFiles({ taskId, notes }: { taskId: string; notes: TaskNote[] }) {
   const [shown, setShown] = useState<TaskFile | null>(null);
   const files = notes.flatMap((note) => note.files.map((file) => ({ file, note })));

@@ -1710,3 +1710,67 @@ button.session-pill:hover:not(:disabled) { border-color: var(--control-hover); }
   .td-attrs { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .td-key { padding-top: 6px; }
 }
+
+/*
+ * A task's output (src/TaskOutput.tsx), an unreviewed design on the overnight branch: what it produced leads its drawer,
+ * what the captain gave it folds under that, a page it presented carries a strip back to it, and its row a chip.
+ */
+.to-list { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.to-row { box-sizing: border-box; display: grid; text-decoration: none; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; color: var(--ink); background: transparent; text-align: left; }
+.to-list > :last-child, .to-list > :last-child > .to-row { border-bottom: 0; }
+.to-row:not(.static):hover { background: var(--hover); cursor: pointer; }
+.to-row:focus-visible { outline: 0; box-shadow: inset 2px 0 0 var(--sea); }
+.to-icon { display: flex; color: var(--faint); }
+.to-row.needs .to-icon, .to-report.needs > .to-row .to-icon { color: var(--blue); }
+.to-row.needs, .to-report.needs > .to-row { box-shadow: inset 3px 0 0 var(--blue); }
+.to-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.to-copy strong { overflow: hidden; font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.to-copy strong em { color: var(--faint); font-style: normal; font-weight: 500; }
+.to-copy small { overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.to-row.needs .to-copy small, .to-report.needs > .to-row .to-copy small { color: var(--blue); }
+.to-act { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px 3px 9px; border-radius: 6px; color: var(--blue); background: color-mix(in srgb, var(--blue) 11%, transparent); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.to-act.quiet { color: var(--muted); background: var(--surface-3); font-weight: 500; }
+.to-act svg { transition: transform .16s ease; }
+.to-act svg.rotated { transform: rotate(90deg); }
+.to-row.static .to-copy strong { color: var(--muted); font-weight: 500; }
+.to-report { border-bottom: 1px solid var(--rule); }
+.to-report:last-child { border-bottom: 0; }
+.to-report > .to-row { border-bottom: 0; }
+.to-report.open > .to-row { border-bottom: 1px solid var(--rule); }
+.to-report-body { max-height: 420px; overflow: auto; padding: 12px 16px 14px; background: var(--surface-2); }
+.to-report-text h1 { font-size: 15.5px; }
+.to-picture { color: var(--faint); font-size: 12.5px; }
+.to-quiet { margin: 8px 0 0; color: var(--faint); font-size: 12.5px; overflow-wrap: anywhere; }
+.to-report-body > .to-quiet:first-child { margin-top: 0; }
+.to-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--coral); font-size: 12.5px; }
+.to-problem span { flex: 1 1 200px; overflow-wrap: anywhere; }
+.to-none { margin: 0; padding: 12px 14px; border: 1px dashed var(--control); border-radius: 12px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.to-gave > .drawer-section:last-child { margin-bottom: 0; }
+.to-gave { padding-left: 21px; }
+
+/* A page's strip back to the task that presented it, with the task's other pages as tabs. */
+.page-task-strip { display: flex; flex: none; align-items: center; gap: 14px; min-height: 48px; padding: 6px 36px 6px 26px; border-bottom: 1px solid var(--rule); background: var(--surface); }
+.pts-task { display: flex; min-width: 0; align-items: center; gap: 6px; height: auto; padding: 5px 10px 5px 6px; border: 0; border-radius: 8px; color: var(--ink); background: transparent; text-align: left; }
+button.pts-task:hover { background: var(--hover); }
+button.pts-task:hover strong { color: var(--sea); }
+.pts-task.static .pts-back { visibility: hidden; }
+.pts-back { flex: none; color: var(--faint); }
+.pts-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.pts-copy strong { overflow: hidden; font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pts-copy small { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.pts-copy small > span:not(.tl-pri) + span:not(.tl-pri)::before { margin-right: 8px; color: var(--ghost); content: "·"; }
+.pts-tabs { display: flex; min-width: 0; flex: 1; justify-content: flex-end; gap: 2px; overflow-x: auto; padding: 3px; }
+.pts-tabs button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 0; border-radius: 7px; color: var(--ink-3); background: transparent; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.pts-tabs button:hover { color: var(--ink); background: var(--hover); }
+.pts-tabs button.on { color: var(--ink); background: var(--surface-3); font-weight: 600; }
+.pts-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--blue); }
+@media (max-width: 720px) { .page-task-strip { flex-wrap: wrap; padding: 6px 12px; } .pts-tabs { flex-basis: 100%; justify-content: flex-start; } }
+
+/* A row's chip for what its task produced: strong when it waits on the captain, quiet when it is only there to open. */
+.tl-chips { display: inline-flex; align-items: center; justify-self: end; gap: 6px; min-width: 0; }
+.tl-out-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 170px; height: auto; overflow: hidden; padding: 2px 8px; border: 0; border-radius: 6px; color: var(--muted); background: var(--surface-3); font-size: 11.5px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.tl-out-chip:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 10%, var(--surface-3)); }
+.tl-out-chip.strong { color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); font-weight: 600; }
+.tl-out-chip.strong:hover { background: color-mix(in srgb, var(--blue) 20%, transparent); }
+.tl-out-chip svg { flex: none; }
+@media (max-width: 760px) { .tl-chips { grid-column: 3; grid-row: 2; justify-self: start; } }

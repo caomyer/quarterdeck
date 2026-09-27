@@ -11,8 +11,9 @@
 //! running, so the app starts it again when it opens; a first mate the captain
 //! stopped stays stopped.
 //!
-//! `QUARTERDECK_SETTINGS_DIR` replaces the app data folder for this file, so a
-//! test run can use a scratch home without touching the captain's saved one.
+//! `QUARTERDECK_SETTINGS_DIR` replaces the app data folder for this file, the
+//! host's per-home files and the app's own home, so a test run can use a
+//! scratch home without touching anything of the captain's.
 //!
 //! Commands: `home_get`, `home_choose`.
 
@@ -128,6 +129,7 @@ pub(crate) fn note_running<R: tauri::Runtime>(app: &AppHandle<R>, home: &Path, r
     }
 }
 
+/// The app's own folder: the app data folder, or what `QUARTERDECK_SETTINGS_DIR` names.
 pub(crate) fn settings_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("QUARTERDECK_SETTINGS_DIR").filter(|dir| !dir.is_empty()) {
         return Ok(PathBuf::from(dir));

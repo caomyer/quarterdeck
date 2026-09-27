@@ -338,7 +338,7 @@ for (const [outcome, words] of Object.entries(REFUSALS)) {
   while (Date.now() < deadline && await label() !== "done") await page.waitForTimeout(100);
   check(await label() === "done" && await phaseOf(drawer) === "underway", "a finished worker's drawer shows its own done state");
   await tone(page, drawer, "--green", "lucide-circle-check", "Finished");
-  check(await drawer.locator(".pr-block a[href='https://github.com/caomyer/Resonance/pull/31']").count() === 1, "and the PR it opened");
+  check(await drawer.locator("[data-testid='task-output'] a[href='https://github.com/caomyer/Resonance/pull/31']").count() === 1, "and the PR it opened");
   check(await page.locator(`[data-testid='task-list'] .tl-row[data-id='${SHIP}']`).count() === 0, "the finished row has left the queue");
   await shot(page, "d2-finished");
   await page.close();

@@ -93,8 +93,10 @@ fm_test_fake_gh_axi() {
 
 # fm_test_fake_tmux_spawn <fakebin>
 # Spawn-world tmux: pane_current_path from FM_FAKE_PANE_PATH, session named
-# firstmate, window ops succeed, send-keys succeed. When FM_FAKE_LAUNCH_LOG is
-# set, each send-keys -l payload is appended one per line. Optional
+# firstmate, window ops succeed, send-keys succeed, and a created window runs a
+# harness (tests/fake-tmux-liveness.sh) so the spawn's launch gate sees it live. When FM_FAKE_LAUNCH_LOG is
+# set, each send-keys -l payload is appended one per line, the launch file's
+# command standing in for the line that sources it. Optional
 # FM_FAKE_DUPLICATE_WINDOW is printed from list-windows.
 #
 # The pane path defaults to empty when FM_FAKE_PANE_PATH is unset. Window
@@ -105,6 +107,7 @@ fm_test_fake_tmux_spawn() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
@@ -122,7 +125,7 @@ case "${1:-}" in
       prev=
       for a in "$@"; do
         if [ "$prev" = "-l" ]; then
-          printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
+          printf '%s\n' "$(fm_fake_tmux_typed "$a")" >> "$FM_FAKE_LAUNCH_LOG"
         fi
         prev=$a
       done

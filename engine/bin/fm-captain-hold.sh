@@ -272,7 +272,10 @@
 # keyed status decision is transferred to its durable owner with a
 # `captain-held [key=...]` status close naming the inventory. Later review
 # passes may add ids. A post-teardown visual review can complete against the
-# surviving report and tasks without recreating task state.
+# surviving report and tasks without recreating task state. It attests calls
+# only; a page of the origin still waiting for the captain's review is named on
+# a `review:` line, because that wait is bin/fm-artifact.sh's and cleanup keeps
+# the row open for it.
 # `verify` is read-only and is called by scout teardown, so teardown cannot
 # erase a source before this gate has succeeded: every recorded inventory
 # entry must still be durable and no keyed status decision may be open.
@@ -2989,7 +2992,7 @@ reconcile_note() {
 
 command_complete() {
   local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open raw_open has_meta=0 transfer_rc resolved
-  local resolved_how attested_by_prefix=''
+  local resolved_how attested_by_prefix='' waiting
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
   shift
@@ -3065,6 +3068,14 @@ EOF
   fi
   printf 'complete: %s captain-call inventory reviewed%s%s\n' "$origin" "${keys:+ ($keys)}" \
     "${attested_by_prefix:+ [attested through the configured prefix: $attested_by_prefix]}"
+  # Completion attests calls only. A page still waiting for the captain's review
+  # is a separate wait that bin/fm-artifact.sh owns and cleanup carries forward,
+  # so it is named here rather than left to be discovered after the row closes.
+  if waiting=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      "$SCRIPT_DIR/fm-artifact.sh" waiting "$origin" 2>/dev/null); then
+    printf 'review: %s still waits for the captain'"'"'s review; cleanup keeps %s open and held from dispatch until the verdict arrives\n' \
+      "$(printf '%s\n' "$waiting" | paste -sd ',' - | sed 's/,/, /g')" "$origin"
+  fi
 }
 
 command_verify() {

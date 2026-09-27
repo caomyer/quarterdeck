@@ -55,6 +55,28 @@ Project instructions still govern the work wherever they do not conflict with th
 EOF
 }
 
+# The configured declared-wait verb (bin/fm-classify-lib.sh owns the default),
+# read here too because bin/fm-promote.sh renders these blocks without it.
+fm_dod_paused_verb() {
+  printf '%s' "${FM_CLASSIFY_PAUSED_VERB:-${FM_CLASSIFY_PAUSED_VERB_DEFAULT:-paused}}"
+}
+
+# fm_validation_wait_line prints the one sentence that tells a worker, at the
+# point it is about to sit on a long run of its own, to declare that wait before
+# going quiet. Rule 4 of the brief stays the one owner of what the declared-wait
+# verb MEANS; this line only points at it, so the two never drift. It lives in
+# every mode's Definition of done (and the scout's) because the case buried as
+# the fourth example of rule 4's longest paragraph was missed by four workers in
+# one evening, each of whom adopted it at once when told. A worker that has read
+# a rule still has to apply it at the moment it waits, so the no-mistakes block
+# also names the declared wait inside its own background-and-poll sentence,
+# which is read at exactly that moment.
+fm_validation_wait_line() {
+  local verb
+  verb=$(fm_dod_paused_verb)
+  printf "Before you sit on a long validation run of your own - a full test suite, a build, CI, a pipeline round - append \`%s: waiting on {what}\` first, because a quiet pane whose last line is \`working:\` reads to firstmate as a possible wedge; rule 4 says what that line means, and your next line when you resume supersedes it.\n" "$verb"
+}
+
 fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id>
   local mode=$1 id=$2
   case "$mode" in
@@ -234,6 +256,8 @@ EOF
 
 fm_dod_block() {  # <mode> <task-id>
   local mode=$1 id=$2
+  local verb
+  verb=$(fm_dod_paused_verb)
   case "$mode" in
     direct-PR)
       cat <<EOF
@@ -241,6 +265,9 @@ fm_dod_block() {  # <mode> <task-id>
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
+EOF
+      fm_validation_wait_line
+      cat <<EOF
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -252,6 +279,9 @@ Delivery contract: mode=local-only
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$id\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+EOF
+      fm_validation_wait_line
+      cat <<EOF
 When it is implemented and committed, append \`done: ready in branch fm/$id\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
@@ -261,6 +291,9 @@ EOF
 # Definition of done
 Delivery contract: mode=no-mistakes
 The task is complete only when committed on your branch.
+EOF
+      fm_validation_wait_line
+      cat <<EOF
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
@@ -277,7 +310,7 @@ This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisio
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
-So background the drive call and poll \`no-mistakes axi status\` from a separate call instead of sitting in one blocking hold your harness will kill.
+So append \`$verb: waiting on the no-mistakes round\` (rule 4), then background the drive call and poll \`no-mistakes axi status\` from a separate call instead of sitting in one blocking hold your harness will kill.
 Where a harness's own command limit is not established, assume it bounds commands and use that same background-and-poll shape.
 A killed or timed-out call is never evidence the daemon died: the daemon accepts your response immediately and runs the round in the background, so the call was only ever waiting for a read while the run kept working.
 Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.

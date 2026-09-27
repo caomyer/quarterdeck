@@ -62,6 +62,8 @@ case "${1:-}" in
     done
     payload=${1:-}
     if [ "$literal" = 1 ]; then
+      . "${FM_TEST_FAKE_TMUX_TYPED:?}"
+      payload=$(fm_fake_tmux_typed "$payload")
       printf '%s\n' "$payload" >> "$D/literal"
       case "$payload" in
         /exit|/quit)

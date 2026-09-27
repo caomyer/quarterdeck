@@ -30,3 +30,13 @@ libc = "0.2"
 signal-hook = "0.3"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+
+# The development drive's window snapshot (src/devdrive.rs), from the same crates
+# the webview itself is built on.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSString", "NSProcessInfo"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKSnapshotConfiguration", "WKContentWorld", "WKFrameInfo"] }

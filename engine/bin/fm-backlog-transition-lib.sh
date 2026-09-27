@@ -667,7 +667,50 @@ fm_backlog_retain() {  # <data-dir> <id> [flag...]
   if [ "${#row_args[@]}" -gt 0 ]; then
     fm_backlog_mutate "$authorized_data" update "$id" "${row_args[@]}" || return 1
   fi
-  fm_backlog_mutate "$authorized_data" reopen "$id"
+  fm_backlog_mutate "$authorized_data" reopen "$id" || return 1
+  fm_backlog_review_hold_if_waiting "$authorized_data" "$id"
+}
+
+# THE REVIEW DISPATCH HOLD. A row retained because a page of its task still
+# waits for the captain's review (bin/fm-artifact.sh owns that wait) is open but
+# has nothing to do until the review arrives, so it is held from dispatch with
+# this exact reason and kind `external`, never `captain`: it is a wait, not a
+# decision, and it raises no call. bin/fm-artifact.sh lifts it when a verdict or
+# withdrawal leaves no page of the task waiting, so a returned page can go back
+# to its author. A row held for the captain keeps only that hold. The hold is
+# re-asked on every retention, including a replayed one, so a review that
+# arrived in between leaves no hold behind; failing to place it never fails the
+# retention, because the row is open either way and the wait stays listed.
+FM_BACKLOG_REVIEW_HOLD_REASON="waiting for the captain to review a presented page"
+
+fm_backlog_review_hold_if_waiting() {  # <data-dir> <id>
+  local data=$1 id=$2 lib_dir
+  fm_backlog_row_probe "$data" "$id" || return 0
+  [ "$FM_BACKLOG_ROW_HOLD_KIND" != captain ] || return 0
+  lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 0
+  FM_DATA_OVERRIDE="$data" "$lib_dir/fm-artifact.sh" waiting "$id" >/dev/null 2>&1 || return 0
+  fm_backlog_mutate "$data" hold "$id" --reason "$FM_BACKLOG_REVIEW_HOLD_REASON" --kind external \
+    || printf 'warning: %s stays open for the captain'"'"'s review, but its review hold could not be placed (%s)\n' \
+      "$id" "${FM_BACKLOG_TRANSITION_ERROR:-unknown error}" >&2
+  return 0
+}
+
+# Lift the review dispatch hold, and only that hold: 0 when it is lifted or
+# there is none to lift, nonzero when lifting failed.
+fm_backlog_review_unhold() {  # <data-dir> <id>
+  local data authorized_data=$1 id=$2 out reason
+  fm_backlog_row_probe "$authorized_data" "$id" || return 0
+  case "$FM_BACKLOG_ROW_STATE" in
+    done\ *|*\ no\ *) return 0 ;;
+  esac
+  [ "$FM_BACKLOG_ROW_HOLD_KIND" = external ] || return 0
+  data=$(fm_backlog_data_absolute "$authorized_data") || return 0
+  out=$(fm_backlog_row_show "$data" "$id") || return 0
+  reason=$(printf '%s\n' "$out" | sed -n 's/^  hold_reason: *//p' | head -1)
+  reason=${reason#\"}
+  reason=${reason%\"}
+  [ "$reason" = "$FM_BACKLOG_REVIEW_HOLD_REASON" ] || return 0
+  fm_backlog_mutate "$authorized_data" unhold "$id"
 }
 
 fm_backlog_canonical_existing() {
@@ -825,6 +868,23 @@ fm_backlog_row_dispatchable() {
   esac
 }
 
+# A task held for the captain can still take a review of its page without its
+# hold being released: when the captain's newest review of one of its pages is
+# a comments or changes review nobody has acted on (bin/fm-artifact.sh owns that
+# record), the held row may be dispatched for it, and the hold stays exactly as
+# it was. Only a captain hold qualifies, and never a blocked row.
+fm_backlog_row_dispatchable_for_review() {  # <row-state> <hold-kind> <data-dir> <id>
+  local lib_dir
+  case "$1" in
+    in_flight\ yes\ no|queued\ yes\ no) ;;
+    *) return 1 ;;
+  esac
+  [ "$2" = captain ] || return 1
+  lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 1
+  FM_DATA_OVERRIDE="$3" "$lib_dir/fm-artifact.sh" reviews --task "$4" --unhandled 2>/dev/null \
+    | awk -F '\t' '$4 == "changes" || $4 == "comment" { found = 1 } END { exit !found }'
+}
+
 fm_backlog_dispatch_transition() {
   local meta=$1 data=$2 id=$3 state=$4 row row_status
   fm_backlog_record_present "$meta" "task record" "$state" || return 1
@@ -840,12 +900,15 @@ fm_backlog_dispatch_transition() {
   fi
   row=$FM_BACKLOG_ROW_STATE
   if ! fm_backlog_row_dispatchable "$row"; then
-    FM_BACKLOG_TRANSITION_ERROR="backlog item $id is not dispatchable in state $row"
-    return 1
+    if [ "${FM_BACKLOG_DISPATCH_FOR_REVIEW:-0}" != 1 ] \
+        || ! fm_backlog_row_dispatchable_for_review "$row" "$FM_BACKLOG_ROW_HOLD_KIND" "$data" "$id"; then
+      FM_BACKLOG_TRANSITION_ERROR="backlog item $id is not dispatchable in state $row"
+      return 1
+    fi
   fi
   case "$row" in
-    in_flight\ no\ no) return 0 ;;
-    queued\ no\ no) fm_backlog_start "$data" "$id" ;;
+    in_flight\ *) return 0 ;;
+    queued\ *) fm_backlog_start "$data" "$id" ;;
   esac
 }
 

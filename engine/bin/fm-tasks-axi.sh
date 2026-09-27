@@ -34,6 +34,8 @@
 #
 # Refusals (exit 2, nothing run):
 #   - tasks-axi missing from PATH;
+#   - `done <id>` while a page of that task still waits for the captain's review
+#     (bin/fm-artifact.sh `waiting`), or when that cannot be read;
 #   - a caller-supplied --file, because this command owns the addressing and
 #     tasks-axi would silently let the last --file win;
 #   - a data directory that cannot be resolved, or whose backend configuration
@@ -108,6 +110,25 @@ for arg in "$@"; do
 done
 
 command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi is not on PATH; run bin/fm-bootstrap.sh for the install command"
+
+# Closing a row never files away a page the captain has not reviewed: `done` on
+# a task with a page still waiting for the captain's review is refused, exactly as
+# bin/fm-teardown.sh keeps that row open. Withdrawing the page with a reason the
+# captain can read is the way to let it go.
+if [ "${ARGS[0]:-}" = "done" ] && [ -n "${ARGS[1]:-}" ]; then
+  case "${ARGS[1]}" in
+    -*) ;;
+    *)
+      review_rc=0
+      review_waiting=$(FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-artifact.sh" waiting "${ARGS[1]}" 2>&1) || review_rc=$?
+      case "$review_rc" in
+        0) fail "${ARGS[1]} still has a page waiting for the captain's review ($(printf '%s' "$review_waiting" | paste -sd ',' - | sed 's/,/, /g')); leave the row open, or withdraw the page with bin/fm-artifact.sh withdraw --task ${ARGS[1]} --name <name> --reason <text> first" ;;
+        1) ;;
+        *) fail "whether ${ARGS[1]} still has a page waiting for the captain's review could not be read; fix that read rather than risk filing an unread page away: $review_waiting" ;;
+      esac
+      ;;
+  esac
+fi
 
 FM_BACKLOG_TRANSITION_ERROR=
 if ! fm_backlog_tasks_axi_addressing "$DATA"; then

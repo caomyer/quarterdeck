@@ -90,6 +90,7 @@ EOF
 
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 case "$*" in *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;; esac
 case "${1:-}" in display-message) printf 'firstmate\n'; exit 0 ;; esac
 exit 0

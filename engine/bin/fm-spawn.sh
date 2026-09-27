@@ -73,6 +73,15 @@
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
 #   socket, or unsupported secondmate mode) is terminal for that selected backend;
 #   callers must surface it instead of silently retrying another backend.
+#   The launch command is never typed into the pane: it is written to
+#   /tmp/fm-<id>/launch.sh and the pane is handed one short, quote-free line
+#   that sources it, so a shell that is still starting cannot receive it cut off
+#   at a continuation prompt. On tmux and herdr the spawn then reports success
+#   only once the endpoint reads a running agent; a launch that produces none
+#   appends failed: to the status file, closes a fresh endpoint (a relaunch keeps
+#   its endpoint with the input line cleared), and never moves the task to In
+#   flight. A relaunch clears any half-typed input before it types. The
+#   regression is tests/fm-spawn-launch-delivery.test.sh.
 #   A herdr crewmate or scout is placed in the exact workspace of the firstmate
 #   or secondmate process launching it, resolved from that process's own herdr
 #   pane rather than from a workspace label (herdr enforces no label uniqueness,
@@ -333,7 +342,11 @@
 # script performs the transition under the task's own meta lock before it reports
 # success. A ship or scout dispatch therefore REFUSES up front, before any
 # endpoint, worktree, or record exists, unless the home's backlog has an
-# unheld, unblocked Queued or In flight item for the id; a transition that fails
+# unheld, unblocked Queued or In flight item for the id - or, for a task held for
+# the captain, one whose page came back with a comments or changes review nobody
+# has acted on (bin/fm-backlog-transition-lib.sh's
+# fm_backlog_row_dispatchable_for_review), which is dispatched with its hold in
+# place so answering the review never releases the call; a transition that fails
 # after publication removes the record it just wrote rather than leaving a
 # worker the backlog does not own. A relaunch re-reads the row instead of
 # re-running the transition, so an eligible In-flight item is left untouched.
@@ -2831,8 +2844,13 @@ if fm_backlog_transition_applies "$CONFIG" "$DATA" "$KIND"; then
     exit 1
   fi
   if ! fm_backlog_row_dispatchable "$BACKLOG_ROW_STATE"; then
-    echo "error: this home's backlog item $ID is not dispatchable in state $BACKLOG_ROW_STATE; refusing before creating its endpoint or local copy" >&2
-    exit 1
+    if fm_backlog_row_dispatchable_for_review "$BACKLOG_ROW_STATE" "$FM_BACKLOG_ROW_HOLD_KIND" "$DATA" "$ID"; then
+      FM_BACKLOG_DISPATCH_FOR_REVIEW=1
+      echo "note: $ID stays held for the captain; it is dispatched only to answer the captain's review of its page, and its call is not released" >&2
+    else
+      echo "error: this home's backlog item $ID is not dispatchable in state $BACKLOG_ROW_STATE; refusing before creating its endpoint or local copy" >&2
+      exit 1
+    fi
   fi
 else
   BACKLOG_GATE_STATUS=$?
@@ -3346,6 +3364,143 @@ agy_spawn_fail() {  # <detail>
   rovo_endpoint_cleanup
 }
 
+# The launch file and the one line that runs it. The file lives in the task's
+# own temp root, which carries only the validated task id, so the typed line is
+# pure [A-Za-z0-9/._-] text with no quote a truncation could leave open. The
+# root is predictable under the shared /tmp, so it must be this user's own real
+# directory, closed to everyone else, before anything the pane will run is
+# written into it; the file itself is replaced whole, never rewritten in place.
+spawn_write_launch_file() {  # <launch-command>
+  local tmp
+  SPAWN_LAUNCH_FILE="$TASK_TMP/launch.sh"
+  SPAWN_LAUNCH_LINE=". $SPAWN_LAUNCH_FILE"
+  case "$SPAWN_LAUNCH_LINE" in
+    *[!A-Za-z0-9/._\ -]*)
+      echo "error: task temp root '$TASK_TMP' would put shell syntax in the launch line; refusing to type it" >&2
+      return 1
+      ;;
+  esac
+  if [ -L "$TASK_TMP" ] || [ ! -d "$TASK_TMP" ] || [ ! -O "$TASK_TMP" ]; then
+    echo "error: task temp root '$TASK_TMP' is not a directory this user owns; refusing to write the launch command where another user could change it" >&2
+    return 1
+  fi
+  chmod 700 "$TASK_TMP" || return 1
+  tmp="$TASK_TMP/.launch.sh.${BASHPID:-$$}"
+  if ! printf '%s\n' "$1" >"$tmp" || ! mv -f "$tmp" "$SPAWN_LAUNCH_FILE"; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "error: could not write the launch command to $SPAWN_LAUNCH_FILE" >&2
+    return 1
+  fi
+}
+
+# A launch is not delivered until an agent is running in the endpoint. Before
+# this gate the spawn committed the task to In flight as soon as Enter was
+# sent, so a launch that never became an agent - cut off in the pane, or a
+# harness that exited at once - looked alive from outside: a window, a
+# worktree, a task in flight, and no status line, because no agent ever ran to
+# write one. On a backend with a recovery-grade classifier (tmux, herdr) the
+# endpoint must read `alive` within the bound; `dead` (only shells in the
+# foreground, which is what a continuation prompt is) or `missing` at the bound
+# fails the spawn before the commit point, so the fresh record is rolled back
+# and the task never reads as in flight. A pane the classifier cannot attribute
+# (`ambiguous`, `unreadable`) proves nothing either way and is let through with
+# a warning rather than failing a worker that may well be running. A raw launch
+# command names no harness the classifier knows, so it is not gated, and
+# neither is a backend without a classifier.
+#
+# Herdr's recovery read calls a pane `alive` only once Herdr has registered an
+# agent on it, and a freshly launched harness may not be registered yet - or
+# ever, for a harness Herdr does not recognise - while its process is plainly
+# running. So on Herdr anything short of `alive` or `missing` is settled from
+# the pane's processes instead (fm_backend_herdr_pane_process_state, the same
+# process-level probe the recovery read verifies a registration against): a
+# harness process is a running agent, and only a pane holding nothing but its
+# shell is a launch that produced none.
+spawn_launch_state() {
+  local state
+  state=$(fm_backend_agent_state "$BACKEND" "$T")
+  if [ "$BACKEND" != herdr ]; then
+    printf '%s' "$state"
+    return 0
+  fi
+  case "$state" in
+    alive | missing) printf '%s' "$state"; return 0 ;;
+  esac
+  fm_backend_herdr_parse_target "$T" || { printf 'unreadable'; return 0; }
+  case "$(fm_backend_herdr_pane_process_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+    agent) printf 'alive' ;;
+    shell) printf 'dead' ;;
+    other) printf 'ambiguous' ;;
+    *) printf 'unreadable' ;;
+  esac
+}
+
+spawn_wait_for_live_agent() {
+  local i=0 max=${FM_SPAWN_LIVE_POLLS:-40} interval=${FM_SPAWN_LIVE_POLL_INTERVAL:-0.5}
+  SPAWN_LAUNCH_STATE=
+  [ "$RAW_LAUNCH" = 0 ] || return 0
+  fm_control_backend_state_verified "$BACKEND" || return 0
+  while :; do
+    SPAWN_LAUNCH_STATE=$(spawn_launch_state)
+    [ "$SPAWN_LAUNCH_STATE" != alive ] || return 0
+    i=$((i + 1))
+    [ "$i" -lt "$max" ] || break
+    sleep "$interval"
+  done
+  case "$SPAWN_LAUNCH_STATE" in
+    dead | missing) return 1 ;;
+  esac
+  echo "warning: task $ID's endpoint $T reads '$SPAWN_LAUNCH_STATE' after launch, so whether its agent is running could not be proven; check it with bin/fm-peek.sh $ID" >&2
+  return 0
+}
+
+# Report a launch that produced no agent where firstmate reads it, keep what the
+# pane showed as the evidence, and leave the endpoint ready for another try: a
+# fresh endpoint is closed like any other failed delivery, and a relaunch keeps
+# its recorded endpoint with the input line cleared, so the next launch is not
+# typed onto the end of whatever this one left there.
+spawn_launch_fail() {
+  local detail tail_line
+  tail_line=$(fm_backend_capture "$BACKEND" "$T" 40 "$W" 2>/dev/null | awk 'NF { last = $0 } END { print last }')
+  tail_line=$(printf '%s' "$tail_line" | tr -d '\000-\037' | cut -c1-160)
+  detail="launch produced no running agent in endpoint $T (it reads $SPAWN_LAUNCH_STATE)"
+  [ -z "$tail_line" ] || detail="$detail; the pane's last line was: $tail_line"
+  printf 'failed: %s\n' "$detail" >>"$STATE/$ID.status"
+  if [ "$RELAUNCH" -eq 1 ]; then
+    spawn_clear_input_line "$T" || true
+    echo "error: $detail; the endpoint was kept with its input cleared - inspect window $T, then relaunch" >&2
+  else
+    echo "error: $detail; the endpoint was closed and the task was not moved to In flight" >&2
+    rovo_endpoint_cleanup
+  fi
+}
+
+# Clear whatever a shell has half-typed at its prompt, a continuation prompt
+# included: Ctrl-C abandons a pending multi-line command, Ctrl-U empties the
+# line. Only ever sent to an endpoint already proven agent-free, since Ctrl-C to
+# a running agent would interrupt it.
+spawn_clear_input_line() {  # <target>
+  spawn_send_key "$1" C-c || return 1
+  sleep 0.2
+  spawn_send_key "$1" C-u
+}
+
+# A relaunch types into an endpoint proven agent-free, but a failed launch can
+# have left its shell at a continuation prompt holding half a command, and every
+# line typed after it would be appended to that. Clear it once, just before the
+# relaunch first types, and only after every check that can still refuse
+# without touching the pane.
+SPAWN_RELAUNCH_INPUT_CLEARED=0
+spawn_relaunch_clear_input() {
+  [ "$SPAWN_RELAUNCH_INPUT_CLEARED" = 0 ] || return 0
+  spawn_clear_input_line "$WT_TARGET" || {
+    echo "error: task $ID's endpoint $WT_TARGET could not have its input line cleared; refusing to type a relaunch onto whatever it holds" >&2
+    exit 1
+  }
+  SPAWN_RELAUNCH_INPUT_CLEARED=1
+  sleep 0.2
+}
+
 if [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
@@ -3363,6 +3518,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
       exit 1
     fi
+    spawn_relaunch_clear_input
     relaunch_cd_path=${WT//\'/\'\\\'\'}
     spawn_send_text_line "$WT_TARGET" "cd -- '$relaunch_cd_path'" || {
       echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}' and could not be told to return to its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
@@ -3379,6 +3535,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     fi
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+  spawn_relaunch_clear_input
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
@@ -4277,8 +4434,21 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
   fi
   LAUNCH="$LAUNCH_ENV_PREFIX /bin/sh -c $(shell_quote "$LAUNCH")"
 fi
+# The launch command is never typed into the pane: it is written to a file and
+# the pane is handed one short line that sources it (spawn_write_launch_file). A
+# typed launch runs to well over a kilobyte, and keystrokes that land while the
+# pane's shell is not yet at its line editor - an interactive shell treehouse
+# just started, still reading its rc files - sit in the terminal's cooked-mode
+# input queue, which on macOS holds 1024 bytes (MAX_CANON) and silently drops
+# the rest. The launch then arrives cut off mid-quote, the shell waits at a
+# continuation prompt (`dquote cmdsubst quote>`) and no agent ever runs, which
+# cost whole workers again and again. The sourcing line is a few dozen bytes of
+# quote-free text, so it cannot be cut there, and a line that is lost or
+# garbled some other way leaves at worst an error at a prompt, never a
+# half-open quote; spawn_wait_for_live_agent below then reports it.
+spawn_write_launch_file "$LAUNCH" || exit 1
 sleep 0.3
-spawn_send_literal "$T" "$LAUNCH"
+spawn_send_literal "$T" "$SPAWN_LAUNCH_LINE"
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
@@ -4353,6 +4523,11 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
   fi
+fi
+
+if ! spawn_wait_for_live_agent; then
+  spawn_launch_fail
+  exit 1
 fi
 
 # This is the commit point: all endpoint and harness delivery that can reject

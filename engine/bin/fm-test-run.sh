@@ -371,6 +371,7 @@ family_for_basename() {
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|fm-claude-trust.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
+    fm-spawn-launch-delivery.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
@@ -666,6 +667,7 @@ portable_serial_weight_hints() {
   cat <<'EOF'
 tests/fm-agy-harness.test.sh 11000
 tests/fm-artifact.test.sh 12000
+tests/fm-review-waits.test.sh 120000
 tests/fm-captain-calls.test.sh 75000
 tests/fm-project-intake.test.sh 1500
 tests/fm-history.test.sh 15000
@@ -791,6 +793,7 @@ tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 22
 tests/fm-sessionstart-nudge.test.sh 66194
 tests/fm-shared-captain-inheritance.test.sh 6108
 tests/fm-spawn-dispatch-profile.test.sh 63996
+tests/fm-spawn-launch-delivery.test.sh 24743
 tests/fm-spawn-pool-base-freshen.test.sh 34920
 tests/fm-spawn-worktree-settle.test.sh 5687
 tests/fm-startup-memory-budget.test.sh 6964
@@ -1621,6 +1624,17 @@ families_for_changed_path() {
       # The reference scan is not transitive, so match the two helpers that
       # source this one as well: most suites inherit it only through them.
       families_for_test_reference git-config-helpers.sh lib.sh herdr-test-safety.sh \
+        || printf '%s\n' "__unmapped__:$path"
+      ;;
+    tests/fake-tmux-liveness.sh)
+      # Suites reach it through lib.sh's FM_TEST_FAKE_TMUX_LIVENESS, or through
+      # fixtures.sh, which sources it, so match those names as well.
+      families_for_test_reference fake-tmux-liveness.sh FM_TEST_FAKE_TMUX_LIVENESS fixtures.sh \
+        || printf '%s\n' "__unmapped__:$path"
+      ;;
+    tests/fake-tmux-typed.sh)
+      # Suites reach it through lib.sh's FM_TEST_FAKE_TMUX_TYPED.
+      families_for_test_reference fake-tmux-typed.sh FM_TEST_FAKE_TMUX_TYPED \
         || printf '%s\n' "__unmapped__:$path"
       ;;
     tests/fixtures/*/*)

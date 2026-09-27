@@ -83,7 +83,17 @@ test("the views split the open rows by where each stands, and count what they ho
   assert.deepEqual(ids(taskRows(input(records, { view: "ready" }))), ["r"]);
   assert.deepEqual(ids(taskRows(input(records, { view: "blocked" }))), ["b"]);
   assert.deepEqual(ids(taskRows(input(records, { view: "held" }))), ["h"]);
-  assert.deepEqual(viewCounts(input(records)), { open: 4, ready: 1, blocked: 1, held: 1 });
+  assert.deepEqual(viewCounts(input(records)), { open: 4, ready: 1, blocked: 1, held: 1, review: 0 });
+});
+
+test("To review holds the open rows whose output waits on the captain, whatever else they stand for", () => {
+  const records = [row("r", { standing: "ready" }), row("b", { standing: "blocked" }), row("u", { state: "in_flight" }), row("gone", { state: "done" })];
+  const review = new Set(["b", "u", "gone"]);
+  // Underway work still leads, as in every view; a closed row is never in an open list, whatever it produced.
+  assert.deepEqual(ids(taskRows(input(records, { view: "review", review }))), ["u", "b"]);
+  assert.equal(viewCounts(input(records, { review })).review, 2);
+  // A list told nothing about output has nothing to review.
+  assert.deepEqual(ids(taskRows(input(records, { view: "review" }))), []);
 });
 
 test("the other orders: what unblocks most, what has waited longest, what was filed last", () => {

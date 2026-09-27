@@ -30,6 +30,11 @@
 # row a merge later closes describes the work that shipped rather than the audit
 # it started as. The row is read before anything changes, so an unreadable row
 # refuses promotion; a manual-backend home is told to make the same edit by hand.
+# When the captain approved a page of this task and nobody has acted on it yet
+# (bin/fm-artifact.sh), the approval and the comments it carried are added to the
+# ship spec word for word, and after the promotion succeeds it is recorded as
+# acted on (`fm-artifact.sh handled --promoted`), which is what stops the wake
+# drain listing it under UNHANDLED REVIEWS.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--title <new objective>]
 set -eu
 
@@ -232,6 +237,40 @@ If these promotion steps were already completed before a relaunch, preserve the 
 6. Treat the scout-time Firstmate spec and any unmarked legacy \`# Task\` text as investigation context, not captain intent or current ship-time instructions.
 7. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule, except where the current delivery contract below explicitly replaces scout-only delivery rules.
 EOF
+# Only the captain's approval of a page authorizes building what it proposes.
+# When this task has an approval nobody has acted on (bin/fm-artifact.sh owns
+# that record), the comments that came with it are the captain's own words about
+# the build, so they travel into the ship spec word for word, and the promotion
+# records the approval as acted on once it has succeeded.
+promote_approved_reviews() {
+  local line name rev threads log
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-artifact.sh" reviews --task "$ID" --unhandled 2>/dev/null \
+    | awk -F '\t' '$4 == "approve"' | while IFS=$'\t' read -r _task name rev _verdict threads _author _at; do
+    printf 'The captain approved the page %s rev %s, which is what authorizes this build.\n' "$name" "$rev"
+    [ "$threads" != - ] || continue
+    log="$DATA/$ID/artifacts/$name/review.jsonl"
+    printf 'Carry out the comments that came with that approval, word for word:\n'
+    if [ -f "$log" ]; then
+      jq -cR 'fromjson? | select(type == "object")' "$log" 2>/dev/null | jq -rs --arg ids "$threads" '
+        . as $events
+        | ($ids | split(",")[]) as $id
+        | ($events | map(select(.kind == "opened" and .id == $id)) | last) as $opened
+        | "- \($id)"
+          + (if (($opened.anchor.quote? // "") | length) > 0 then " (on \"\($opened.anchor.quote)\")" else "" end)
+          + ": " + (($opened.body // "(the comment text is not in the review log)") | gsub("\n"; "\n  "))
+          + ([$events[] | select(.kind == "comment" and .id == $id) | "\n  " + (.body | gsub("\n"; "\n  "))] | join(""))'
+    else
+      printf -- '- %s (the review log is missing; read the comments from the captain'"'"'s review message)\n' "$threads"
+    fi
+  done
+}
+APPROVED_REVIEWS=$(promote_approved_reviews) || APPROVED_REVIEWS=
+if [ -n "$APPROVED_REVIEWS" ]; then
+  PROMOTION_SHIP_SPEC="$PROMOTION_SHIP_SPEC
+8. $APPROVED_REVIEWS"
+fi
+
 promote_delivery_contract() {
   cat <<EOF
 # Current delivery mode contract
@@ -334,6 +373,11 @@ elif [ "$BACKLOG_MANUAL" = 1 ]; then
 fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
+if [ -n "$APPROVED_REVIEWS" ]; then
+  APPROVAL_NOTE=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-artifact.sh" handled --task "$ID" --promoted 2>&1) \
+    || APPROVAL_NOTE="warning: the promotion stands, but the captain's approval could not be recorded as acted on ($APPROVAL_NOTE); record it: bin/fm-artifact.sh handled --task $ID --promoted"
+fi
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 INSTRUCTIONS_Q=$(printf '%q' "$INSTRUCTIONS")
@@ -342,6 +386,10 @@ echo "wrote ship instructions for mode=$MODE: $INSTRUCTIONS"
 case "$BACKLOG_NOTE" in
   warning:*) printf '%s\n' "$BACKLOG_NOTE" >&2 ;;
   ?*) printf '%s\n' "$BACKLOG_NOTE" ;;
+esac
+case "${APPROVAL_NOTE:-}" in
+  warning:*) printf '%s\n' "$APPROVAL_NOTE" >&2 ;;
+  ?*) printf '%s\n' "$APPROVAL_NOTE" ;;
 esac
 echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID \"\$(cat $INSTRUCTIONS_Q)\""
 
