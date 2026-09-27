@@ -666,6 +666,7 @@ portable_serial_weight_hints() {
   cat <<'EOF'
 tests/fm-agy-harness.test.sh 11000
 tests/fm-artifact.test.sh 12000
+tests/fm-review-waits.test.sh 120000
 tests/fm-captain-calls.test.sh 75000
 tests/fm-project-intake.test.sh 1500
 tests/fm-history.test.sh 15000
