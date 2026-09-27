@@ -20,6 +20,10 @@
 # task and records[]. Each record contains url, kind, checked_at, error,
 # failure, observation, verdict, seen event tokens, pending events, and notified
 # tokens. failure counts consecutive failed reads: {count, first_at, woke}.
+# last_read says what the latest attempt was: {at, result, rc, detail}, where
+# result is read, not-read, budget-exhausted or failed, rc is the last gh exit
+# status (null when the budget refused the call), and detail, for a failure
+# only, is the forge's error text or the reason the answer was refused.
 # observation is one coherent forge read (a PR head is rechecked after fetching
 # checks/reviews). Checks are normalized by name, id, started_at, status and
 # conclusion; projection picks the newest attempt per distinct name. The last
@@ -37,7 +41,7 @@
 # Oldest observations go first, so a large corpus progresses across polls.
 # Each distinct URL is observed once per poll and applied to every owner.
 # A read either bound cuts short is "not read yet", never a failure: that URL's
-# records stay untouched, so it goes first next poll. When the budget runs out
+# records keep everything but last_read, so it goes first next poll. When the budget runs out
 # the poll ends; when only the five-second slice ran out, the poll moves on.
 # A genuine forge failure or head change records an error at once, and wakes
 # only once it persists for FAIL_WAKE_COUNT reads or FAIL_WAKE_SECONDS, once
@@ -181,10 +185,11 @@ forge() {
   local remaining bounded=0 rc=0
   remaining=$((DEADLINE - $(date +%s)))
   # The budget, not the forge, refused this read.
-  [ "$remaining" -gt 0 ] || { BUDGET_EXHAUSTED=1; return 1; }
+  [ "$remaining" -gt 0 ] || { BUDGET_EXHAUSTED=1; FORGE_RC=; return 1; }
   if [ "$remaining" -le 5 ]; then bounded=1; else remaining=5; fi
   fm_run_timed "$remaining" env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
     gh "$@" 2> "$TMP/forge.err" || rc=$?
+  FORGE_RC=$rc
   # A read killed at either bound is not read yet, never evidence against the
   # forge. Killed at the budget's own deadline, it is budget exhaustion too.
   if [ "$rc" -eq 124 ]; then
@@ -196,9 +201,9 @@ forge() {
 
 observe() { # canonical GitHub URL -> normalized JSON
   local url=$1 part number kind endpoint head after label
-  case "$url" in https://github.com/*) ;; *) return 1 ;; esac
+  case "$url" in https://github.com/*) ;; *) printf 'unsupported forge\n' > "$TMP/forge.err"; return 1 ;; esac
   part=${url#https://github.com/}; number=${part##*/}; part=${part%/*}; kind=${part##*/}; part=${part%/*}
-  case "$kind" in pull) endpoint="repos/$part/pulls/$number" ;; issues) endpoint="repos/$part/issues/$number" ;; *) return 1 ;; esac
+  case "$kind" in pull) endpoint="repos/$part/pulls/$number" ;; issues) endpoint="repos/$part/issues/$number" ;; *) printf 'unsupported forge\n' > "$TMP/forge.err"; return 1 ;; esac
   forge api "$endpoint" > "$TMP/core.json" || return 1
   jq -e '(.state == "open" or .state == "closed") and (.user.login | type == "string")' "$TMP/core.json" >/dev/null || return 1
   forge api "repos/$part/issues/$number/comments?per_page=100" --paginate --slurp > "$TMP/comments.json" || return 1
@@ -275,7 +280,7 @@ publish_pending() { # task canonical-url record-file
 }
 
 poll() {
-  local task url old kind error observed failing
+  local task url old kind error observed failing result
   local -a row
   acquire
   get_input
@@ -294,11 +299,20 @@ poll() {
     url=${row[0]}
     observed=0
     NOT_READ=0
+    FORGE_RC=
+    : > "$TMP/forge.err"
     observe "$url" || observed=$?
-    # An observation a bound cut short is unmeasured, not unavailable: keep
-    # every owner's prior record so the URL is observed first next poll.
-    [ "$BUDGET_EXHAUSTED" -eq 0 ] || break
-    [ "$NOT_READ" -eq 0 ] || continue
+    # An observation a bound cut short is unmeasured, not unavailable: every
+    # owner keeps its prior record, so the URL is observed first next poll.
+    if [ "$BUDGET_EXHAUSTED" -ne 0 ]; then result=budget-exhausted
+    elif [ "$NOT_READ" -ne 0 ]; then result=not-read
+    elif [ "$observed" -ne 0 ]; then result=failed
+    else result=read; fi
+    jq -n --arg now "$NOW" --arg result "$result" --arg rc "$FORGE_RC" --rawfile err "$TMP/forge.err" '
+      {at:$now,result:$result,rc:(if $rc == "" then null else ($rc | tonumber) end),
+       detail:(if $result != "failed" then null
+         else ($err | gsub("\\s+";" ") | ltrimstr(" ") | rtrimstr(" ") | .[:300]
+           | if . == "" then "forge answer failed validation" else . end) end)}' > "$TMP/last-read.json"
     failing=
     case "$url" in */issues/*) kind=issue ;; *) kind="pr" ;; esac
     for task in "${row[@]:1}"; do
@@ -307,7 +321,9 @@ poll() {
       jq -n --slurpfile saved "$TMP/saved.json" --arg task "$task" --arg url "$url" --arg kind "$kind" '
         ([$saved[0][] | select(.task == $task) | .records[] | select(.url == $url)] | first)
         // {url:$url,kind:$kind,checked_at:null,observation:null,verdict:null,seen:[],pending:[],notified:[]}' > "$old"
-      if [ "$observed" -eq 0 ]; then
+      if [ "$result" = not-read ] || [ "$result" = budget-exhausted ]; then
+        cp "$old" "$TMP/row.json"
+      elif [ "$result" = read ]; then
         jq -n --arg now "$NOW" --slurpfile old "$old" --slurpfile observation "$TMP/observation.json" '
           $old[0] as $old | $observation[0] as $o
           | ($o.events + (if $o.ready == true and $old.observation.ready != true and (any($o.events[]; .type == "ready-for-pr") | not) then
@@ -329,10 +345,13 @@ poll() {
           mv "$TMP/woke.json" "$TMP/row.json"
         fi
       fi
+      jq --slurpfile read "$TMP/last-read.json" '.last_read = $read[0]' "$TMP/row.json" > "$TMP/read-row.json"
+      mv "$TMP/read-row.json" "$TMP/row.json"
       write_record "$task" "$TMP/row.json"
       publish_pending "$task" "$url" "$TMP/row.json"
     done
     [ -z "$failing" ] || printf 'contributions: observation failing for %s (%s)\n' "$url" "$failing"
+    [ "$result" != budget-exhausted ] || break
   done < "$TMP/known.tsv"
 }
 

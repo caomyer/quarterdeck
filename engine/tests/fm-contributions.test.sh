@@ -576,8 +576,12 @@ SH
   chmod +x "$home/fakebin/gh" "$home/fakebin/date"
 }
 
+same_but_last_read() { # prior current: every field but last_read is unchanged
+  jq -e -n --slurpfile a "$1" --slurpfile b "$2" '($a[0] | del(.records[].last_read)) == ($b[0] | del(.records[].last_read))' >/dev/null
+}
+
 test_budget_exhaustion_keeps_prior_record() { # exhaust|hang
-  local mode=$1 home out
+  local mode=$1 home out expected
   home=$(new_home "budget-$mode")
   forge_home "$home"
   wrap_forge "$home"
@@ -590,8 +594,11 @@ test_budget_exhaustion_keeps_prior_record() { # exhaust|hang
   [ -z "$out" ] || fail "budget exhaustion ($mode) printed a wake line: $out"
   grep -F 'api repos/o/r/pulls/8' "$home/forge/calls" >/dev/null \
     || fail "budget exhaustion ($mode) never started the observation"
-  cmp -s "$home/prior.json" "$home/data/delivery/contributions.json" \
+  same_but_last_read "$home/prior.json" "$home/data/delivery/contributions.json" \
     || fail "budget exhaustion ($mode) rewrote the prior record: $(cat "$home/data/delivery/contributions.json")"
+  if [ "$mode" = exhaust ]; then expected=null; else expected=124; fi
+  jq -e --arg now "$NOW" --argjson rc "$expected" '.records[0].last_read == {at:$now,result:"budget-exhausted",rc:$rc,detail:null}' \
+    "$home/data/delivery/contributions.json" >/dev/null || fail "budget exhaustion ($mode) was not recorded as such"
   [ ! -s "$home/state/.wake-queue" ] || fail "budget exhaustion ($mode) enqueued a wake"
   pass "budget exhausted mid-observation ($mode) keeps the prior record and stays silent"
 }
@@ -615,8 +622,10 @@ test_slice_timeout_is_not_read_yet() {
   printf 'slow\n' > "$home/forge/fault"
   out=$(with_home "$home" "$ROOT/bin/fm-contributions.sh" poll) || fail 'poll failed when one read outlived its slice'
   [ -z "$out" ] || fail "a read cut short by its slice, with budget left, printed a wake line: $out"
-  cmp -s "$home/prior.json" "$home/data/delivery/contributions.json" \
+  same_but_last_read "$home/prior.json" "$home/data/delivery/contributions.json" \
     || fail "a read cut short by its slice rewrote the prior record: $(cat "$home/data/delivery/contributions.json")"
+  jq -e --arg now "$NOW" '.records[0].last_read == {at:$now,result:"not-read",rc:124,detail:null}' \
+    "$home/data/delivery/contributions.json" >/dev/null || fail 'a read cut short by its slice was not recorded as not read'
   jq -e --arg now "$NOW" '.records[0].checked_at == $now and .records[0].error == null' \
     "$home/data/filed/contributions.json" >/dev/null || fail 'the poll stopped at a slow read instead of moving on'
   [ ! -s "$home/state/.wake-queue" ] || fail 'a read cut short by its slice enqueued a wake'
@@ -635,7 +644,8 @@ test_genuine_failure_near_deadline_records_error() {
   [ -z "$out" ] || fail "a single genuine forge failure woke before it persisted: $out"
   jq -e --arg now "$NOW" '.records[0].checked_at == $now
     and .records[0].error == "forge observation unavailable or changed during read"
-    and .records[0].failure == {count:1,first_at:$now,woke:false}' \
+    and .records[0].failure == {count:1,first_at:$now,woke:false}
+    and .records[0].last_read == {at:$now,result:"failed",rc:1,detail:"HTTP 502"}' \
     "$home/data/delivery/contributions.json" >/dev/null || fail 'a genuine forge failure left no error evidence'
   pass 'a genuine forge failure past the deadline still records the error, not budget exhaustion'
 }
@@ -649,7 +659,8 @@ test_unreachable_forge_wakes_once_it_persists() {
   printf 'down\n' > "$home/forge/fault"
   for poll in 1 2 3 4; do
     out=$(with_home "$home" "$ROOT/bin/fm-contributions.sh" poll) || fail "poll $poll failed on an unreachable forge"
-    jq -e --arg now "$NOW" '.records[0].error != null and .records[0].failure.first_at == $now' \
+    jq -e --arg now "$NOW" '.records[0].error != null and .records[0].failure.first_at == $now
+      and .records[0].last_read == {at:$now,result:"failed",rc:1,detail:"error connecting to api.github.com"}' \
       "$home/data/delivery/contributions.json" >/dev/null || fail "unreachable read $poll left no error evidence"
     case "$poll" in
       3) [ "$out" = "$expected" ] || fail "a persistent unreachable forge did not wake on read 3: $out" ;;
@@ -661,7 +672,8 @@ test_unreachable_forge_wakes_once_it_persists() {
   : > "$home/forge/fault"
   out=$(with_home "$home" "$ROOT/bin/fm-contributions.sh" poll) || fail 'poll failed after the forge recovered'
   [ -z "$out" ] || fail "a recovered forge printed: $out"
-  jq -e '.records[0].error == null and .records[0].failure == null' "$home/data/delivery/contributions.json" >/dev/null \
+  jq -e --arg now "$NOW" '.records[0].error == null and .records[0].failure == null
+    and .records[0].last_read == {at:$now,result:"read",rc:0,detail:null}' "$home/data/delivery/contributions.json" >/dev/null \
     || fail 'a successful read did not clear the failure'
   # A failure that persists in time, not in count, wakes too.
   printf 'down\n' > "$home/forge/fault"
@@ -694,6 +706,9 @@ test_shared_url_observed_once() {
         "$home/data/$task/contributions.json" >/dev/null || fail "owner $task did not receive the shared result ($mode)"
     done
     [ "$mode" != ok ] || continue
+    if [ "$mode" = head ]; then expected='head changed during observation'; else expected='HTTP 502'; fi
+    jq -e --arg detail "$expected" '.records[0].last_read.result == "failed" and .records[0].last_read.detail == $detail' \
+      "$home/data/delivery/contributions.json" >/dev/null || fail "a shared failure did not record its cause ($mode)"
     for poll in 2 3; do
       out=$(with_home "$home" "$ROOT/bin/fm-contributions.sh" poll) || fail "shared-owner poll $poll failed ($mode)"
     done

@@ -15,6 +15,9 @@ def valid_record:
     and (.failure == null or (.failure | (.count | type == "number" and . >= 1)
       and (.first_at | fromdateiso8601 | type == "number") and (.woke | type == "boolean")))
     and (.checked_at == null or (.checked_at | fromdateiso8601 | type == "number"))
+    and (.last_read == null or (.last_read | (.at | fromdateiso8601 | type == "number")
+      and (.result | IN("read","not-read","budget-exhausted","failed"))
+      and (.rc == null or (.rc | type == "number")) and (.detail == null or (.detail | type == "string"))))
     and (.verdict == null or (.verdict | (.head | sha) and (.source | type == "string")
       and (.actor | IN("captain","fleet","maintainer","nobody")) and (.summary | type == "string")))
     and (.observation == null or (.kind as $kind | .observation |
