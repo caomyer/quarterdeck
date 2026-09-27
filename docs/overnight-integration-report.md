@@ -22,9 +22,11 @@ Question answered: do the overnight branches stand up together, not whether each
 | `cargo clippy --all-targets` | exit 0 |
 | `cargo test` | 162 passed, 0 failed, 11 ignored (the live tests) |
 | Vite: artifacts, tasks, taskview, calls, replies, tones, sources, projects, starts, evidence, onboarding, attach, routing, usage, updates, session, replay | 17 of 17 exit 0; 1478 ok, 0 FAIL |
-| `engine/bin/fm-test-run.sh --changed` (230 cases) | ENGINE RESULT: pending, filled in when the run returns |
+| `engine/bin/fm-test-run.sh --changed` (230 cases) | 221 pass, 9 fail; all 9 fail identically on main (below) |
 
-Engine failures so far in the final run, 74 of 230 cases complete: `fm-mail` (timeout), `fm-muse-harness`, `fm-harness-precedence`, `fm-kimi-harness`, all pre-existing on main (below).
+The 9 engine failures: `fm-mail` (timeout), `fm-muse-harness`, `fm-harness-precedence`, `fm-kimi-harness`, `fm-cursor-harness`, `fm-remote-doctor`, `fm-remote-herdr-guard`, `fm-afk-return`, `fm-composer-codex-idle-live-e2e`.
+Every one is pre-existing on main.
+Every suite tonight's work touched passes, including `fm-review-waits`, `fm-spawn-launch-delivery`, `fm-teardown`, `fm-test-run` and `fm-lint`.
 
 ## The two merges resolved
 
@@ -85,7 +87,9 @@ I held off on the approve-1 and taskview-1 bugs while both workers still had unc
 | `fm-remote-herdr-guard` | `this host does not expose a holder's environment (macOS hides platform-binary environments ...)` |
 | `fm-remote-doctor` | `--fix left a repairable host unready: expected exit 0, got 1` |
 | `fm-afk-return` | `evidence publication failure should retain catch-up (rc=1)` |
-| `fm-teardown` | `herdr-preflight-missing-adapter: teardown continued without its required preflight` (round 1; `0a635a7` later targets it) |
+| `fm-cursor-harness` | `a real cursor-agent ancestor must detect cursor, got ''` |
+| `fm-composer-codex-idle-live-e2e` | `codex (codex-cli 0.144.6): idle screen never classified empty (tmux read: unknown, cursorless styled read: unknown)`; selected only once the spawn-race files changed, and touched by nothing tonight |
+| `fm-teardown` | `herdr-preflight-missing-adapter: teardown continued without its required preflight` (round 1 only; passes on the final tip after `0a635a7`) |
 
 The harness lanes are the macOS System Integrity Protection limit `AGENTS.md` records; they run on Linux in CI.
 
