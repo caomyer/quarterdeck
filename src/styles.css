@@ -429,7 +429,10 @@ a { color: var(--sea); }
 .decision-card h3 { margin: 10px 0 0; color: var(--ink); font-size: 19px; font-weight: 600; line-height: 1.3; letter-spacing: -.02em; text-wrap: pretty; }
 .decision-body > p { max-width: 72ch; margin: 10px 0 0; color: var(--ink-3); font-size: 14px; line-height: 1.6; text-wrap: pretty; }
 .decision-body > p.call-argued { margin-top: 12px; color: var(--muted); font-size: 13px; }
-.call-argued strong { color: var(--sea); font-weight: 500; }
+/* What argues a call: each piece a link, with what opening it does in a few words beside it. */
+.evidence-link, .evidence-more { padding: 0; border: 0; color: var(--sea); background: transparent; font: inherit; font-weight: 500; text-align: left; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--sea) 35%, transparent); text-underline-offset: 3px; cursor: pointer; }
+.evidence-link:hover, .evidence-more:hover { text-decoration-color: currentColor; }
+.evidence-link small { margin-left: 5px; color: var(--faint); font-family: var(--mono); font-size: 10.5px; font-weight: 400; text-decoration: none; display: inline-block; }
 .decision-body > p.call-unread { margin-top: 4px; color: var(--amber); font-size: 12.5px; }
 .decision-actions, .report-card .report-actions { display: flex; align-items: center; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--rule); background: var(--surface-2); }
 .decision-actions > span { flex: 1; overflow: hidden; color: var(--muted); font-family: var(--mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1198,6 +1201,7 @@ a { color: var(--sea); }
 .decision-answer header span { color: var(--coral); font-family: var(--mono); font-size: 11.5px; }
 .decision-answer header small { overflow: hidden; color: var(--faint); font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .decision-answer p { margin: 8px 0 10px; color: var(--ink); font-size: 14px; font-weight: 500; line-height: 1.45; }
+.decision-answer p.call-argued { margin: -4px 0 10px; color: var(--muted); font-size: 12.5px; font-weight: 400; }
 .decision-choices { display: flex; flex-direction: column; gap: 6px; }
 .decision-choices button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; padding: 8px 12px; border: 1px solid var(--control); border-radius: 9px; color: var(--ink); background: var(--surface); font-size: 13px; line-height: 1.35; text-align: left; transition: border-color .12s ease; }
 .decision-choices button:hover:not(:disabled) { border-color: var(--control-hover); }

@@ -142,6 +142,11 @@ function reviewValue(name: string) {
  * its "under pace" words sit twice in the Claude row, which is shut when the page opens.
  * `?chat-calls` has the first mate act on calls in chat the way `bin/fm-captain-hold.sh` does, when the captain asks it
  * to (`chatCallsTurn`), so every time a call carries is one the engine would write.
+ * `?evidence` gives calls more to argue them, as `fm-captain-hold.sh evidence <task> add` attaches it: the transcripts
+ * call a page, a report with no page and a link; the model-download call four pieces, among them a report whose scout
+ * presented a page and the page of a task with no worker left; a call argued only by a report with no page; and one
+ * argued only by the report of a scout that presented a page, which that page's rail answers.
+ * `&gone-page` has the call nothing argues name a page that is not among the presented pages.
  */
 /** A calendar day `days` ago where the app runs, as a bare YYYY-MM-DD date. */
 function localDate(days: number) {
@@ -168,6 +173,10 @@ const START_SHIP = "res-waveform-colors";
 
 /** A call nothing argues, so Bearings offers its options inline. */
 const UNARGUED_CALL = "foreman-auto-merge";
+/** `?evidence`: a call argued only by a report its scout wrote without a page. */
+const REPORT_ONLY_CALL = "res-artwork-refresh";
+/** `?evidence`: a call argued only by the report of a scout that presented a page. */
+const REPORT_PAGE_CALL = "res-transcripts-backfill";
 
 type MockHome = {
   artifacts: Artifact[];
@@ -397,6 +406,25 @@ function mockArtifacts(home: string): MockHome {
       why: "The scout's plan needs a ship task to land, and it waits on your call rather than starting.",
     }),
   ];
+  if (reviewFlag("evidence")) {
+    const argued = (id: string, evidence: string[]) => {
+      const index = calls.findIndex((item) => item.id === id);
+      calls[index] = { ...calls[index], evidence };
+    };
+    argued("res-transcripts-source", [`page:task/${REPORT_TASK}/transcripts-report`, `report:${REPORTED_TASK}`, "url:https://github.com/caomyer/resonance/pull/41"]);
+    argued("res-model-download", ["page:chat/model-download", `report:${REPORT_TASK}`, `page:task/${LANDED_TASK}/rebase-plan`, "url:https://github.com/caomyer/resonance/pull/44"]);
+    if (reviewFlag("gone-page")) argued(UNARGUED_CALL, ["page:chat/gone"]);
+    calls.push(call(REPORT_ONLY_CALL, "Resonance: refresh episode artwork nightly?", {
+      question: "Should Resonance refresh every feed's artwork nightly?",
+      options: [option("weekly", "Weekly is enough", true), option("nightly", "Nightly")],
+      evidence: [`report:${REPORTED_TASK}`], raised_at: at(2 * 60), updated_at: at(2 * 60),
+    }));
+    calls.push(call(REPORT_PAGE_CALL, "Resonance: backfill transcripts for old episodes?", {
+      question: "Should Resonance transcribe the back catalogue, or only new episodes?",
+      options: [option("new-only", "Only new episodes", true), option("backfill", "Backfill the back catalogue overnight")],
+      evidence: [`report:${REPORT_TASK}`], raised_at: at(3 * 60), updated_at: at(3 * 60),
+    }));
+  }
   return {
     artifacts,
     tasks: reviewFlag("usage-t2") ? [planTask, reportTask, usageTask] : [planTask, reportTask],

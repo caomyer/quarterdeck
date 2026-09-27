@@ -8,8 +8,27 @@
 import { Check, CircleAlert, CircleCheck, CirclePause, CircleSlash, Ellipsis, Info } from "lucide-react";
 import { useState } from "react";
 
+import { type Evidence, evidenceAction } from "./calls";
 import { type AnswerCardView, type CallCardView, type CallLine } from "./callviews";
 import type { Call } from "./host/types";
+
+/** How many pieces of evidence a line names before it folds the rest under "N more". */
+const EVIDENCE_SHOWN = 3;
+
+/**
+ * What argues a call, as one sentence of links: each opens its piece the way that kind opens everywhere, and says in a
+ * few words what it will do. Nothing is drawn when nothing argues the call. Past three, the rest fold under "N more".
+ */
+export function EvidenceLine({ lead, evidence, onOpen }: { lead: string; evidence: Evidence[]; onOpen: (item: Evidence) => void }) {
+  const [all, setAll] = useState(false);
+  if (evidence.length === 0) return null;
+  const folded = !all && evidence.length > EVIDENCE_SHOWN;
+  const shown = folded ? evidence.slice(0, EVIDENCE_SHOWN - 1) : evidence;
+  // Anchors rather than buttons, so a long title wraps as the words around it do; a link keeps its own address.
+  const links = shown.map((item) => <a key={item.ref} className="evidence-link" data-testid="evidence-link" data-kind={item.kind} href={item.kind === "url" ? item.url : "#"} role={item.kind === "url" ? undefined : "button"} onClick={(event) => { event.preventDefault(); onOpen(item); }}>{item.title}<small>{evidenceAction(item)}</small></a>);
+  const tail = folded ? <button className="evidence-more" data-testid="evidence-more" onClick={() => setAll(true)}>{evidence.length - shown.length} more</button> : links.pop();
+  return <p className="call-argued" data-testid="argued-by">{lead} {links.map((link, index) => <span key={index}>{link}{links.length > 1 ? ", " : " "}</span>)}{links.length > 0 && "and "}{tail}</p>;
+}
 
 /** The answer form a call card shows, handed in by the surface that answers the call. */
 export type CallForm = {
@@ -25,12 +44,14 @@ export type CallForm = {
   clear: () => void;
 };
 
-/** A call once it is not the captain's to answer: one line, with the question and every option a click away. */
-export function CallLineCard({ call, heading, line, form, onOpenPage, onDraft }: {
+/** A call once it is not the captain's to answer: one line, with the question, every option and what argues it a click away. */
+export function CallLineCard({ call, heading, line, form, evidence, onOpenEvidence, onOpenPage, onDraft }: {
   call: Call;
   heading: string;
   line: CallLine;
   form: Pick<CallForm, "draft" | "clear">;
+  evidence: Evidence[];
+  onOpenEvidence: (item: Evidence) => void;
   onOpenPage?: () => void;
   onDraft: (text: string) => void;
 }) {
@@ -42,10 +63,11 @@ export function CallLineCard({ call, heading, line, form, onOpenPage, onDraft }:
       {line.pill && <span className={`call-pill tone-${line.tone}`}>{line.pill}</span>}
       {line.kind === "in-review" && onOpenPage && <button onClick={onOpenPage}>Open the page</button>}
     </div>
-    {call.options.length > 0 && <details className="call-chat-options">
-      <summary>The question and all {call.options.length === 1 ? "1 option" : `${call.options.length} options`}</summary>
+    {(call.options.length > 0 || evidence.length > 0) && <details className="call-chat-options">
+      <summary>{call.options.length > 0 ? <>The question and all {call.options.length === 1 ? "1 option" : `${call.options.length} options`}</> : "The question and what argues it"}</summary>
       {call.question && <p>{call.question}</p>}
-      <ul>{call.options.map((option) => <li key={option.key} className={option.key === line.pick ? "picked" : ""}>{option.key === line.pick && <Check size={13} />}{option.label}</li>)}</ul>
+      {call.options.length > 0 && <ul>{call.options.map((option) => <li key={option.key} className={option.key === line.pick ? "picked" : ""}>{option.key === line.pick && <Check size={13} />}{option.label}</li>)}</ul>}
+      <EvidenceLine lead="Argued by" evidence={evidence} onOpen={onOpenEvidence} />
     </details>}
     {/* Answered somewhere else while he was writing here: what he wrote is kept, and never sent from here. */}
     {form.draft && <div className="call-chat-note" data-testid="call-unsent"><Info size={15} /><span><strong>What you were writing here was not sent</strong>“{form.draft}”</span><button onClick={() => { onDraft(form.draft); form.clear(); }}>Put it in the composer</button></div>}
@@ -57,19 +79,26 @@ export function CallLineCard({ call, heading, line, form, onOpenPage, onDraft }:
  * his that nothing has recorded folds the form under Answer differently. `notices` are the surface's own states
  * (not recorded, the reply itself, a reply refused), drawn the way Bearings draws them.
  */
-export function CallOpenCard({ call, heading, question, view, form, argued, unread, summary, notices, onReadArgument }: {
+export function CallOpenCard({ call, heading, question, view, form, evidence, argued, readLabel, unread, summary, notices, onReadArgument, onOpenEvidence }: {
   call: Call;
   heading: string;
   /** The question, when it says more than the heading. */
   question: string | null;
   view: CallCardView;
   form: CallForm;
+  /** Everything that argues the call, each piece a link. */
+  evidence: Evidence[];
+  /** The title of the one piece to read first, when there is one. */
   argued: string | null;
-  unread: boolean;
+  /** What the button that opens it says. */
+  readLabel: string;
+  /** The title of the page that argues it, when the captain has not opened it yet. */
+  unread: string | null;
   /** The options at a glance, for when the form is folded. */
   summary: string;
   notices: React.ReactNode;
   onReadArgument?: () => void;
+  onOpenEvidence: (item: Evidence) => void;
 }) {
   const [answering, setAnswering] = useState(false);
   const folded = view.replied && !answering;
@@ -77,8 +106,8 @@ export function CallOpenCard({ call, heading, question, view, form, argued, unre
     <div className="call-chat-kicker">Captain's call{view.kicker.length > 0 && <span>{view.kicker.join(" · ")}</span>}</div>
     <h4>{heading}</h4>
     {question && <p className="call-chat-question">{question}</p>}
-    {argued && <p className="call-argued" data-testid="argued-by">Argued by <strong>{argued}</strong></p>}
-    {argued && unread && !folded && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argued}” yet.</p>}
+    <EvidenceLine lead="Argued by" evidence={evidence} onOpen={onOpenEvidence} />
+    {unread && !folded && <p className="call-unread" data-testid="unread-argument">You haven't opened “{unread}” yet.</p>}
     {(view.optionsChanged || view.withdrawn) && <div className="call-chat-note warn" data-testid="options-changed"><CircleAlert size={15} /><span>
       {view.optionsChanged && <><strong>The options changed at {view.optionsChanged}, after the first mate wrote about this above.</strong>These are the current ones. </>}
       {view.withdrawn && <>“{view.withdrawn}”, which you had picked, is no longer offered. Pick again.</>}
@@ -89,7 +118,7 @@ export function CallOpenCard({ call, heading, question, view, form, argued, unre
     <div className="call-chat-actions">
       <span data-testid="call-hint">{folded ? summary : form.hint}</span>
       <div>
-        {argued && onReadArgument && <button className="quiet" onClick={onReadArgument}>Read the argument</button>}
+        {argued && onReadArgument && <button className="quiet" data-testid="read-argument" onClick={onReadArgument}>{readLabel}</button>}
         {folded ? <button onClick={() => setAnswering(true)}>Answer differently</button> : form.button}
       </div>
     </div>
