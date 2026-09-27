@@ -152,8 +152,16 @@ freeze_parent_session() {
 remote_injected_traceparent() {
   sed -n 's/.*export TRACEPARENT=\([0-9a-f-]*\).*/\1/p' "$HERDR_LOG" | tail -1
 }
+# The pane is handed only a line sourcing the launch file, so the launch the
+# remote pane ran is that file's command.
 remote_launch_snapshot() {
-  grep -o 'FM_TRACE_CONTEXT=[a-z]*' "$HERDR_LOG" | tail -1 | cut -d= -f2
+  local f
+  {
+    cat "$HERDR_LOG"
+    for f in $(grep -o '/tmp/fm-[A-Za-z0-9._-]*/launch\.sh' "$HERDR_LOG" | sort -u); do
+      cat "$f"
+    done
+  } | grep -o 'FM_TRACE_CONTEXT=[a-z]*' | tail -1 | cut -d= -f2
 }
 meta_traceparent() { sed -n 's/^traceparent=//p' "$1"; }
 
@@ -206,7 +214,7 @@ assert_present "$REMOTE_HOME/config/trace-context" \
   "an enabled remote launch did not inherit the enablement flag into the remote home"
 GOTMP_LINE=$(grep -n 'export GOTMPDIR=' "$HERDR_LOG" | tail -1 | cut -d: -f1)
 TP_LINE=$(grep -n 'export TRACEPARENT=' "$HERDR_LOG" | tail -1 | cut -d: -f1)
-LAUNCH_LINE=$(grep -n 'FM_TRACE_CONTEXT=' "$HERDR_LOG" | tail -1 | cut -d: -f1)
+LAUNCH_LINE=$(grep -n '/tmp/fm-[A-Za-z0-9._-]*/launch\.sh' "$HERDR_LOG" | tail -1 | cut -d: -f1)
 [ -n "$GOTMP_LINE" ] && [ -n "$TP_LINE" ] && [ -n "$LAUNCH_LINE" ] \
   || fail "remote pane log missing GOTMPDIR/TRACEPARENT/launch lines"
 [ "$TP_LINE" -gt "$GOTMP_LINE" ] \

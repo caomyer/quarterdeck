@@ -436,6 +436,7 @@ make_noop_tmux() {
   mkdir -p "$fakebin"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 exit 0
 SH
   chmod +x "$fakebin/tmux"
@@ -654,6 +655,7 @@ make_launch_capturing_tmux() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+. "${FM_TEST_FAKE_TMUX_LIVENESS:?}"
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
@@ -666,7 +668,7 @@ case "${1:-}" in
       prev=
       for a in "$@"; do
         if [ "$prev" = "-l" ]; then
-          printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
+          printf '%s\n' "$(fm_fake_tmux_typed "$a")" >> "$FM_FAKE_LAUNCH_LOG"
         fi
         prev=$a
       done
