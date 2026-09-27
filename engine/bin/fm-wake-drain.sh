@@ -3,8 +3,9 @@
 # optionally acknowledge handled records,
 # annotate every unread line for validated signal status keys, surface unread
 # informational status lines, latest captain-facing statuses not covered by a
-# newer branch outcome, OPEN DECISIONS, captain-call record divergence, and
-# captain replies no one has acted on, then assert liveness.
+# newer branch outcome, OPEN DECISIONS, captain-call record divergence,
+# captain replies no one has acted on, and captain reviews no one has acted on,
+# then assert liveness.
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
@@ -595,6 +596,62 @@ EOF
   printf 'UNHANDLED REPLIES: read each reply with bin/fm-captain-hold.sh list --json; record it with bin/fm-captain-hold.sh answer <task> --decision-file <path> (with --key when the words name an option) only if the words decide the call, otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with bin/fm-captain-hold.sh hold <task> --until <date> when the words put it off to a date; never infer an answer from the reply alone.\n' || return 1
 }
 
+# Print the UNHANDLED REVIEWS section: every review of a task page the captain
+# sent that the first mate owes a move on (bin/fm-artifact.sh `reviews --owed`
+# owns what counts): an approval nobody has promoted, linked to a build, or
+# answered with a reason, and a comments or changes review whose author is gone,
+# so it reaches no one unless the first mate relaunches the author with it or
+# says why not. Each has waited at least FM_REVIEW_OVERDUE_MINUTES (default 5).
+# Stateless like UNHANDLED REPLIES: it prints on every drain until the first
+# mate acts, and a failure never changes the drain's exit status. Nothing here
+# dispatches: whether and how the work starts stays the first mate's call.
+print_unhandled_reviews_section() {
+  local reviews task name rev verdict threads author at line shown=0 omitted=0 bound minutes
+  local output='' used=0 bytes item_bytes=300 global_bytes=2400
+
+  bound=${FM_DIVERGENCE_TIMEOUT:-20}
+  case "$bound" in ''|*[!0-9]*|0) bound=20 ;; esac
+  minutes=${FM_REVIEW_OVERDUE_MINUTES:-5}
+  case "$minutes" in ''|*[!0-9]*) minutes=5 ;; esac
+
+  reviews=$(FM_STATE_OVERRIDE="$STATE" fm_run_timed "$bound" "$SCRIPT_DIR/fm-artifact.sh" reviews --owed --older-than "$minutes" 2>/dev/null) || return 0
+  [ -n "$reviews" ] || return 0
+
+  while IFS=$(printf '\t') read -r task name rev verdict threads author at; do
+    [ -n "$task" ] || continue
+    if [ "$verdict" = approve ]; then
+      line="$task: the captain approved page $name rev $rev at $at"
+      [ "$threads" = - ] || line="$line with comments $threads to carry into the build word for word"
+      line="$line; promote it or say why not"
+    else
+      line="$task: the captain's $verdict review of page $name rev $rev at $at"
+      [ "$threads" = - ] || line="$line (comments $threads)"
+      line="$line reached no worker: its author is gone"
+    fi
+    fm_cap_line_var "$line" $((item_bytes - 1))
+    line=$FM_LINE_CAP_LINE
+    bytes=$(( ${#line} + 1 ))
+    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+      omitted=$((omitted + 1))
+      continue
+    fi
+    output="$output$line
+"
+    used=$((used + bytes))
+    shown=$((shown + 1))
+  done <<EOF
+$reviews
+EOF
+
+  [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0
+  printf 'UNHANDLED REVIEWS (the captain reviewed these pages and nothing has acted on the review - your overdue work, not reviews awaiting the captain):\n' || return 1
+  printf '%s' "$output" || return 1
+  if [ "$omitted" -gt 0 ]; then
+    printf 'UNHANDLED REVIEWS: %d more omitted (byte cap)\n' "$omitted" || return 1
+  fi
+  printf 'UNHANDLED REVIEWS: only an approval authorizes building what a page proposes. For an approval, promote the task in place with bin/fm-promote.sh (which records it), or record a build filed separately with bin/fm-artifact.sh handled --task <task> --linked <build-task>, or why not with --reason <text>; never dispatch without deciding the mode and brief yourself. For a review whose author is gone, relaunch the author with the review in its brief (a task held for the captain can be dispatched for it without releasing the hold), or record how it was answered with bin/fm-artifact.sh handled --task <task> --reason <text>.\n' || return 1
+}
+
 print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
@@ -654,6 +711,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
   fm_lock_release "$lock"
   print_unhandled_replies_section || true
+  print_unhandled_reviews_section || true
   return "$rc"
 }
 

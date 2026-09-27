@@ -32,6 +32,11 @@
 # (bin/fm-captain-hold.sh `open` owns that predicate), because the policy holds
 # the very work item a question gates and cleanup must never retire the
 # captain's own question.
+# A page of the task still waiting for the captain's review takes the same
+# retention (bin/fm-artifact.sh `waiting` owns that predicate, and "cannot tell"
+# refuses the same way), so cleanup never files an unread page away; the retained
+# row is then held from dispatch until the captain's verdict arrives
+# (bin/fm-backlog-transition-lib.sh, "THE REVIEW DISPATCH HOLD").
 # NOTE: this uses `open`'s silent default and depends only on its unchanged
 # 0/1/2 exit-code contract. The optional `--identity` output that bin/fm-watch.sh
 # asks for prints only on an exit 0 and changes nothing read here.
@@ -504,6 +509,28 @@ if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ]; then
     *)
       echo "error: task $ID cannot be torn down because whether its backlog item is still held for the captain could not be read; fix that read and retry rather than risk closing a captain call with no recorded answer" >&2
       [ -z "$TEARDOWN_CAPTAIN_OPEN_OUT" ] || printf '%s\n' "$TEARDOWN_CAPTAIN_OPEN_OUT" >&2
+      exit 1
+      ;;
+  esac
+fi
+# Cleanup never files away a page the captain has not reviewed either: a task
+# with a page still waiting for the captain's review (bin/fm-artifact.sh `waiting` owns
+# the predicate) takes the same retain transition, and the retention holds the
+# row from dispatch until the verdict arrives (bin/fm-backlog-transition-lib.sh).
+# The worker still goes: a late review reaches the first mate, which relaunches
+# the author with it.
+TEARDOWN_REVIEW_WAITING=
+if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ] && [ "$TEARDOWN_BACKLOG_TRANSITION" = close ]; then
+  TEARDOWN_REVIEW_STATUS=0
+  TEARDOWN_REVIEW_WAITING=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    "$SCRIPT_DIR/fm-artifact.sh" waiting "$ID" 2>&1) || TEARDOWN_REVIEW_STATUS=$?
+  case "$TEARDOWN_REVIEW_STATUS" in
+    0) TEARDOWN_BACKLOG_TRANSITION=retain ;;
+    1) TEARDOWN_REVIEW_WAITING= ;;
+    *)
+      echo "error: task $ID cannot be torn down because whether a page of it still waits for the captain's review could not be read; fix that read and retry rather than risk filing an unread page away" >&2
+      [ -z "$TEARDOWN_REVIEW_WAITING" ] || printf '%s\n' "$TEARDOWN_REVIEW_WAITING" >&2
       exit 1
       ;;
   esac
@@ -1488,7 +1515,9 @@ backlog_refresh_reminder() {
   else
     backlog_display="${DATA%/}/backlog.md"
   fi
-  if [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ]; then
+  if [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ] && [ -n "$TEARDOWN_REVIEW_WAITING" ]; then
+    printf '%s\n' "Backlog: $ID stays open in $backlog_display with its deliverable recorded, held from dispatch until the captain reviews $(printf '%s' "$TEARDOWN_REVIEW_WAITING" | paste -sd ',' - | sed 's/,/, /g'). The verdict reaches you on the wake drain; withdraw a page the captain no longer needs with bin/fm-artifact.sh withdraw and a reason the captain can read."
+  elif [ "$BACKLOG_CLOSED" = 1 ] && [ "$BACKLOG_TRANSITION" = retain ]; then
     printf '%s\n' "Backlog: $ID stays open in $backlog_display, still held for the captain with its deliverable recorded. Relay the question and close it only with bin/fm-captain-hold.sh answer."
   elif [ "$BACKLOG_CLOSED" = 1 ]; then
     printf '%s\n' "Backlog: $ID is closed in $backlog_display. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
