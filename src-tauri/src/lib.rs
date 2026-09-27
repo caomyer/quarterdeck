@@ -14,6 +14,7 @@ mod settings;
 mod snapshot;
 mod sources;
 mod start;
+mod tasks;
 mod update;
 
 use tauri::Manager;
@@ -102,6 +103,7 @@ pub fn run() {
       sources::sources_remove,
       sources::sources_dismiss,
       sources::sources_link,
+      tasks::task_edit,
       update::update_status,
       update::update_check,
       update::update_restart,

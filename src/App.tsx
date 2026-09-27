@@ -47,7 +47,7 @@ import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type Landed, type FleetTask, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type Landed, type FleetTask, type TaskEdit, type TaskEdited, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
@@ -60,6 +60,9 @@ import { askedHow, askWantsReading, BUSY, judgeDetail, launchedAt, lighterReason
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
 import { RoutingSettings } from "./Routing";
 import { IntakeSection, LinkField, SourceChips, SourcesSettings, UpstreamSections } from "./TaskSources";
+import { PriorityBadge, TaskList, type UnderwayStatus } from "./TaskList";
+import { type DetailsLock, TaskChain, TaskDetails, WaitingOnThis } from "./TaskDetails";
+import { standingOf } from "./tasks";
 import { askKey, linkViews, offerRows, type OfferRow, sourcesOf } from "./sources";
 
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
@@ -178,7 +181,25 @@ export function App() {
     }));
   }, [bridge.projects, fleet]);
 
-  const records = useMemo(() => new Map((fleet?.backlog?.records ?? []).map((record) => [record.id, record])), [fleet]);
+  // An edit's row shows at once, until the snapshot carries the same row: the backlog's change reaches it a moment later.
+  const [edited, setEdited] = useState<Record<string, BacklogRecord>>({});
+  const backlogRecords = useMemo(() => withEdits(fleet?.backlog?.records ?? [], edited), [fleet, edited]);
+  useEffect(() => {
+    const fresh = fleet?.backlog?.records ?? [];
+    setEdited((current) => {
+      const kept = Object.fromEntries(Object.entries(current).filter(([id, record]) => !fresh.some((row) => row.id === id && sameRow(row, record))));
+      return Object.keys(kept).length === Object.keys(current).length ? current : kept;
+    });
+  }, [fleet]);
+  const records = useMemo(() => new Map(backlogRecords.map((record) => [record.id, record])), [backlogRecords]);
+  // A home whose firstmate reads start order also has the command that edits a task, landed with it.
+  const editing = useMemo(() => (fleet?.backlog?.records ?? []).some((record) => "standing" in record), [fleet]);
+  async function editTask(edit: TaskEdit): Promise<TaskEdited> {
+    const result = await host.taskEdit(edit);
+    if (result.ok) setEdited((current) => ({ ...current, [result.task]: result.record }));
+    return result;
+  }
+  const [groupId, setGroupId] = useState<string | null>(null);
   // Every call the home carries, from its one source: firstmate's calls[], or Bearings' bare list on an older home.
   const { calls, legacy: legacyCalls } = useMemo(() => homeCalls(fleet, bearings, records), [fleet, bearings, records]);
   const waiting = useMemo(() => openCalls(calls), [calls]);
@@ -271,7 +292,7 @@ export function App() {
     if (takeOnReadingWanted) void bridge.refreshSnapshot();
   }, [takeOnReadingWanted, bridge.refreshSnapshot]);
   const intakeRows = (project: string) => offerRows(project, sources, {
-    records: fleet?.backlog?.records ?? [], asks: takeOns,
+    records: backlogRecords, asks: takeOns,
     deliveries: Object.fromEntries(Object.values(takeOns).filter((ask) => ask.message).map((ask) => [ask.message!, outbox[ask.message!]])),
     runtime: runtime.state, sendReady: bridge.sendReady, quietSince, snapshotAt,
   }, now);
@@ -357,6 +378,48 @@ export function App() {
   const problemDetails = [...new Set([runtime.reason, bridge.startError].filter((text): text is string => Boolean(text)))].join("\n\n");
   // A Start can also fail after the host said it was starting, and stay there.
   const hasProblem = runtime.state === "refused" || (notRunning && Boolean(runtime.reasonKind || problemDetails)) || (runtime.state === "starting" && Boolean(bridge.startError));
+
+  /** Opens a task's drawer: the live one for work a worker is on, the queued one otherwise. */
+  function openListTask(id: string) {
+    const worker = fleet?.tasks.find((task) => task.id === id);
+    setGroupId(null);
+    if (worker && records.get(id)?.state === "in_flight" && !readyIds.has(id)) {
+      setQueuedId(null);
+      setActiveTask(worker);
+    } else {
+      setActiveTask(null);
+      setQueuedId(id);
+    }
+  }
+
+  /** What the task list and the drawers add for a task: its details, its chain, and what waits on it. */
+  function taskSections(record: BacklogRecord | undefined, lock: DetailsLock | null) {
+    if (!record) return null;
+    return <>
+      {editing && <TaskDetails record={record} records={backlogRecords} projects={bridge.projects.map((project) => project.name)} captainDay={fleet?.captain_day} editing={editing} lock={lock} onEdit={editTask} onOpen={openListTask} />}
+      <TaskChain record={record} records={backlogRecords} captainDay={fleet?.captain_day} editing={editing} title={(text) => withinProject(text, record.repo ?? "")} onOpen={openListTask} onEdit={editTask} />
+      <WaitingOnThis record={record} records={backlogRecords} title={(text) => withinProject(text, record.repo ?? "")} onOpen={openListTask} />
+    </>;
+  }
+
+  /** How each underway task's worker reads now, for the list's chips, drawn as the rest of the app draws it. */
+  function underwayStatuses(tasks: FleetTask[]) {
+    return new Map<string, UnderwayStatus>(tasks.map((task) => {
+      const status = taskStatus(task.current_state.state, 13);
+      return [task.id, { label: stateLabel(task.current_state.state), tone: status.tone, icon: status.icon }];
+    }));
+  }
+
+  /** Why a task's project, kind and dependencies stay as they are: a worker was briefed with them. */
+  function runningLock(record: BacklogRecord | undefined): DetailsLock | null {
+    if (!record) return null;
+    const kind = (KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "task").toLowerCase();
+    return {
+      reason: "running",
+      text: `Its worker was briefed as a ${kind} in ${record.repo ? `a ${record.repo} worktree` : "its own worktree"}. To change its project, kind or what it waits on, the work has to stop and be briefed again.`,
+      ask: () => draftInChat(`Can you re-scope ${record.id}? I'd like to change `),
+    };
+  }
 
   function navigate(next: View) {
     setView(next);
@@ -759,24 +822,35 @@ export function App() {
         )}
 
         {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
-        {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(fleet?.backlog?.records ?? [], name).length} onOpen={openProject} />}
+        {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(backlogRecords, name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
           now={now}
           taskTitle={taskTitle}
-          records={records}
           waiting={waitingIn(selectedProjectData.name)}
           reports={readyReports.filter(({ task }) => projectName(task.project) === selectedProjectData.name)}
           underway={underwayIn(selectedProjectData)}
-          queued={upNext(fleet?.backlog?.records ?? [], selectedProjectData.name)}
-          recent={fleet?.backlog?.records ?? []}
+          queued={upNext(backlogRecords, selectedProjectData.name)}
+          recent={backlogRecords}
           calls={calls}
           history={history}
-          onOpenTask={setActiveTask}
           onOpenCall={(id) => { navigate("bearings"); setFocusedCall(id); }}
           onOpenReport={(item) => item.page ? showArtifact(item.page) : draftInChat(askAboutReport(taskTitle(item.task.id)))}
           onOpenEntry={setLogEntry}
-          onOpenQueued={(record) => setQueuedId(record.id)}
+          work={<TaskList
+            key={selectedProjectData.name}
+            records={backlogRecords}
+            filter={{ project: selectedProjectData.name }}
+            captainDay={fleet?.captain_day}
+            now={now}
+            underway={underwayStatuses(underwayIn(selectedProjectData))}
+            hidden={readyIds}
+            title={(text) => withinProject(text, selectedProjectData.name)}
+            editing={editing}
+            onOpen={openListTask}
+            onOpenGroup={(id) => { setActiveTask(null); setQueuedId(null); setGroupId(id); }}
+            onEdit={editTask}
+          />}
           intake={<IntakeSection
             project={selectedProjectData.name}
             rows={intakeRows(selectedProjectData.name)}
@@ -822,8 +896,8 @@ export function App() {
       {settingsOpen && <SettingsDialog home={bridge.home} problem={bridge.homeProblem} running={runningHere} choosing={bridge.choosingHome} chosen={bridge.homeChosen} projects={projects.map((project) => project.name)} onChoose={() => void bridge.chooseHome()} onUseApp={() => void bridge.useAppHome()} onClose={() => { setSettingsOpen(false); void bridge.refreshSnapshot(); }} />}
       {queuedRecord && phase && (queuedTask && fleet && LAUNCH_PHASES.has(phase)
         ? <TaskDrawer task={queuedTask} title={withinProject(queuedRecord.title, selectedProject ?? "")} record={queuedRecord} now={now} reviews={reviews} onAskReport={() => { setQueuedId(null); draftInChat(askAboutReport(taskTitle(queuedTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setQueuedId(null); setShowEverything(false); }}
-            launch={{ phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, onDraft: draftInChat }} upstream={upstreamFor(queuedRecord, false)} />
-        : <QueuedDrawer record={queuedRecord} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedRecord.id)} reviews={reviews} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onClose={() => setQueuedId(null)}
+            launch={{ phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined, onDraft: draftInChat }} upstream={upstreamFor(queuedRecord, false)} details={taskSections(queuedRecord, runningLock(queuedRecord))} />
+        : <QueuedDrawer record={queuedRecord} project={queuedRecord.repo ?? selectedProject ?? ""} details={taskSections(queuedRecord, queuedLock(queuedRecord, phase, queuedAsk, now) ?? (queuedRecord.state === "in_flight" && queuedRecord.kind !== "program" ? runningLock(queuedRecord) : null))} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === queuedRecord.id)} reviews={reviews} source={fleet?.schema ?? null} onOpenArtifact={showArtifact} onClose={() => setQueuedId(null)}
             upstream={upstreamFor(queuedRecord, queuedRecord.state === "queued")}
             start={{
               phase, ask: queuedAsk, delivery: queuedAsk?.message ? outbox[queuedAsk.message] : undefined,
@@ -836,7 +910,8 @@ export function App() {
               onDraft: draftInChat,
             }} />)}
       {logEntry && <LogbookDrawer entry={logEntry} project={selectedProject ?? ""} now={now} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === logEntry.id)} reviews={reviews} source={history.schema} upstream={upstreamFor(logEntry.record, false)} onOpenArtifact={showArtifact} onAskReport={() => { setLogEntry(null); draftInChat(askAboutReport(logEntry.title)); }} onClose={() => setLogEntry(null)} />}
-      {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} upstream={upstreamFor(records.get(activeTask.id), false)} />}
+      {activeTask && fleet && <TaskDrawer task={activeTask} title={taskTitle(activeTask.id)} record={records.get(activeTask.id)} now={now} reviews={reviews} onAskReport={() => { setActiveTask(null); draftInChat(askAboutReport(taskTitle(activeTask.id))); }} artifacts={artifacts.filter((artifact) => artifact.scope === "task" && artifact.task === activeTask.id)} onOpenArtifact={showArtifact} fleetSchema={fleet.schema} fleetGenerated={fleet.generated} expanded={showEverything} onCapture={bridge.paneCapture} onToggle={() => setShowEverything((current) => !current)} onClose={() => { setActiveTask(null); setShowEverything(false); }} upstream={upstreamFor(records.get(activeTask.id), false)} details={taskSections(records.get(activeTask.id), runningLock(records.get(activeTask.id)))} />}
+      {groupId && records.get(groupId) && <GroupDrawer group={records.get(groupId)!} records={backlogRecords} now={now} editing={editing} onOpen={openListTask} onEdit={editTask} onClose={() => setGroupId(null)} details={taskSections(records.get(groupId), null)} />}
     </div>
   );
 }
@@ -1628,11 +1703,83 @@ function useProjectHistory(project: string | null, stamp: string | undefined) {
 
 type ProjectReport = { task: FleetTask; page?: Artifact; report: string | null };
 
-function ProjectView({ project, now, taskTitle, records, waiting, reports, underway, queued, recent, calls, history, intake, onOpenTask, onOpenCall, onOpenReport, onOpenEntry, onOpenQueued }: {
+/** The snapshot's rows with the rows the captain's edits returned in their place, and any group an edit filed. */
+function withEdits(rows: BacklogRecord[], edited: Record<string, BacklogRecord>) {
+  if (Object.keys(edited).length === 0) return rows;
+  const placed = new Set<string>();
+  const merged = rows.map((row) => {
+    const edit = edited[row.id];
+    if (!edit || placed.has(row.id) || row.state === "done") return row;
+    placed.add(row.id);
+    return edit;
+  });
+  return [...merged, ...Object.values(edited).filter((row) => !placed.has(row.id) && !rows.some((item) => item.id === row.id))];
+}
+
+/** Whether the snapshot's row is the row an edit returned: its line and its body as written. */
+function sameRow(a: BacklogRecord, b: BacklogRecord) {
+  const raw = (row: BacklogRecord) => (row as { raw?: string }).raw ?? "";
+  return raw(a) === raw(b) && JSON.stringify(a.body_lines ?? []) === JSON.stringify(b.body_lines ?? []) && a.state === b.state;
+}
+
+/** While the first mate is writing a brief from the row, its project and kind stay as they are. */
+function queuedLock(record: BacklogRecord, phase: StartPhase | null, ask: StartAsk | null, now: number): DetailsLock | null {
+  if (phase !== "asked" || !ask) return null;
+  return { reason: "asked", text: `Handed to the first mate ${formatDuration(Math.max(0, now - ask.at))} ago. It is writing the brief from this row now, so its project, kind and what it waits on stay as they are until it starts it or answers.` };
+}
+
+/**
+ * A group: its own row, which no worker runs, and the tasks that name it. It closes when the captain or the first mate
+ * closes it, and only once every task in it has.
+ */
+function GroupDrawer({ group, records, now, editing, details, onOpen, onEdit, onClose }: { group: BacklogRecord; records: BacklogRecord[]; now: number; editing: boolean; details: React.ReactNode; onOpen: (id: string) => void; onEdit: (edit: TaskEdit) => Promise<TaskEdited>; onClose: () => void }) {
+  const panel = useDrawerDismiss(onClose);
+  const [closing, setClosing] = useState(false);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const members = [...new Map(records.filter((record) => record.part_of === group.id).map((record) => [record.id, record])).values()]
+    .sort((a, b) => Number(a.state === "done") - Number(b.state === "done") || (a.start_rank ?? 1e9) - (b.start_rank ?? 1e9));
+  const open = members.filter((record) => record.state !== "done");
+  const landed = members.length - open.length;
+  const closed = group.state === "done";
+  async function close() {
+    setClosing(true);
+    setRefusal(null);
+    try {
+      const result = await onEdit({ verb: "group-close", task: group.id });
+      if (!result.ok) setRefusal(result.reason);
+    } catch (error) {
+      setRefusal(String(error));
+    } finally {
+      setClosing(false);
+    }
+  }
+  return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="group-drawer">
+    <header className="drawer-header"><div><span>{group.repo ?? "Group"}</span><h2 data-testid="drawer-title">{group.title}</h2><small className="drawer-id">{group.id}</small></div><button className="icon-button" onClick={onClose} title="Close group details"><X size={18} /></button></header>
+    <div className="drawer-status"><span className="task-state tone-sea"><ListPlus size={16} /></span><div><strong className="tone-sea">{closed ? "Closed" : "Group"}</strong><span>{members.length ? `${landed} of ${members.length} landed` : "No tasks in it yet. Add one from a task's details, or several from the list."}</span></div>{members.length > 0 && <span className="tl-bar wide" aria-hidden="true"><i style={{ width: `${(100 * landed) / members.length}%` }} /></span>}</div>
+    <div className="drawer-scroll">
+      {details}
+      <DrawerSection title="Tasks in it"><div className="gd-members" data-testid="group-members">
+        {members.length === 0 && <p className="td-quiet">Nothing yet.</p>}
+        {members.map((record) => <button key={record.id} type="button" className={record.state === "done" ? "landed" : ""} onClick={() => onOpen(record.id)}>
+          <PriorityBadge record={record} dim={record.state === "done"} />
+          <span className="td-node-copy"><strong>{withinProject(record.title, group.repo ?? "")}</strong><small>{record.id}{record.state === "done" && record.completion?.date ? ` · landed ${shortDay(record.completion.date, now)}` : ""}</small></span>
+          <span className={`td-node-chip tone-${record.state === "done" ? "muted" : record.state === "in_flight" ? "blue" : standingOf(record) === "ready" ? "green" : standingOf(record) === "blocked" ? "amber" : "muted"}`}>{record.state === "done" ? "Landed" : record.state === "in_flight" ? "Underway" : standingOf(record) === "ready" ? "Ready" : standingOf(record) === "blocked" ? "Blocked" : "Put off"}</span>
+        </button>)}
+      </div></DrawerSection>
+      {editing && !closed && <DrawerSection title="Close the group"><div className="brief-block start-block">
+        <p>{open.length ? `It closes once its ${open.length === 1 ? "last open task has" : `${open.length} open tasks have`} landed.` : "Every task in it has landed."}</p>
+        <div className="start-actions"><button type="button" className="btn-base" disabled={open.length > 0 || closing} onClick={() => void close()}>{closing ? "Closing…" : "Close the group"}</button></div>
+        {refusal && <p className="start-problem" role="alert">{refusal}</p>}
+      </div></DrawerSection>}
+    </div>
+    <footer className="drawer-footer">A group orders nothing: what waits on what orders its tasks.</footer>
+  </aside></div>;
+}
+
+function ProjectView({ project, now, taskTitle, waiting, reports, underway, queued, recent, calls, history, intake, work, onOpenCall, onOpenReport, onOpenEntry }: {
   project: ProjectSummary;
   now: number;
   taskTitle: (id: string) => string;
-  records: Map<string, BacklogRecord>;
   waiting: Call[];
   reports: ProjectReport[];
   underway: FleetTask[];
@@ -1642,11 +1789,11 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
   history: ReturnType<typeof useProjectHistory>;
   /** Issues the project's task sources offer, to take on or put aside. */
   intake?: React.ReactNode;
-  onOpenTask: (task: FleetTask) => void;
+  /** The task list, mounted filtered to this project, in place of the Work section it replaced. */
+  work: React.ReactNode;
   onOpenCall: (id: string) => void;
   onOpenReport: (item: ProjectReport) => void;
   onOpenEntry: (entry: LogEntry) => void;
-  onOpenQueued: (record: BacklogRecord) => void;
 }) {
   // A call the captain has replied to is listed, amber, but it is the first mate's move, so it is not counted.
   const needs = waiting.filter(awaitsCaptain).length + reports.length;
@@ -1685,18 +1832,7 @@ function ProjectView({ project, now, taskTitle, records, waiting, reports, under
 
     {intake}
 
-    <DashboardSection title="Work" tone="blue" count={underway.length} countLabel={`underway · ${queued.length} queued`}>
-      <div className="task-list" data-testid="project-underway">{underway.map((task) => {
-        const status = taskStatus(task.current_state.state);
-        const started = startedAt(task, records.get(task.id));
-        return <button className="task-row" key={task.id} onClick={() => onOpenTask(task)}><span className={`task-state tone-${status.tone}`}>{status.icon}</span><span className="task-copy"><strong>{title(taskTitle(task.id))}</strong><small>{KIND_NAMES[task.kind] ?? task.kind} · {task.harness}{started && <> · {sinceLabel(started, now)}</>}</small></span><span className={`task-chip tone-${status.tone}`}>{stateLabel(task.current_state.state)}</span><ChevronRight size={16} /></button>;
-      })}</div>
-      {queued.length > 0 && <div className="task-list" data-testid="project-queue">{queued.map((record) => {
-        const detail = [KIND_NAMES[record.kind ?? ""] ?? record.kind, record.since && `filed ${shortDay(record.since, now)}`, record.hold_reason].filter(Boolean).join(" · ");
-        return <button className="task-row wide" key={record.id} data-id={record.id} onClick={() => onOpenQueued(record)}><span className="task-state tone-muted"><Clock3 size={16} /></span><span className="task-copy"><strong>{title(record.title)}</strong><small>{detail}</small></span><span className={`task-chip tone-${record.hold_reason ? "amber" : "muted"}`}>{record.hold_reason ? "waiting" : "queued"}</span><ChevronRight size={16} /></button>;
-      })}</div>}
-      {underway.length + queued.length === 0 && <EmptyState label="Nothing is underway or queued in this project." />}
-    </DashboardSection>
+    {work}
 
     <Logbook project={project.name} now={now} entries={entries} history={history} title={title} onOpen={onOpenEntry} />
   </div>;
@@ -1826,7 +1962,7 @@ const START_QUESTIONS = {
  * already carries. From here the captain can hand it to the first mate, and the drawer then follows that ask
  * until a worker is registered, when the live task drawer takes over.
  */
-function QueuedDrawer({ record, project, now, artifacts, reviews, source, start, upstream, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; start: QueuedStart; upstream?: DrawerUpstream; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
+function QueuedDrawer({ record, project, now, artifacts, reviews, source, start, upstream, details, onOpenArtifact, onClose }: { record: BacklogRecord; project: string; now: number; artifacts: Artifact[]; reviews: ReviewSummary; source: string | null; start: QueuedStart; upstream?: DrawerUpstream; details?: React.ReactNode; onOpenArtifact: (artifact: Artifact) => void; onClose: () => void }) {
   const body = bodyBlocks(record.body_lines, record.body_excerpt);
   const kind = KIND_NAMES[record.kind ?? ""] ?? record.kind ?? "Task";
   const closed = record.state === "done";
@@ -1843,13 +1979,16 @@ function QueuedDrawer({ record, project, now, artifacts, reviews, source, start,
     : phase === "orphaned" ? { tone: "amber", icon: <TriangleAlert size={16} />, label: "Not picked up", detail: "Marked in flight, but no worker is registered for it." }
     : phase === "in_flight" ? { tone: "muted", icon: <Clock3 size={16} />, label: "In flight", detail: `${kind} · marked in flight, with no worker in this snapshot yet` }
     : closed ? { tone: "muted", icon: <Clock3 size={16} />, label: "Closed", detail: `${kind} · closed` }
+    : record.hold_kind === "parked" ? { tone: "muted", icon: <Clock3 size={16} />, label: record.hold_until ? `Put off until ${shortDay(record.hold_until, now)}` : "Put off", detail: "You put it off. The first mate won't start it before then." }
     : record.hold_reason ? { tone: "amber", icon: <Clock3 size={16} />, label: "Waiting", detail: record.hold_reason }
+    : standingOf(record) === "blocked" ? { tone: "amber", icon: <Clock3 size={16} />, label: "Blocked", detail: `Waits on ${(record.unresolved_blocker_ids ?? []).join(", ")}.` }
     : { tone: "muted", icon: <Clock3 size={16} />, label: "Queued", detail: `${kind} · waiting its turn` };
   return <div className="drawer-backdrop passive"><aside className="task-drawer" ref={panel} data-testid="queued-drawer" data-phase={phase}>
     <header className="drawer-header"><div><span>{project}</span><h2 data-testid="drawer-title">{withinProject(record.title, project)}</h2><small className="drawer-id">{record.id}</small>{upstream?.chips}</div><button className="icon-button" onClick={onClose} title="Close task details"><X size={18} /></button></header>
     <div className="drawer-status" data-testid="start-status"><span className={`task-state tone-${status.tone}`}>{status.icon}</span><div><strong className={`tone-${status.tone}`}>{status.label}</strong><span>{status.detail}</span></div>{status.since !== undefined && <time className="drawer-age" title={formatWhen(new Date(status.since).toISOString())}>{shortAge(clock - status.since)}</time>}</div>
     <div className="drawer-scroll">
       <StartSection record={record} start={start} ship={ship} />
+      {details}
       {upstream?.sections}
       <TaskFiles taskId={record.id} notes={notes.notes} />
       {body.length > 0 ? <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection> : <DrawerSection title="What was asked"><div className="brief-block"><p>The row says nothing more than its title.</p></div></DrawerSection>}
@@ -2313,7 +2452,7 @@ function launchStatus(phase: StartPhase, task: FleetTask, clock: number, note: s
   return null;
 }
 
-function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose, launch, upstream }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void; launch?: LaunchView; upstream?: DrawerUpstream }) {
+function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifact, onAskReport, fleetSchema, fleetGenerated, expanded, onCapture, onToggle, onClose, launch, upstream, details }: { task: FleetTask; title: string; record?: BacklogRecord; now: number; artifacts: Artifact[]; reviews: ReviewSummary; onOpenArtifact: (artifact: Artifact) => void; onAskReport: () => void; fleetSchema: string; fleetGenerated: string; expanded: boolean; onCapture: (taskId: string) => Promise<{ text: string; observed_at?: string }>; onToggle: () => void; onClose: () => void; launch?: LaunchView; upstream?: DrawerUpstream; details?: React.ReactNode }) {
   const [capture, setCapture] = useState<{ text: string; observed_at?: string } | null>(null);
   // A worker with no agent in it is shown with its screen open: the screen is the evidence.
   const [screenOpen, setScreenOpen] = useState(launch?.phase === "didnt_start");
@@ -2368,6 +2507,7 @@ function TaskDrawer({ task, title, record, now, artifacts, reviews, onOpenArtifa
       {launch?.phase === "didnt_start" && <DrawerSection title="What to do"><div className="brief-block start-block bad" data-testid="start-work"><p>The first mate may already be fixing it. If it hasn't said so in chat, ask it.</p><div className="start-actions"><button className="btn-base primary" onClick={() => launch.onDraft(START_QUESTIONS.relaunch(task.id))}>Ask the first mate to relaunch</button></div></div></DrawerSection>}
       {how && <DrawerSection title="How it ships"><div className="brief-block" data-testid="how-it-ships"><p><span className="mode-chip">{task.mode}</span> {how}</p>{why && <p className="start-why">{why}</p>}</div></DrawerSection>}
       {(launch?.phase === "didnt_start" || launch?.phase === "unconfirmed") && screen_}
+      {details}
       {upstream?.sections}
       <TaskFiles taskId={task.id} notes={notes.notes} />
       {body.length > 0 && <DrawerSection title="What was asked"><TaskBody blocks={body} /></DrawerSection>}

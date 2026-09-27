@@ -61,7 +61,44 @@ export type BacklogRecord = {
   body_excerpt?: string | null;
   /** The items elsewhere this task is linked to, read from its body; absent from homes whose firstmate predates task sources. */
   source_links?: SourceLink[];
+  /** The priority as tasks-axi stores it, "0" (urgent) to "4" (someday); null when the row carries none. */
+  priority?: string | null;
+  /**
+   * What firstmate orders by: 0 to 4, 2 when the row carries none. This and `standing`, `start_rank` and `part_of` are
+   * absent from homes whose firstmate predates start order, `bin/fm-backlog-parse-lib.sh`, which owns all four.
+   */
+  priority_level?: number;
+  /** Every task this one waits on, as written, and those still open. */
+  blocked_by_ids?: string[];
+  unresolved_blocker_ids?: string[];
+  /** The day a hold lifts, `yyyy-mm-dd`: a deferred call's, or one the captain put the task off to (`hold_kind` `parked`). */
+  hold_until?: string | null;
+  /** A captain hold's bucket: `live`, `dated`, `aged` or `blocked`; null on any other row. */
+  hold_bucket?: string | null;
+  /** A queued row's place for dispatch: startable now, waiting on open work, or held back; null on any other row. */
+  standing?: "ready" | "blocked" | "held" | null;
+  /** A queued row's place in start order, from 1; null on any other row. */
+  start_rank?: number | null;
+  /** The group this task is part of, a `kind: program` row, from its `part-of:` line. */
+  part_of?: string | null;
 };
+
+/** One change the captain makes to a task, as `bin/fm-task-edit.sh` takes it; `expect` is the value the window showed. */
+export type TaskEdit =
+  | { verb: "priority"; task: string; value: string; expect: string }
+  | { verb: "title"; task: string; value: string; expect: string }
+  | { verb: "block" | "unblock"; task: string; by: string }
+  | { verb: "park"; task: string; until: string; expect: string }
+  | { verb: "unpark"; task: string; expect: string }
+  | { verb: "project" | "kind" | "group"; task: string; value: string; expect: string }
+  | { verb: "group-new"; title: string; project: string; priority?: string | null }
+  | { verb: "group-close"; task: string };
+
+/** Why an edit was refused, in the script's own code: `stale` carries the value that won in `current`. */
+export type TaskEditRefusal = { code: string; reason: string; current?: string };
+
+/** What an edit did: the row as the snapshot will carry it, or why it was refused. */
+export type TaskEdited = { ok: true; task: string; changed: boolean; record: BacklogRecord } | ({ ok: false; task: string | null } & TaskEditRefusal);
 
 /** One link from a task to an item in a task source: the source, the item's immutable id, and what the task does for it. */
 export type SourceLink = { source: string; item: string; role: "fulfills" | "contributes" };
@@ -729,6 +766,8 @@ export interface HostAdapter {
   sourcesDismiss(source: string, item: string): Promise<SourcesRead>;
   /** Links a task that exists to an item, by its link or key. Refused, in firstmate's words, when it cannot be resolved. */
   sourcesLink(task: string, reference: string): Promise<unknown>;
+  /** One change to a task through firstmate's `fm-task-edit.sh`; a refusal comes back as a result, not an error. */
+  taskEdit(edit: TaskEdit): Promise<TaskEdited>;
 }
 
 /** The path both adapters serve a revision's page under: `task/<id>/<name>/rev-<n>/<entry>` or `chat/<name>/rev-<n>/<entry>`. */

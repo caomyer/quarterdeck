@@ -52,15 +52,16 @@ check((await page.locator("[data-testid='stat-waiting'] strong").innerText()) ==
 const needs = page.locator("[data-testid='project-needs'] .task-row");
 check(await needs.count() === 3, "Needs you lists resonance's three open calls");
 check(await page.locator("[data-testid='project-needs']").getByText("keep merging", { exact: false }).count() === 0, "another project's call is not listed");
-check(await page.locator("[data-testid='project-underway'] .task-row").count() === 1, "a finished scout waiting to be read is not underway");
-const queue = page.locator("[data-testid='project-queue'] .task-row");
-check(await queue.count() === 2, "Up next lists the project's two queued rows");
-check(/\bwaiting\b/i.test(await queue.nth(1).locator(".task-chip").innerText()), "a queued row held on something says so");
+check(await page.locator("[data-testid='task-list'] .tl-row[data-standing='underway']").count() === 1, "a finished scout waiting to be read is not underway");
+const queue = page.locator("[data-testid='task-list'] .tl-row:not([data-standing='underway'])");
+check(await queue.count() === 2, "the task list shows the project's two queued rows");
+const held = page.locator("[data-testid='task-list'] .tl-row[data-id='res-lockscreen']");
+check((await held.locator(".tl-chip").innerText()) === "Held" && (await held.innerText()).includes("Waits on the snip lifecycle work landing"), "a queued row the first mate holds says so, and why");
 check(!(await page.locator("[data-testid='project-page']").innerText()).includes("Resonance:"), "titles drop the project name the page already says");
 await shot(page, "project");
 
 // A queued task opens, and reads the way its filer wrote it.
-await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+await page.locator("[data-testid='task-list'] .tl-row[data-id='res-lockscreen']").click();
 const queued = page.locator("[data-testid='queued-drawer']");
 await queued.waitFor();
 check((await queued.locator("[data-testid='drawer-title']").innerText()) === "Snip from the Lock Screen and AirPods", "a queued task opens, titled within its project");
@@ -107,7 +108,7 @@ check(await queued.count() === 0, "Escape closes a queued task");
 
 // A refused note keeps the captain's words and says why, in firstmate's words.
 await openProject(page, "resonance", "&note-refused");
-await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+await page.locator("[data-testid='task-list'] .tl-row[data-id='res-lockscreen']").click();
 await queued.getByLabel("Add a note to this task").fill("See the attached recording.");
 await queued.locator("[data-testid='note-composer'] button", { hasText: "Add to task" }).click();
 await queued.locator(".attach-problems").waitFor();
@@ -116,10 +117,10 @@ check((await queued.getByLabel("Add a note to this task").inputValue()) === "See
 
 // A firstmate that keeps no notes shows no notes, and a failed read offers to try again.
 await openProject(page, "resonance", "&no-notes");
-await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+await page.locator("[data-testid='task-list'] .tl-row[data-id='res-lockscreen']").click();
 check(await queued.locator("[data-testid='task-files'], [data-testid='note-composer']").count() === 0, "without fm-task-note.sh there is no Files or Notes section");
 await openProject(page, "resonance", "&notes-error");
-await page.locator("[data-testid='project-queue'] .task-row[data-id='res-lockscreen']").click();
+await page.locator("[data-testid='task-list'] .tl-row[data-id='res-lockscreen']").click();
 check(await queued.locator("[data-testid='notes-error']").count() === 1, "a failed notes read says so and offers to try again");
 await openProject(page, "resonance");
 
