@@ -8,6 +8,7 @@ import { MockUpdates } from "./mock-update";
 import { mockUsage } from "./mock-usage";
 import { MockSession, STAGED_TURN } from "./mock-session";
 import { addRefusal, linkedBody, linkFixtureRow, mockIssues, mockSources } from "./mock-sources";
+import { applyTaskEdit, mockTaskRecords, reparse } from "./mock-tasks";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
 import type {
@@ -56,6 +57,8 @@ import type {
   StartRequest,
   TakeOnAsk,
   TakeOnRequest,
+  TaskEdit,
+  TaskEdited,
   TaskSource,
 } from "./types";
 
@@ -729,7 +732,7 @@ export class MockHostAdapter implements HostAdapter {
   private readonly openedAt = Date.now();
 
   private static fixtureSnapshot() {
-    const base = MockHostAdapter.artifactSnapshot();
+    const base = MockHostAdapter.tasksSnapshot(MockHostAdapter.artifactSnapshot());
     if (!reviewFlag("sources")) return base;
     // `?sources`: GitHub connected as resonance's task source (src/host/mock-sources.ts).
     const variant = reviewValue("sources") || null;
@@ -748,6 +751,14 @@ export class MockHostAdapter implements HostAdapter {
         ...(sources.read ? { sources: sources.read } : {}),
       },
     };
+  }
+
+  /** `?tasks`: the task list's backlog (src/host/mock-tasks.ts), read by the parser's rules on the captain's day today. */
+  private static tasksSnapshot(base: { bearings: BearingsSnapshot; fleet: FleetSnapshot }) {
+    if (!reviewFlag("tasks")) return base;
+    const today = localDate(0);
+    const records = reparse([...(base.fleet.backlog?.records ?? []), ...mockTaskRecords(backlogRow, reviewValue("tasks") || null)], today);
+    return { bearings: base.bearings, fleet: { ...base.fleet, captain_day: today, backlog: { ...base.fleet.backlog, records } } };
   }
 
   private static artifactSnapshot() {
@@ -1575,6 +1586,34 @@ export class MockHostAdapter implements HostAdapter {
     if ((record.source_links ?? []).some((link) => link.source === source.id && link.item === item.id)) throw new Error(`${task} is already linked to ${item.key}`);
     this.fileLinked(task, record.title, source.id, item.id, []);
     return { ok: true, task, link: { source: source.id, item: item.id, role: "fulfills" }, key: item.key, url: item.url };
+  }
+
+  /** Whether `?tasks=stale` has had its one edit the first mate got to first. */
+  private staleEditUsed = false;
+
+  /**
+   * One edit through firstmate's `fm-task-edit.sh`, here by its rules (src/host/mock-tasks.ts). The result comes back
+   * at once and the snapshot follows a moment later, generated then, as the home's watcher brings the backlog's change.
+   */
+  async taskEdit(edit: TaskEdit): Promise<TaskEdited> {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const fleet = this.snapshot.fleet;
+    const { records, result, staleUsed } = applyTaskEdit(edit, {
+      records: fleet.backlog?.records ?? [],
+      captainDay: fleet.captain_day ?? localDate(0),
+      projects: ["resonance", "foreman"],
+      staleOnce: reviewValue("tasks") === "stale" && !this.staleEditUsed,
+    });
+    if (staleUsed) this.staleEditUsed = true;
+    if (records !== fleet.backlog?.records) {
+      // The backlog changes at once, as the script's write does; the snapshot that reads it arrives a moment later.
+      this.snapshot.fleet = { ...this.snapshot.fleet, backlog: { ...this.snapshot.fleet.backlog, records } as FleetSnapshot["backlog"] };
+      this.later(300, () => {
+        this.snapshot.fleet = { ...this.snapshot.fleet, generated: new Date().toISOString() };
+        this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+      });
+    }
+    return result;
   }
 
   /**
