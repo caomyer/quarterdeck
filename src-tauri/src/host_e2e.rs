@@ -128,6 +128,16 @@ impl Events {
         index.map(|i| self.seen[i].1.clone()).unwrap_or(Value::Null)
     }
 
+    /// Where the reply to a message picked up at `picked` ends. A prompt is picked up when its
+    /// turn's result comes, after the reply; a Codex message steered into a running turn is
+    /// picked up as it joins the turn, so its reply runs on to the end of that turn.
+    async fn reply_end(&mut self, picked: usize) -> usize {
+        if self.seen[picked].1["via"] != "steering" {
+            return picked;
+        }
+        self.find(picked, REPLY_WAIT, host_state(&["idle"])).await.map_or(self.seen.len(), |idle| idle + 1)
+    }
+
     fn text_between(&self, from: usize, to: usize) -> String {
         self.seen[from..to.min(self.seen.len())]
             .iter()
@@ -393,7 +403,7 @@ async fn host_e2e_live_scratch_home() {
         let id = sent.clone().unwrap_or_default();
         let queued = events.find(from, Duration::from_secs(5), outbox(&id, "queued")).await;
         let picked = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
-        let reply = picked.map(|p| events.text_between(from, p)).unwrap_or_default();
+        let reply = match picked { Some(p) => { let end = events.reply_end(p).await; events.text_between(from, end) } None => String::new() };
         answered_at = picked;
         record(
             &mut steps,
@@ -781,7 +791,7 @@ async fn host_e2e_live_relaunch() {
     let sent = send(&host, format!("Captain here. {GUARD} Reply with one word: aye.")).await;
     let id = sent.clone().unwrap_or_default();
     let picked = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
-    let reply = picked.map(|p| events.text_between(from, p)).unwrap_or_default();
+    let reply = match picked { Some(p) => { let end = events.reply_end(p).await; events.text_between(from, end) } None => String::new() };
     let running = started.is_ok() && picked.is_some();
     record(
         &mut steps,
@@ -1494,7 +1504,7 @@ async fn attach_e2e_live_scratch_home() {
         let sent = send(&host, text.clone()).await;
         let id = sent.clone().unwrap_or_default();
         let picked_up = events.find(from, REPLY_WAIT, outbox(&id, "picked_up")).await;
-        let reply = picked_up.map(|p| events.text_between(from, p)).unwrap_or_default();
+        let reply = match picked_up { Some(p) => { let end = events.reply_end(p).await; events.text_between(from, end) } None => String::new() };
         record(
             &mut steps,
             "attach: the first mate reads the file and answers from it",
@@ -1529,7 +1539,7 @@ async fn attach_e2e_live_scratch_home() {
             .find(restart_from, Duration::from_secs(30), |e, b| outbox(&id, "requeued")(e, b) && b["resent_after_restart"] == true)
             .await;
         let picked_up = events.find(restart_from, REPLY_WAIT, outbox(&id, "picked_up")).await;
-        let reply = picked_up.map(|p| events.text_between(restart_from, p)).unwrap_or_default();
+        let reply = match picked_up { Some(p) => { let end = events.reply_end(p).await; events.text_between(restart_from, end) } None => String::new() };
         if answered_first {
             not_exercised(&mut steps, "attach: re-sent after a restart and still read", "the first mate answered before the restart".into());
         } else {
@@ -1714,6 +1724,16 @@ async fn compact_e2e_live_scratch_home() {
 
 // ------------------------------------------------------- session controls ---
 
+/// The values the option of a category offers, in the adapter's order.
+fn offered(controls: &Value, category: &str) -> Vec<String> {
+    controls["options"]
+        .as_array()
+        .and_then(|options| options.iter().find(|o| o["category"] == category))
+        .and_then(|option| option["options"].as_array())
+        .map(|values| values.iter().filter_map(|v| v["value"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
 /// The current value of the option of a category in the host's controls.
 fn current_value(controls: &Value, category: &str) -> Option<String> {
     controls["options"].as_array()?.iter().find(|o| o["category"] == category)?["currentValue"].as_str().map(str::to_string)
@@ -1789,24 +1809,33 @@ async fn session_e2e_live_scratch_home() {
         format!("model={:?}; effort={:?}; commands={commands}", current_value(&controls, "model"), current_value(&controls, "thought_level")),
     );
 
-    // 2. The captain's picks, confirmed by the adapter itself.
+    // 2. The captain's picks, confirmed by the adapter itself: another model than the one the
+    // session opened on, and High effort, from what this agent's session offers.
     let mut picked = false;
+    // Claude's default model is also offered under its own name, which the adapter reports back as
+    // the default, so Claude keeps a model that is plainly another one; Codex has no such alias.
+    let want_model = match e2e_harness() {
+        Harness::Claude => "sonnet".to_string(),
+        _ => offered(&controls, "model").into_iter().find(|value| Some(value) != current_value(&controls, "model").as_ref()).unwrap_or_default(),
+    };
+    let want_effort = "high".to_string();
+    println!("picking model {want_model} at effort {want_effort}");
     if running {
-        recorder.mark("2", "set effort high, then the model to sonnet, through session/set_config_option");
-        let effort = ask(&host, |reply| Cmd::SetOption { category: "thought_level".into(), value: "high".into(), reply }).await;
-        let model = ask(&host, |reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await;
+        recorder.mark("2", "set effort high, then another model, through session/set_config_option");
+        let effort = ask(&host, |reply| Cmd::SetOption { category: "thought_level".into(), value: want_effort.clone(), reply }).await;
+        let model = ask(&host, |reply| Cmd::SetOption { category: "model".into(), value: want_model.clone(), reply }).await;
         let after = model.as_ref().cloned().unwrap_or(Value::Null);
-        picked = current_value(&after, "model").as_deref() == Some("sonnet") && current_value(&after, "thought_level").as_deref() == Some("high");
+        picked = current_value(&after, "model").as_deref() == Some(want_model.as_str()) && current_value(&after, "thought_level").as_deref() == Some(want_effort.as_str());
         record(
             &mut steps,
-            "set: the adapter confirms Sonnet at High",
+            "set: the adapter confirms another model at High",
             effort.is_ok() && picked,
             format!("effort={:?}; model={:?}; now model={:?} effort={:?}", effort.as_ref().err(), model.as_ref().err(), current_value(&after, "model"), current_value(&after, "thought_level")),
         );
         let refused = ask(&host, |reply| Cmd::SetOption { category: "model".into(), value: "nonexistent-model-xyz".into(), reply }).await;
         record(&mut steps, "set: a value the session does not offer is refused before it", refused.is_err(), format!("{refused:?}"));
     } else {
-        not_exercised(&mut steps, "set: the adapter confirms Sonnet at High", "the host did not start".into());
+        not_exercised(&mut steps, "set: the adapter confirms another model at High", "the host did not start".into());
     }
 
     // 3. Relaunch, resuming the session: effort would come back as the default without the re-apply.
@@ -1816,32 +1845,34 @@ async fn session_e2e_live_scratch_home() {
         let (running, session, controls) = start_and_read(&host, &home, &mut events).await;
         record(
             &mut steps,
-            "resumed: Sonnet at High applied again",
-            running && current_value(&controls, "model").as_deref() == Some("sonnet") && current_value(&controls, "thought_level").as_deref() == Some("high") && controls["problems"] == json!({}),
+            "resumed: the picks applied again",
+            running && current_value(&controls, "model").as_deref() == Some(want_model.as_str()) && current_value(&controls, "thought_level").as_deref() == Some(want_effort.as_str()) && controls["problems"] == json!({}),
             format!("session={session}; model={:?}; effort={:?}; problems={}", current_value(&controls, "model"), current_value(&controls, "thought_level"), controls["problems"]),
         );
     } else {
-        not_exercised(&mut steps, "resumed: Sonnet at High applied again", "no pick was confirmed".into());
+        not_exercised(&mut steps, "resumed: the picks applied again", "no pick was confirmed".into());
     }
 
     // 4. Relaunch on a fresh session, which starts on the default model.
     if picked {
         recorder.mark("4", "stop, forget the session, and start a fresh one");
         let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
+        // Each agent keeps its session in its own place: Claude's beside the outbox, another's in a folder named for it.
         for dir in std::fs::read_dir(data_dir.join("homes")).into_iter().flatten().flatten() {
             let _ = std::fs::remove_file(dir.path().join("session.json"));
+            let _ = std::fs::remove_file(dir.path().join(e2e_harness().id()).join("session.json"));
         }
         let (running, session, controls) = start_and_read(&host, &home, &mut events).await;
         record(
             &mut steps,
-            "fresh: Sonnet at High applied again",
-            running && session["mode"] == "new" && current_value(&controls, "model").as_deref() == Some("sonnet") && current_value(&controls, "thought_level").as_deref() == Some("high"),
+            "fresh: the picks applied again",
+            running && session["mode"] == "new" && current_value(&controls, "model").as_deref() == Some(want_model.as_str()) && current_value(&controls, "thought_level").as_deref() == Some(want_effort.as_str()),
             format!("session={session}; model={:?}; effort={:?}; problems={}", current_value(&controls, "model"), current_value(&controls, "thought_level"), controls["problems"]),
         );
         let drifted = events.seen.iter().any(|(e, b)| e == "host_health" && b["kind"] == "mode_changed");
         record(&mut steps, "the home's permission mode held throughout", !drifted, format!("mode_changed reported: {drifted}"));
     } else {
-        not_exercised(&mut steps, "fresh: Sonnet at High applied again", "no pick was confirmed".into());
+        not_exercised(&mut steps, "fresh: the picks applied again", "no pick was confirmed".into());
     }
 
     let _ = ask(&host, |reply| Cmd::Stop { reply }).await;

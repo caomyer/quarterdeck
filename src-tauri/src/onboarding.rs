@@ -195,6 +195,9 @@ fn release_install(harness: Harness) {
     }
 }
 
+/// Where an install's events go: the window, or a test.
+pub(crate) type Emit = std::sync::Arc<dyn Fn(Value) + Send + Sync>;
+
 /// One step of an install: what it runs, as the captain was shown it.
 struct Step {
     title: String,
@@ -254,6 +257,12 @@ pub async fn agent_install(app: AppHandle, harness: String) -> Result<Value, Str
         return Err(format!("{} is already being installed", harness.label()));
     }
     let total = steps.len();
+    let sink: Emit = {
+        let app = app.clone();
+        std::sync::Arc::new(move |event| {
+            let _ = app.emit("agent_install", event);
+        })
+    };
     let mut outcome = Ok(json!({"harness": harness.id(), "installed": true, "steps": total}));
     for (index, step) in steps.iter().enumerate() {
         let number = index + 1;
@@ -262,12 +271,18 @@ pub async fn agent_install(app: AppHandle, harness: String) -> Result<Value, Str
             if let (Value::Object(body), Value::Object(extra)) = (&mut body, extra) {
                 body.extend(extra);
             }
-            let _ = app.emit("agent_install", body);
+            sink(body);
         };
         emit("running", json!({}));
         let result = match &step.run {
-            StepRun::Shell(line) => run_streamed(&app, harness, number, total, "/bin/bash", &["-c", line], None).await,
-            StepRun::Adapter(harness) => install_adapter(&app, *harness, number, total).await,
+            StepRun::Shell(line) => run_streamed(&sink, harness, number, total, "/bin/bash", &["-c", line], None).await,
+            StepRun::Adapter(harness) => {
+                let adapter = harness.adapter();
+                match envpath::tools_dir() {
+                    Some(tools) => install_adapter_into(tools, adapter.program, &format!("{}@{}", adapter.package, adapter.version), &sink, *harness, number, total).await,
+                    None => Err("the app has no tools folder".to_string()),
+                }
+            }
         };
         match result {
             Ok(()) => emit("done", json!({})),
@@ -284,7 +299,8 @@ pub async fn agent_install(app: AppHandle, harness: String) -> Result<Value, Str
 
 /// Runs a command with the wide path, sending each line it prints as an event, and keeps
 /// the last lines to say why when it fails.
-async fn run_streamed(app: &AppHandle, harness: Harness, step: usize, steps: usize, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+async fn run_streamed(emit: &Emit, harness: Harness, step: usize, steps: usize, program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)
@@ -301,7 +317,7 @@ async fn run_streamed(app: &AppHandle, harness: Harness, step: usize, steps: usi
     let stderr = child.stderr.take().ok_or("no errors to read")?;
     let tail = std::sync::Arc::new(Mutex::new(std::collections::VecDeque::<String>::new()));
     let pump = |stream: Box<dyn tokio::io::AsyncRead + Unpin + Send>| {
-        let app = app.clone();
+        let emit = emit.clone();
         let tail = tail.clone();
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
@@ -317,7 +333,7 @@ async fn run_streamed(app: &AppHandle, harness: Harness, step: usize, steps: usi
                         tail.pop_front();
                     }
                 }
-                let _ = app.emit("agent_install", json!({"harness": harness.id(), "step": step, "steps": steps, "state": "line", "line": line}));
+                emit(json!({"harness": harness.id(), "step": step, "steps": steps, "state": "line", "line": line}));
             }
         })
     };
@@ -336,23 +352,21 @@ async fn run_streamed(app: &AppHandle, harness: Harness, step: usize, steps: usi
 
 /// The adapter goes into a scratch prefix that becomes the real one only once npm has
 /// finished, so a failure leaves nothing half-installed where the app looks.
-async fn install_adapter(app: &AppHandle, harness: Harness, step: usize, steps: usize) -> Result<(), String> {
-    let tools = envpath::tools_dir().ok_or("the app has no tools folder")?.to_path_buf();
-    let adapter = harness.adapter();
-    let target = tools.join(adapter.program);
-    let partial = tools.join(format!("{}.partial", adapter.program));
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn install_adapter_into(tools: &Path, program: &str, spec: &str, emit: &Emit, harness: Harness, step: usize, steps: usize) -> Result<(), String> {
+    let target = tools.join(program);
+    let partial = tools.join(format!("{program}.partial"));
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::create_dir_all(&partial).map_err(|e| format!("could not create {}: {e}", partial.display()))?;
     let npm = envpath::resolve("npm").ok_or("npm is not on this Mac")?;
-    let spec = format!("{}@{}", adapter.package, adapter.version);
     let prefix = partial.to_string_lossy().to_string();
     let result = run_streamed(
-        app,
+        emit,
         harness,
         step,
         steps,
         &npm.to_string_lossy(),
-        &["install", "--prefix", &prefix, &spec, "--no-audit", "--no-fund", "--loglevel=http"],
+        &["install", "--prefix", &prefix, spec, "--no-audit", "--no-fund", "--loglevel=http"],
         Some(&partial),
     )
     .await;
@@ -360,9 +374,9 @@ async fn install_adapter(app: &AppHandle, harness: Harness, step: usize, steps: 
         let _ = std::fs::remove_dir_all(&partial);
         return Err(error);
     }
-    if !partial.join("node_modules").join(".bin").join(adapter.program).exists() {
+    if !partial.join("node_modules").join(".bin").join(program).exists() {
         let _ = std::fs::remove_dir_all(&partial);
-        return Err(format!("npm finished, but {} was not among what it installed", adapter.program));
+        return Err(format!("npm finished, but {program} was not among what it installed"));
     }
     let _ = std::fs::remove_dir_all(&target);
     std::fs::rename(&partial, &target).map_err(|e| format!("could not move the adapter into place: {e}"))
@@ -487,5 +501,77 @@ mod tests {
         assert!(script.contains("\ncodex login\n"), "{script}");
         assert!(script.contains(r"export PATH='/opt/homebrew/bin:/Users/o'\''neil/.local/bin'"), "{script}");
         assert!(script.contains("Signing Codex in for firstmate."), "{script}");
+    }
+
+    fn engine() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("engine")
+    }
+
+    /// Reads this Mac's agents through firstmate's own script, as the welcome does, and
+    /// checks what it says against the agents themselves. Spends nothing, changes nothing.
+    ///
+    /// ```sh
+    /// cd src-tauri && cargo test onboarding_live_reads_this_mac -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "live: reads this Mac's agents"]
+    async fn onboarding_live_reads_this_mac() {
+        let output = tokio::process::Command::new(engine().join("bin").join("fm-agents.sh"))
+            .args(["status", "claude", "codex"])
+            .env("PATH", envpath::wide_path())
+            .output()
+            .await
+            .expect("fm-agents.sh runs");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let agents = parse_agents(&String::from_utf8_lossy(&output.stdout));
+        println!("{agents:#?}");
+        assert_eq!(agents.iter().map(|agent| agent.harness.as_str()).collect::<Vec<_>>(), ["claude", "codex"]);
+        for agent in &agents {
+            let on_this_mac = envpath::resolve(&agent.harness).is_some();
+            assert_eq!(agent.installed, on_this_mac, "{} reads as installed exactly when the app can find it", agent.harness);
+            if agent.installed {
+                assert!(agent.version.is_some(), "{} says which version it is", agent.harness);
+                assert!(agent.signed_in == "signed-in" || agent.signed_in == "signed-out", "{} gives a definite sign-in: {}", agent.harness, agent.signed_in);
+            }
+            assert!(agent.install.is_some(), "{} carries its install line", agent.harness);
+        }
+    }
+
+    /// Installs the pinned Codex adapter from npm into a scratch tools folder, as the welcome
+    /// does, then fails one on purpose: a failure leaves nothing where the app looks. Needs the
+    /// network and about 300 MB of disk; spends no model tokens.
+    ///
+    /// ```sh
+    /// cd src-tauri && cargo test onboarding_live_installs_an_adapter -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "live: installs an ACP adapter from npm"]
+    async fn onboarding_live_installs_an_adapter() {
+        let tools = std::env::temp_dir().join(format!("qd-onboarding-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tools);
+        std::fs::create_dir_all(&tools).unwrap();
+        let events = std::sync::Arc::new(Mutex::new(Vec::<Value>::new()));
+        let emit: Emit = {
+            let events = events.clone();
+            std::sync::Arc::new(move |event| events.lock().unwrap().push(event))
+        };
+        let adapter = Harness::Codex.adapter();
+        let spec = format!("{}@{}", adapter.package, adapter.version);
+        install_adapter_into(&tools, adapter.program, &spec, &emit, Harness::Codex, 1, 1).await.expect("the pinned adapter installs");
+        let bin = tools.join(adapter.program).join("node_modules").join(".bin").join(adapter.program);
+        assert!(bin.exists(), "{} is where the app looks", bin.display());
+        assert!(!tools.join(format!("{}.partial", adapter.program)).exists(), "nothing half-installed is left");
+        let said = tokio::process::Command::new(&bin).arg("--version").env("PATH", envpath::wide_path()).output().await.expect("the adapter runs");
+        let version = String::from_utf8_lossy(&said.stdout).to_string();
+        assert!(version.contains(adapter.version), "the pinned version is the one installed: {version}");
+        assert!(events.lock().unwrap().iter().any(|event| event["state"] == "line"), "npm's lines were streamed");
+
+        let failed = install_adapter_into(&tools, "no-such-adapter", "@agentclientprotocol/codex-acp@0.0.0-does-not-exist", &emit, Harness::Codex, 1, 1).await;
+        let error = failed.expect_err("a version npm does not have fails");
+        println!("npm said: {error}");
+        assert!(!error.is_empty());
+        assert!(!tools.join("no-such-adapter").exists() && !tools.join("no-such-adapter.partial").exists(), "a failed install leaves nothing where the app looks");
+        assert!(bin.exists(), "and the adapter already there is untouched");
+        let _ = std::fs::remove_dir_all(&tools);
     }
 }
