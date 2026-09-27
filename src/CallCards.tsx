@@ -27,7 +27,7 @@ export function EvidenceLine({ lead, evidence, onOpen }: { lead: string; evidenc
   // Anchors rather than buttons, so a long title wraps as the words around it do; a link keeps its own address.
   const links = shown.map((item) => <a key={item.ref} className="evidence-link" data-testid="evidence-link" data-kind={item.kind} href={item.kind === "url" ? item.url : "#"} role={item.kind === "url" ? undefined : "button"} onClick={(event) => { event.preventDefault(); onOpen(item); }}>{item.title}<small>{evidenceAction(item)}</small></a>);
   const tail = folded ? <button className="evidence-more" data-testid="evidence-more" onClick={() => setAll(true)}>{evidence.length - shown.length} more</button> : links.pop();
-  return <p className="call-argued" data-testid="argued-by">{lead} {links.map((link, index) => <span key={index}>{link}, </span>)}{links.length > 0 && "and "}{tail}</p>;
+  return <p className="call-argued" data-testid="argued-by">{lead} {links.map((link, index) => <span key={index}>{link}{links.length > 1 ? ", " : " "}</span>)}{links.length > 0 && "and "}{tail}</p>;
 }
 
 /** The answer form a call card shows, handed in by the surface that answers the call. */
@@ -92,7 +92,8 @@ export function CallOpenCard({ call, heading, question, view, form, evidence, ar
   argued: string | null;
   /** What the button that opens it says. */
   readLabel: string;
-  unread: boolean;
+  /** The title of the page that argues it, when the captain has not opened it yet. */
+  unread: string | null;
   /** The options at a glance, for when the form is folded. */
   summary: string;
   notices: React.ReactNode;
@@ -106,7 +107,7 @@ export function CallOpenCard({ call, heading, question, view, form, evidence, ar
     <h4>{heading}</h4>
     {question && <p className="call-chat-question">{question}</p>}
     <EvidenceLine lead="Argued by" evidence={evidence} onOpen={onOpenEvidence} />
-    {argued && unread && !folded && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argued}” yet.</p>}
+    {unread && !folded && <p className="call-unread" data-testid="unread-argument">You haven't opened “{unread}” yet.</p>}
     {(view.optionsChanged || view.withdrawn) && <div className="call-chat-note warn" data-testid="options-changed"><CircleAlert size={15} /><span>
       {view.optionsChanged && <><strong>The options changed at {view.optionsChanged}, after the first mate wrote about this above.</strong>These are the current ones. </>}
       {view.withdrawn && <>“{view.withdrawn}”, which you had picked, is no longer offered. Pick again.</>}

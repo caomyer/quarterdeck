@@ -47,7 +47,7 @@ import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type Landed, type FleetSnapshot, type FleetTask, type TaskEdit, type TaskEdited, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type Landed, type FleetTask, type TaskEdit, type TaskEdited, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
@@ -893,7 +893,6 @@ export function App() {
               })}
               calls={callsArguedBy(calls, shownArtifact)}
               evidenceOf={evidenceOf}
-              authorGone={authorGone(shownArtifact, shownRevision, fleet)}
               onOpenEvidence={openEvidence}
               onAnswer={(call, answer) => host.reviewAnswer(artifactRef!, call.id, answer.option?.key, answer.option?.label, call.on_answer, answer.words).then(setReview)}
               onScene={(place, proposal) => host.reviewScene(artifactRef!, shownRevision.rev, place.file, place.label, place.path, proposal.summary, proposal.scene, proposal.png).then(setReview)}
@@ -1128,7 +1127,6 @@ function finishedLine(task: FleetTask) {
   return detail && detail !== "Busy in its terminal." ? detail : task.paths.status_log.last_event.note;
 }
 
-/** A task's newest page, when it has presented one. */
 /** What the captain types to have a report without a page read to them. */
 function askAboutReport(title: string) {
   return `Walk me through the report on "${title}".`;
@@ -1533,18 +1531,19 @@ function DecisionCard({ call, project, now, standing, answered, evidence, argume
   const failed = standing.kind === "open" ? standing.failed : null;
   const argued = argument && onReadArgument ? argument : null;
   const folded = argued !== null && !answering;
+  const page = argued ? pageOf(argued) : null;
   return <article className={`decision-card${reply ? " replied call-tone-amber" : ""}`} data-call-id={call.id} data-argued={argued ? "true" : undefined} data-inline={argued ? undefined : "true"} data-replied={reply ? "true" : undefined}>
     <div className="decision-body">
       {meta}
       <h3 data-testid="decision-title">{heading}</h3>
       {questionBeyondTitle(call) && <p data-testid="decision-reason">{call.question}</p>}
       <EvidenceLine lead="Argued by" evidence={evidence} onOpen={onOpenEvidence} />
-      {reply && <ReplyState reply={reply} page={argued && pageOf(argued) ? argued.title : undefined} />}
+      {reply && <ReplyState reply={reply} page={page?.title} />}
       {failed && <NotRecorded note={failed} />}
       {form.refused && <ReplyRefused problem={form.refused} />}
       {form.withdrawn && <p className="call-unread" data-testid="pick-withdrawn">“{form.withdrawn}”, which you had picked, is no longer offered. Pick again.</p>}
       {!folded && <>
-        {argued && seenArgument === false && <p className="call-unread" data-testid="unread-argument">You haven't opened “{argued.title}” yet.</p>}
+        {page && seenArgument === false && <p className="call-unread" data-testid="unread-argument">You haven't opened “{page.title}” yet.</p>}
         {form.fields("chips")}
       </>}
     </div>
@@ -1589,6 +1588,7 @@ function ChatCall({ call, project, standing, evidence, argument, seenArgument, e
   if (line) return <CallLineCard call={call} heading={heading} line={line} form={form} evidence={evidence} onOpenEvidence={onOpenEvidence} onOpenPage={onOpenPage} onDraft={onDraft} />;
   const reply = replyOf(call);
   const argued = argument && onReadArgument ? argument : null;
+  const page = argued ? pageOf(argued) : null;
   const failed = standing.kind === "open" ? standing.failed : null;
   const view = callCardView(call, { project, reply, earlier, askedBefore, withdrawn: form.withdrawn, when: formatWhen });
   return <CallOpenCard
@@ -1600,11 +1600,11 @@ function ChatCall({ call, project, standing, evidence, argument, seenArgument, e
     evidence={evidence}
     argued={argued?.title ?? null}
     readLabel={argued ? readLabel(argued) : ""}
-    unread={argued !== null && seenArgument === false}
+    unread={page && seenArgument === false ? page.title : null}
     summary={optionSummary(call)}
     notices={<>
       {failed && <NotRecorded note={failed} />}
-      {reply && <ReplyState reply={reply} page={argued && pageOf(argued) ? argued.title : undefined} />}
+      {reply && <ReplyState reply={reply} page={page?.title} />}
       {form.refused && <ReplyRefused problem={form.refused} />}
     </>}
     onReadArgument={onReadArgument}
@@ -2547,17 +2547,6 @@ function sameArtifact(artifact: Artifact, ref: ArtifactRef) {
   return artifact.scope === ref.scope && artifact.task === ref.task && artifact.name === ref.name;
 }
 
-/**
- * The task that wrote a revision, when it has no worker left to take a review: teardown keeps its pages, but a review on
- * one goes to the first mate. Unknown until the home has been read, so nothing is claimed before then.
- */
-function authorGone(artifact: Artifact, revision: ArtifactRevision, fleet: FleetSnapshot | null | undefined) {
-  const by = revision.presented_by;
-  if (!fleet || artifact.scope !== "task" || by.role !== "crew") return null;
-  const task = by.task;
-  return task && !fleet.tasks.some((candidate) => candidate.id === task) ? task : null;
-}
-
 /** Who a page belongs to, in the captain's nouns: the project and task, or the conversation. */
 function artifactOwner(artifact: Artifact, tasks: FleetTask[]) {
   if (artifact.scope === "chat" || !artifact.task) return "Shared in chat";
@@ -2983,7 +2972,7 @@ function threadQuote(thread: ReviewThread) {
  * Narrow shows it at the width firstmate's layout check calls narrow. In Comment mode the page's own script
  * turns a selection or a block into a place, and what the captain writes stays a draft until the review is sent.
  */
-function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, calls, evidenceOf, authorGone, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onOpenEvidence, onScene }: {
+function ArtifactReview({ artifact, revision, url, review, stake, sendReady, runtime, calls, evidenceOf, onRevision, onComment, onDiscard, onSubmit, onSettle, onSeen, onAnswer, onOpenEvidence, onScene }: {
   artifact: Artifact;
   revision: ArtifactRevision;
   url: string;
@@ -3002,8 +2991,6 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
   calls: Call[];
   /** What argues a call, from the one resolver every surface reads. */
   evidenceOf: (call: Call) => Evidence[];
-  /** The task that wrote this revision, when it has no worker left to take a review. */
-  authorGone: string | null;
   onAnswer: (call: Call, answer: RailAnswer) => Promise<unknown>;
   onOpenEvidence: (item: Evidence) => void;
   onScene: (place: ScenePlace, proposal: SceneProposal) => Promise<unknown>;
@@ -3203,7 +3190,6 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
       </div>
       <aside className="review-rail" aria-label="Your review">
         <header className="review-head"><strong>Your review</strong><small>{calls.some(isOpen) ? `Answering here also closes the captain's call on ${calls.filter(isOpen).length === 1 ? "this decision" : "these decisions"}.` : "Write on a part of the page, then send it all at once."}</small></header>
-        {authorGone && <p className="review-author-gone" data-testid="author-gone"><strong>Written by {authorGone}, which has finished.</strong> Your review goes to the first mate, who acts on it.</p>}
         {pending && <section className="comment-composer">
           <blockquote>{pending.quote.length > 160 ? `${pending.quote.slice(0, 160)}…` : pending.quote}</blockquote>
           {pick !== null && <PictureChoice on={withPicture} reasons={pending.reasons ?? []} drawn={drawn[pick]} onToggle={() => setWithPicture((current) => !current)} />}

@@ -1194,8 +1194,6 @@ a { color: var(--sea); }
 .decision-answer header small { overflow: hidden; color: var(--faint); font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .decision-answer p { margin: 8px 0 10px; color: var(--ink); font-size: 14px; font-weight: 500; line-height: 1.45; }
 .decision-answer p.call-argued { margin: -4px 0 10px; color: var(--muted); font-size: 12.5px; font-weight: 400; }
-.review-author-gone { flex: none; margin: 14px 22px 0; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 9px; color: var(--ink-3); background: var(--surface); font-size: 12.5px; line-height: 1.5; }
-.review-author-gone strong { color: var(--ink); font-weight: 600; }
 .decision-choices { display: flex; flex-direction: column; gap: 6px; }
 .decision-choices button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; padding: 8px 12px; border: 1px solid var(--control); border-radius: 9px; color: var(--ink); background: var(--surface); font-size: 13px; line-height: 1.35; text-align: left; transition: border-color .12s ease; }
 .decision-choices button:hover:not(:disabled) { border-color: var(--control-hover); }

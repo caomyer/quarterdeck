@@ -27,9 +27,8 @@ const SEVERAL = "res-transcripts-source";
 const FOLDED = "res-model-download";
 const PAGE_ONLY = "res-model-cellular";
 const REPORT_ONLY = "res-artwork-refresh";
-/** The page of a task with no worker left, and the task. */
+/** The page of a task with no worker left. */
 const TORN_DOWN_PAGE = "Rebase the subject before anybody reads it";
-const TORN_DOWN_TASK = "foreman-rebase-before-review";
 
 async function open(query = "&evidence", width = 1440) {
   const page = await browser.newPage({ viewport: { width, height: 1000 } });
@@ -230,31 +229,7 @@ async function toBearings(page) {
     check((await line.innerText()).startsWith("Also argued by"), `rail, ${theme}: the line says the rest`);
     check(JSON.stringify(await pieces(line)) === JSON.stringify(["report:report", "page:page", "url:link"]), `rail, ${theme}: the page on screen is not repeated (${await pieces(line)})`);
     check(await rail.locator(`[data-testid='decision-answer'][data-call-id='${PAGE_ONLY}'] [data-testid='argued-by']`).count() === 0, `rail, ${theme}: a call argued only by this page has no such line`);
-    check(await rail.locator("[data-testid='author-gone']").count() === 0, `rail, ${theme}: the first mate's own page has no author to lose`);
   });
-  await page.close();
-}
-
-// A page whose task has been torn down: it opens, and the rail says the review goes to the first mate.
-{
-  const page = await open();
-  await page.locator(".nav-item", { hasText: "Artifacts" }).click();
-  await page.locator(".artifact-group-heading", { hasText: "Settled" }).click();
-  await page.locator(".artifact-list .artifact-row", { hasText: TORN_DOWN_PAGE }).click();
-  const gone = page.locator(".review-rail [data-testid='author-gone']");
-  await page.locator(".review-rail .review-head").waitFor();
-  await page.waitForTimeout(200);
-  await inBothThemes(page, "rail-torn-down", page.locator(".review-rail"), async (theme) => {
-    check(await gone.count() === 1, `rail, ${theme}: a page whose task has no worker left says so`);
-    if (await gone.count() === 0) return;
-    check((await gone.innerText()) === `Written by ${TORN_DOWN_TASK}, which has finished. Your review goes to the first mate, who acts on it.`, `rail, ${theme}: says the review goes to the first mate`);
-    check(await paintedWith(gone.locator("strong"), "--ink"), `rail, ${theme}: drawn in the theme's ink`);
-  });
-  // A crewmate still at work keeps its review.
-  await page.locator(".back-button").click();
-  await page.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" }).click();
-  await page.locator(".review-rail").waitFor();
-  check(await page.locator(".review-rail [data-testid='author-gone']").count() === 0, "rail: a crewmate still at work is not called finished");
   await page.close();
 }
 
