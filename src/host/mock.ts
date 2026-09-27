@@ -41,6 +41,7 @@ import type {
   TaskFile,
   TaskNote,
   TaskNotes,
+  TaskReport,
   ReasonKind,
   CommentPicture,
   ReviewAnchor,
@@ -173,6 +174,25 @@ const START_SHIP = "res-waveform-colors";
 
 /** A call nothing argues, so Bearings offers its options inline. */
 const UNARGUED_CALL = "foreman-auto-merge";
+/**
+ * `?taskview`: what tasks produced, in every state a row, a drawer and a page's strip draw. The titles scout presents
+ * a second page the captain has already read, a ship that is underway has opened a PR, a scout still working has
+ * written a report without a page that an open call argues, and a queued task carries a page the captain has read.
+ * `&report-refused` has reading a report refused; `&report-long` has one cut past the reader's limit.
+ */
+const SHIP_TASK = "res-snip-export";
+/** The reports the mock's scouts wrote, in the markdown a worker writes. */
+const MOCK_REPORTS: Record<string, string> = {
+  "res-codec-scout": "# Which codec should snips be stored in?\n\n**Opus is half the size; AAC plays everywhere.** A 30-second snip is 240 KB as AAC and 118 KB as Opus at the same quality.\n\n## What I measured\n\n| Codec | 30 s snip | Plays in Safari | Plays in the Stories export |\n| --- | --- | --- | --- |\n| AAC | 240 KB | Yes | Yes |\n| Opus | 118 KB | Since iOS 17 | No: it has to be converted first |\n\n## What it means\n\n- Storing Opus halves what snips take on the phone and in the cloud.\n- Every Stories export would convert to AAC first, which adds about a second.\n\nThe call is yours: see [the Opus support notes](https://opus-codec.org/) for the details.\n\n![a chart that is not loaded](https://example.com/chart.png)\n",
+  "res-feed-scout": "# How often do feeds change their artwork?\n\nOf 400 feeds sampled over 30 days, **11 changed their artwork**, and none more than once.\n\nRefreshing weekly would have caught every change within a week.\n",
+  "res-transcripts-scout": "# Which episodes already carry a transcript?\n\n2 of 9281 sampled episodes carry a publisher transcript.\n",
+  "res-next-scout": "# Which audit improvement should come next\n\nThe snip lifecycle work, then AI titles.\n",
+  "res-onboarding-scout": "# Where new listeners give up during onboarding\n\nMost leave at the permissions screen.\n",
+};
+const CODEC_TASK = "res-codec-scout";
+const CODEC_CALL = "res-codec-choice";
+const QUEUED_PAGE_TASK = "res-lockscreen";
+
 /** `?evidence`: a call argued only by a report its scout wrote without a page. */
 const REPORT_ONLY_CALL = "res-artwork-refresh";
 /** `?evidence`: a call argued only by the report of a scout that presented a page. */
@@ -425,14 +445,45 @@ function mockArtifacts(home: string): MockHome {
       evidence: [`report:${REPORT_TASK}`], raised_at: at(3 * 60), updated_at: at(3 * 60),
     }));
   }
+  const taskview = reviewFlag("taskview");
+  const extraTasks: FleetTask[] = [];
+  const extraInFlight: BearingsSnapshot["in_flight"] = [];
+  if (taskview) {
+    const page = (task: string, name: string, title: string, minutesAgo: number): Artifact => {
+      const revision: ArtifactRevision = {
+        scope: "task", task, name, rev: 1, title, note: null, entry: `${name}.html`, bytes: 1800, presented_at: at(minutesAgo),
+        presented_by: { role: "crew", task }, layout: { status: "clean", issues: [] },
+      };
+      return { scope: "task", task, name, title, latest: revision, revisions: [revision] };
+    };
+    artifacts.push(page(ARTIFACT_TASK, "model-sizes", "Model sizes", 60), page(QUEUED_PAGE_TASK, "lockscreen-sketch", "Snipping from the Lock Screen", 26 * 60));
+    const ship = mockTask(home, SHIP_TASK, "ship", "working", 50, { detail: "harness busy (claude-hook)", note: "Waiting on CI for the export PR.", report: false, observedAt: at(1) });
+    ship.pr = { url: "https://github.com/caomyer/Resonance/pull/33", source: "status-log" };
+    const codec = mockTask(home, CODEC_TASK, "scout", "working", 70, { detail: "harness busy (claude-hook)", note: "Wrote up the codecs; checking one more device.", report: true, observedAt: at(1) });
+    extraTasks.push(ship, codec);
+    extraInFlight.push(
+      { id: SHIP_TASK, kind: "ship", state: "working", repo: ship.project, name: "Export a snip as a video for Stories", doing: "Waiting on CI for the export PR." },
+      { id: CODEC_TASK, kind: "scout", state: "working", repo: codec.project, name: "Which codec should snips be stored in?", doing: "Wrote up the codecs; checking one more device." },
+    );
+    records.push(
+      backlogRow(SHIP_TASK, "Resonance: export a snip as a video for Stories", { since: day(1), priority: "1", body_lines: ["Render the waveform and the caption over the episode art, as a 9:16 video."] }),
+      backlogRow(CODEC_TASK, "Resonance: which codec should snips be stored in?", { kind: "scout", since: day(0), body_lines: ["Compare AAC and Opus for size, quality and what plays everywhere."] }),
+    );
+    calls.push(call(CODEC_CALL, "Resonance: store snips as AAC or Opus?", {
+      question: "Should snips be stored as AAC, which plays everywhere, or Opus, which is half the size?",
+      options: [option("aac", "AAC", true), option("opus", "Opus")],
+      evidence: [`report:${CODEC_TASK}`], origin: CODEC_TASK, raised_at: at(15), updated_at: at(15),
+    }));
+  }
   return {
     artifacts,
-    tasks: reviewFlag("usage-t2") ? [planTask, reportTask, usageTask] : [planTask, reportTask],
+    tasks: [...(reviewFlag("usage-t2") ? [planTask, reportTask, usageTask] : [planTask, reportTask]), ...extraTasks],
     // `?plain-report`: the transcripts scout's report argues no call, so it is offered on its own card.
     calls: (reviewFlag("plain-report") ? calls.filter((call) => call.origin !== REPORT_TASK) : calls).map(repliedBefore),
     inFlight: [
       { id: ARTIFACT_TASK, kind: "scout", state: "working", repo: planTask.project, name: "AI titles for snips", doing: "Revising the titles plan." },
       { id: REPORT_TASK, kind: "scout", state: "done", repo: reportTask.project, name: "Resonance: which episodes already carry a transcript?", doing: "" },
+      ...extraInFlight,
     ],
     // Every call is a backlog row in firstmate, held for the captain or closed with its answer.
     records: [...records, ...calls.filter((item) => !records.some((record) => record.id === item.id)).map((item) => backlogRow(item.id, item.title, {
@@ -871,7 +922,10 @@ export class MockHostAdapter implements HostAdapter {
     answers: [], earlier: [], draft_count: 0, staged_answers: 0, open_count: 1, seen_rev: 2, log: `${this.snapshot.fleet.fm_home}/data/${USAGE_TASK}/review.jsonl`,
     // Sent by the window before this one, so its message id is not one this window has.
     sent: [{ at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, verdict: "changes", rev: 1, message: "m-yesterday", header: RESUMED_DAY_REVIEW, threads: ["t1"] }],
-  }]] : []);
+  }]] : [...(reviewFlag("taskview") ? [`task/${ARTIFACT_TASK}/model-sizes`, `task/${QUEUED_PAGE_TASK}/lockscreen-sketch`] : [])].map((key): [string, ReviewView] => [key, {
+    // `?taskview`: pages the captain has read, with nothing new on them.
+    threads: [], answers: [], earlier: [], draft_count: 0, staged_answers: 0, open_count: 0, sent: [], seen_rev: 1, log: `data/${key.split("/")[1]}/review.jsonl`,
+  }]));
   /** Threads ever opened per review, discarded ones included, which is how the app numbers them too. */
   private readonly opened = new Map<string, number>();
 
@@ -2035,6 +2089,16 @@ export class MockHostAdapter implements HostAdapter {
       { id: "n2", at: "2026-09-22T10:02:00Z", by: "firstmate", scope: true, body: "AirPods can wait: ship the Lock Screen widget on its own first.", files: [] },
     ]],
   ]);
+
+  /** A scout's report as its worker wrote it; `?report-refused` refuses the read, `?report-long` cuts it as the reader does past 1 MiB. */
+  async taskReport(taskId: string): Promise<TaskReport | null> {
+    const text = MOCK_REPORTS[taskId];
+    if (text === undefined) return null;
+    if (reviewFlag("report-refused")) throw new Error(`${taskId}'s report is not a plain file, so it is not opened`);
+    const path = `${this.snapshot.fleet.fm_home}/data/${taskId}/report.md`;
+    if (reviewFlag("report-long")) return { task: taskId, path, text, bytes: 1_300_000, truncated: true };
+    return { task: taskId, path, text, bytes: new TextEncoder().encode(text).length, truncated: false };
+  }
 
   /** `?no-notes`: a firstmate without `fm-task-note.sh`. `?notes-error` fails the read. */
   async taskNotes(taskId: string): Promise<TaskNotes | null> {

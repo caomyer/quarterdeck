@@ -10,6 +10,7 @@ mod host;
 mod host_e2e;
 mod notes;
 mod quota;
+mod report;
 mod review;
 mod routing;
 mod settings;
@@ -87,6 +88,7 @@ pub fn run() {
       snapshot::project_history,
       notes::task_notes,
       notes::task_note_add,
+      report::task_report,
       review::review_get,
       review::review_comment,
       review::review_discard,
