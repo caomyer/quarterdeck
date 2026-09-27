@@ -9,7 +9,9 @@
 //   click '<text>' [sel]   clicks the innermost visible control whose text or
 //                          aria-label contains <text> (buttons, links, tabs, options);
 //                          '=<text>' matches only a control whose words are exactly that
-//   type '<sel>' '<text>'  types into the input, textarea or contenteditable at <sel>
+//   type '<sel>' '<text>'  types into the input, textarea or contenteditable at <sel>;
+//                          'composer' is the chat's own box (a call card's words box
+//                          is a textarea too, and comes first on the page)
 //   key '<sel>' '<key>'    presses a key (Enter, Escape, ...) on the element at <sel>
 //   shot <file.png>        saves what the window shows, artifact frames included
 //   wait '<text>' [s]      waits until the page's visible text contains <text>
@@ -56,6 +58,7 @@ const qd = {
     return qd.label(el).slice(0, 120);
   },
   type(sel, text) {
+    if (sel === "composer") sel = 'textarea[placeholder^="Message the first mate"]';
     const el = document.querySelector(sel);
     if (!el) throw new Error("nothing matches " + sel);
     el.focus();
