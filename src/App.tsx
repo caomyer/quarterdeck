@@ -68,10 +68,15 @@ import { askKey, linkViews, offerRows, type OfferRow, sourcesOf } from "./source
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
 const SceneEditor = lazy(() => import("./SceneEditor").then((module) => ({ default: module.SceneEditor })));
 import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
+import { useCalm } from "./host/use-calm";
 import { useQuota } from "./host/use-quota";
 import { useUpdate } from "./host/use-update";
 import { UpdateNotice } from "./UpdateNotice";
 import { Usage } from "./UsagePanel";
+import { calmHidden } from "./calm";
+import type { CalmRead, PickedCategory, SessionCommand, SessionControls } from "./host/types";
+import { CalmPill, GhostHint, type SessionNotice, SessionNotices, SessionPills, SlashPalette, WorkingRow } from "./SessionControls";
+import { fill, ghostHint, palette as paletteFor, routeOf, typedCommand, typedSetting } from "./sessionctl";
 
 type View = "bearings" | "chat" | "projects" | "project" | "artifacts" | "artifact";
 /** Which page the review screen shows: the artifact, and the revision picked (the latest when none is). */
@@ -139,6 +144,7 @@ export function App() {
   const quota = useQuota(host);
   const appUpdate = useUpdate(host);
   const { bearings, fleet, messages, outbox, runtime } = bridge;
+  const calm = useCalm(host, bridge.home, runtime.state);
   const [view, setView] = useState<View>("bearings");
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<FleetTask | null>(null);
@@ -829,7 +835,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} controls={bridge.controls} onSetOption={bridge.setOption} turnSince={bridge.turnSince} calm={calm.calm} calmSaving={calm.saving} calmError={calm.error} onCalm={(on) => void calm.setOn(on)} onDismissCalmError={calm.dismissError} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(backlogRecords, name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -2288,13 +2294,98 @@ function ChatAnswer({ message, answer, call, title, outbox, running, from }: { m
   return <AnswerCard callId={answer.call} view={title ? { ...view, title } : view} time={!status && !message.past ? formatTime(message.createdAt) : null} sent={message.text} />;
 }
 
-function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void }) {
+function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart, controls, onSetOption, turnSince, calm, calmSaving, calmError, onCalm, onDismissCalmError }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void; controls: SessionControls | null; onSetOption: (category: PickedCategory, value: string) => Promise<unknown>; turnSince: number | null; calm: CalmRead | null; calmSaving: boolean; calmError: string | null; onCalm: (on: boolean) => void; onDismissCalmError: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
-  const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate" : "The first mate isn't running. It'll read this when it starts.";
-  const items = chatItems(messages, artifacts, reviews, calls);
+  const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate, or type / for its commands" : "The first mate isn't running. It'll read this when it starts.";
+  // Calm hides the steps and the working notes; nothing is removed, and turning it off shows them again.
+  const calmOn = calm?.available === true && calm.on;
+  const shown = useMemo(() => {
+    if (!calmOn) return messages;
+    const hidden = calmHidden(messages);
+    return messages.filter((message) => !hidden.has(message.id));
+  }, [messages, calmOn]);
+  const items = chatItems(shown, artifacts, reviews, calls);
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  // The palette: what the session advertises, for a draft that starts with a slash while the caret is in its first word.
+  const [caret, setCaret] = useState(draft.length);
+  const [active, setActive] = useState(0);
+  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
+  const [openMenu, setOpenMenu] = useState<PickedCategory | null>(null);
+  const [notice, setNotice] = useState<SessionNotice | null>(null);
+  const [dismissedProblems, setDismissedProblems] = useState<string[]>([]);
+  const commands = controls?.commands ?? null;
+  const palette = dismissedFor === draft ? { open: false as const } : paletteFor(draft, caret, commands);
+  const matches = palette.open && palette.kind === "list" ? palette.matches : [];
+  const query = palette.open ? palette.query : null;
+  useEffect(() => setActive(0), [query]);
+  // The session can take a change only once it is open and the first mate is not starting.
+  const sessionLive = running && runtime !== "starting" && runtime !== "restarting" && controls?.live !== false;
+  const choose = async (category: PickedCategory, value: string) => {
+    setOpenMenu(null);
+    setNotice(null);
+    try {
+      await onSetOption(category, value);
+    } catch (error) {
+      setNotice({ kind: "refused", category, value, reason: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  const pick = (command: SessionCommand) => {
+    const route = routeOf(command, controls);
+    if (route) {
+      // Sent as text, /model and /effort never reach the session's own options: the control sets them instead.
+      onDraft("");
+      setOpenMenu(route);
+      return;
+    }
+    const next = fill(command);
+    onDraft(next);
+    setCaret(next.length);
+    composer.current?.focus();
+  };
+  const submit = () => {
+    const command = files.length === 0 ? typedCommand(draft) : null;
+    if (command && !sessionLive) {
+      setNotice({ kind: "not-live", ...(typedSetting(draft, controls) ?? command) });
+      return;
+    }
+    const typed = command ? typedSetting(draft, controls) : null;
+    if (typed) {
+      onDraft("");
+      void choose(typed.category, typed.value);
+      return;
+    }
+    onSend();
+  };
+  const toggleCalm = () => {
+    setNotice(null);
+    onCalm(!calmOn);
+  };
+  useEffect(() => { if (calmError) setNotice({ kind: "calm", problem: calmError }); }, [calmError]);
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (palette.open && event.key === "Escape") {
+      event.preventDefault();
+      setDismissedFor(draft);
+      return;
+    }
+    if (matches.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      setActive((current) => (current + (event.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length);
+      return;
+    }
+    if (matches.length && (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey))) {
+      event.preventDefault();
+      pick(matches[Math.min(active, matches.length - 1)]);
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+    }
+  };
+  const readCaret = (event: React.SyntheticEvent<HTMLTextAreaElement>) => setCaret(event.currentTarget.selectionStart ?? 0);
+
   // Arriving with words already written (Push back, asking for a report) puts the caret after them, ready to go on.
   useEffect(() => {
     const element = composer.current;
@@ -2307,7 +2398,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
   useLayoutEffect(() => {
     const element = scroller.current;
     if (element && following.current) element.scrollTop = element.scrollHeight;
-  }, [messages, outbox, approvals, artifacts, calls]);
+  }, [messages, outbox, approvals, artifacts, calls, calmOn, turnLive]);
   // A banner or approval card appearing shrinks the list without a scroll event, so stay pinned through resizes too.
   useEffect(() => {
     const element = scroller.current;
@@ -2334,7 +2425,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
         ? <div key={item.message.id} className="chat-notice" role="status">{item.message.text}</div>
-        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}</div>{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer">{files.length > 0 && <ul className="file-chips composer-files" aria-label="Attached files">{files.map((file) => <li key={file.source} className="file-chip" title={`${file.source}\nCopied into the home when the message is sent`}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => onRemoveFile(file.source)} disabled={copying} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}{attachProblems.length > 0 && <ul className="attach-problems" role="alert">{attachProblems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={onDismissProblems} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}<textarea ref={composer} value={draft} readOnly={copying} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label="Message the first mate" /><div><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} />{hostLabel}</span><span className="composer-hint">⏎ to send · ⇧⏎ for a new line</span><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" onClick={onAttach} disabled={attaching || copying} title="Attach files for the first mate to read">{attaching ? "Attaching…" : "Attach"}</button><button className="send-button" onClick={onSend} disabled={(!draft.trim() && files.length === 0) || !sendReady || copying} title={sendReady ? "Send message" : "Start the first mate to send messages"}>{copying ? "Sending…" : "Send"}</button></div></div></div>;
+        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}{calmOn && turnLive && <WorkingRow since={turnSince} />}</div>{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer"><SlashPalette state={palette} active={active} controls={controls} onHover={setActive} onChoose={pick} />{files.length > 0 && <ul className="file-chips composer-files" aria-label="Attached files">{files.map((file) => <li key={file.source} className="file-chip" title={`${file.source}\nCopied into the home when the message is sent`}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => onRemoveFile(file.source)} disabled={copying} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}{attachProblems.length > 0 && <ul className="attach-problems" role="alert">{attachProblems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={onDismissProblems} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}<div className="composer-draft"><GhostHint draft={draft} hint={ghostHint(draft, commands)} /><textarea ref={composer} value={draft} readOnly={copying} onChange={(event) => { onDraft(event.target.value); readCaret(event); }} onSelect={readCaret} onKeyDown={onKeyDown} placeholder={placeholder} aria-label="Message the first mate" aria-autocomplete="list" aria-controls={matches.length ? "slash-palette" : undefined} aria-activedescendant={matches.length ? `slash-${active}` : undefined} /></div><div className="composer-bar"><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /><span>{hostLabel}</span></span><SessionPills controls={controls} live={sessionLive} openMenu={openMenu} notice={notice} onOpen={setOpenMenu} onChoose={(category, value) => void choose(category, value)} /><CalmPill calm={calm} saving={calmSaving} failed={notice?.kind === "calm"} onToggle={toggleCalm} /><span className="composer-grow" /><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" onClick={onAttach} disabled={attaching || copying} title="Attach files for the first mate to read">{attaching ? "Attaching…" : "Attach"}</button><button className="send-button" onClick={submit} disabled={(!draft.trim() && files.length === 0) || !sendReady || copying} title={sendReady ? "Send message (⏎) · ⇧⏎ for a new line" : "Start the first mate to send messages"}>{copying ? "Sending…" : "Send"}</button></div><SessionNotices controls={controls} calm={calm} notice={notice} dismissedProblems={dismissedProblems} onRetry={() => { if (notice?.kind === "refused") void choose(notice.category, notice.value); else if (notice?.kind === "calm") { setNotice(null); onDismissCalmError(); onCalm(!calmOn); } }} onRestart={() => { setNotice(null); onRestart(); }} onDismiss={() => setNotice(null)} onDismissProblem={(key) => setDismissedProblems((current) => [...current, key])} /></div></div>;
 }
 
 /**

@@ -1,6 +1,8 @@
 mod artifact;
 mod attach;
 mod calls;
+mod calm;
+mod controls;
 mod engine;
 mod envpath;
 mod host;
@@ -62,6 +64,9 @@ pub fn run() {
       host::cancel_turn,
       host::get_state,
       host::answer_permission,
+      host::session_option_set,
+      calm::calm_get,
+      calm::calm_set,
       attach::attach_pick,
       attach::attach_copy,
       settings::home_get,

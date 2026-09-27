@@ -22,7 +22,7 @@ Agents do not work there and do not branch from it: each agent clones the remote
 It was its own repository at `caomyer/firstmate` until 2026-09-20, when it moved here with all 720 of its commits, paths rewritten, so `git log` and `git blame` read its whole past from this repo.
 It is not a vendored dependency and not a submodule: it is ours, edited here, and a change that crosses the line between the app and the first mate is one commit.
 
-- Its checks are its own, and they run from `engine/`: `cd engine && bin/fm-test-run.sh --changed` for what your change touches, `bin/fm-lint.sh` for the shell, `bin/fm-test-run.sh --all` for the full 221-script regression.
+- Its checks are its own, and they run from `engine/`: `cd engine && bin/fm-test-run.sh --changed` for what your change touches, `bin/fm-lint.sh` for the shell, `bin/fm-test-run.sh --all` for the full regression.
   They need pinned ShellCheck and actionlint on PATH; `engine/bin/fm-install-shellcheck.sh <dir>` and `engine/bin/fm-install-actionlint.sh <dir>` fetch the versions CI uses.
 - GitHub runs workflows only from a repository root, so the engine's live at `.github/workflows/engine.yml`, running from `engine/` and firing only on changes under it.
   `.github/workflows/app.yml` is the app's own, and skips a change confined to `engine/`.
@@ -135,6 +135,11 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   Check every state, including needs-authorization, stale and empty, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm usage`.
   `cd src-tauri && cargo test quota_live_reads_this_mac -- --ignored --nocapture` reads this Mac's quota-axi through the app's path, spending nothing.
   Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test compact_e2e_live_scratch_home -- --ignored --nocapture` compacts a real first mate while it is idle and while a turn runs.
+- The first mate's model and effort, the composer's slash palette and Calm (`src/SessionControls.tsx`, read by `src/sessionctl.ts` and `src/calm.ts`) come only from the session: its `configOptions` and its `available_commands_update`, which the host keeps (`src-tauri/src/controls.rs`), so the app keeps no list of models, efforts or commands of its own.
+  A change goes as `session/set_config_option` and shows only once the adapter confirms it; each confirmed pick is kept per home in the app's own folder and applied again after every start, since neither a resumed nor a fresh session keeps it.
+  Calm is read and set only through `engine/bin/fm-calm.sh` (`src-tauri/src/calm.rs`); the app never writes `config/calm`.
+  Check every state, in both themes: start Vite on your own port, then `FIRSTMATE_URL=http://127.0.0.1:<port> pnpm session`.
+  Live, which spends model tokens: `cd src-tauri && FM_E2E_HOME=<scratch home> cargo test session_e2e_live_scratch_home -- --ignored --nocapture` sets both through the real adapter and checks they come back after a resumed and a fresh start.
 - Every push to `main` publishes a release that running apps install (`.github/workflows/release.yml`, `src-tauri/src/update.rs`); `docs/releasing.md` says how, and what only James can do.
   Without the signing certificate the Release job fails and publishes nothing, on purpose: an unsigned release would reset the app's macOS permissions.
   `app.yml`'s Bundle job dry-runs that build on every branch, publishing nothing.
