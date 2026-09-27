@@ -27,6 +27,9 @@ const SEVERAL = "res-transcripts-source";
 const FOLDED = "res-model-download";
 const PAGE_ONLY = "res-model-cellular";
 const REPORT_ONLY = "res-artwork-refresh";
+/** A call argued only by the report of a scout that presented a page, and that page. */
+const REPORT_PAGE = "res-transcripts-backfill";
+const REPORT_PAGE_TITLE = "Which episodes already carry a transcript?";
 /** The page of a task with no worker left. */
 const TORN_DOWN_PAGE = "Rebase the subject before anybody reads it";
 
@@ -230,6 +233,52 @@ async function toBearings(page) {
     check(JSON.stringify(await pieces(line)) === JSON.stringify(["report:report", "page:page", "url:link"]), `rail, ${theme}: the page on screen is not repeated (${await pieces(line)})`);
     check(await rail.locator(`[data-testid='decision-answer'][data-call-id='${PAGE_ONLY}'] [data-testid='argued-by']`).count() === 0, `rail, ${theme}: a call argued only by this page has no such line`);
   });
+  await page.close();
+}
+
+// A report whose scout presented a page: that page argues the call, so its rail answers it, as for a page named outright.
+{
+  const page = await open();
+  const card = bearingsCard(page, REPORT_PAGE);
+  await inBothThemes(page, "bearings-report-page", card, async (theme) => {
+    check(JSON.stringify(await pieces(card.locator("[data-testid='argued-by']"))) === JSON.stringify(["report:report"]), `Bearings, ${theme}: the report says it opens`);
+    check((await card.locator("[data-testid='read-argument']").innerText()) === "Read the argument", `Bearings, ${theme}: the card offers Read the argument`);
+  });
+  await card.locator("[data-testid='read-argument']").click();
+  await page.locator(".page-heading h1", { hasText: REPORT_PAGE_TITLE }).waitFor();
+  check(true, "Bearings: Read the argument opens the scout's page");
+  const rail = page.locator(".review-rail");
+  const answer = rail.locator(`[data-testid='decision-answer'][data-call-id='${REPORT_PAGE}']`);
+  await answer.waitFor();
+  await inBothThemes(page, "rail-report-page", rail, async (theme) => {
+    check((await answer.locator(".decision-choices button").allInnerTexts()).some((text) => text.includes("Only new episodes")), `rail, ${theme}: the call's options are offered`);
+    check(await answer.locator("[data-testid='argued-by']").count() === 0, `rail, ${theme}: the report that is this page is not named beside it`);
+  });
+  check(await rail.locator(`[data-testid='decision-answer'][data-call-id='${REPORT_ONLY}']`).count() === 0, "rail: a report with no page is not offered here");
+  await answer.locator(".decision-choices button", { hasText: "Only new episodes" }).click();
+  await page.locator(".send-review").click();
+  await page.locator(".review-last").waitFor();
+  await answer.locator("[data-testid='call-answered']").waitFor({ timeout: 5000 }).catch(() => undefined);
+  check(await answer.locator("[data-testid='call-answered']").count() === 1 && (await answer.locator("[data-testid='call-answered']").innerText()).includes("Only new episodes"), "rail: the answer is recorded once");
+  await toBearings(page);
+  await card.waitFor({ state: "detached", timeout: 5000 }).catch(() => undefined);
+  check(await card.count() === 0, "Bearings: the call answered in the page is no longer waiting");
+  // No page ever offers the call whose report has none, and its card still asks for it.
+  await page.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await page.locator(".artifact-group-heading", { hasText: "Settled" }).click();
+  const rows = page.locator(".artifact-list .artifact-row");
+  const titles = await rows.locator("strong").allInnerTexts();
+  check(titles.includes(REPORT_PAGE_TITLE), `every page is visited (${titles.join(" | ")})`);
+  for (const title of titles) {
+    await rows.filter({ hasText: title }).first().click();
+    await page.locator(".review-rail .review-head").waitFor();
+    check(await page.locator(`.review-rail [data-testid='decision-answer'][data-call-id='${REPORT_ONLY}']`).count() === 0, `rail of "${title}": the report with no page is never offered`);
+    await page.locator(".back-button").click();
+    await rows.first().waitFor();
+    if (await page.locator(".artifact-group-heading[aria-expanded='false']", { hasText: "Settled" }).count()) await page.locator(".artifact-group-heading", { hasText: "Settled" }).click();
+  }
+  await toBearings(page);
+  check((await bearingsCard(page, REPORT_ONLY).locator("[data-testid='read-argument']").innerText()) === "Ask for the report", "Bearings: the report with no page still says Ask for the report");
   await page.close();
 }
 

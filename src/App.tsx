@@ -350,7 +350,7 @@ export function App() {
     : selectedProject ?? "Project";
   // Everything waiting on the captain: open calls he has not replied to, and finished reports nobody has closed.
   const openCallCount = awaiting.length + readyReports.length;
-  const shownCalls = shownArtifact ? callsArguedBy(calls, shownArtifact).filter(isOpen) : [];
+  const shownCalls = shownArtifact ? callsArguedBy(calls, shownArtifact, artifacts).filter(isOpen) : [];
   const subtitle = view === "project" && selectedProjectData ? selectedProjectData.posture
     : view === "chat" ? "You and the first mate"
     : view === "bearings" ? (bearings ? `Everything the fleet is doing${openCallCount ? `, and the ${countWord(openCallCount, "thing")} that ${openCallCount === 1 ? "wants" : "want"} your word` : ""}` : "")
@@ -880,7 +880,7 @@ export function App() {
               revision={shownRevision}
               url={host.artifactUrl(shownRevision)}
               review={review}
-              stake={reviewStake(shownArtifact, fleet?.tasks ?? [], records, calls, (review?.answers ?? []).filter((answer) => answer.sent_at === null))}
+              stake={reviewStake(shownArtifact, artifacts, fleet?.tasks ?? [], records, calls, (review?.answers ?? []).filter((answer) => answer.sent_at === null))}
               sendReady={bridge.sendReady}
               runtime={runtime.state}
               onRevision={(rev) => showArtifact(shownArtifact, rev)}
@@ -891,7 +891,7 @@ export function App() {
                 setReview(sent.review);
                 return sent.warning;
               })}
-              calls={callsArguedBy(calls, shownArtifact)}
+              calls={callsArguedBy(calls, shownArtifact, artifacts)}
               evidenceOf={evidenceOf}
               onOpenEvidence={openEvidence}
               onAnswer={(call, answer) => host.reviewAnswer(artifactRef!, call.id, answer.option?.key, answer.option?.label, call.on_answer, answer.words).then(setReview)}
@@ -2639,12 +2639,12 @@ export type ArtifactStanding = "needs-you" | "discussion" | "settled";
  * arguing a call still waiting on the captain means the move is yours; anything
  * else that is still going belongs with its author.
  */
-export function artifactStanding(artifact: Artifact, review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>, calls: Call[]): ArtifactStanding {
+export function artifactStanding(artifact: Artifact, artifacts: Artifact[], review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>, calls: Call[]): ArtifactStanding {
   const task = artifact.scope === "task" ? artifact.task : null;
   if (task && backlog.get(task)?.state === "done") return "settled";
   if (review && review.draft_count > 0) return "needs-you";
   const comments = openComments(artifact, review);
-  const argued = callsArguedBy(calls, artifact);
+  const argued = callsArguedBy(calls, artifact, artifacts);
   // A call this page argues: yours until you answer or reply to it, then firstmate's until it records or asks again.
   const waiting = argued.filter(isOpen);
   // A chat page that argued calls exists for them, so once every one is closed it has done its work,
@@ -2673,13 +2673,13 @@ function ArtifactsView({ artifacts, tasks, reviews, backlog, calls, onOpen }: { 
   const [openSettled, setOpenSettled] = useState(false);
   const groups = useMemo(() => {
     const out = new Map<ArtifactStanding, Artifact[]>(STANDINGS.map((standing) => [standing.id, []]));
-    for (const artifact of artifacts) out.get(artifactStanding(artifact, reviews[artifactKey(artifact)], backlog, calls))!.push(artifact);
+    for (const artifact of artifacts) out.get(artifactStanding(artifact, artifacts, reviews[artifactKey(artifact)], backlog, calls))!.push(artifact);
     return out;
   }, [artifacts, reviews, backlog, calls]);
 
   /** What rides on a page still in play: a call it argues, or the kind of work that wrote it. */
   const stakeOf = (artifact: Artifact) => {
-    if (callsArguedBy(calls, artifact).some(isOpen)) return { label: "A decision rides on this", tone: "coral" };
+    if (callsArguedBy(calls, artifact, artifacts).some(isOpen)) return { label: "A decision rides on this", tone: "coral" };
     const task = artifact.scope === "task" ? tasks.find((candidate) => candidate.id === artifact.task) : undefined;
     if (task?.kind === "scout") return { label: "Scout report", tone: "muted" };
     return undefined;
@@ -2912,8 +2912,8 @@ const LIVE_STATES = new Set(["working", "blocked", "parked", "paused", "unknown"
  * task has finished or landed, a scout's report that argues no call, or a chat page with no open call holds
  * nothing up, so it starts on Comment, and every hint says what the verdict does for this page, not in general.
  */
-function reviewStake(artifact: Artifact, tasks: FleetTask[], backlog: Map<string, BacklogRecord>, known: Call[], staged: ReviewView["answers"] = []): ReviewStake {
-  const calls = callsArguedBy(known, artifact).filter(isOpen);
+function reviewStake(artifact: Artifact, artifacts: Artifact[], tasks: FleetTask[], backlog: Map<string, BacklogRecord>, known: Call[], staged: ReviewView["answers"] = []): ReviewStake {
+  const calls = callsArguedBy(known, artifact, artifacts).filter(isOpen);
   const taskId = artifact.scope === "task" ? artifact.task : null;
   const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
   const quiet = (reason: string): ReviewStake => ({

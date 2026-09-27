@@ -12,15 +12,12 @@
  */
 import type { Artifact, BacklogRecord, BearingsSnapshot, Call, CallAnswer, CallReply, FleetSnapshot, IntakeResult } from "./host/types";
 
-/** Which page an evidence ref names: `page:task/<id>/<name>` or `page:chat/<name>`. */
-export function pageRef(page: { scope: "task" | "chat"; task: string | null; name: string }) {
-  return page.scope === "task" && page.task ? `page:task/${page.task}/${page.name}` : `page:chat/${page.name}`;
-}
-
-/** The calls whose evidence contains this page, in the order the snapshot lists them. */
-export function callsArguedBy(calls: Call[], page: { scope: "task" | "chat"; task: string | null; name: string }) {
-  const ref = pageRef(page);
-  return calls.filter((call) => call.evidence.includes(ref));
+/**
+ * The calls this page argues, in the order the snapshot lists them: those whose evidence opens it, by naming it or as
+ * the report of the task that presented it last. `page` is one of `artifacts`, the presented pages.
+ */
+export function callsArguedBy(calls: Call[], page: Artifact, artifacts: Artifact[]) {
+  return calls.filter((call) => resolveEvidence(call, artifacts, (id) => id).some((item) => pageOf(item) === page));
 }
 
 /** Waiting on the captain now: held, not answered, and in the live part of the hold. */

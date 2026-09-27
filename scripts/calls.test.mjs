@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, pageRef, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "../src/calls.ts";
+import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "../src/calls.ts";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -24,11 +24,6 @@ const board = page("chat", null, "model-download", "When may the app download th
 const report = page("task", "res-transcripts-scout", "transcripts-report", "Which episodes already carry a transcript?");
 const title = (id) => ({ "res-transcripts-scout": "Resonance: transcripts" })[id] ?? id;
 
-test("a page is named the way evidence names it", () => {
-  assert.equal(pageRef(board), "page:chat/model-download");
-  assert.equal(pageRef(report), "page:task/res-transcripts-scout/transcripts-report");
-});
-
 test("one page can argue two calls, and a page argues only what names it", () => {
   const calls = [
     call("res-model-download", { evidence: ["page:chat/model-download"] }),
@@ -37,8 +32,21 @@ test("one page can argue two calls, and a page argues only what names it", () =>
     // A task page and a chat page with the same name are different pages.
     call("res-other", { evidence: ["page:task/someone/model-download"] }),
   ];
-  assert.deepEqual(callsArguedBy(calls, board).map((item) => item.id), ["res-model-download", "res-model-cellular"]);
-  assert.deepEqual(callsArguedBy(calls, report).map((item) => item.id), ["res-transcripts-source"]);
+  assert.deepEqual(callsArguedBy(calls, board, [board, report]).map((item) => item.id), ["res-model-download", "res-model-cellular"]);
+  assert.deepEqual(callsArguedBy(calls, report, [board, report]).map((item) => item.id), ["res-transcripts-source"]);
+});
+
+test("a report argues its task's newest page, and a report with no page argues none", () => {
+  const older = page("task", "res-transcripts-scout", "older-notes", "Older notes");
+  older.latest.presented_at = ago(5);
+  const artifacts = [board, older, report];
+  const calls = [
+    call("res-by-report", { evidence: ["report:res-transcripts-scout"] }),
+    call("res-no-page", { evidence: ["report:res-titles-scout"] }),
+  ];
+  assert.deepEqual(callsArguedBy(calls, report, artifacts).map((item) => item.id), ["res-by-report"]);
+  assert.deepEqual(callsArguedBy(calls, older, artifacts), []);
+  for (const artifact of artifacts) assert.ok(!callsArguedBy(calls, artifact, artifacts).some((item) => item.id === "res-no-page"), artifact.name);
 });
 
 test("evidence resolves to what can be opened, in firstmate's order", () => {
