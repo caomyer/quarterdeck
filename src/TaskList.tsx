@@ -317,7 +317,7 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
         </small>
       </span>
       <span className="tl-chips">
-        {made && <button type="button" className={`tl-out-chip${made.strong ? " strong" : ""}`} data-output={made.opens.kind} data-strong={made.strong || undefined} title={made.title} onClick={(event) => { event.stopPropagation(); output!.onOpen(row.id, made); }} onKeyDown={(event) => event.stopPropagation()}>
+        {made && <button type="button" className={`tl-out-chip${made.strong ? " strong" : ""}`} data-output={made.opens.kind} data-strong={made.strong || undefined} title={made.title} onClick={(event) => { event.stopPropagation(); output!.onOpen(row.id, made); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}>
           {made.opens.kind === "page" ? <PanelsTopLeft size={12} /> : made.opens.kind === "report" ? <FileText size={12} /> : <GitPullRequest size={12} />}{made.label}{made.opens.kind === "pr" && <ExternalLink size={11} />}
         </button>}
         <span className={`tl-chip tone-${chip.tone}`}>{row.standing === "underway" ? underway.get(row.id)?.icon : null}{chip.label}</span>

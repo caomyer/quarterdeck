@@ -149,10 +149,11 @@ export function PageTaskStrip({ task, title, project, standing, record, pages, c
   task: string; title: string; project: string | null; standing: TaskStanding | null; record?: BacklogRecord; pages: Artifact[]; current: Artifact;
   needs: (page: Artifact) => boolean; onOpenTask: (() => void) | null; onOpenPage: (page: Artifact) => void;
 }) {
-  const meta = [project, standing?.label].filter(Boolean);
+  // A task with neither a row nor a worker says so where its standing would be.
+  const meta = onOpenTask ? [project, standing?.label].filter(Boolean) : ["No longer in this home"];
   const name = <>
     <ChevronLeft size={15} className="pts-back" aria-hidden="true" />
-    <span className="pts-copy"><strong>{title}</strong><small>{meta.map((part, index) => <span key={index} className={index === 1 && standing ? `tone-${standing.tone}` : undefined}>{part}</span>)}{record && <PriorityBadge record={record} dim={record.state === "done"} />}</small></span>
+    <span className="pts-copy"><strong>{title}</strong><small>{meta.map((part, index) => <span key={index} className={index === 1 && standing && onOpenTask ? `tone-${standing.tone}` : undefined}>{part}</span>)}{record && <PriorityBadge record={record} dim={record.state === "done"} />}</small></span>
   </>;
   return <nav className="page-task-strip" aria-label="The task this page is from" data-testid="page-task-strip" data-task={task}>
     {onOpenTask

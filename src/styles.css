@@ -1701,7 +1701,7 @@ button.session-pill:hover:not(:disabled) { border-color: var(--control-hover); }
   .tl-search { max-width: none; flex-basis: 100%; }
   .tl-row, .tl:not(:has(.tl-check-cell)) .tl-row { grid-template-columns: 22px 34px minmax(0, 1fr) 14px; row-gap: 6px; }
   .tl-check-cell, .tl-age { display: none; }
-  .tl-chips { grid-column: 3; grid-row: 2; justify-self: start; }
+  .tl-chip { grid-column: 3; grid-row: 2; justify-self: start; }
   .tl-open { grid-column: 4; grid-row: 1; }
   .tl-label { padding-left: 38px; }
   .tl-label small { display: none; }
@@ -1773,3 +1773,4 @@ button.pts-task:hover strong { color: var(--sea); }
 .tl-out-chip.strong { color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); font-weight: 600; }
 .tl-out-chip.strong:hover { background: color-mix(in srgb, var(--blue) 20%, transparent); }
 .tl-out-chip svg { flex: none; }
+@media (max-width: 760px) { .tl-chips { grid-column: 3; grid-row: 2; justify-self: start; } }

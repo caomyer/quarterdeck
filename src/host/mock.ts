@@ -178,7 +178,9 @@ const UNARGUED_CALL = "foreman-auto-merge";
  * `?taskview`: what tasks produced, in every state a row, a drawer and a page's strip draw. The titles scout presents
  * a second page the captain has already read, a ship that is underway has opened a PR, a scout still working has
  * written a report without a page that an open call argues, and a queued task carries a page the captain has read.
- * `&report-refused` has reading a report refused; `&report-long` has one cut past the reader's limit.
+ * A page from a scout the home no longer carries, row or worker, shows where a page outlives its task's records.
+ * `&report-refused` has reading a report refused; `&report-long` has one cut past the reader's limit; `&no-pr` has the
+ * ship not open its PR yet.
  */
 const SHIP_TASK = "res-snip-export";
 /** The reports the mock's scouts wrote, in the markdown a worker writes. */
@@ -456,9 +458,13 @@ function mockArtifacts(home: string): MockHome {
       };
       return { scope: "task", task, name, title, latest: revision, revisions: [revision] };
     };
-    artifacts.push(page(ARTIFACT_TASK, "model-sizes", "Model sizes", 60), page(QUEUED_PAGE_TASK, "lockscreen-sketch", "Snipping from the Lock Screen", 26 * 60));
+    artifacts.push(
+      page(ARTIFACT_TASK, "model-sizes", "Model sizes", 60),
+      page(QUEUED_PAGE_TASK, "lockscreen-sketch", "Snipping from the Lock Screen", 26 * 60),
+      page("res-retired-scout", "retired-notes", "What the retired scout found", 9 * 24 * 60),
+    );
     const ship = mockTask(home, SHIP_TASK, "ship", "working", 50, { detail: "harness busy (claude-hook)", note: "Waiting on CI for the export PR.", report: false, observedAt: at(1) });
-    ship.pr = { url: "https://github.com/caomyer/Resonance/pull/33", source: "status-log" };
+    if (!reviewFlag("no-pr")) ship.pr = { url: "https://github.com/caomyer/Resonance/pull/33", source: "status-log" };
     const codec = mockTask(home, CODEC_TASK, "scout", "working", 70, { detail: "harness busy (claude-hook)", note: "Wrote up the codecs; checking one more device.", report: true, observedAt: at(1) });
     extraTasks.push(ship, codec);
     extraInFlight.push(

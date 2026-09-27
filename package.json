@@ -25,7 +25,8 @@
     "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/callviews.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs scripts/sources.test.mjs scripts/tasks.test.mjs scripts/produced.test.mjs scripts/sessionctl.test.mjs scripts/calm.test.mjs",
     "sources": "node scripts/task-sources.mjs",
     "session": "node scripts/session-controls.mjs",
-    "tasks": "node scripts/task-list.mjs"
+    "tasks": "node scripts/task-list.mjs",
+    "taskview": "node scripts/task-view.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
