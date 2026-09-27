@@ -180,7 +180,13 @@ try {
       if (!rest[0]) usage("shot needs a file");
       const file = resolve(rest[0]);
       mkdirSync(join(file, ".."), { recursive: true });
-      const size = await run("return [innerWidth, innerHeight]");
+      // A hidden window paints lazily, and WebKit snapshots its last paint: right after
+      // a click that is the screen before it. Two frames, or a pause where frames do
+      // not come, let the paint catch up.
+      const size = await run(`
+        await Promise.race([new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))), qd.sleep(700)]);
+        await qd.sleep(150);
+        return [innerWidth, innerHeight]`);
       print(await request({ snapshot: file, size }));
       break;
     }
