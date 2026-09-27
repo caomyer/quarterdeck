@@ -116,6 +116,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-crew-dispatch.sh`    | Turn crew dispatch routing on or off, edit its rules, list the harnesses and efforts a rule may name, and set or clear the typed dispatch resolution key, for callers without an editor such as Quarterdeck |
 | `fm-crew-dispatch-lib.sh` | Single owner of `config/crew-dispatch.json` validation and of the harnesses and efforts a profile may name, shared by bootstrap and `fm-crew-dispatch.sh` |
 | `fm-harness-bin-lib.sh` | Single owner of where each harness's executable lives, shared by spawning and `fm-crew-dispatch.sh` |
+| `fm-calm.sh`             | Read or set this home's Calm preference, for a surface other than the two harness integrations, such as Quarterdeck's chat |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
 | `fm-wake-drain.sh`       | Present and acknowledge the current actor's claimed wake rows alongside status, outcome-backstop, decision, divergence, recovery, and supervision checks |
 | `fm-wake-grant.sh`       | Serialize Pi supervision-branch wake-row claim activation, publication, release, and deactivation |

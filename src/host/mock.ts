@@ -6,10 +6,12 @@ import recordedStream from "./mock-event-stream.json";
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
 import { MockUpdates } from "./mock-update";
 import { mockUsage } from "./mock-usage";
+import { MockSession, STAGED_TURN } from "./mock-session";
 import { addRefusal, linkedBody, linkFixtureRow, mockIssues, mockSources } from "./mock-sources";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
 import type {
+  PickedCategory,
   AnswerWords,
   AppUpdate,
   Artifact,
@@ -719,6 +721,8 @@ export class MockHostAdapter implements HostAdapter {
 
   /** `?usage=<state>`: the usage panel's states, from src/host/mock-usage.ts. */
   private readonly usage = mockUsage(reviewValue("usage"));
+  /** `?session=<state>`, `?calm=<state>` and `?turn=<moment>`: the session's controls, from src/host/mock-session.ts. */
+  private readonly session = new MockSession((event) => this.emit(event), (ms, run) => this.later(ms, run));
   /** The context reading the host has reported, which it does only after a turn. */
   private context: ContextReading | null = null;
   private keychainAllowed = false;
@@ -1095,6 +1099,10 @@ export class MockHostAdapter implements HostAdapter {
       this.startupPlayed = true;
       this.play(recordedStream.startup as RecordedEvent[]);
       this.later(600, () => this.reportUsage());
+      // The recorded session opens at about 430ms: its options come with it, its commands a moment later.
+      this.later(500, () => this.session.opened());
+      const turn = reviewValue("turn");
+      if (turn) this.later(900, () => this.stageTurn(turn));
       // `?markdown`: one reply in the shapes a first mate writes, for judging chat formatting by eye.
       if (reviewFlag("markdown")) this.later(900, () => this.emit({ type: "history", payload: { items: [...MARKDOWN_SAMPLE] } }));
       const health = reviewValue("health");
@@ -1157,7 +1165,22 @@ export class MockHostAdapter implements HostAdapter {
     // Like the host's own, `starting` names the home the first mate starts in, so sending there works from now on.
     this.emit({ type: "state", payload: { state: "starting", home: this.snapshot.fleet.fm_home } });
     this.emit({ type: "state", payload: { state: "idle" } });
+    this.session.opened();
     this.later(300, () => this.reportUsage());
+  }
+
+  /**
+   * `?turn=<1..5>`: one turn held at a moment, for judging the chat with Calm off and on; `?turn=play` plays it
+   * through, a few seconds a moment. The events are the ones the host sends for such a turn.
+   */
+  private stageTurn(turn: string) {
+    const upTo = turn === "play" ? STAGED_TURN.length - 1 : Math.max(1, Math.min(STAGED_TURN.length - 1, Number(turn) || 1));
+    STAGED_TURN.forEach((events, moment) => {
+      if (moment > upTo) return;
+      const run = () => events.forEach((event) => this.emit(event));
+      if (turn === "play" && moment > 1) this.later((moment - 1) * 3500, run);
+      else run();
+    });
   }
 
   /** What the host reports after a turn: the context reading and the session's Claude limit. `?usage=start` has had no turn yet. */
@@ -1802,7 +1825,20 @@ export class MockHostAdapter implements HostAdapter {
       conversation: reviewFlag("reloaded") ? { sessionId: "79f27945-68cf-4639-899d-49576d4668e4", items: [...EARLIER_CONVERSATION] } : null,
       // `?reloaded`: the host already had a reading when the window opened.
       usage: { context: reviewFlag("reloaded") ? this.usage.context : this.context, rateLimit: this.usage.rateLimit },
+      controls: this.state === "stopped" ? null : this.session.view(this.state === "idle" || this.state === "prompt_turn" || this.state === "agent_turn"),
     };
+  }
+
+  setSessionOption(category: PickedCategory, value: string) {
+    return this.session.set(category, value);
+  }
+
+  calmGet() {
+    return this.session.calmGet();
+  }
+
+  calmSet(on: boolean) {
+    return this.session.calmSet(on);
   }
 
   async latestSnapshot(): Promise<SnapshotEvent> {

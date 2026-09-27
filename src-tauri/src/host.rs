@@ -22,10 +22,15 @@
 //!   with `session/load`.
 //!
 //! Commands: `host_start`, `host_stop`, `host_restart`, `send`, `get_state`,
-//! `answer_permission`, and `cancel_turn`, which answers "not supported yet".
+//! `answer_permission`, `session_option_set`, and `cancel_turn`, which answers
+//! "not supported yet".
 //! Events: `session`, `state`, `text`, `tool_call`, `update`, `outbox`,
 //! `prompt_result`, `usage`, `compact`, `permission`, `permission_request`,
-//! `permission_resolved`, `host_health`.
+//! `permission_resolved`, `host_health`, `session_controls`.
+//!
+//! `session_controls` carries the session's options and advertised commands as
+//! the adapter last stated them (`controls.rs` owns what is kept and how a pick
+//! is applied again after every start), which `get_state` also returns.
 //!
 //! `usage` carries the adapter's update as it came, with the host's reading of
 //! the context window and the latest Claude plan limit, which `get_state` also
@@ -33,6 +38,7 @@
 //! captain sent, from handing it over to how it ended, since the adapter says
 //! that only in the words it streams.
 
+use crate::controls::{self, Controls};
 use crate::envpath;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -73,6 +79,9 @@ const HANDSHAKE_WAIT: Duration = Duration::from_secs(60);
 /// Loading replays the whole conversation, so it gets longer.
 const LOAD_WAIT: Duration = Duration::from_secs(180);
 const SET_MODE_WAIT: Duration = Duration::from_secs(30);
+/// How long the session may sit off the home's permission mode before it is a fault: a model
+/// change the host puts back moves it for about as long as two requests take.
+const MODE_DRIFT_GRACE: Duration = Duration::from_secs(3);
 const LOCK_WAIT: Duration = Duration::from_secs(15);
 const REAP_WAIT: Duration = Duration::from_secs(5);
 /// How long firstmate's own session-start hook gets to claim the home's lock on
@@ -105,6 +114,8 @@ pub enum Cmd {
     Send { text: String, reply: oneshot::Sender<Result<String, String>> },
     GetState { reply: oneshot::Sender<Value> },
     AnswerPermission { id: String, option_id: String, reply: oneshot::Sender<Result<(), String>> },
+    /// Change one of the session's options the captain may change: its category and the value.
+    SetOption { category: String, value: String, reply: oneshot::Sender<Result<Value, String>> },
 }
 
 /// Where the host sends its events and keeps its per-home files. The app uses
@@ -255,6 +266,17 @@ pub async fn answer_permission(
     host.call(|reply| Cmd::AnswerPermission { id, option_id, reply }).await?
 }
 
+/// Change the model or effort of the first mate's session. Answers with the session's
+/// controls once the adapter confirms the change, or with its reason for refusing it.
+#[tauri::command]
+pub async fn session_option_set(
+    category: String,
+    value: String,
+    host: TauriState<'_, HostHandle>,
+) -> Result<Value, String> {
+    host.call(|reply| Cmd::SetOption { category, value, reply }).await?
+}
+
 // ------------------------------------------------------------------- rpc ---
 
 enum HostEvent {
@@ -265,6 +287,7 @@ enum HostEvent {
     Stderr { gen: u64, line: String },
     PromptDone { gen: u64, outbox_id: String, result: RpcResult },
     SessionStartDone { gen: u64, result: RpcResult },
+    OptionSet { gen: u64, category: String, value: String, outcome: Result<Vec<Value>, controls::Refused>, reply: oneshot::Sender<Result<Value, String>> },
 }
 
 #[derive(Clone)]
@@ -297,10 +320,16 @@ impl Rpc {
     }
 
     /// `request`, bounded: a hung adapter answers with an error instead of never.
-    async fn request_within(&self, method: &str, params: Value, limit: Duration) -> RpcResult {
+    pub(crate) async fn request_within(&self, method: &str, params: Value, limit: Duration) -> RpcResult {
         tokio::time::timeout(limit, self.request(method, params))
             .await
             .unwrap_or_else(|_| Err(format!("no answer to {method} within {}s", limit.as_secs())))
+    }
+}
+
+impl controls::Requester for Rpc {
+    async fn ask(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.request_within(method, params, controls::SET_WAIT).await
     }
 }
 
@@ -1133,6 +1162,12 @@ struct Host {
     rate_limit: Option<Value>,
     /// A `/compact` handed to the first mate and not finished yet.
     compaction: Option<Compaction>,
+    /// The session's options and commands, as the adapter last stated them.
+    controls: Controls,
+    /// The session mode firstmate's permission posture was applied as.
+    posture: Option<&'static str>,
+    /// Since when the session has been off that mode, and whether that was reported.
+    mode_drift: Option<(Instant, bool)>,
     groups: Groups,
 }
 
@@ -1234,6 +1269,9 @@ impl Host {
             context: Context::default(),
             rate_limit: None,
             compaction: None,
+            controls: Controls::default(),
+            posture: None,
+            mode_drift: None,
         }
     }
 
@@ -1393,6 +1431,7 @@ impl Host {
             Cmd::AnswerPermission { id, option_id, reply } => {
                 let _ = reply.send(self.answer_permission(&id, &option_id).await);
             }
+            Cmd::SetOption { category, value, reply } => self.set_option(category, value, reply),
             Cmd::GetState { reply } => {
                 let queued: Vec<String> = self
                     .outbox
@@ -1414,6 +1453,7 @@ impl Host {
                         "items": history_items(&self.conversation),
                     })),
                     "usage": {"context": self.context.view(), "rate_limit": self.rate_limit},
+                    "controls": self.controls_view(),
                     "permission_requests": self
                         .asked
                         .iter()
@@ -1501,6 +1541,13 @@ impl Host {
         };
         let Spawned { mut adapter, mode, session, history } = spawned;
         record_adapter(&host_dir, adapter.pgid);
+        // The session's options come in its open result. The commands, and any option or mode
+        // update, may have landed in a resumed session's replay, so they are lifted out of it.
+        self.controls = Controls::opened(&session);
+        self.mode_drift = None;
+        for update in history.iter().filter(|update| controls::is_control_update(update)) {
+            self.controls.note(update);
+        }
 
         // Apply firstmate's permission posture; never approximate a missing mode.
         let offered = session
@@ -1537,6 +1584,24 @@ impl Host {
             let reason = format!("could not apply config/claude-permission-mode ({config_mode}): {error}");
             self.set_state(State::Refused, json!({"reason": reason, "reason_kind": "permission_mode"}));
             return Err(reason);
+        }
+        self.posture = Some(mode_id);
+        self.controls.mode = Some(mode_id.to_string());
+        for option in self.controls.options.iter_mut().flatten().filter(|o| o.get("category").and_then(Value::as_str) == Some("mode")) {
+            option["currentValue"] = json!(mode_id);
+        }
+
+        // The captain's model and effort, applied again: a resumed session keeps a model only by
+        // luck and a fresh one starts on the default. One that cannot be applied never stops the
+        // start; the first mate runs on what the session chose, and the window says why.
+        let picks = controls::read_picks(&host_dir);
+        if !picks.is_empty() {
+            let options = self.controls.options.clone().unwrap_or_default();
+            let (options, problems, unfit) =
+                controls::apply_picks(&adapter.rpc, &adapter.session_id, options, &picks, mode_id, None).await;
+            self.controls.options = Some(options);
+            self.controls.problems = problems;
+            self.controls.unfit = unfit;
         }
 
         // The lock guards against two first mates in one home, so a live holder that is
@@ -1584,6 +1649,7 @@ impl Host {
         if mode == "loaded" {
             self.emit("history", json!({"items": history_items(&history)}));
         }
+        self.emit_controls_with(true);
         self.conversation = history.iter().filter_map(conversation_update).collect();
         self.context = Context::fresh(mode == "loaded");
         self.compaction = None;
@@ -1635,6 +1701,136 @@ impl Host {
         // Diagnostics, not a banner: what firstmate's session start came back with.
         self.emit("host_health", json!({"kind": "session_start_turn", "stop_reason": stop, "error": error}));
         self.end_agent_turn(json!({"derived": "session start turn done"}));
+    }
+
+    /// The session's controls as the window draws them.
+    fn controls_view(&self) -> Value {
+        let picks = self.host_dir.as_deref().map(controls::read_picks).unwrap_or_default();
+        self.controls.view(self.adapter.is_some() && self.state.live(), &picks)
+    }
+
+    fn emit_controls(&self) {
+        self.emit("session_controls", self.controls_view());
+    }
+
+    /// For the end of a start, before its state reads live: the session is open to take a change.
+    fn emit_controls_with(&self, live: bool) {
+        let mut view = self.controls_view();
+        view["live"] = json!(live);
+        self.emit("session_controls", view);
+    }
+
+    /// Starts one change on its way. The answer comes back as `OptionSet`, so the host keeps
+    /// reading the first mate while the adapter works on it.
+    fn set_option(&mut self, category: String, value: String, reply: oneshot::Sender<Result<Value, String>>) {
+        let gone = "the first mate's session has ended";
+        let (Some(adapter), true) = (self.adapter.as_ref(), self.state.live()) else {
+            let _ = reply.send(Err(if self.adapter.is_some() { "the first mate is not ready yet" } else { gone }.to_string()));
+            return;
+        };
+        if !controls::PICKED.contains(&category.as_str()) {
+            let _ = reply.send(Err(format!("{category} is not a setting the captain changes here")));
+            return;
+        }
+        if let Some(reason) = self.controls.unfit.get(&value) {
+            let _ = reply.send(Err(reason.clone()));
+            return;
+        }
+        if self.controls.pending.is_some() {
+            let _ = reply.send(Err("another change is still on its way".to_string()));
+            return;
+        }
+        let rpc = adapter.rpc.clone();
+        let session_id = adapter.session_id.clone();
+        let options = self.controls.options.clone().unwrap_or_default();
+        let posture = self.posture.unwrap_or("bypassPermissions");
+        let picks = self.host_dir.as_deref().map(controls::read_picks).unwrap_or_default();
+        let events = self.ev_tx.clone();
+        let gen = self.gen;
+        self.controls.pending = Some((category.clone(), value.clone()));
+        self.emit_controls();
+        tauri::async_runtime::spawn(async move {
+            let mut outcome = controls::set_option(&rpc, &session_id, &options, &category, &value, posture).await;
+            // Back on a model with efforts: the captain's effort comes back with it.
+            if let (Ok(after), "model") = (&outcome, category.as_str()) {
+                let (after, _, _) =
+                    controls::apply_picks(&rpc, &session_id, after.clone(), &picks, posture, Some("model")).await;
+                outcome = Ok(after);
+            }
+            let _ = events.send(HostEvent::OptionSet { gen, category, value, outcome, reply });
+        });
+    }
+
+    fn on_option_set(
+        &mut self,
+        gen: u64,
+        category: String,
+        value: String,
+        outcome: Result<Vec<Value>, controls::Refused>,
+        reply: oneshot::Sender<Result<Value, String>>,
+    ) {
+        if gen != self.gen {
+            let _ = reply.send(Err("the first mate restarted before the change was confirmed, so nothing changed".to_string()));
+            return;
+        }
+        self.controls.pending = None;
+        let result = match outcome {
+            Ok(options) => {
+                self.controls.options = Some(options);
+                self.controls.problems.remove(&category);
+                // The change stands either way; only applying it again at the next start is lost.
+                if let Some(Err(error)) = self.host_dir.as_deref().map(|dir| controls::keep_pick(dir, &category, &value)) {
+                    self.emit("host_health", json!({"kind": "session_pick_unsaved", "category": category, "error": error}));
+                }
+                Ok(())
+            }
+            Err(refused) => {
+                if let Some(options) = refused.options {
+                    self.controls.options = Some(options);
+                }
+                if refused.unfit {
+                    self.controls.unfit.insert(value, refused.reason.clone());
+                }
+                Err(refused.reason)
+            }
+        };
+        self.check_posture();
+        self.emit_controls();
+        let _ = reply.send(result.map(|()| self.controls_view()));
+    }
+
+    /// Notes whether the session is off the home's permission mode. A model change the host
+    /// makes can move it for a moment before the host puts it back, so only a drift that
+    /// outlasts `MODE_DRIFT_GRACE` is reported, by `tick`.
+    fn check_posture(&mut self) {
+        let off = match (self.posture, self.controls.mode.as_deref()) {
+            (Some(posture), Some(mode)) => mode != posture,
+            _ => false,
+        };
+        if !off {
+            self.mode_drift = None;
+        } else if self.mode_drift.is_none() {
+            self.mode_drift = Some((Instant::now(), false));
+        }
+    }
+
+    /// The session stayed off the home's permission mode: a fault the captain must see, never absorbed.
+    fn report_mode_drift(&mut self) {
+        let Some((since, reported)) = self.mode_drift else { return };
+        if reported || self.controls.pending.is_some() || since.elapsed() < MODE_DRIFT_GRACE {
+            return;
+        }
+        self.mode_drift = Some((since, true));
+        let (Some(posture), Some(mode)) = (self.posture, self.controls.mode.clone()) else { return };
+        self.emit(
+            "host_health",
+            json!({
+                "kind": "mode_changed",
+                "mode": mode,
+                "posture": posture,
+                "warning": format!("The first mate's session left this home's permission mode ({posture}) and is now in {mode}. Restart the first mate to put it back."),
+            }),
+        );
     }
 
     fn host_dir_for(&self, home: &Path) -> Result<PathBuf, String> {
@@ -1693,6 +1889,9 @@ impl Host {
         self.asked.clear();
         self.end_storm();
         self.helm = false;
+        // The last options stay, for the window to show dimmed; nothing can change them now.
+        self.controls.pending = None;
+        self.mode_drift = None;
         if let Some(mut adapter) = self.adapter.take() {
             let report = adapter.kill_tree().await;
             self.report_kill(report, "stop");
@@ -1758,6 +1957,7 @@ impl Host {
                 self.on_prompt_done(outbox_id, result)
             }
             HostEvent::SessionStartDone { gen, result } if gen == self.gen => self.on_session_start_done(result),
+            HostEvent::OptionSet { gen, category, value, outcome, reply } => self.on_option_set(gen, category, value, outcome, reply),
             _ => {}
         }
     }
@@ -1774,6 +1974,12 @@ impl Host {
             "session_info_update" | "available_commands_update" | "current_mode_update" | "config_option_update"
         );
         if meta {
+            if self.controls.note(&update) {
+                if kind == "current_mode_update" {
+                    self.check_posture();
+                }
+                self.emit_controls();
+            }
             self.emit("update", json!({"kind": kind, "update": update}));
             return;
         }
@@ -2017,6 +2223,7 @@ impl Host {
 
     fn tick(&mut self) {
         self.review_storm();
+        self.report_mode_drift();
         // Quiet only ends an agent turn; with a prompt in flight its result decides.
         if self.state != State::AgentTurn || !self.in_flight.is_empty() || self.helm {
             return;
@@ -2563,6 +2770,25 @@ def answer(id, origin="human", used=1):
     # As the real adapter does: the result's usage names whose turn it was, then the response.
     update({"sessionUpdate": "usage_update", "used": used, "size": 100 if used == 1 else 1000, "_meta": {"_claude/origin": {"kind": origin}}})
     send({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn"}})
+# The session's config options, shaped as claude-agent-acp 0.69.0 states them: a model switch
+# rebuilds the list, and Haiku offers no effort. Every set is logged, so a test sees what was sent.
+config = {"mode": "default", "model": "default", "effort": "default"}
+def config_options():
+    options = [
+        {"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": config["mode"], "options": [{"value": "default", "name": "Manual"}, {"value": "bypassPermissions", "name": "Bypass Permissions"}]},
+        {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": config["model"], "options": [{"value": "default", "name": "Default (recommended)", "description": "Opus (1M context)"}, {"value": "sonnet", "name": "Sonnet", "description": "Sonnet 5"}, {"value": "haiku", "name": "Haiku", "description": "Haiku 4.5"}]},
+    ]
+    if config["model"] != "haiku":
+        options.append({"id": "effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": config["effort"], "options": [{"value": v, "name": v.capitalize()} for v in ["default", "low", "high", "max"]]})
+    return options
+COMMANDS = {"sessionUpdate": "available_commands_update", "availableCommands": [
+    {"name": "afk", "description": "Enter the away posture.", "input": None},
+    {"name": "compact", "description": "Free up context by summarizing the conversation so far", "input": {"hint": "<optional custom summarization instructions>"}},
+]}
+def advertise():
+    # As the adapter does after session/new: the list goes a moment after the response.
+    time.sleep(0.05)
+    update(COMMANDS)
 # A Stop-hook rewake: the model's own cycle, with a step that reports nothing for a while.
 # A prompt that arrives during it is folded into the cycle, as the CLI does, and never answered.
 cycle = threading.Event()
@@ -2602,11 +2828,27 @@ while True:
         replay({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "earlier answer"}})
         replay({"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read File", "kind": "read", "status": "pending"})
         replay({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "title": "Read AGENTS.md"})
-        send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+        # The commands can land before the load answers, inside what the host reads as replay.
+        replay(COMMANDS)
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"modes": {"currentModeId": config["mode"], "availableModes": [{"id": "default"}, {"id": "bypassPermissions"}]}, "configOptions": config_options()}})
     elif method == "session/new":
-        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s1", "modes": {"availableModes": [{"id": "auto"}, {"id": "bypassPermissions"}]}}})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s1", "modes": {"currentModeId": config["mode"], "availableModes": [{"id": "auto"}, {"id": "bypassPermissions"}]}, "configOptions": config_options()}})
+        threading.Thread(target=advertise).start()
     elif method == "session/set_mode":
+        config["mode"] = m["params"]["modeId"]
+        update({"sessionUpdate": "current_mode_update", "currentModeId": config["mode"]})
         send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+    elif method == "session/set_config_option":
+        key, value = m["params"]["configId"], m["params"]["value"]
+        open(os.path.join(home, "set-options.log"), "a").write(key + "=" + value + "\n")
+        # The adapter refuses max here, as it refused a value it offered in a live run.
+        if key not in config or value == "max":
+            send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32603, "message": "Internal error", "data": {"details": "Invalid value for config option " + key + ": " + value}}})
+            continue
+        if os.path.exists(os.path.join(home, "slow-set")):
+            time.sleep(1)
+        config[key] = value
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"configOptions": config_options()}})
     elif method == "session/prompt":
         text = "".join(part.get("text", "") for part in m["params"]["prompt"])
         open(os.path.join(home, "prompts.log"), "a").write(text + "\n")
@@ -2871,6 +3113,136 @@ while True:
             ])
         );
         assert!(!events.iter().any(|(e, b)| e == "text" && b["text"] == "earlier answer"), "replay leaked into live chat");
+    }
+
+    /// The option of a category in a controls view, and its current value.
+    fn current_of(controls: &Value, category: &str) -> Option<String> {
+        controls["options"].as_array()?.iter().find(|o| o["category"] == category)?["currentValue"].as_str().map(str::to_string)
+    }
+
+    fn set_log(home: &Path) -> Vec<String> {
+        std::fs::read_to_string(home.join("set-options.log")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// The captain's model goes to the adapter as `session/set_config_option`, and the
+    /// window is told the new value only in the adapter's own answer.
+    #[tokio::test]
+    async fn a_model_change_is_sent_as_a_config_option_and_shown_once_confirmed() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("set-model");
+        std::fs::write(home.join("slow-set"), "").unwrap();
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        wait_for(&log, Duration::from_secs(5), |e, b| e == "session_controls" && b["commands"].is_array()).await.expect("the commands arrived");
+        let answer = host.call(|reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await.unwrap();
+        let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let sent = set_log(&home);
+        let picks = std::fs::read_to_string(std::fs::read_dir(home.join("appdata/homes")).unwrap().next().unwrap().unwrap().path().join("session-picks.json")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(sent, ["model=sonnet"], "{events:?}");
+        let answer = answer.expect("the adapter confirmed it");
+        assert_eq!(current_of(&answer, "model").as_deref(), Some("sonnet"));
+        let controls: Vec<&Value> = events.iter().filter(|(e, _)| e == "session_controls").map(|(_, b)| b).collect();
+        let waiting = controls.iter().find(|b| !b["pending"].is_null()).expect("the change was shown as on its way");
+        assert_eq!(waiting["pending"], json!({"category": "model", "value": "sonnet"}));
+        assert_eq!(current_of(waiting, "model").as_deref(), Some("default"), "shown before the adapter confirmed it");
+        assert!(controls.iter().filter(|b| !b["pending"].is_null()).all(|b| current_of(b, "model").as_deref() == Some("default")), "{controls:?}");
+        let asked = controls.iter().position(|b| !b["pending"].is_null()).unwrap();
+        let confirmed = controls.iter().position(|b| current_of(b, "model").as_deref() == Some("sonnet")).unwrap();
+        assert!(asked < confirmed && controls[confirmed]["pending"].is_null(), "{controls:?}");
+        assert_eq!(current_of(&state["controls"], "model").as_deref(), Some("sonnet"));
+        assert_eq!(state["controls"]["commands"][0]["name"], "afk");
+        assert_eq!(state["controls"]["commands"][1]["hint"], "<optional custom summarization instructions>");
+        assert!(picks.contains("\"model\": \"sonnet\""), "{picks}");
+    }
+
+    /// A pick does not survive a relaunch on its own: a fresh session starts on the default,
+    /// so the host applies the captain's model and effort again once the session opens.
+    #[tokio::test]
+    async fn kept_picks_are_applied_again_after_every_start() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("reapply");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::SetOption { category: "thought_level".into(), value: "high".into(), reply }).await.unwrap().expect("effort");
+        host.call(|reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await.unwrap().expect("model");
+        host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
+        let _ = std::fs::remove_file(home.join("adapter.pid"));
+        let first = set_log(&home);
+        log.0.lock().unwrap().clear();
+        // A new adapter process: a fresh session on the defaults.
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("second start");
+        let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let sent = set_log(&home);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(first, ["effort=high", "model=sonnet"]);
+        assert_eq!(&sent[2..], ["model=sonnet", "effort=high"], "model first, then the effort it rebuilt: {events:?}");
+        let started = events.iter().position(|(e, _)| e == "session").unwrap();
+        let shown = events.iter().position(|(e, b)| e == "session_controls" && current_of(b, "model").as_deref() == Some("sonnet")).unwrap();
+        assert!(shown > started, "{events:?}");
+        assert_eq!(current_of(&state["controls"], "model").as_deref(), Some("sonnet"));
+        assert_eq!(current_of(&state["controls"], "thought_level").as_deref(), Some("high"));
+        assert_eq!(state["controls"]["problems"], json!({}));
+        assert!(!events.iter().any(|(e, b)| e == "host_health" && b["kind"] == "mode_changed"), "{events:?}");
+    }
+
+    /// A resumed session sends its commands during the replay; they are lifted out of it
+    /// rather than dropped with the rest of what the replay is not.
+    #[tokio::test]
+    async fn a_resumed_sessions_commands_are_lifted_out_of_its_replay() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("resume-commands");
+        std::fs::write(home.join("can-load"), "").unwrap();
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("first start");
+        host.call(|reply| Cmd::Stop { reply }).await.unwrap().expect("stop");
+        let _ = std::fs::remove_file(home.join("adapter.pid"));
+        log.0.lock().unwrap().clear();
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("resumed start");
+        let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let events = log.0.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(events.iter().any(|(e, b)| e == "session" && b["mode"] == "loaded"), "{events:?}");
+        assert_eq!(state["controls"]["commands"].as_array().map(Vec::len), Some(2), "{state}");
+        assert_eq!(current_of(&state["controls"], "model").as_deref(), Some("default"), "from the load result");
+    }
+
+    /// A refusal carries the adapter's own reason, and the window keeps what it is really on.
+    #[tokio::test]
+    async fn a_refused_change_says_why_and_changes_nothing() {
+        let _adapter_env = ADAPTER_ENV.lock().await;
+        let home = fake_adapter_home("refused");
+        let log = Arc::new(EventLog::default());
+        let host = HostHandle::spawn_with(Arc::new(RecordingEnv { dir: home.join("appdata"), log: log.clone() }));
+        let early = host.call(|reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await.unwrap();
+        host.call(|reply| Cmd::Start { home: home.clone(), reply }).await.unwrap().expect("start");
+        let unknown = host.call(|reply| Cmd::SetOption { category: "thought_level".into(), value: "ultra".into(), reply }).await.unwrap();
+        let refused = host.call(|reply| Cmd::SetOption { category: "thought_level".into(), value: "max".into(), reply }).await.unwrap();
+        let mode = host.call(|reply| Cmd::SetOption { category: "mode".into(), value: "default".into(), reply }).await.unwrap();
+        let state = host.call(|reply| Cmd::GetState { reply }).await.unwrap();
+        let _ = host.call(|reply| Cmd::Stop { reply }).await;
+        let after_stop = host.call(|reply| Cmd::SetOption { category: "model".into(), value: "sonnet".into(), reply }).await.unwrap();
+        let sent = set_log(&home);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(early.unwrap_err(), "the first mate's session has ended");
+        assert_eq!(after_stop.unwrap_err(), "the first mate's session has ended");
+        assert_eq!(unknown.unwrap_err(), "ultra is not one of the values this session offers");
+        assert_eq!(refused.unwrap_err(), "Invalid value for config option effort: max", "the adapter's own details");
+        assert!(mode.unwrap_err().contains("not a setting"), "the permission mode is the home's");
+        assert_eq!(sent, ["effort=max"], "only the offered value reached the adapter");
+        assert_eq!(current_of(&state["controls"], "thought_level").as_deref(), Some("default"));
     }
 
     /// A throwaway home run by the fake adapter, whose lock is held while the adapter runs.
