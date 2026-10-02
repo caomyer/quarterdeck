@@ -46,6 +46,7 @@ const EXPECT = {
   "qd-replies-2": { headline: "Validating. Which step is not readable right now.", rail: true, unknownRail: true, source: "runs ledger only" },
   "qd-call-evidence-3": { headline: "The review gate found 3 things the worker can answer itself.", rail: true, gate: "Parked at review for 2m10s · 3 findings, all the worker's", findings: 3 },
   "qd-sessionctl-build-2": { headline: "A finding needs an authority decision. The worker passed it to the first mate.", rail: true, gate: "2 findings, 1 ask-user", findings: 2, askUser: 1, escalated: "nm-01M3HD-review" },
+  "qd-calm-build-2": { headline: "A finding at the gate needs an authority decision, and the worker has not passed it on yet.", rail: true, gate: "Parked at review for 4m · 1 finding, 1 ask-user", findings: 1, askUser: 1, notEscalated: true },
   "qd-chat-calls-build-2": { headline: "Your call: Let a page sit below a newer message?", rail: true, gate: "1 finding, 1 ask-user", findings: 1, askUser: 1, call: true },
   "qd-tasks-sort-2": { headline: "Checks are green. The PR waits for you to merge it.", rail: true, held: true, pr: "PR #35 open · checks green", source: "merge posture: yours" },
   "qd-routing-fix-1": { headline: "Checks are green. The first mate holds merge authority for this task.", rail: true, held: true, source: "merge posture: first mate (yolo on)" },
@@ -58,13 +59,15 @@ const EXPECT = {
   "qd-nm-visibility-1": { headline: "Investigating. A scout writes a report and opens no PR.", rail: false, ships: "Report only." },
   "qd-docs-shots-1": { headline: "Reported done with a PR, raised directly without the pipeline.", rail: false, ships: "No pipeline: the worker opens the PR itself.", pr: "state not read · checks not read for direct-PR" },
   "qd-dev-tidy-1": { headline: "Committed on its branch. No remote, no PR.", rail: false, ships: "No pipeline, no PR. Lands on local main." },
+  "qd-quota-read-2": { headline: 'Paused for an outside wait. The worker said: "waiting for the rate limit to reset"', rail: true, source: "the worker's own status line", once: "waiting for the rate limit to reset" },
   "qd-spawn-race-2": { headline: "The pipeline did not answer, and nothing else proves who holds this.", rail: true, unknownRail: true, source: "no-mistakes did not answer" },
 };
 const LABEL = { captain: "You", first_mate: "First mate", worker: "Worker", pipeline: "Pipeline", ci: "CI", external: "Outside wait", none: "No one", unknown: "Can't tell" };
-const TOKEN = { captain: "--coral", first_mate: "--amber", worker: "--blue", pipeline: "--sea", ci: "--sea", none: "--green", unknown: "--muted" };
+const TOKEN = { captain: "--coral", first_mate: "--amber", worker: "--blue", pipeline: "--sea", ci: "--sea", external: "--muted", none: "--green", unknown: "--muted" };
 
 check(PIPELINE_CASES.length === Object.keys(EXPECT).length && PIPELINE_CASES.every((item) => EXPECT[item.id]), "every mock state has an expectation, and every expectation a state");
-check(new Set(PIPELINE_CASES.map((item) => item.waiting_on.who)).size >= 7, "the mock covers every holder but the outside wait");
+check(Object.keys(LABEL).every((who) => PIPELINE_CASES.some((item) => item.waiting_on.who === who)), "the mock covers every holder");
+check(Array.from({ length: 12 }, (_, index) => index + 1).every((rule) => PIPELINE_CASES.some((item) => item.waiting_on.rule === rule)), "the mock covers every rule");
 
 /** Opens the mock with `flags` on resonance's page, with its task list drawn. */
 async function openList(flags = "", size = { width: 1280, height: 900 }) {
@@ -120,6 +123,7 @@ async function painted(page, locator, token, what) {
     const standing = row(page, item.id).locator("[data-testid='pipeline-standing']");
     check(await standing.getAttribute("data-who") === item.waiting_on.who, `${item.id}: the row's chip is the snapshot's holder, ${item.waiting_on.who}`);
     check((await standing.locator(".ps-who").innerText()).trim() === `${LABEL[item.waiting_on.who]} · ${item.waiting_on.why}`, `${item.id}: the chip reads "${LABEL[item.waiting_on.who]} · ${item.waiting_on.why}"`);
+    if (EXPECT[item.id].once) check((await standing.innerText()).split(EXPECT[item.id].once).length - 1 === 1, `${item.id}: the chip says "${EXPECT[item.id].once}" once`);
     const strip = standing.locator("[data-testid='pipeline-strip']");
     if (EXPECT[item.id].rail) {
       check(await strip.locator("b").count() === 9, `${item.id}: the strip has nine cells`);
@@ -176,6 +180,8 @@ async function painted(page, locator, token, what) {
       const rows = item.pipeline.findings.rows;
       check((await gate.locator(".ps-fd").allInnerTexts()).join("|") === rows.map((finding) => finding.description).join("|"), `${item.id}: finding descriptions are the pipeline's words, verbatim`);
     }
+    if (want.once) check(text.split(want.once).length - 1 === 1, `${item.id}: the block says "${want.once}" once`);
+    if (want.notEscalated) check(text.includes("Not escalated yet."), `${item.id}: says it is not escalated yet`);
     if (want.escalated) check((await block.innerText()).includes(`Escalated as ${want.escalated}`), `${item.id}: names the escalation it found`);
     const controls = await block.locator("button, a, input, select").evaluateAll((items) => items.map((item) => item.getAttribute("data-testid") ?? item.tagName.toLowerCase()));
     const allowed = controls.every((name) => name === "pipeline-call" || name === "a");

@@ -79,6 +79,10 @@ export const PIPELINE_CASES: Case[] = [
       findings: { total: 2, ask_user: 1, rows: [finding("r1", "warning", "auto-fix", "unused import", "src/sessionctl.ts"), finding("r2", "error", "ask-user", "changes product behavior", "src-tauri/src/controls.rs")] } },
     decisions: [{ key: "nm-01M3HD-review", verb: "needs-decision", summary: "ask-user findings=r2" }],
     waiting_on: { who: "first_mate", why: "1 ask-user finding", rule: 3, call: null } },
+  { id: "qd-calm-build-2", title: "Calm mode in the composer", state: { state: "parked", source: "run-step", detail: "parked at review: 1 finding(s) (ask-user: authority decision)" },
+    pipeline: { ...none, read: "full", run: run("01M3HDQ4RS", "awaiting_approval"), steps: steps("csa......"), gate: { step: "review", status: "awaiting_approval", parked_for: "4m" },
+      findings: { total: 1, ask_user: 1, rows: [finding("r1", "warning", "ask-user", "Calm now silences captain calls too", "src/calm.ts")] } },
+    waiting_on: { who: "first_mate", why: "1 ask-user finding", rule: 4, call: null } },
   { id: "qd-chat-calls-build-2", title: "Captain's calls in the chat composer", state: { state: "parked", source: "run-step", detail: "parked at review: 1 finding(s) (ask-user: authority decision)" },
     pipeline: { ...none, read: "full", run: run("01M3HE1NPQ", "awaiting_approval"), steps: steps("csa......"), gate: { step: "review", status: "awaiting_approval", parked_for: "1h12m" },
       findings: { total: 1, ask_user: 1, rows: [finding("r1", "error", "ask-user", "a page may now sit below a newer message", "src/chatorder.ts")] } },
@@ -119,6 +123,10 @@ export const PIPELINE_CASES: Case[] = [
   { id: "qd-dev-tidy-1", title: "Tidy the dev scripts", mode: "local-only", state: { state: "done", source: "status-log", detail: "ready in branch" },
     pipeline: { ...none, applies: false, reason: "local-only" }, note: "ready in branch",
     waiting_on: { who: "captain", why: "land on local main", rule: 2, call: null } },
+  // Outside wait
+  { id: "qd-quota-read-2", title: "Read plan limits from quota-axi", state: { state: "paused", source: "status-log", detail: "waiting for the rate limit to reset" },
+    pipeline: none, note: "waiting for the rate limit to reset",
+    waiting_on: { who: "external", why: "waiting for the rate limit to reset", rule: 10, call: null } },
   // Can't tell
   { id: "qd-spawn-race-2", title: "Terminal spawn race", state: { state: "unknown", source: "none", detail: "backend unreachable (herdr endpoint state: unreadable)" },
     pipeline: { ...none, read: "unanswered" },
