@@ -118,7 +118,7 @@ export function headline(task: FleetTask, waiting: Waiting, callTitle?: string |
       return callTitle ? `Your call: ${callTitle}` : "There is a call for you on this task.";
     case 2:
       if (pipeline?.reason === "local-only") return "Committed on its branch. No remote, no PR.";
-      if (pipeline?.reason === "direct-PR") return "PR open. Raised directly, without the pipeline.";
+      if (pipeline?.reason === "direct-PR") return "Reported done with a PR, raised directly without the pipeline.";
       if (pipeline?.run && (pipeline.run.outcome === "failed" || pipeline.run.status === "failed")) {
         return waiting.who === "captain"
           ? "Checks were green when the pipeline stopped watching. The PR waits for your merge."
@@ -157,7 +157,7 @@ export function headline(task: FleetTask, waiting: Waiting, callTitle?: string |
       if (task.kind === "scout") return "Investigating. A scout writes a report and opens no PR.";
       return pipeline?.applies ? "Writing the change. The pipeline starts when the worker runs it." : "Writing the change.";
     case 10:
-      return `Paused for an outside wait${waiting.why && waiting.why !== "paused" ? `: ${waiting.why}` : ""}.`;
+      return waiting.why && waiting.why !== "paused" ? `Paused for an outside wait. The worker said: "${waiting.why}"` : "Paused for an outside wait.";
     case 11:
       return pipeline?.pr?.state === "merged" ? "Landed. PR merged." : "The report is in.";
     default:
@@ -206,12 +206,12 @@ export function prLine(task: FleetTask): { name: string; url: string | null; sta
     const state = pr.state === "closed" ? "closed, not merged" : pr.state === "unknown" ? "state unknown" : pr.state;
     return { name: prName(pr.url), url: pr.url, state, detail };
   }
-  if (pipeline && !pipeline.applies && task.pr.url) return { name: prName(task.pr.url), url: task.pr.url, state: "open", detail: `checks not read for ${pipeline.reason ?? "this task"}` };
+  if (pipeline && !pipeline.applies && task.pr.url) return { name: prName(task.pr.url), url: task.pr.url, state: "state not read", detail: `checks not read for ${pipeline.reason ?? "this task"}` };
   return null;
 }
 
 /** Where the read came from, for the block's footer. */
-export function sourceLine(task: FleetTask): string {
+export function sourceLine(task: FleetTask, waiting?: Waiting | null): string {
   const pipeline = task.pipeline;
   const state = task.current_state;
   if (pipeline?.run && pipeline.read === "full") {
@@ -224,6 +224,7 @@ export function sourceLine(task: FleetTask): string {
   if (pipeline?.read === "unanswered") return "no-mistakes did not answer";
   if (state.source === "pane") return state.state === "working" ? "Busy in its terminal" : "Its terminal";
   if (state.source === "status-log") {
+    if (waiting?.rule === 10) return "the worker's own status line";
     const said = task.paths.status_log.last_event.raw.replace(/https?:\/\/\S+(\/(?:pull|merge_requests)\/\d+)/g, "…$1");
     return said ? `worker said ${said}` : "the worker's last note";
   }

@@ -56,7 +56,7 @@ const EXPECT = {
   "qd-sessionctl-build-1": { headline: "The run was cancelled at review.", rail: true },
   "qd-sources-gh-2": { headline: "The no-mistakes service is not answering.", rail: true, unknownRail: true, note: "the only record is from before the service stopped" },
   "qd-nm-visibility-1": { headline: "Investigating. A scout writes a report and opens no PR.", rail: false, ships: "Report only." },
-  "qd-docs-shots-1": { headline: "PR open. Raised directly, without the pipeline.", rail: false, ships: "No pipeline: the worker opens the PR itself.", pr: "checks not read for direct-PR" },
+  "qd-docs-shots-1": { headline: "Reported done with a PR, raised directly without the pipeline.", rail: false, ships: "No pipeline: the worker opens the PR itself.", pr: "state not read · checks not read for direct-PR" },
   "qd-dev-tidy-1": { headline: "Committed on its branch. No remote, no PR.", rail: false, ships: "No pipeline, no PR. Lands on local main." },
   "qd-spawn-race-2": { headline: "The pipeline did not answer, and nothing else proves who holds this.", rail: true, unknownRail: true, source: "no-mistakes did not answer" },
 };

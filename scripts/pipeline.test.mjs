@@ -101,7 +101,9 @@ test("nothing claims a time the engine does not have", () => {
   assert.doesNotMatch(JSON.stringify(line), /since|\d{1,2}:\d{2}/);
   assert.equal(prLine(task({ pipeline: pipeline({ pr: { url: "https://github.com/o/r/pull/37", state: "unknown", via: null }, ci: "green" }) })).detail, "ci monitor ended, last read green");
   assert.equal(prLine(task({ pipeline: pipeline({ pr: { url: "https://github.com/o/r/pull/28", state: "closed", via: "forge" } }) })).state, "closed, not merged");
-  assert.equal(prLine(task({ pr: { url: "https://github.com/o/r/pull/38", source: "status_event" }, pipeline: pipeline({ applies: false, reason: "direct-PR" }) })).detail, "checks not read for direct-PR");
+  const direct = task({ pr: { url: "https://github.com/o/r/pull/38", source: "status_event" }, pipeline: pipeline({ applies: false, reason: "direct-PR" }) });
+  assert.deepEqual(prLine(direct), { name: "PR #38", url: "https://github.com/o/r/pull/38", state: "state not read", detail: "checks not read for direct-PR" }, "a PR nothing read is never called open");
+  assert.doesNotMatch(headline(direct, waitingOf({ ...direct, waiting_on: { who: "captain", why: "PR raised directly", rule: 2, call: null } })), /open/i);
   assert.equal(prLine(task()), null);
 });
 
@@ -120,6 +122,12 @@ test("the gate, the rail's note and the footer say what was read and where it ca
   assert.equal(sourceLine(task({ pipeline: pipeline({ read: "unanswered" }) })), "no-mistakes did not answer");
   assert.equal(sourceLine(task({ pipeline: pipeline({ read: "none" }), current_state: { state: "done", source: "status-log", detail: "", raw: "" },
     paths: { status_log: { present: true, last_event: { state: "done", note: "", raw: "done: PR https://github.com/o/r/pull/38" } }, worktree: { path: "", present: true }, report: { path: "", present: false } } })), "worker said done: PR …/pull/38");
+  const paused = task({ pipeline: pipeline({ read: "none" }), current_state: { state: "paused", source: "status-log", detail: "waiting for the rate limit to reset", raw: "" },
+    paths: { status_log: { present: true, last_event: { state: "paused", note: "waiting for the rate limit to reset", raw: "paused: waiting for the rate limit to reset" } }, worktree: { path: "", present: true }, report: { path: "", present: false } },
+    waiting_on: { who: "external", why: "waiting for the rate limit to reset", rule: 10, call: null } });
+  const drawn = [headline(paused, waitingOf(paused)), sourceLine(paused, waitingOf(paused))].join(" ");
+  assert.equal(drawn.split("waiting for the rate limit to reset").length - 1, 1, "the drawer quotes a declared pause reason once");
+  assert.equal(chipOf(paused).label.split("waiting for the rate limit to reset").length - 1, 1, "the chip shows it once");
   assert.equal(fixRound("auto-fix 2/3"), "Fix round 2 of 3");
   assert.equal(fixRound(null), null);
   assert.deepEqual([readAge(12_000), readAge(240_000), readAge(7_500_000)], ["12s", "4m", "2h 5m"]);

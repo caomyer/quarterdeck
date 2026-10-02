@@ -11,7 +11,7 @@
 # order.
 #
 # Each rule reads only structured fields the snapshot already holds, never
-# prose: the task's pipeline object (bin/fm-crew-state.sh --json), its
+# prose (rule 10 alone quotes the worker's declared reason, below): the task's pipeline object (bin/fm-crew-state.sh --json), its
 # current_state, kind, yolo, report presence and keyed open decisions, and the
 # snapshot's calls[]. The first rule that matches wins:
 #    1 captain     an open, captain_actionable call whose origin or about is
@@ -35,8 +35,10 @@
 #   11 none        the PR merged, or a finished scout's report is in
 #   12 unknown     anything else
 # The result is {who, why, rule, call}: why is a short phrase built from the
-# same fields, never a worker's own words, and call names the open call rule 1
-# matched, else null.
+# same fields for every rule but 10, never a worker's own words. Rule 10's why
+# is the worker's own declared pause reason, cut to 80 characters, because for
+# a declared pause the worker is the only evidence of why it waits. call names
+# the open call rule 1 matched, else null.
 #
 # pipeline_live is true while the task's run is running, fixing or on its ci
 # step and no gate holds it; the app pulses a refresh only while some task is.

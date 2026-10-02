@@ -53,11 +53,11 @@ export function PipelineBlock({ task, waiting, call, read, onOpenCall }: { task:
       {callLink}
     </div>}
     {!gate && callLink}
-    {pr && <p className="ps-pr" data-testid="pipeline-pr"><span className={`ps-pr-name ${pr.state.split(",")[0].replace(" ", "-")}`}>{pr.name}</span> {pr.state} · {pr.detail}{pr.url && <> · <a href={pr.url} target="_blank" rel="noreferrer">Open on GitHub <ExternalLink size={11} /></a></>}</p>}
+    {pr && <p className="ps-pr" data-testid="pipeline-pr"><span className={`ps-pr-name ${pr.state.split(",")[0].replaceAll(" ", "-")}`}>{pr.name}</span> {pr.state} · {pr.detail}{pr.url && <> · <a href={pr.url} target="_blank" rel="noreferrer">Open PR <ExternalLink size={11} /></a></>}</p>}
     <footer className={read.error ? "stale" : undefined} data-testid="pipeline-source">
       {read.error
         ? <>last good read {age ?? "time unknown"} ago · refresh failed: {read.error}</>
-        : <>{sourceLine(task)}{openCall?.raised_at && ` · call raised ${clock(openCall.raised_at)}`}{posture && ` · ${posture}`}{age && ` · read ${age} ago`}</>}
+        : <>{sourceLine(task, waiting)}{openCall?.raised_at && ` · call raised ${clock(openCall.raised_at)}`}{posture && ` · ${posture}`}{age && ` · read ${age} ago`}</>}
     </footer>
   </section>;
 }
