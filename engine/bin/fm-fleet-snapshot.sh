@@ -69,6 +69,17 @@
 #     state, source, detail, and raw line separately. Remote secondmate rows use
 #     an explicit unknown value because their endpoint liveness belongs to
 #     supervision rather than this snapshot path.
+#     pipeline is the no-mistakes facts that same read already gathered, from
+#     bin/fm-crew-state.sh --json, whose header owns the shape: whether the
+#     task validates through a pipeline at all and, if not, how it ships
+#     instead; what kind of read answered (full, coarse ledger, none,
+#     unanswered, not asked); the run, its steps, the active step, the gate
+#     and its findings verbatim, ci, the PR, and the daemon. It is null for a
+#     remote secondmate, a raced generation, and a read that timed out.
+#     waiting_on is {who,why,rule,call}: who holds the task now - captain,
+#     first_mate, worker, pipeline, ci, external, none, or unknown - folded
+#     once from pipeline, current_state, hints.open_decisions and calls[] by
+#     bin/fm-waiting-on-lib.sh, which owns the twelve rules and their order.
 #     paths.status_log.last_event is historical wake-event data only, never
 #     current state.
 #     hints.open_decisions is the keyed open-decision set returned by
@@ -84,6 +95,10 @@
 #     task with no recorded target uses "not_checked". endpoint.status folds
 #     both reads: "absent" when the endpoint is gone, else agent_alive's
 #     alive/dead, else "unknown".
+#   pipeline_live: true while some task's run is running, fixing or on its ci
+#     step with no gate holding it (bin/fm-waiting-on-lib.sh). Nothing in the
+#     home changes as such a run moves, so a renderer may re-read on a slow
+#     timer while this is true, and has no reason to while it is false.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   artifacts[]: presented review artifacts, newest first, exactly as
 #     `bin/fm-artifact.sh list --json` reports them; that script owns the shape.
@@ -256,6 +271,9 @@ esac
 . "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
 # shellcheck source=bin/fm-merge-authority-lib.sh
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
+# shellcheck source=bin/fm-waiting-on-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-waiting-on-lib.sh"  # FM_WAITING_ON_JQ_DEFS: the one holder fold
 
 usage() {
   cat <<'EOF'
@@ -351,7 +369,9 @@ last_nonempty_line() {  # <file>
 
 # A local crew-state read is bounded so one slow child cannot extend this
 # snapshot without limit. Remote secondmate endpoint liveness is never read here.
-# A local read that hits the bound folds to state unknown.
+# A local read that hits the bound folds to state unknown. The read asks for
+# --json, whose object carries the line as raw beside the pipeline facts; an
+# answer that is not that object is parsed as the line, with no pipeline.
 crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
   local id=$1 captured_meta=${2:-} captured_status=${3:-} raw rest state source detail sep
   raw=$(
@@ -364,9 +384,14 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
       FM_DATA_OVERRIDE="$DATA" \
       FM_PROJECTS_OVERRIDE="$PROJECTS" \
       FM_CONFIG_OVERRIDE="$CONFIG" \
-      "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true
+      "$SCRIPT_DIR/fm-crew-state.sh" --json "$id" 2>/dev/null || true
   )
   raw=$(printf '%s\n' "$raw" | head -1)
+  if printf '%s' "$raw" | jq -e 'type == "object" and (.state | type) == "string"
+      and (.source | type) == "string" and (.raw | type) == "string"' >/dev/null 2>&1; then
+    printf '%s' "$raw" | jq -c '{state, source, detail: (.detail // ""), raw, pipeline: (.pipeline // null)}'
+    return 0
+  fi
   sep=' · '
   state=unknown
   source=none
@@ -383,7 +408,7 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
       ;;
   esac
   jq -n --arg raw "$raw" --arg state "$state" --arg source "$source" --arg detail "$detail" \
-    '{state:$state,source:$source,detail:$detail,raw:$raw}'
+    '{state:$state,source:$source,detail:$detail,raw:$raw,pipeline:null}'
 }
 
 status_event_json() {  # <observed-status-log> [<contract-path>]
@@ -753,7 +778,8 @@ task_json_lines() {
           report:$report
         },
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
-        current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
+        current_state:(($current_state | del(.pipeline)) + {observed_at:$observed_at,freshness:"fresh"}),
+        pipeline:($current_state.pipeline // null),
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
           status:(if $endpoint_exists == false then "absent"
                   elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive
@@ -1922,7 +1948,7 @@ jq -n \
   --slurpfile sources "$SOURCES_JSON_FILE" \
   --slurpfile secondmate_current "$SECONDMATE_CURRENT_JSON_FILE" \
   --slurpfile secondmate_landed "$SECONDMATE_LANDED_JSON_FILE" \
-  '($backlog[0]) as $backlog
+  "$FM_WAITING_ON_JQ_DEFS"'($backlog[0]) as $backlog
    | ($tasks[0]) as $tasks
    | ($main_inventory[0]) as $main_inventory
    | ($scout_reports[0]) as $scout_reports
@@ -1931,14 +1957,16 @@ jq -n \
    | def backlog_by_id($id): ($backlog.records[]? | select(.structured == true and .id == $id) | .) // null;
    def task_by_id($id): ($tasks[]? | select(.id == $id) | .) // null;
    def report_kind($id): (task_by_id($id).kind // backlog_by_id($id).kind // "scout");
-   {
+   ($calls[0].calls) as $call_rows
+   | {
      schema:"fm-fleet-snapshot.v1",
      generated:$generated,
      captain_day:$captain_day,
      fm_home:$fm_home,
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,
-     tasks:($tasks | map(. + {backlog:backlog_by_id(.id)})),
+     tasks:($tasks | map(. + {backlog:backlog_by_id(.id)} | . + {waiting_on:waiting_on($call_rows)})),
+     pipeline_live:($tasks | any(.[]; pipeline_live)),
      main_inventory:$main_inventory,
      contributions:$contributions[0],
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
