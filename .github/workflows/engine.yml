@@ -146,8 +146,8 @@ jobs:
       # dependency tree), and the uses: actions float on major tags such as
       # actions/checkout@v6. Unpinned, Pi 0.99.0 (2026-09-29) reached every run
       # and failed fm-pi-branch-extension and fm-calm-pi-extension with no
-      # change of ours: its stock tool rows
-      # began drawing their arguments, and Calm's export and e2e checks broke.
+      # change of ours: its stock tool rows began drawing their arguments, and
+      # Calm's export and e2e checks broke.
       # 0.87.1 is the newest Pi both pass on; moving past it is its own change,
       # made with whatever the extensions need, never by a floating install.
       - name: Install tasks-axi
