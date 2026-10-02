@@ -239,9 +239,6 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
     }
 }
 
-/// The cached snapshot keeps the last good projection when a read fails, with
-/// the time each projection was read (`bearings_at_ms`, `fleet_at_ms`), so a
-/// window that opens later still has the data and knows how old it is.
 /// When to read again with no file change: [`PIPELINE_PULSE`] while the fleet
 /// snapshot kept says some run is live, else never. A failed read keeps the
 /// previous fleet, so a pulse that fails tries again on the same cadence.
@@ -249,6 +246,9 @@ fn pulse_after(snapshot: &Value) -> Option<Duration> {
     (snapshot.pointer("/fleet/pipeline_live") == Some(&Value::Bool(true))).then_some(PIPELINE_PULSE)
 }
 
+/// The cached snapshot keeps the last good projection when a read fails, with
+/// the time each projection was read (`bearings_at_ms`, `fleet_at_ms`), so a
+/// window that opens later still has the data and knows how old it is.
 fn merge_latest(previous: Option<Value>, mut next: Value) -> Value {
     let at = next.get("generated_at_ms").cloned().unwrap_or(Value::Null);
     for part in ["bearings", "fleet"] {
