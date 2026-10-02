@@ -1414,9 +1414,12 @@ test_terminal_status_line_never_clears_an_open_decision() {
     fi
     assert_contains "$(cat "$home/$verb-verify.err")" "open captain decision $id/scope" \
       "verify must refuse for the open decision after $verb"
-    if run_teardown "$home" "$id" >/dev/null 2>&1; then
+    printf '# Report\n\nThe investigation finished.\n' > "$home/data/$id/report.md"
+    if run_teardown "$home" "$id" > "$home/$verb-teardown.out" 2> "$home/$verb-teardown.err"; then
       fail "teardown proceeded past an open decision after $verb"
     fi
+    assert_contains "$(cat "$home/$verb-teardown.err")" "has not passed the captain-call completion gate" \
+      "teardown must refuse at the captain-call gate after $verb"
     [ -f "$home/state/$id.status" ] || fail "teardown deleted the status log holding an open decision after $verb"
 
     printf 'resolved [key=scope]: answered in chat\n' >> "$home/state/$id.status"
