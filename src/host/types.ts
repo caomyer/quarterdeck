@@ -273,6 +273,10 @@ export type FleetTask = {
   pr: { url: string | null; source: string };
   hints: { pending_decision: boolean; blocked_event: boolean; open_decisions: unknown[]; scout_report_present: boolean; last_event_text: string };
   actions: { watch: string; steer: string; return_channel_note: string | null };
+  /** What the task's no-mistakes pipeline read found; absent from a firstmate that predates it. */
+  pipeline?: TaskPipeline | null;
+  /** Who holds the task now, folded by firstmate; absent from a firstmate that predates it. */
+  waiting_on?: WaitingOn;
 };
 
 /** A layout problem firstmate's pre-present check found in a page, at its wide (1280px) or narrow (500px) window. */
@@ -413,6 +417,8 @@ export type FleetSnapshot = {
   main_inventory?: { valid: boolean; reason: string | null; orphan_in_flight: string[]; unstructured_current_count: number };
   /** The task sources connected in this home, or why they could not be read; absent from homes whose firstmate predates them. */
   sources?: SourcesRead | { error: string };
+  /** Some task's run is running, fixing or on its ci step with no gate holding it; absent from a firstmate that predates it. */
+  pipeline_live?: boolean;
 };
 
 /** How the captain says a task should ship: `judge` leaves it to the first mate, by the project's posture. */
@@ -821,3 +827,34 @@ export function artifactPath(revision: ArtifactRevision) {
   const owner = revision.scope === "task" && revision.task ? `task/${encodeURIComponent(revision.task)}` : "chat";
   return `${owner}/${encodeURIComponent(revision.name)}/rev-${revision.rev}/${encodeURIComponent(revision.entry)}`;
 }
+
+/**
+ * A task's no-mistakes pipeline, exactly as `bin/fm-crew-state.sh --json` reads it; that script's header owns every
+ * field. Each comes from a read the engine already made, so a field it could not read is null, never guessed.
+ */
+export type TaskPipeline = {
+  applies: boolean;
+  /** How a task that never runs a pipeline ships instead. */
+  reason: "scout" | "direct-PR" | "local-only" | "secondmate" | null;
+  /** `unanswered`: the pipeline did not answer, which is not the same as no run; `not_asked`: nothing asked it. */
+  read: "full" | "coarse" | "none" | "unanswered" | "not_asked";
+  run: { id: string | null; head: string | null; status: string | null; outcome: string | null } | null;
+  steps: { step: string; status: string; findings: number | null; duration_ms: number | null }[] | null;
+  active: { step: string; active_for: string | null; last_activity: string | null; quiet: boolean; round: string | null } | null;
+  gate: { step: string; status: "awaiting_approval" | "fix_review" | null; parked_for: string | null } | null;
+  /** `rows` is the pipeline's own findings table, verbatim; `ask_user` is null when only a count was printed. */
+  findings: { total: number; ask_user: number | null; rows: PipelineFinding[] } | null;
+  ci: "running" | "fixing" | "green" | "rearmed" | "not-ready" | "unknown" | null;
+  pr: { url: string | null; state: "open" | "merged" | "closed" | "unknown"; via: "receipt" | "forge" | "skipped" | "unreadable" | "run" | null } | null;
+  daemon: "down" | "up" | "not_probed";
+};
+
+export type PipelineFinding = { id: string; severity: string; file: string; line: string; action: string; description: string };
+
+/** Who a task waits on, and the rule of `bin/fm-waiting-on-lib.sh` that said so; `call` is the open call rule 1 matched. */
+export type WaitingOn = {
+  who: "captain" | "first_mate" | "worker" | "pipeline" | "ci" | "external" | "none" | "unknown";
+  why: string;
+  rule: number;
+  call: string | null;
+};

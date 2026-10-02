@@ -18,7 +18,7 @@ import {
 } from "./tasks";
 
 /** How an underway task's worker reads now, drawn the way the rest of the app draws it. */
-export type UnderwayStatus = { label: string; tone: string; icon: React.ReactNode };
+export type UnderwayStatus = { label: string; tone: string; icon: React.ReactNode; standing?: React.ReactNode };
 
 type TaskListProps = {
   /** The whole backlog, every project: a chain or a group can reach beyond the filter. */
@@ -307,7 +307,7 @@ export function TaskList({ records, filter: mountedFilter, captainDay, now, unde
           {row.standing === "landed" && record.completion?.date && <span>{shortDate(record.completion.date)}</span>}
         </small>
       </span>
-      <span className={`tl-chip tone-${chip.tone}`}>{row.standing === "underway" ? underway.get(row.id)?.icon : null}{chip.label}</span>
+      {(row.standing === "underway" && underway.get(row.id)?.standing) || <span className={`tl-chip tone-${chip.tone}`}>{row.standing === "underway" ? underway.get(row.id)?.icon : null}{chip.label}</span>}
       <time className="tl-age" title={record.since ? `Filed ${shortDate(record.since)}` : "Undated"}>{age === null ? "" : `${age}d`}</time>
       <ChevronRight size={15} className="tl-open" aria-hidden="true" />
     </div>;
