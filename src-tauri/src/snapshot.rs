@@ -1,9 +1,12 @@
 //! Read-only view of the firstmate home.
 //!
 //! Runs firstmate's own read-only snapshot scripts when the home is selected
-//! and whenever files under `state/` or `data/` change (debounced, never on a
-//! timer), and emits one `snapshot` event with both projections and the
-//! project registry. Also serves the worker's read-only screen through
+//! and whenever files under `state/` or `data/` change (debounced), and emits
+//! one `snapshot` event with both projections and the project registry.
+//! The one timer is the pipeline pulse: a no-mistakes run moving from step to
+//! step, or CI turning green, changes no file in the home, so while the last
+//! fleet snapshot says `pipeline_live` the next read comes [`PIPELINE_PULSE`]
+//! after the last one. Nothing else ever pulses. Also serves the worker's read-only screen through
 //! `bin/fm-peek.sh`.
 //!
 //! The last finished snapshot is kept, so a window that subscribes after it
@@ -29,6 +32,8 @@ use tokio::time::Instant;
 const DEBOUNCE: Duration = Duration::from_millis(750);
 /// Minimum gap between two snapshot runs, so a busy watcher cannot spin them.
 const MIN_GAP: Duration = Duration::from_secs(2);
+/// How long after a read the next one comes while some task's run is live.
+const PIPELINE_PULSE: Duration = Duration::from_secs(60);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(90);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(20);
 const HISTORY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -222,7 +227,11 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
                         json!({"phase": "refreshing", "home": root.to_string_lossy(), "started_at_ms": now_ms()}),
                     );
                     let payload = build_snapshot(&root).await;
-                    latest = Some(merge_latest(latest.take(), payload.clone()));
+                    let merged = merge_latest(latest.take(), payload.clone());
+                    if deadline.is_none() {
+                        deadline = pulse_after(&merged).map(|wait| Instant::now() + wait);
+                    }
+                    latest = Some(merged);
                     let _ = app.emit("snapshot", payload);
                 }
             }
@@ -233,6 +242,13 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
 /// The cached snapshot keeps the last good projection when a read fails, with
 /// the time each projection was read (`bearings_at_ms`, `fleet_at_ms`), so a
 /// window that opens later still has the data and knows how old it is.
+/// When to read again with no file change: [`PIPELINE_PULSE`] while the fleet
+/// snapshot kept says some run is live, else never. A failed read keeps the
+/// previous fleet, so a pulse that fails tries again on the same cadence.
+fn pulse_after(snapshot: &Value) -> Option<Duration> {
+    (snapshot.pointer("/fleet/pipeline_live") == Some(&Value::Bool(true))).then_some(PIPELINE_PULSE)
+}
+
 fn merge_latest(previous: Option<Value>, mut next: Value) -> Value {
     let at = next.get("generated_at_ms").cloned().unwrap_or(Value::Null);
     for part in ["bearings", "fleet"] {
@@ -418,6 +434,23 @@ async fn history(home: Option<PathBuf>, request: HistoryRequest) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pulse_only_while_a_run_is_live() {
+        assert_eq!(pulse_after(&json!({"fleet": {"pipeline_live": true}})), Some(Duration::from_secs(60)));
+        assert_eq!(pulse_after(&json!({"fleet": {"pipeline_live": false}})), None);
+        // A firstmate that predates the flag, a failed first read, and anything not exactly true never pulse.
+        assert_eq!(pulse_after(&json!({"fleet": {"tasks": []}})), None);
+        assert_eq!(pulse_after(&json!({"fleet": null})), None);
+        assert_eq!(pulse_after(&json!({"fleet": {"pipeline_live": "true"}})), None);
+        // A read that failed keeps the last fleet, and with it the pulse, so the next try comes on the same cadence.
+        let live = json!({"generated_at_ms": 1, "fleet": {"pipeline_live": true}, "bearings": {}});
+        let failed = json!({"generated_at_ms": 2, "fleet": null, "bearings": {}});
+        assert_eq!(pulse_after(&merge_latest(Some(live), failed)), Some(PIPELINE_PULSE));
+        let quiet = json!({"generated_at_ms": 3, "fleet": {"pipeline_live": false}, "bearings": {}});
+        let live = json!({"generated_at_ms": 1, "fleet": {"pipeline_live": true}, "bearings": {}});
+        assert_eq!(pulse_after(&merge_latest(Some(live), quiet)), None);
+    }
 
     #[test]
     fn history_passes_only_safe_arguments() {
