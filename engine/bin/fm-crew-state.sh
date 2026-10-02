@@ -1132,9 +1132,8 @@ if [ "$HAVE_RUN" = 1 ]; then
         awaiting_approval|fix_review) P_GATE_STATUS=$gate_status ;;
         *) case "$status" in awaiting_approval|fix_review) P_GATE_STATUS=$status ;; esac ;;
       esac
-      case "$(trim "${awaiting#*:}")" in
-        parked\ *) P_PARKED_FOR=$(trim "$(strip_quotes "$(trim "${awaiting#*:}")")"); P_PARKED_FOR=${P_PARKED_FOR#parked } ;;
-      esac
+      parked=$(strip_quotes "$(trim "${awaiting#*:}")")
+      case "$parked" in parked\ *) P_PARKED_FOR=${parked#parked } ;; esac
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
       if nm_findings_ask_user; then

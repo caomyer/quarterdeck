@@ -23,9 +23,10 @@
 #    3 first_mate  a keyed open decision: needs-decision, blocked, or an
 #                  ask-user escalation
 #    4 first_mate  the gate holds an ask-user finding
-#    5 first_mate  the run failed or was cancelled (a failed run whose ci log
-#                  reads green is held for a merge, rule 2), the PR closed
-#                  unmerged, or the daemon is down
+#    5 first_mate  the daemon is down (its last record is no proof the work
+#                  failed, so this is named first), the run failed or was
+#                  cancelled (a failed run whose ci log reads green is held for
+#                  a merge, rule 2), or the PR closed unmerged
 #    6 worker      parked at a gate whose findings are all the worker's
 #    7 ci          the ci step is running and checks are not green
 #    8 pipeline    any other step running or fixing
@@ -34,12 +35,13 @@
 #   11 none        the PR merged, or a finished scout's report is in
 #   12 unknown     anything else
 # The result is {who, why, rule, call}: why is a short phrase built from the
-# same fields, and call names the open call rule 1 matched, else null.
+# same fields, never a worker's own words, and call names the open call rule 1
+# matched, else null.
 #
 # pipeline_live is true while the task's run is running, fixing or on its ci
 # step and no gate holds it; the app pulses a refresh only while some task is.
 
-# shellcheck disable=SC2016  # jq program text, not shell expansion.
+# shellcheck disable=SC2016,SC2034  # jq program text for sourcing callers, not shell expansion.
 FM_WAITING_ON_JQ_DEFS='
 def wo_run_live:
   (.pipeline.run // null) as $r
@@ -75,17 +77,21 @@ def waiting_on($calls):
        why: (if $p.reason == "local-only" then "land on local main" else "merge " + ($t | wo_pr_label) end),
        rule: 2}
     elif $decision != null then
-      {who: "first_mate", why: ($decision.verb + ": " + ($decision.summary // "") | wo_short), rule: 3}
+      {who: "first_mate",
+       why: (if $gate != null and (($findings.ask_user // 0) > 0) then wo_plural($findings.ask_user; "ask-user finding")
+             elif $decision.verb == "blocked" then "blocked"
+             else "decision to make" end),
+       rule: 3}
     elif $gate != null and (($findings.ask_user // 0) > 0) then
       {who: "first_mate", why: wo_plural($findings.ask_user; "ask-user finding"), rule: 4}
+    elif $p.daemon == "down" then
+      {who: "first_mate", why: "pipeline service down", rule: 5}
     elif $run != null and ($run.outcome == "failed" or $run.status == "failed") and $p.ci != "green" then
       {who: "first_mate", why: ("run failed" + (if $broke_at then " at " + $broke_at else "" end)), rule: 5}
     elif $run != null and ($run.outcome == "cancelled" or $run.status == "cancelled") then
       {who: "first_mate", why: ("run cancelled" + (if $broke_at then " at " + $broke_at else "" end)), rule: 5}
     elif ($p.pr.state // null) == "closed" then
       {who: "first_mate", why: "PR closed unmerged", rule: 5}
-    elif $p.daemon == "down" then
-      {who: "first_mate", why: "pipeline service down", rule: 5}
     elif $gate != null and $findings != null and $findings.ask_user == 0 then
       {who: "worker", why: wo_plural($findings.total; $gate.step + " finding"), rule: 6}
     elif ($t | wo_run_live) and $gate == null and $p.ci != null and $p.ci != "green" then

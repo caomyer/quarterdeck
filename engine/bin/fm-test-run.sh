@@ -384,7 +384,7 @@ family_for_basename() {
       ;;
     fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|fm-contributions.test.sh|\
     fm-fleet-snapshot-view.test.sh|fm-home-summary-refresh.test.sh|fm-history.test.sh|\
-    fm-sources.test.sh|fm-source-github.test.sh|fm-task-edit.test.sh)
+    fm-sources.test.sh|fm-source-github.test.sh|fm-task-edit.test.sh|fm-fleet-waiting-on.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
@@ -675,6 +675,7 @@ tests/fm-watch-served-harness.test.sh 20000
 tests/fm-sources.test.sh 50000
 tests/fm-source-github.test.sh 2000
 tests/fm-task-edit.test.sh 5000
+tests/fm-fleet-waiting-on.test.sh 4000
 tests/fm-agy-signals-live-e2e.test.sh 23
 tests/fm-afk-contract.test.sh 3000
 tests/fm-afk-inject-e2e.test.sh 35792

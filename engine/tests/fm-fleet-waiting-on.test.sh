@@ -91,6 +91,12 @@ test_each_rule_alone() {
   expect "$out" first_mate 2 "rule 2: a local-only task that reported done, yolo on"
   out=$(fold "$P_DECISION")
   expect "$out" first_mate 3 "rule 3: a keyed open decision"
+  printf '%s' "$out" | jq -e '.why == "decision to make"' >/dev/null || fail "rule 3 why: $out"
+  out=$(fold "$P_DECISION" "$P_ASK_USER")
+  printf '%s' "$out" | jq -e '.rule == 3 and .why == "1 ask-user finding"' >/dev/null \
+    || fail "rule 3 names an escalated ask-user finding by count: $out"
+  out=$(fold '{"hints": {"open_decisions": [{"key": "k", "verb": "blocked", "summary": "no-mistakes daemon socket refused connections"}]}}')
+  printf '%s' "$out" | jq -e '.rule == 3 and .why == "blocked"' >/dev/null || fail "rule 3 blocked why: $out"
   out=$(fold "$P_ASK_USER")
   expect "$out" first_mate 4 "rule 4: an ask-user finding at the gate"
   printf '%s' "$out" | jq -e '.why == "1 ask-user finding"' >/dev/null || fail "rule 4 why: $out"
@@ -103,6 +109,9 @@ test_each_rule_alone() {
   expect "$out" first_mate 5 "rule 5: PR closed unmerged"
   out=$(fold '{"pipeline": {"read": "coarse", "daemon": "down"}}')
   expect "$out" first_mate 5 "rule 5: daemon down"
+  out=$(fold '{"pipeline": {"read": "coarse", "daemon": "down", "run": {"id": null, "head": null, "status": "failed", "outcome": null}}}')
+  printf '%s' "$out" | jq -e '.why == "pipeline service down"' >/dev/null \
+    || fail "rule 5: a failed record from a dead daemon is named as the daemon, not a failure: $out"
   out=$(fold "$P_WORKER_GATE")
   expect "$out" worker 6 "rule 6: a gate whose findings are all the worker's"
   printf '%s' "$out" | jq -e '.why == "3 review findings"' >/dev/null || fail "rule 6 why: $out"
@@ -182,7 +191,6 @@ test_rule_order() {
 }
 
 test_pipeline_live() {
-  local live
   live() { jq -n --argjson t "$1" "$FM_WAITING_ON_JQ_DEFS"'$t | pipeline_live'; }
   [ "$(live "$(jq -n --argjson a "$BASE_TASK" --argjson b "$P_PIPELINE" '$a * $b')")" = true ] \
     || fail "a fixing run is live"
