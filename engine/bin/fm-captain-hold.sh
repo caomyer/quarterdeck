@@ -613,21 +613,14 @@ meta_value() {  # <meta> <key>
   grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+# The origin's open captain decisions are exactly the status fold's
+# (fm-classify-lib.sh status_open_decisions), whatever the origin's kind and
+# whatever its last line says: a later done or failed line never closes a
+# decision. One the captain no longer owes, answered elsewhere or moot after a
+# failure, is closed by its own keyed `resolved` line, and one still owed is
+# held as a captain task through `complete <task-id>`.
 origin_open_decisions() {  # <origin-id>
-  local origin=$1 meta="$STATE/$1.meta" status_file="$STATE/$1.status" open kind last verb
-  open=$(status_open_decisions "$status_file")
-  [ -n "$open" ] || return 0
-  [ -f "$meta" ] || { printf '%s' "$open"; return 0; }
-  kind=$(meta_value "$meta" kind)
-  [ -n "$kind" ] || kind=ship
-  if [ "$kind" != secondmate ]; then
-    last=$(last_status_line "$status_file")
-    verb=$(status_line_verb "$last")
-    case "$verb" in
-      done|failed) return 0 ;;
-    esac
-  fi
-  printf '%s' "$open"
+  status_open_decisions "$STATE/$1.status"
 }
 
 # A resolution record written by this script or by the retired

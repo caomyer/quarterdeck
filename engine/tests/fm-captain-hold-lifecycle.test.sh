@@ -1377,35 +1377,63 @@ EOF
   pass "resolved findings and decision-like prose do not create captain-held tasks"
 }
 
-test_terminal_single_owner_status_decision_does_not_block_empty_inventory() {
-  local home id open secondmate
-  home=$(make_home stale-terminal-decision)
-  id=sample-terminal-review
-  mkdir -p "$home/data/$id"
-  tasks_in "$home" add "$id" "Review a terminal sample finding" --kind scout --repo sample --start >/dev/null
-  write_origin_meta "$home" "$id"
-  printf 'needs-decision [key=default]: choose route A or route B\ndone: report complete\n' \
-    > "$home/state/$id.status"
-  printf '# Terminal sample review\n\nNo unresolved captain choice remains.\n' > "$home/data/$id/report.md"
-  open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
-    "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
-  assert_contains "$open" "default" "fixture must retain the raw stale status decision"
-  run_captain "$home" complete "$id" --none >/dev/null \
-    || fail "terminal single-owner stale status decision blocked empty inventory completion"
-  run_captain "$home" verify "$id" >/dev/null \
-    || fail "terminal single-owner stale status decision blocked inventory verification"
-  run_teardown "$home" "$id" >/dev/null 2> "$home/terminal-teardown.err" \
-    || fail "terminal single-owner stale status decision blocked teardown: $(cat "$home/terminal-teardown.err")"
+# A crewmate that asks the captain a question and then reports done or failed
+# has not closed that question: the gate reads the same fold as the drain, so
+# `complete --none` and `verify` keep refusing, teardown keeps the status log,
+# and only the decision's own keyed `resolved` line lets it through.
+test_terminal_status_line_never_clears_an_open_decision() {
+  local home id verb open secondmate
+  home=$(make_home terminal-open-decision)
+  for verb in 'done' failed; do
+    id=sample-terminal-$verb
+    mkdir -p "$home/data/$id"
+    tasks_in "$home" add "$id" "Review a terminal sample finding" --kind scout --repo sample --start >/dev/null
+    write_origin_meta "$home" "$id"
+    printf 'working: start\nneeds-decision [key=scope]: narrow or wide?\n' > "$home/state/$id.status"
+    if run_captain "$home" complete "$id" --none >/dev/null 2>&1; then
+      fail "an open decision did not refuse --none before $verb"
+    fi
+    printf '%s: report written\n' "$verb" >> "$home/state/$id.status"
+    open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+      "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
+    assert_contains "$open" "scope" "the fold must keep the decision open after $verb"
+    if run_captain "$home" complete "$id" --none > "$home/$verb-complete.out" 2> "$home/$verb-complete.err"; then
+      fail "a $verb line cleared an open decision from complete --none"
+    fi
+    assert_contains "$(cat "$home/$verb-complete.err")" "still has open captain decisions" \
+      "complete must refuse for the open decision after $verb"
+    if run_captain "$home" verify "$id" >/dev/null 2>&1; then
+      fail "a $verb line let verify pass with no inventory and an open decision"
+    fi
+
+    # An inventory attested before the question was asked must not carry the
+    # question through verify or teardown either.
+    printf 'decisions_reviewed=1\ndecision_keys=\n' >> "$home/state/$id.meta"
+    if run_captain "$home" verify "$id" > "$home/$verb-verify.out" 2> "$home/$verb-verify.err"; then
+      fail "a $verb line cleared an open decision from verify"
+    fi
+    assert_contains "$(cat "$home/$verb-verify.err")" "open captain decision $id/scope" \
+      "verify must refuse for the open decision after $verb"
+    if run_teardown "$home" "$id" >/dev/null 2>&1; then
+      fail "teardown proceeded past an open decision after $verb"
+    fi
+    [ -f "$home/state/$id.status" ] || fail "teardown deleted the status log holding an open decision after $verb"
+
+    printf 'resolved [key=scope]: answered in chat\n' >> "$home/state/$id.status"
+    run_captain "$home" complete "$id" --none >/dev/null \
+      || fail "a keyed resolution did not clear the decision after $verb"
+    run_captain "$home" verify "$id" >/dev/null \
+      || fail "a keyed resolution did not let verify pass after $verb"
+  done
 
   secondmate=sample-secondmate
   write_origin_meta "$home" "$secondmate" secondmate
   printf 'needs-decision [key=route]: choose route A or route B\ndone: heartbeat complete\n' \
     > "$home/state/$secondmate.status"
-  if run_captain "$home" complete "$secondmate" --none \
-    > "$home/secondmate-terminal.out" 2> "$home/secondmate-terminal.err"; then
+  if run_captain "$home" complete "$secondmate" --none >/dev/null 2>&1; then
     fail "secondmate terminal status decision was incorrectly cleared"
   fi
-  pass "terminal single-owner stale status decisions do not block empty inventory"
+  pass "a later done or failed line never clears an open decision from the completion gate"
 }
 
 test_secondmate_hold_stays_in_authoritative_home() {
@@ -4136,7 +4164,7 @@ test_undated_aging_follows_the_captains_day
 test_out_of_band_close_is_recordable
 test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds
-test_terminal_single_owner_status_decision_does_not_block_empty_inventory
+test_terminal_status_line_never_clears_an_open_decision
 test_secondmate_hold_stays_in_authoritative_home
 test_secondmate_home_publishes_holds_and_answers
 test_secondmate_reconcile_publishes_before_request_retirement
