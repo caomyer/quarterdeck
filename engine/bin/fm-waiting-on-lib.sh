@@ -11,9 +11,10 @@
 # order.
 #
 # Each rule reads only structured fields the snapshot already holds, never
-# prose (rule 10 alone quotes the worker's declared reason, below): the task's pipeline object (bin/fm-crew-state.sh --json), its
-# current_state, kind, yolo, report presence and keyed open decisions, and the
-# snapshot's calls[]. The first rule that matches wins:
+# prose (rule 10 alone quotes the worker's declared reason, below): the task's
+# pipeline object (bin/fm-crew-state.sh --json), its current_state, kind,
+# yolo, report presence and keyed open decisions, and the snapshot's calls[].
+# The first rule that matches wins:
 #    1 captain     an open, captain_actionable call whose origin or about is
 #                  this task
 #    2 captain or first_mate
