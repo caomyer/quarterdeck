@@ -96,7 +96,7 @@ export const PIPELINE_CASES: Case[] = [
     waiting_on: { who: "first_mate", why: "merge PR #36", rule: 2, call: null } },
   { id: "qd-voice-held-1", title: "Voice handover queue", state: { state: "done", source: "run-step", detail: "checks green: PR held for merge (ci monitor ended)" },
     pipeline: { ...none, read: "full", run: run("01M3HH7XYZ", "failed", "failed"), steps: steps("cscccccc" + "x"), ci: "green", pr: { ...pr(37, "unknown", null) }, findings: { total: 0, ask_user: 0, rows: [] } },
-    waiting_on: { who: "captain", why: "merge PR #37", rule: 2, call: null } },
+    waiting_on: { who: "captain", why: "checks green, PR #37 state not read", rule: 2, call: null } },
   { id: "qd-contrib-noise-1", title: "Stop contribution observation false alarms", state: { state: "done", source: "run-step", detail: "run passed: PR merged" },
     pipeline: { ...none, read: "full", run: run("01M3GQHA9Q05RK4F1EJRRKTW1T", "completed", "passed"), steps: steps("csccccccc"), ci: "green", pr: pr(30, "merged", "receipt"), findings: { total: 1, ask_user: null, rows: [] } },
     waiting_on: { who: "none", why: "PR merged", rule: 11, call: null } },

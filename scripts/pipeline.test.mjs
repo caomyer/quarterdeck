@@ -90,6 +90,15 @@ test("the headline is the holder's situation, in the captain's words, from the f
   assert.equal(say({ pipeline: pipeline({ read: "coarse", daemon: "down", run: { status: "failed" } }) }, { who: "first_mate", why: "", rule: 5, call: null }),
     "The no-mistakes service is not answering. Its last record for this run is not proof the work failed.");
   assert.equal(say({ yolo: "on", pipeline: pipeline({ ci: "green" }) }, { who: "first_mate", why: "", rule: 2, call: null }), "Checks are green. The first mate holds merge authority for this task.");
+  const unread = { url: "https://github.com/o/r/pull/37", state: "unknown", via: null };
+  assert.equal(say({ pipeline: pipeline({ ci: "green", pr: unread }) }, { who: "captain", why: "", rule: 2, call: null }), "Checks are green. The PR state was not read. Merge authority is yours.");
+  assert.equal(say({ yolo: "on", pipeline: pipeline({ ci: "green", pr: unread, run: { status: "completed", outcome: "failed" } }) }, { who: "first_mate", why: "", rule: 2, call: null }),
+    "Checks were green when the pipeline stopped watching. The PR state was not read. The first mate holds merge authority for this task.");
+  const gate = { step: "review", status: "awaiting_approval", parked_for: "2m" };
+  assert.equal(say({ pipeline: pipeline({ gate, findings: { total: 1, ask_user: 1, rows: [] } }) }, { who: "first_mate", why: "", rule: 3, call: null }),
+    "A finding needs an authority decision. The worker passed it to the first mate.");
+  assert.equal(say({ hints: { pending_decision: true, blocked_event: true, open_decisions: [{ key: "d1", verb: "blocked" }], scout_report_present: false, last_event_text: "" }, pipeline: pipeline({ gate, findings: { total: 2, ask_user: 0, rows: [] } }) },
+    { who: "first_mate", why: "blocked", rule: 3, call: null }), "The worker reported it is blocked. The first mate decides what happens next.");
   assert.equal(say({ pipeline: pipeline({ read: "unanswered" }) }, { who: "unknown", why: "", rule: 12, call: null }), "The pipeline did not answer, and nothing else proves who holds this.");
   assert.equal(say({ kind: "scout", pipeline: pipeline({ applies: false, reason: "scout" }) }, { who: "worker", why: "", rule: 9, call: null }), "Investigating. A scout writes a report and opens no PR.");
 });

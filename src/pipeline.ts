@@ -116,17 +116,21 @@ export function headline(task: FleetTask, waiting: Waiting, callTitle?: string |
   switch (waiting.rule) {
     case 1:
       return callTitle ? `Your call: ${callTitle}` : "There is a call for you on this task.";
-    case 2:
+    case 2: {
       if (pipeline?.reason === "local-only") return "Committed on its branch. No remote, no PR.";
       if (pipeline?.reason === "direct-PR") return "Reported done with a PR, raised directly without the pipeline.";
-      if (pipeline?.run && (pipeline.run.outcome === "failed" || pipeline.run.status === "failed")) {
-        return waiting.who === "captain"
-          ? "Checks were green when the pipeline stopped watching. The PR waits for your merge."
-          : "Checks were green when the pipeline stopped watching. The first mate holds merge authority for this task.";
-      }
-      return waiting.who === "captain" ? "Checks are green. The PR waits for you to merge it." : "Checks are green. The first mate holds merge authority for this task.";
-    case 3:
-      return pipeline?.gate ? "A finding needs an authority decision. The worker passed it to the first mate." : "The worker asked the first mate to decide something.";
+      const held = pipeline?.run && (pipeline.run.outcome === "failed" || pipeline.run.status === "failed");
+      const green = held ? "Checks were green when the pipeline stopped watching." : "Checks are green.";
+      const captain = waiting.who === "captain";
+      if (pipeline?.pr?.state === "unknown") return `${green} The PR state was not read. ${captain ? "Merge authority is yours." : "The first mate holds merge authority for this task."}`;
+      if (!captain) return `${green} The first mate holds merge authority for this task.`;
+      return held ? `${green} The PR waits for your merge.` : `${green} The PR waits for you to merge it.`;
+    }
+    case 3: {
+      if (pipeline?.gate && (pipeline.findings?.ask_user ?? 0) > 0) return "A finding needs an authority decision. The worker passed it to the first mate.";
+      const decision = (task.hints.open_decisions as { verb?: string }[])[0];
+      return decision?.verb === "blocked" ? "The worker reported it is blocked. The first mate decides what happens next." : "The worker asked the first mate to decide something.";
+    }
     case 4:
       return "A finding at the gate needs an authority decision, and the worker has not passed it on yet.";
     case 5: {

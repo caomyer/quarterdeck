@@ -177,6 +177,8 @@ test_rule_order() {
   # log reads green. That is the merge question, never a failure.
   out=$(fold "$P_FAILED" '{"pipeline": {"ci": "green", "pr": {"url": "https://github.com/o/r/pull/37", "state": "unknown", "via": null}}}')
   expect "$out" captain 2 "2 before 5: green-held is a merge, not a failure"
+  printf '%s' "$out" | jq -e '.why == "checks green, PR #37 state not read"' >/dev/null \
+    || fail "rule 2 why never claims a PR state it did not read: $out"
   # A gate whose ask-user split is unknown (a scalar count) is no worker's.
   out=$(fold "$P_WORKER_GATE" '{"pipeline": {"findings": {"total": 1, "ask_user": null, "rows": []}}}')
   expect "$out" unknown 12 "an unknown ask-user split proves no holder"

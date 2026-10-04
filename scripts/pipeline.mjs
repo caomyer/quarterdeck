@@ -50,7 +50,7 @@ const EXPECT = {
   "qd-chat-calls-build-2": { headline: "Your call: Let a page sit below a newer message?", rail: true, gate: "1 finding, 1 ask-user", findings: 1, askUser: 1, call: true },
   "qd-tasks-sort-2": { headline: "Checks are green. The PR waits for you to merge it.", rail: true, held: true, pr: "PR #35 open · checks green", source: "merge posture: yours" },
   "qd-routing-fix-1": { headline: "Checks are green. The first mate holds merge authority for this task.", rail: true, held: true, source: "merge posture: first mate (yolo on)" },
-  "qd-voice-held-1": { headline: "Checks were green when the pipeline stopped watching. The PR waits for your merge.", rail: true, held: true, pr: "PR #37 state unknown · ci monitor ended, last read green" },
+  "qd-voice-held-1": { headline: "Checks were green when the pipeline stopped watching. The PR state was not read. Merge authority is yours.", rail: true, held: true, pr: "PR #37 state unknown · ci monitor ended, last read green" },
   "qd-contrib-noise-1": { headline: "Landed. PR merged.", rail: true, pr: "PR #30 merged · merge receipt" },
   "qd-call-evidence-1": { headline: "The PR was closed unmerged. The first mate decides what happens next.", rail: true, pr: "PR #28 closed, not merged · forge read" },
   "qd-history-page-2": { headline: "The run failed at test.", rail: true, source: "outcome failed" },

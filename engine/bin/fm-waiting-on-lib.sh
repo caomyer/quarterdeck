@@ -73,7 +73,10 @@ def waiting_on($calls):
       {who: "captain", why: "your call", rule: 1, call: $call.id}
     elif ($p.ci == "green" and $p.pr != null and $p.pr.url != null
           and ($p.pr.state == "open" or $p.pr.state == "unknown")) then
-      {who: $merger, why: ("merge " + ($t | wo_pr_label)), rule: 2}
+      {who: $merger,
+       why: (if $p.pr.state == "unknown" then "checks green, " + ($t | wo_pr_label) + " state not read"
+             else "merge " + ($t | wo_pr_label) end),
+       rule: 2}
     elif ($p.applies == false and ($p.reason == "direct-PR" or $p.reason == "local-only")
           and $cs.state == "done") then
       {who: $merger,
