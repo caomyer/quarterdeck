@@ -8,6 +8,7 @@ import { MockUpdates } from "./mock-update";
 import { mockUsage } from "./mock-usage";
 import { MockSession, STAGED_TURN } from "./mock-session";
 import { addRefusal, linkedBody, linkFixtureRow, mockIssues, mockSources } from "./mock-sources";
+import { mockPipeline } from "./mock-pipeline";
 import { applyTaskEdit, mockTaskRecords, reparse } from "./mock-tasks";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
@@ -760,7 +761,7 @@ export class MockHostAdapter implements HostAdapter {
   private readonly openedAt = Date.now();
 
   private static fixtureSnapshot() {
-    const base = MockHostAdapter.tasksSnapshot(MockHostAdapter.artifactSnapshot());
+    const base = MockHostAdapter.pipelineSnapshot(MockHostAdapter.tasksSnapshot(MockHostAdapter.artifactSnapshot()));
     if (!reviewFlag("sources")) return base;
     // `?sources`: GitHub connected as resonance's task source (src/host/mock-sources.ts).
     const variant = reviewValue("sources") || null;
@@ -787,6 +788,27 @@ export class MockHostAdapter implements HostAdapter {
     const today = localDate(0);
     const records = reparse([...(base.fleet.backlog?.records ?? []), ...mockTaskRecords(backlogRow, reviewValue("tasks") || null)], today);
     return { bearings: base.bearings, fleet: { ...base.fleet, captain_day: today, backlog: { ...base.fleet.backlog, records } } };
+  }
+
+  /** `?pipeline`: a task in every pipeline state (src/host/mock-pipeline.ts), read just now, with `pipeline_live` as the engine sets it. */
+  private static pipelineSnapshot(base: { bearings: BearingsSnapshot; fleet: FleetSnapshot }) {
+    if (!reviewFlag("pipeline")) return base;
+    const home = base.fleet.fm_home;
+    const mock = mockPipeline(home, {
+      row: backlogRow,
+      worker: (id, kind, state, minutesAgo) => mockTask(home, id, kind, state, minutesAgo, { detail: "", note: "", report: false, observedAt: new Date().toISOString() }),
+    });
+    return {
+      bearings: base.bearings,
+      fleet: {
+        ...base.fleet,
+        generated: new Date().toISOString(),
+        tasks: [...base.fleet.tasks, ...mock.tasks],
+        backlog: { ...base.fleet.backlog, records: [...(base.fleet.backlog?.records ?? []), ...mock.records] },
+        calls: [...(base.fleet.calls ?? []), ...mock.calls],
+        pipeline_live: true,
+      },
+    };
   }
 
   private static artifactSnapshot() {
@@ -1909,6 +1931,16 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   async latestSnapshot(): Promise<SnapshotEvent> {
+    if (reviewValue("pipeline") === "stale") {
+      // `?pipeline=stale`: the newest fleet read failed, so the pipeline states on screen are from one seven minutes ago.
+      return {
+        phase: "ready",
+        generated_at_ms: Date.now(),
+        ...this.snapshot,
+        fleet_at_ms: Date.now() - 7 * 60_000,
+        errors: [{ source: "fm-fleet-snapshot.sh", error: "fm-fleet-snapshot.sh did not finish within 90s" }],
+      };
+    }
     if (reviewFlag("snapshot-error")) {
       // `?snapshot-error`: the last Bearings read failed, so what's on screen is from an earlier one.
       return {
