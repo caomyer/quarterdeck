@@ -1084,6 +1084,7 @@ export class MockHostAdapter implements HostAdapter {
       pages[scope === "chat" ? `chat/${name}` : `task/${task}/${name}`] = {
         seen_rev: review.seen_rev,
         draft_count: review.draft_count,
+        untold_count: review.untold_count,
         open_count: review.open_count,
         answered: review.answers.filter(recorded).map((answer) => answer.decision),
         open_threads: review.threads.filter((thread) => thread.state === "open").map((thread) => ({ id: thread.id, rev: thread.rev })),

@@ -373,6 +373,8 @@ export type CallAnswered = { outcome: IntakeOutcome; message: string | null; tex
 export type ReviewSummary = Record<string, {
   seen_rev: number | null;
   draft_count: number;
+  /** Reviews sent to their author that the first mate has not been told of; never counted as unsent comments. */
+  untold_count?: number;
   open_count: number;
   /** Calls whose answer the intake recorded: on the record for good. */
   answered: string[];
@@ -384,7 +386,7 @@ export type ReviewSummary = Record<string, {
 }>;
 
 /** The whole review of one page, as the app stores it beside the revisions. */
-export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; /** For each decision, the single most recent answer that went for the first mate to record and was followed by a new one: what the captain said then. */ earlier: ReviewAnswer[]; draft_count: number; staged_answers: number; /** Reviews sent to their author that the first mate has not been told of; counted in draft_count. */ untold_count: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
+export type ReviewView = { threads: ReviewThread[]; answers: ReviewAnswer[]; /** For each decision, the single most recent answer that went for the first mate to record and was followed by a new one: what the captain said then. */ earlier: ReviewAnswer[]; draft_count: number; staged_answers: number; /** Reviews sent to their author that the first mate has not been told of; not counted in draft_count, and Send review tells it. */ untold_count: number; open_count: number; sent: ReviewSent[]; seen_rev: number | null; log: string };
 /** One answer given from Bearings: the call, the option, what the call declares, and the page that argues it. */
 export type CallAnswerRequest = { call: string; option: string; label: string; onAnswer: string; page: ArtifactRef | null; note?: string };
 /** Which page a review belongs to. */

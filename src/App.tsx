@@ -2170,7 +2170,7 @@ function reviewsOf(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
   const { byMessage, byHeader } = sentReviews(reviews, artifacts);
   const found = new Map<string, SentPage>();
   const ids = new Set(messages.map((message) => message.id));
-  const unclaimed = new Map([...byHeader].map(([header, pages]) => [header, pages.filter((page) => !ids.has(page.review.message))]));
+  const unclaimed = new Map([...byHeader].map(([header, pages]) => [header, pages.filter((page) => !(page.review.message && ids.has(page.review.message)))]));
   for (const message of [...messages].reverse()) {
     if (message.who !== "captain") continue;
     const own = byMessage.get(message.id) ?? unclaimed.get(message.text.split("\n")[0])?.pop();
@@ -2679,7 +2679,9 @@ function layoutNote(revision: ArtifactRevision) {
  */
 function reviewChip(review?: ReviewSummary[string], artifact?: Artifact, landed = false) {
   if (!artifact) return null;
-  if (review && review.draft_count > 0) return { label: review.draft_count === 1 ? "1 comment not sent" : `${review.draft_count} comments not sent`, tone: "draft" };
+  const unsent = review && review.draft_count > 0 ? review.draft_count === 1 ? "1 comment not sent" : `${review.draft_count} comments not sent` : null;
+  const untold = review?.untold_count ? "Not yet told to the first mate" : null;
+  if (unsent || untold) return { label: [unsent, untold].filter(Boolean).join(" · "), tone: "draft" };
   if (landed) return null;
   const seen = review?.seen_rev ?? null;
   if (seen === null) return { label: "Not looked at yet", tone: "new" };
@@ -2746,7 +2748,7 @@ export type ArtifactStanding = "needs-you" | "discussion" | "settled";
 export function artifactStanding(artifact: Artifact, artifacts: Artifact[], review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>, calls: Call[]): ArtifactStanding {
   const task = artifact.scope === "task" ? artifact.task : null;
   if (task && backlog.get(task)?.state === "done") return "settled";
-  if (review && review.draft_count > 0) return "needs-you";
+  if (review && (review.draft_count > 0 || (review.untold_count ?? 0) > 0)) return "needs-you";
   const comments = openComments(artifact, review);
   const argued = callsArguedBy(calls, artifact, artifacts);
   // A call this page argues: yours until you answer or reply to it, then firstmate's until it records or asks again.

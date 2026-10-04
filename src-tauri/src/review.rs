@@ -354,7 +354,7 @@ pub fn view(path: &Path) -> Value {
         "threads": threads,
         "answers": answers,
         "earlier": earlier,
-        "draft_count": draft.len() + staged + untold,
+        "draft_count": draft.len() + staged,
         "untold_count": untold,
         "staged_answers": staged,
         "open_count": open,
@@ -1148,7 +1148,7 @@ pub async fn review_submit(
 pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64, verdict: String) -> Result<Value, String> {
     let dir = dir.to_path_buf();
     let log = dir.join("review.jsonl");
-    let retold = match retell(home, host, &dir).await {
+    let (retold, unnoted) = match retell(home, host, &dir).await {
         Ok(retold) => retold,
         Err((problem, text)) => {
             let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
@@ -1164,8 +1164,10 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
             let log = log.clone();
             blocking(move || Ok(view(&log))).await?
         };
-        let unsent = current["threads"].as_array().is_some_and(|threads| threads.iter().any(|thread| thread["sent_at"].is_null()));
-        if !unsent && current["staged_answers"].as_u64().unwrap_or(0) == 0 {
+        if let Some(problem) = unnoted {
+            return Ok(json!({"message": message, "text": text, "review": current, "outcomes": [], "retold": retold_shown, "warning": format!("Told the first mate, but the app could not note that it went: {problem}")}));
+        }
+        if current["draft_count"].as_u64().unwrap_or(0) == 0 {
             return Ok(json!({"message": message, "text": text, "review": current, "outcomes": [], "retold": retold_shown}));
         }
     }
@@ -1228,9 +1230,11 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
 /// Tells the first mate of each review its author was sent while the first mate
 /// could not be told, composed again from that review's own record: the
 /// delivery already made is reported, never made again. Returns each message
-/// that went with its text, or why one could not go and its text; nothing after
-/// a failure is tried.
-async fn retell(home: &Path, host: &HostHandle, dir: &Path) -> Result<Vec<(String, String)>, (String, String)> {
+/// that went with its text, and why the last could not be noted as told when it
+/// could not, or why one could not go and its text; nothing after a failure is
+/// tried.
+#[allow(clippy::type_complexity)]
+async fn retell(home: &Path, host: &HostHandle, dir: &Path) -> Result<(Vec<(String, String)>, Option<String>), (String, String)> {
     let untold = {
         let dir = dir.to_path_buf();
         blocking(move || untold_reviews(&dir)).await.map_err(|problem| (problem, String::new()))?
@@ -1243,10 +1247,12 @@ async fn retell(home: &Path, host: &HostHandle, dir: &Path) -> Result<Vec<(Strin
         let log = dir.join("review.jsonl");
         if let Err(problem) = blocking(move || append(&log, &event)).await {
             log::error!("review {message} was told but not recorded: {problem}");
+            told.push((message, text));
+            return Ok((told, Some(problem)));
         }
         told.push((message, text));
     }
-    Ok(told)
+    Ok((told, None))
 }
 
 /// Every review sent to its author but not yet told to the first mate: when it
@@ -1518,6 +1524,7 @@ pub fn summary(data: &Path) -> Value {
             json!({
                 "seen_rev": current["seen_rev"],
                 "draft_count": current["draft_count"],
+                "untold_count": current["untold_count"],
                 "open_count": current["open_count"],
                 "answered": answered,
                 "open_threads": open_threads,
@@ -2443,7 +2450,9 @@ mod tests {
         assert!(warning.starts_with("The review reached qd-plan-1, but the first mate was not told: the first mate host is not running."), "{warning}");
         let current = view(&log);
         assert_eq!((&current["threads"][0]["state"], &current["threads"][0]["told"]), (&json!("open"), &json!(false)), "{current}");
-        assert_eq!((&current["untold_count"], &current["draft_count"]), (&json!(1), &json!(1)), "{current}");
+        assert_eq!((&current["untold_count"], &current["draft_count"]), (&json!(1), &json!(0)), "{current}");
+        let listed = &summary(&home.join("data"))["task/qd-plan-1/plan"];
+        assert_eq!((&listed["untold_count"], &listed["draft_count"]), (&json!(1), &json!(0)), "the list never calls a review its author has an unsent comment: {listed}");
         assert!(discard(&log, "t1").is_err(), "a comment its author has cannot be taken back");
         let events = read_events(&log);
         let recorded = events.iter().find(|event| event["kind"] == "sent").expect("the delivery is not left without a sent review");
@@ -2474,6 +2483,22 @@ mod tests {
         assert_eq!((&both["message"], &both["retold"][0]["message"]), (&json!("told-2"), &json!("told-2")), "{both}");
         assert!(!home.join("state/qd-plan-1.inbox/003.msg").exists());
         assert_eq!(view(&log)["untold_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn a_retelling_the_app_could_not_note_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let (home, dir) = engine_home("retold-unnoted", true);
+        let log = dir.join("review.jsonl");
+        submit(&home, &HostHandle::stopped(), &dir, 1, "changes".into()).await.unwrap();
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let again = submit(&home, &HostHandle::taking(told.clone()), &dir, 1, "changes".into()).await.unwrap();
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(again["message"], "told-1", "{again}");
+        let warning = again["warning"].as_str().unwrap_or_default();
+        assert!(warning.starts_with("Told the first mate, but the app could not note that it went: "), "{again}");
+        assert_eq!(told.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
