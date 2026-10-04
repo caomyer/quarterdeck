@@ -72,9 +72,11 @@
 #     paths.status_log.last_event is historical wake-event data only, never
 #     current state.
 #     hints.open_decisions is the keyed open-decision set returned by
-#     fm-classify-lib.sh's authoritative status_open_decisions fold and reconciled
-#     against current_state; hints.pending_decision and hints.blocked_event are
-#     booleans derived from that set.
+#     fm-classify-lib.sh's authoritative status_open_decisions fold, cleared
+#     only while a live run-step or pane read shows a non-secondmate crew still
+#     working past its gate; a terminal done or failed state never clears it.
+#     hints.pending_decision and hints.blocked_event are booleans derived from
+#     that set.
 #     endpoint.exists is the cheap local backend endpoint-presence read.
 #     endpoint.agent_alive is fm_backend_agent_alive's process-level read for
 #     every local task with an endpoint target: "alive" only when a harness
@@ -650,26 +652,28 @@ task_json_lines() {
     # Durable keyed open-decision set: fold the WHOLE status stream
     # (fm-classify-lib.sh's status_open_decisions) so a later unrelated event can
     # never mask a still-open captain decision. The set is derived purely from the
-    # keyed fold - never from report bodies or decision-like prose - and then
-    # reconciled against the crew LIFECYCLE, which only clears a stale decision the
-    # crew has provably moved past. Two lifecycle signals clear it, neither of which
-    # reads any report content:
-    #   - a live activity read (run-step or busy pane) that is working/done, so a
-    #     crew that resumed past a gate is not still reported as parked; and
-    #   - a TERMINAL done/failed state on a single-owner task (scout or ship), whose
-    #     deliverable is its report or PR, so a COMPLETED scout surfaces only as a
-    #     report POINTER, never as a reopened pending decision.
-    # Secondmates are excluded from lifecycle clearing: they are persistent and
-    # multiplex many concerns onto one stream, so activity on one concern must
-    # never clear another concern's keyed decision. A parked/blocked state, or a
-    # non-authoritative status-log/none read on a still-live task, keeps the fold's
-    # open decision surfacing.
+    # keyed fold - never from report bodies or decision-like prose. A terminal
+    # state never closes a decision, whether a done or failed status line or a
+    # pipeline run that passed or failed reports it: the drain and the completion
+    # gate (fm-captain-hold.sh origin_open_decisions) read the fold verbatim, so a
+    # finished scout or ship that still owes the captain an answer shows it here
+    # beside its report or PR, until the decision's own keyed `resolved` or
+    # `captain-held` line closes it.
+    # One lifecycle signal still reconciles the set, and it reads no report
+    # content: a live activity read (run-step or busy pane) that shows the crew
+    # still working past its gate, so a crew that resumed is not reported as
+    # parked. Secondmates are excluded from it: they are persistent and multiplex
+    # many concerns onto one stream, so activity on one concern must never clear
+    # another concern's keyed decision. A parked/blocked state, a terminal state,
+    # or a non-authoritative status-log/none read keeps the fold's open decision
+    # surfacing.
     open_decisions_tsv=$(status_open_decisions "$status_log")
     if [ "$kind" != secondmate ] && \
-       { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
-           && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
-         || { [ "$current_state" = "done" ] || [ "$current_state" = "failed" ]; }; }; then
-      open_decisions_tsv=""
+       { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; }; then
+      case "$current_state" in
+        parked|blocked|done|failed) ;;
+        *) open_decisions_tsv="" ;;
+      esac
     fi
     open_decisions_json=$(printf '%s' "$open_decisions_tsv" | jq -R -s '
       [ splits("\n") | select(length > 0)

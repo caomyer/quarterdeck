@@ -1574,10 +1574,12 @@ test_projection_and_toon_fail_closed() {
   pass "projection and TOON rendering failures exit nonzero with diagnostics"
 }
 
-# The Lavish-103 defect, end to end: a COMPLETED scout that raised a decision and
-# then finished (done), whose report body reads like that decision, must surface as
-# a report POINTER only - never in decisions_open. Report prose must never open or
-# reopen a pending decision; only the keyed durable state does.
+# The Lavish-103 case, end to end: a COMPLETED scout whose report body reads
+# like a captain decision surfaces as a report POINTER, and report prose never
+# opens a pending decision; only the keyed durable state does. So a scout whose
+# question was answered before it finished never appears in decisions_open, and
+# one whose question nothing answered appears there once, in its status line's
+# words, beside its report: a later done line never closes a decision.
 test_completed_scout_report_not_pending() {
   local home fakebin json
   home=$(make_home completed-scout); write_fixture "$home"
@@ -1591,6 +1593,7 @@ test_completed_scout_report_not_pending() {
     "kind=scout" \
     "mode=scout"
   printf 'needs-decision: adopt approach A or B for Lavish issue 103\n' > "$home/state/lavish-103.status"
+  printf 'resolved: captain chose approach A\n' >> "$home/state/lavish-103.status"
   printf 'done: report ready at data/lavish-103/report.md\n' >> "$home/state/lavish-103.status"
   printf '# Lavish 103\nThe open question is whether to adopt approach A or B; this needs a captain decision.\n' > "$home/data/lavish-103/report.md"
   json=$(run "$home" "$fakebin" --json)
@@ -1598,7 +1601,18 @@ test_completed_scout_report_not_pending() {
     (.decisions_open | any(.[]; .id == "lavish-103") | not)
       and (.reports | any(.[]; .id == "lavish-103"))
   ' >/dev/null || fail "completed scout must be a report pointer, never a pending decision: $json"
-  pass "a completed scout with decision-like report prose is a pointer, not pending"
+
+  printf 'needs-decision: adopt approach A or B for Lavish issue 103\n' > "$home/state/lavish-103.status"
+  printf 'done: report ready at data/lavish-103/report.md\n' >> "$home/state/lavish-103.status"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    ([.decisions_open[] | select(.id == "lavish-103")]
+     | length == 1
+       and .[0].verb == "needs-decision"
+       and .[0].summary == "adopt approach A or B for Lavish issue 103")
+      and (.reports | any(.[]; .id == "lavish-103"))
+  ' >/dev/null || fail "a completed scout with an unanswered question must show that one status decision beside its report: $json"
+  pass "a completed scout is a report pointer, and only its status stream holds a decision"
 }
 
 # Recently Landed must include merges a secondmate managed. Those completion records

@@ -15,8 +15,13 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 make_fakebin() {  # <dir>
   local fb
   fb=$(fm_fakebin "$1")
+  # FM_FAKE_AXI_STATUS, when set, is the run `no-mistakes axi status` reports,
+  # so a test can give a crewmate an attributed pipeline run.
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "axi status" ] && [ -n "${FM_FAKE_AXI_STATUS:-}" ]; then
+  printf '%s\n' "$FM_FAKE_AXI_STATUS"
+fi
 exit 0
 SH
   cat > "$fb/tmux" <<'SH'
@@ -891,14 +896,14 @@ test_open_decision_clears_on_keyed_resolution() {
   pass "durable fold clears a decision only on a keyed resolution"
 }
 
-# A COMPLETED scout report must never be read as a pending decision. A scout that
-# raised a needs-decision and then finished (done) - its report delivered, its
-# decision either answered or captured in the report for the captain - must surface
-# only as a report POINTER, not a reopened pending decision, even when the report
-# body and the stale status line contain decision-like prose. This is the Lavish-103
-# defect: a terminal single-owner task's stale, never-keyed-resolved needs-decision
-# must not linger as pending. Decisions come purely from the keyed fold reconciled
-# against the crew lifecycle; report prose never opens or reopens a decision.
+# A COMPLETED scout's report is a POINTER, never a decision: report prose that
+# reads like a captain decision opens nothing, and a finished scout with no open
+# decision reads exactly as a pointer to its report. This is the Lavish-103 case,
+# whose report body and status line both carry decision-like prose. Decisions
+# come purely from the keyed status fold, so a finished scout that still holds a
+# needs-decision nothing has resolved states both facts at once: its report is
+# ready, and its question is open. A later done line never closes a decision
+# (fm-classify-lib.sh status_open_decisions), so the snapshot does not either.
 test_completed_scout_report_is_pointer_not_pending() {
   local home fakebin out
   home=$(make_home completed-scout)
@@ -911,8 +916,9 @@ test_completed_scout_report_is_pointer_not_pending() {
     "kind=scout" \
     "mode=scout"
   record_claude_idle "$home/state" lavish-103
-  # Stale needs-decision, then the scout finished (done). No keyed resolution.
+  # A needs-decision, answered, then the scout finished (done).
   printf 'needs-decision: adopt approach A or B for Lavish issue 103\n' > "$home/state/lavish-103.status"
+  printf 'resolved: captain chose approach A\n' >> "$home/state/lavish-103.status"
   printf 'done: report ready at data/lavish-103/report.md\n' >> "$home/state/lavish-103.status"
   # Completed report whose PROSE reads like the decision.
   printf '# Lavish 103\nThe open question is whether to adopt approach A or B.\nThis needs a captain decision. Recommendation: A.\n' > "$home/data/lavish-103/report.md"
@@ -925,12 +931,133 @@ test_completed_scout_report_is_pointer_not_pending() {
       and (.hints.open_decisions | length) == 0
       and .hints.scout_report_present == true
   ' >/dev/null || fail "a completed scout report must be a pointer, not a pending decision: $out"
-  pass "a completed scout's stale decision surfaces as a report pointer, not pending"
+  printf '%s' "$out" | jq -e '
+    [.scout_reports[] | select(.id == "lavish-103")] | length == 1
+  ' >/dev/null || fail "a completed scout report must be listed as a report pointer: $out"
+
+  # The same scout, its question never answered: the report is still a pointer,
+  # and the one open decision is the status line's, never the report's prose.
+  printf 'needs-decision: adopt approach A or B for Lavish issue 103\n' > "$home/state/lavish-103.status"
+  printf 'done: report ready at data/lavish-103/report.md\n' >> "$home/state/lavish-103.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "lavish-103")
+    | .current_state.state == "done"
+      and .hints.scout_report_present == true
+      and .hints.pending_decision == true
+      and .hints.open_decisions == [{key:"default",verb:"needs-decision",
+                                     summary:"adopt approach A or B for Lavish issue 103"}]
+  ' >/dev/null || fail "a completed scout with an unanswered question must state both its report and that one status decision: $out"
+  printf '%s' "$out" | jq -e '
+    [.scout_reports[] | select(.id == "lavish-103")] | length == 1
+  ' >/dev/null || fail "an open question must not hide a completed scout's report pointer: $out"
+  pass "a completed scout's report is a pointer, and only its status stream holds a decision"
+}
+
+# A crewmate that asks the captain a question and then reports done or failed
+# has not closed that question. The snapshot reads the same fold as the drain
+# and the completion gate (fm-captain-hold.sh origin_open_decisions), so the
+# decision stays in hints.open_decisions until its own keyed resolved line,
+# whatever the task's kind and however its terminal state was read: from the
+# status log's last line, or from an attributed pipeline run that passed or
+# failed.
+test_terminal_state_never_clears_open_decision() {
+  local home fakebin out kind verb id fold expected run_outcome
+  home=$(make_home terminal-open-decision)
+  fakebin=$(make_fakebin "$home")
+  for kind in scout ship; do
+    for verb in 'done' failed; do
+      id=$kind-terminal-$verb
+      mkdir -p "$home/projects/$id"
+      fm_write_meta "$home/state/$id.meta" \
+        "window=firstmate:fm-$id" \
+        "worktree=$home/projects/$id" \
+        "project=alpha" \
+        "harness=claude" \
+        "kind=$kind" \
+        "mode=$kind"
+      record_claude_idle "$home/state" "$id"
+      printf 'working: start\nneeds-decision [key=scope]: narrow or wide?\n%s: report written\n' "$verb" \
+        > "$home/state/$id.status"
+    done
+  done
+
+  # Pipeline-terminal reads: a ship whose attributed no-mistakes run passed
+  # (done) and one whose run failed, each with a question still open.
+  fm_git_identity fmtest fmtest@example.invalid
+  for run_outcome in passed failed; do
+    id=ship-run-$run_outcome
+    mkdir -p "$home/projects/$id"
+    git -C "$home/projects/$id" init -q
+    git -C "$home/projects/$id" commit -q --allow-empty -m init
+    git -C "$home/projects/$id" checkout -q -b "fm/$id"
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" \
+      "worktree=$home/projects/$id" \
+      "project=alpha" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=ship"
+    record_claude_idle "$home/state" "$id"
+    printf 'needs-decision [key=scope]: narrow or wide?\n' > "$home/state/$id.status"
+  done
+
+  for run_outcome in passed failed; do
+    id=ship-run-$run_outcome
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_CREW_STATE_NO_FORGE=1 \
+      FM_FAKE_AXI_STATUS="run:
+  id: \"01RUN\"
+  branch: fm/$id
+  status: completed
+  head: \"$(git -C "$home/projects/$id" rev-parse HEAD)\"
+  pr: \"\"
+  findings: none
+outcome: $run_outcome" \
+      "$SNAPSHOT" --json)
+    expected='done'
+    [ "$run_outcome" = failed ] && expected=failed
+    printf '%s' "$out" | jq -e --arg id "$id" --arg state "$expected" '
+      .tasks[] | select(.id == $id)
+      | .current_state.state == $state and .current_state.source == "run-step"
+        and .hints.pending_decision == true
+        and .hints.open_decisions == [{key:"scope",verb:"needs-decision",summary:"narrow or wide?"}]
+    ' >/dev/null || fail "a $run_outcome pipeline run must not clear $id's open decision: $out"
+  done
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  for kind in scout ship; do
+    for verb in 'done' failed; do
+      id=$kind-terminal-$verb
+      fold=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+        "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
+      [ "$fold" = "scope	needs-decision	narrow or wide?" ] \
+        || fail "fixture: the fold must keep $id's decision open after $verb, got: $fold"
+      printf '%s' "$out" | jq -e --arg id "$id" --arg verb "$verb" '
+        .tasks[] | select(.id == $id)
+        | .current_state.state == $verb and .current_state.source == "status-log"
+          and .hints.pending_decision == true
+          and .hints.open_decisions == [{key:"scope",verb:"needs-decision",summary:"narrow or wide?"}]
+      ' >/dev/null || fail "a $verb line must not clear $id's open decision from the snapshot: $out"
+    done
+  done
+
+  # Only the decision's own keyed resolution closes it.
+  for kind in scout ship; do
+    for verb in 'done' failed; do
+      printf 'resolved [key=scope]: answered in chat\n' >> "$home/state/$kind-terminal-$verb.status"
+    done
+  done
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    [.tasks[] | select(.id | test("-terminal-"))]
+    | length == 4
+      and all(.[]; .hints.pending_decision == false and (.hints.open_decisions | length) == 0)
+  ' >/dev/null || fail "a keyed resolution must close the decision after a terminal line: $out"
+  pass "a later done or failed state never clears an open decision from the snapshot"
 }
 
 # The complementary safety property: a scout still PARKED at a decision (its last
-# event is the needs-decision, it has not finished) DOES stay pending. The terminal
-# clear must not over-fire on a live, undecided scout.
+# event is the needs-decision, it has not finished) DOES stay pending.
 test_parked_scout_decision_stays_pending() {
   local home fakebin out
   home=$(make_home parked-scout)
@@ -952,7 +1079,7 @@ test_parked_scout_decision_stays_pending() {
       and (.hints.open_decisions | length) == 1
       and .hints.open_decisions[0].key == "q1"
   ' >/dev/null || fail "a scout still parked at a decision must stay pending: $out"
-  pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
+  pass "a scout still parked at a decision stays pending"
 }
 
 # Home-summary validity treats persistent secondmates as registered homes, not
@@ -1111,6 +1238,7 @@ test_secondmate_open_decision_survives_live_endpoint
 test_open_decision_transfers_to_captain_hold
 test_open_decision_clears_on_keyed_resolution
 test_completed_scout_report_is_pointer_not_pending
+test_terminal_state_never_clears_open_decision
 test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
