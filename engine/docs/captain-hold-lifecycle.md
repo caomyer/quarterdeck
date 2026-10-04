@@ -27,7 +27,7 @@ A hold whose `--until` date has passed keeps those annotations while tasks-axi r
 
 The `complete` subcommand unions the reviewed captain-held task ids into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable tasks without recreating volatile task metadata.
-It accepts `--none` as an explicit semantic inventory result, refused while the origin still has a lifecycle-open keyed status decision, and verifies every listed task against tasks-axi before recording completion.
+It accepts `--none` as an explicit semantic inventory result, refused while the origin's status fold still holds an open keyed decision, however the stream ends, since a later `done:` or `failed:` line never closes one, and verifies every listed task against tasks-axi before recording completion.
 With a non-empty inventory it appends a `captain-held [key=<key>]: tracked by <inventory>` transfer event for every still-open keyed status decision, which `bin/fm-classify-lib.sh` recognizes as closing the live status copy without claiming that the captain has answered it.
 
 Scout teardown calls the read-only `verify` subcommand after checking for the report and before removing any source state.
