@@ -1,0 +1,342 @@
+{
+  "about": "What the app writes before the captain's words when he replies to a place in the chat, as src/replyto.ts writes it, every time on the captain's clock in UTC. scripts/replyto.test.mjs builds each from its inputs and compares it with this file, reads each back with splitReply, and checks engine/AGENTS.md documents the first word for word, so the first mate's guidance, this file and the app cannot drift apart.",
+  "cases": [
+    {
+      "name": "documented",
+      "about": "The real 22:07 reply, documented in engine/AGENTS.md: a paragraph naming nothing, in a message naming one task by its PR.",
+      "draft": {
+        "place": {
+          "owner": {
+            "kind": "mate"
+          },
+          "said": {
+            "at": "2026-10-02T22:04:10Z"
+          },
+          "back": 1,
+          "unit": {
+            "kind": "paragraph",
+            "index": 1,
+            "of": 4
+          },
+          "quote": "Doing well - it's on the last step.",
+          "selected": false,
+          "around": {
+            "before": "",
+            "after": "Eight of nine pipeline steps are complete on the merged head: intent, rebase, review, test, document, lint, push, pr. Only ci is left, and it just started. Review came back clean this round - 0 findings - after I decided the rule 2 wording question. PR #32 is open with the same content plus the fixes."
+          },
+          "message": "**Doing well - it's on the last step.**\n\nEight of nine pipeline steps are complete on the merged head: intent, rebase, review, test, document, lint, push, pr. Only **ci** is left, and it just started.\n\nReview came back **clean this round** - 0 findings - after I decided the rule 2 wording question.\n\nPR #32 is open with the same content plus the fixes."
+        },
+        "picked": null
+      },
+      "fleet": {
+        "read": {
+          "at": "2026-10-02T22:07:00Z",
+          "things": [
+            {
+              "kind": "task",
+              "id": "qd-nm-vis-build-1",
+              "title": "Pipeline status per task: who it waits on",
+              "state": "in flight",
+              "pr": "https://github.com/caomyer/quarterdeck/pull/32"
+            },
+            {
+              "kind": "call",
+              "id": "qd-approve-flow-1",
+              "title": "How far to fix the approval loop",
+              "state": "open",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "qd-deterministic-1",
+              "title": "Where the system relies on firstmate for steps a tool could take",
+              "state": "recorded = mechanical",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "nm-rebase-guard-1",
+              "title": "Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?",
+              "state": "open · recommended merge-and-upstream",
+              "pr": null
+            }
+          ]
+        }
+      },
+      "now": "2026-10-02T22:07:30Z",
+      "words": "then why i saw it was on paused state? is that a stale state",
+      "text": "↩ The captain is replying to a place in this chat. It comes first; the captain's words follow the rule.\non        your message of 22:04, 1 before this one, paragraph 1 of 4\nquote     \"Doing well - it's on the last step.\"\naround    (start of your message) ▸here◂ \"Eight of nine pipeline steps are complete on the merged head: intent, rebase,…\"\nnamed     task qd-nm-vis-build-1 \"Pipeline status per task: who it waits on\" · in flight · PR https://github.com/caomyer/quarterdeck/pull/32  (named in the message, not in the quote: \"PR #32\"; the only thing it names; not picked)\nread at   22:07 from the fleet snapshot\n──\nthen why i saw it was on paused state? is that a stale state"
+    },
+    {
+      "name": "picked",
+      "about": "Words the captain selected in a list item naming two calls, one of which he tapped.",
+      "draft": {
+        "place": {
+          "owner": {
+            "kind": "mate"
+          },
+          "said": {
+            "at": "2026-10-02T22:01:00Z"
+          },
+          "back": 1,
+          "unit": {
+            "kind": "item",
+            "index": 2,
+            "of": 3
+          },
+          "quote": "Partly overtaken by events: the determinism work you just approved covers some of it",
+          "selected": true,
+          "around": {
+            "before": "Three decisions, and none of them is urgent. All three crews are working and need nothing from you. nm-rebase-guard-1 - the one I'd take. It's live, it has six incidents behind it. qd-approve-flow-1 - how far to fix the approval loop.",
+            "after": ", and fm/overnight-collab already builds the full option. qd-onboarding-1 - review the built onboarding, with the two Codex gaps named."
+          },
+          "block": "qd-approve-flow-1 - how far to fix the approval loop. Partly overtaken by events: the determinism work you just approved covers some of it, and fm/overnight-collab already builds the full option.",
+          "message": "Three decisions, and none of them is urgent. All three crews are working and need nothing from you. nm-rebase-guard-1 - the one I'd take. It's live, it has six incidents behind it. qd-approve-flow-1 - how far to fix the approval loop. Partly overtaken by events: the determinism work you just approved covers some of it (qd-deterministic-1), and fm/overnight-collab already builds the full option. qd-onboarding-1 - review the built onboarding, with the two Codex gaps named."
+        },
+        "picked": "call:qd-approve-flow-1"
+      },
+      "fleet": {
+        "read": {
+          "at": "2026-10-02T22:02:00Z",
+          "things": [
+            {
+              "kind": "task",
+              "id": "qd-nm-vis-build-1",
+              "title": "Pipeline status per task: who it waits on",
+              "state": "in flight",
+              "pr": "https://github.com/caomyer/quarterdeck/pull/32"
+            },
+            {
+              "kind": "call",
+              "id": "qd-approve-flow-1",
+              "title": "How far to fix the approval loop",
+              "state": "open",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "qd-deterministic-1",
+              "title": "Where the system relies on firstmate for steps a tool could take",
+              "state": "recorded = mechanical",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "nm-rebase-guard-1",
+              "title": "Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?",
+              "state": "open · recommended merge-and-upstream",
+              "pr": null
+            }
+          ]
+        }
+      },
+      "now": "2026-10-02T22:02:40Z",
+      "words": "ok close this one as overtaken, the det work covers it",
+      "text": "↩ The captain is replying to a place in this chat. It comes first; the captain's words follow the rule.\non        your message of 22:01, 1 before this one, item 2 of 3\nquote     \"Partly overtaken by events: the determinism work you just approved covers some of it\"  (a span the captain selected)\naround    \"…six incidents behind it. qd-approve-flow-1 - how far to fix the approval loop.\" ▸here◂ \", and fm/overnight-collab already builds the full option. qd-onboarding-1 -…\"\nmeant     call qd-approve-flow-1 \"How far to fix the approval loop\" · open  (the captain picked it)\nread at   22:02 from the fleet snapshot\n──\nok close this one as overtaken, the det work covers it"
+    },
+    {
+      "name": "several",
+      "about": "A paragraph naming two things, neither picked: the case where the first mate confirms the referent before acting on work.",
+      "draft": {
+        "place": {
+          "owner": {
+            "kind": "mate"
+          },
+          "said": {
+            "at": "2026-10-02T21:40:00Z"
+          },
+          "back": 2,
+          "unit": {
+            "kind": "paragraph",
+            "index": 2,
+            "of": 2
+          },
+          "quote": "nm-rebase-guard-1 waits on qd-deterministic-1, so I parked it.",
+          "selected": false,
+          "around": {
+            "before": "Two of them are tied.",
+            "after": ""
+          },
+          "message": "Two of them are tied.\n\n`nm-rebase-guard-1` waits on `qd-deterministic-1`, so I parked it."
+        },
+        "picked": null
+      },
+      "fleet": {
+        "read": {
+          "at": "2026-10-02T21:44:00Z",
+          "things": [
+            {
+              "kind": "task",
+              "id": "qd-nm-vis-build-1",
+              "title": "Pipeline status per task: who it waits on",
+              "state": "in flight",
+              "pr": "https://github.com/caomyer/quarterdeck/pull/32"
+            },
+            {
+              "kind": "call",
+              "id": "qd-approve-flow-1",
+              "title": "How far to fix the approval loop",
+              "state": "open",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "qd-deterministic-1",
+              "title": "Where the system relies on firstmate for steps a tool could take",
+              "state": "recorded = mechanical",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "nm-rebase-guard-1",
+              "title": "Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?",
+              "state": "open · recommended merge-and-upstream",
+              "pr": null
+            }
+          ]
+        }
+      },
+      "now": "2026-10-02T21:44:10Z",
+      "words": "close it",
+      "text": "↩ The captain is replying to a place in this chat. It comes first; the captain's words follow the rule.\non        your message of 21:40, 2 before this one, paragraph 2 of 2\nquote     \"nm-rebase-guard-1 waits on qd-deterministic-1, so I parked it.\"\naround    \"Two of them are tied.\" ▸here◂ (end of your message)\nnamed     call nm-rebase-guard-1 \"Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?\" · open · recommended merge-and-upstream  (named in the quote: \"nm-rebase-guard-1\"; one of 2 things it names; not picked)\nnamed     call qd-deterministic-1 \"Where the system relies on firstmate for steps a tool could take\" · recorded = mechanical  (named in the quote: \"qd-deterministic-1\"; one of 2 things it names; not picked)\nread at   21:44 from the fleet snapshot\n──\nclose it"
+    },
+    {
+      "name": "card",
+      "about": "A call card: a place that is one thing, raised yesterday.",
+      "draft": {
+        "place": {
+          "owner": {
+            "kind": "call",
+            "id": "nm-rebase-guard-1"
+          },
+          "said": {
+            "at": "2026-10-01T14:02:00Z"
+          },
+          "back": 40,
+          "unit": null,
+          "quote": "Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?",
+          "selected": false,
+          "around": null,
+          "message": ""
+        },
+        "picked": null
+      },
+      "fleet": {
+        "read": {
+          "at": "2026-10-02T22:55:00Z",
+          "things": [
+            {
+              "kind": "task",
+              "id": "qd-nm-vis-build-1",
+              "title": "Pipeline status per task: who it waits on",
+              "state": "in flight",
+              "pr": "https://github.com/caomyer/quarterdeck/pull/32"
+            },
+            {
+              "kind": "call",
+              "id": "qd-approve-flow-1",
+              "title": "How far to fix the approval loop",
+              "state": "open",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "qd-deterministic-1",
+              "title": "Where the system relies on firstmate for steps a tool could take",
+              "state": "recorded = mechanical",
+              "pr": null
+            },
+            {
+              "kind": "call",
+              "id": "nm-rebase-guard-1",
+              "title": "Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?",
+              "state": "open · recommended merge-and-upstream",
+              "pr": null
+            }
+          ]
+        }
+      },
+      "now": "2026-10-02T22:55:20Z",
+      "words": "why is this still open, didn't we agree last week?",
+      "text": "↩ The captain is replying to a place in this chat. It comes first; the captain's words follow the rule.\non        the call card for nm-rebase-guard-1, raised 14:02 yesterday, 40 before this one\nquote     \"Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?\"\nmeant     call nm-rebase-guard-1 \"Make a rebase on a mirrored branch refuse, upstream it to no-mistakes?\" · open · recommended merge-and-upstream  (a card is the thing itself)\nread at   22:55 from the fleet snapshot\n──\nwhy is this still open, didn't we agree last week?"
+    },
+    {
+      "name": "unread",
+      "about": "The fleet snapshot could not be read: the quote still goes, and the block says nothing was checked.",
+      "draft": {
+        "place": {
+          "owner": {
+            "kind": "mate"
+          },
+          "said": {
+            "at": "2026-10-02T22:01:00Z"
+          },
+          "back": 3,
+          "unit": {
+            "kind": "item",
+            "index": 1,
+            "of": 3
+          },
+          "quote": "nm-rebase-guard-1 - the one I'd take. It's live, it has six incidents behind it.",
+          "selected": false,
+          "around": {
+            "before": "Three decisions, and none of them is urgent. All three crews are working and need nothing from you.",
+            "after": "qd-approve-flow-1 - how far to fix the approval loop. Partly overtaken by events: the determinism work you just approved covers some of it, and fm/overnight-collab already builds the full option. qd-onboarding-1 - review the built onboarding, with the two Codex gaps named."
+          },
+          "message": "Three decisions, and none of them is urgent. All three crews are working and need nothing from you. nm-rebase-guard-1 - the one I'd take. It's live, it has six incidents behind it. qd-approve-flow-1 - how far to fix the approval loop. Partly overtaken by events: the determinism work you just approved covers some of it, and fm/overnight-collab already builds the full option. qd-onboarding-1 - review the built onboarding, with the two Codex gaps named."
+        },
+        "picked": null
+      },
+      "fleet": {
+        "failed": {
+          "at": 1790978580000,
+          "why": "fm-fleet-snapshot.sh exited 1"
+        }
+      },
+      "now": "2026-10-02T22:04:00Z",
+      "words": "go with your rec on this",
+      "text": "↩ The captain is replying to a place in this chat. It comes first; the captain's words follow the rule.\non        your message of 22:01, 3 before this one, item 1 of 3\nquote     \"nm-rebase-guard-1 - the one I'd take. It's live, it has six incidents behind it.\"\naround    \"…none of them is urgent. All three crews are working and need nothing from you.\" ▸here◂ \"qd-approve-flow-1 - how far to fix the approval loop. Partly overtaken by…\"\nnamed     could not be read: the fleet snapshot failed at 22:03 (fm-fleet-snapshot.sh exited 1)\n──\ngo with your rec on this"
+    },
+    {
+      "name": "cut",
+      "about": "A paragraph longer than the quote carries, from a resumed conversation that kept no times, replied to by the captain about his own message.",
+      "draft": {
+        "place": {
+          "owner": {
+            "kind": "captain"
+          },
+          "said": {
+            "before": "2026-10-02T09:12:00Z"
+          },
+          "back": 2,
+          "unit": null,
+          "quote": "The model download is the one decision that blocks the release: on cellular it costs a captain on a metered plan about 150 MB each time the app reinstalls, and the store's review guidance asks for a visible choice before a download that size, so I would hold it for Wi-Fi and show the progress in Settings where the other downloads already are.",
+          "selected": false,
+          "around": {
+            "before": "",
+            "after": ""
+          },
+          "message": "The model download is the one decision that blocks the release: on cellular it costs a captain on a metered plan about 150 MB each time the app reinstalls, and the store's review guidance asks for a visible choice before a download that size, so I would hold it for Wi-Fi and show the progress in Settings where the other downloads already are."
+        },
+        "picked": null
+      },
+      "fleet": {
+        "read": {
+          "at": "2026-10-02T09:12:00Z",
+          "things": [
+            {
+              "kind": "task",
+              "id": "qd-nm-vis-build-1",
+              "title": "Pipeline status per task: who it waits on",
+              "state": "in flight",
+              "pr": "https://github.com/caomyer/quarterdeck/pull/32"
+            }
+          ]
+        }
+      },
+      "now": "2026-10-02T09:13:00Z",
+      "words": "about this: still true?",
+      "text": "↩ The captain is replying to a place in this chat. It comes first; the captain's words follow the rule.\non        the captain's own message from a resumed conversation, said before 09:12, 2 before this one\nquote     \"The model download is the one decision that blocks the release: on cellular it costs a captain on a metered plan about 150 MB each time the app reinstalls, and the store's review guidance asks for a visible choice before a download that siz\"  (cut at 240 of 344 characters)\naround    (start of the captain's message) ▸here◂ (end of the captain's message)\nread at   09:12 from the fleet snapshot\n──\nabout this: still true?"
+    }
+  ]
+}

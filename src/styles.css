@@ -551,7 +551,7 @@ a { color: var(--sea); }
 .log-call dl { margin-top: 10px; }
 
 /* Chat: one column, the conversation above and the composer below. */
-.chat-view { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.chat-view { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; }
 .chat-messages { min-height: 0; flex: 1; overflow: auto; padding: 30px max(36px, calc((100% - 760px) / 2)) 20px; }
 .day-label { margin-bottom: 26px; color: var(--fainter); font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-align: center; text-transform: uppercase; }
 .day-label.later { margin-top: 8px; }
@@ -786,6 +786,46 @@ a { color: var(--sea); }
 .attach-problems li:last-child { position: absolute; top: 6px; right: 6px; }
 .attach-problems button { display: grid; width: 20px; height: 20px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--coral); background: transparent; cursor: pointer; }
 .attach-problems button:hover { background: var(--coral-edge); }
+
+/* Replying to a place: the arrow beside it, the strip above the draft, and the line a sent reply carries. */
+.markdown .reply-hot { border-radius: 6px; background: color-mix(in srgb, var(--sea) 9%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--sea) 9%, transparent); }
+.captain-words.reply-hot, .call-chat-card.reply-hot, .answer-chat-card.reply-hot, .artifact-card.reply-hot, .review-card.reply-hot { box-shadow: 0 0 0 2px color-mix(in srgb, var(--sea) 45%, transparent); }
+.reply-flash { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sea) 55%, transparent); transition: box-shadow .2s ease; }
+.markdown .reply-flash { border-radius: 6px; }
+.reply-arrow { position: absolute; z-index: 5; display: grid; width: 26px; height: 26px; place-items: center; padding: 0; border: 1px solid var(--control); border-radius: 8px; color: var(--sea); background: var(--surface); box-shadow: var(--lift); }
+.reply-arrow:hover { border-color: var(--sea); }
+.reply-to-selection { position: absolute; z-index: 5; display: inline-flex; height: 28px; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--control); border-radius: 8px; color: var(--sea); background: var(--surface); box-shadow: var(--lift); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.reply-to-selection:hover { border-color: var(--sea); }
+.reply-strip { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; border-left: 2px solid var(--sea); border-radius: 4px 8px 8px 4px; background: var(--surface-2); }
+.reply-strip-top { display: flex; min-width: 0; align-items: center; gap: 7px; font-size: 12.5px; }
+.reply-strip-top > svg { flex: none; color: var(--sea); }
+.reply-strip-label { flex: none; color: var(--muted); font-weight: 600; }
+.reply-strip-quote { flex: 1; min-width: 0; overflow: hidden; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
+.reply-strip-remove { display: grid; flex: none; width: 20px; height: 20px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; }
+.reply-strip-remove:hover { color: var(--ink); background: var(--surface-3); }
+.reply-problem { display: flex; flex-direction: column; gap: 8px; padding: 9px 11px; border: 1px solid var(--coral-edge); border-radius: 8px; color: var(--coral); background: var(--coral-wash); font-size: 12.5px; line-height: 1.45; }
+.reply-problem strong { font-weight: 600; }
+.reply-problem div { display: flex; flex-wrap: wrap; gap: 6px; }
+.reply-problem button { height: 28px; padding: 0 10px; border: 1px solid var(--coral-edge); border-radius: 7px; color: var(--ink); background: var(--surface); font-size: 12.5px; font-weight: 500; }
+.reply-problem button:hover { border-color: var(--coral); }
+.thing-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.thing-chips.sent { justify-content: flex-end; }
+.thing-chip { display: inline-flex; min-width: 0; max-width: 100%; height: 26px; align-items: center; gap: 6px; padding: 0 9px; border: 1px dashed var(--control-hover); border-radius: 7px; color: var(--ink-2); background: transparent; font-size: 12px; }
+button.thing-chip:hover { border-color: var(--sea); }
+.thing-chip.meant { border: 1px solid var(--sea); background: color-mix(in srgb, var(--sea) 12%, var(--surface)); }
+.thing-chip.warn { border: 1px solid var(--coral-edge); color: var(--coral); background: var(--coral-wash); }
+.thing-kind { flex: none; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.thing-id { min-width: 0; overflow: hidden; color: var(--ink); font-family: var(--mono); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.thing-state { flex: none; color: var(--muted); }
+.thing-hint { color: var(--faint); font-size: 12px; }
+.reply-header { display: inline-flex; max-width: min(100%, 56ch); align-items: center; gap: 6px; padding: 2px 0; border: 0; color: var(--muted); background: transparent; font-size: 12.5px; text-align: left; }
+button.reply-header:hover .reply-header-quote { color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; }
+.reply-header > svg { flex: none; color: var(--sea); }
+.reply-header-who { display: inline-flex; flex: none; align-items: center; gap: 6px; font-weight: 600; }
+.reply-header-quote { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-header.gone { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 11px; border: 1px dashed var(--control-hover); border-radius: 8px; background: var(--surface-2); }
+.reply-header.gone .reply-header-quote { color: var(--ink-2); white-space: normal; }
+.reply-header.gone small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 
 /* Drawers and dialogs. */
 .drawer-backdrop { position: fixed; z-index: 50; inset: 0; background: rgb(12 20 19 / 34%); backdrop-filter: blur(1px); }

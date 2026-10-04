@@ -43,7 +43,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -63,6 +63,8 @@ import { IntakeSection, LinkField, SourceChips, SourcesSettings, UpstreamSection
 import { PriorityBadge, TaskList, type UnderwayStatus } from "./TaskList";
 import { type DetailsLock, TaskChain, TaskDetails, WaitingOnThis } from "./TaskDetails";
 import { standingOf } from "./tasks";
+import { collapse, commandOf, type FleetRead, knownThings, mateReplyOf, type MateReply, pageId, type Place, type ReplyDraft, replyBlock, splitReply, withReply } from "./replyto";
+import { CARDS, blockStretch, MateReplyHeader, placeAt, ReplyAffordances, ReplyHeader, ReplyStrip, selectionStretch, SentThings, showPlace, typing, unitOf, useSelectionChange, wordsOf } from "./Replies";
 import { askKey, linkViews, offerRows, type OfferRow, sourcesOf } from "./sources";
 
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
@@ -161,11 +163,24 @@ export function App() {
   const [attachProblems, setAttachProblems] = useState<string[]>([]);
   const [attaching, setAttaching] = useState(false);
   const [copying, setCopying] = useState(false);
-  // Files picked while one home was chosen are not carried into another.
+  /** The place the message being written replies to, if any. */
+  const [chatReply, setChatReply] = useState<ReplyDraft | null>(null);
+  // Files picked, and a place pointed at, while one home was chosen are not carried into another.
   useEffect(() => {
     setChatFiles([]);
     setAttachProblems([]);
+    setChatReply(null);
   }, [bridge.home]);
+  // What a reply names is read from the fleet snapshot, or the reply says it could not be.
+  const fleetRead = useMemo<FleetRead>(() => {
+    const failed = bridge.snapshotHealth.errors.find((error) => error.source === "fm-fleet-snapshot.sh");
+    if (failed) {
+      const why = collapse(failed.error);
+      return { failed: { at: bridge.snapshotHealth.failedAt ?? null, why: why.length > 200 ? `${why.slice(0, 200)}…` : why } };
+    }
+    if (!fleet) return { failed: { at: null, why: "no fleet snapshot has been read in this home yet" } };
+    return { read: { at: fleet.generated, things: knownThings(fleet) } };
+  }, [fleet, bridge.snapshotHealth]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openArtifact, setOpenArtifact] = useState<OpenArtifact | null>(null);
   const [artifactReturn, setArtifactReturn] = useState<View>("artifacts");
@@ -544,7 +559,7 @@ export function App() {
     if (task) setActiveTask(task);
   }
 
-  async function sendChat() {
+  async function sendChat(reply: ReplyDraft | null = chatReply) {
     // Keep the draft: it can go once the first mate has started in this folder.
     if ((!chatDraft.trim() && chatFiles.length === 0) || !bridge.sendReady || copying) return;
     let attached: Attachment[] = [];
@@ -561,10 +576,12 @@ export function App() {
         setCopying(false);
       }
     }
-    const message = withAttachments(chatDraft, attached);
+    // The reply's block goes first, written now, so the things it names are read as the message goes.
+    const message = withReply(withAttachments(chatDraft, attached), reply ? replyBlock(reply, fleetRead, Date.now()) : null);
     setChatDraft("");
     setChatFiles([]);
     setAttachProblems([]);
+    setChatReply(null);
     await bridge.send(message);
   }
 
@@ -846,7 +863,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} onSend={() => void sendChat()} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} controls={bridge.controls} onSetOption={bridge.setOption} turnSince={bridge.turnSince} calm={calm.calm} calmSaving={calm.saving} calmError={calm.error} onCalm={(on) => void calm.setOn(on)} onDismissCalmError={calm.dismissError} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} reply={chatReply} fleetRead={fleetRead} onReply={setChatReply} onSend={(withReply) => void sendChat(withReply ? chatReply : null)} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} controls={bridge.controls} onSetOption={bridge.setOption} turnSince={bridge.turnSince} calm={calm.calm} calmSaving={calm.saving} calmError={calm.error} onCalm={(on) => void calm.setOn(on)} onDismissCalmError={calm.dismissError} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(backlogRecords, name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -2302,10 +2319,10 @@ function ChatAnswer({ message, answer, call, title, outbox, running, from }: { m
     delivery: status === "Reading" ? "with the first mate" : status?.startsWith("Read by") ? `read by the first mate ${status.slice("Read by ".length)}` : status,
     from,
   });
-  return <AnswerCard callId={answer.call} view={title ? { ...view, title } : view} time={!status && !message.past ? formatTime(message.createdAt) : null} sent={message.text} />;
+  return <AnswerCard callId={answer.call} messageId={message.id} view={title ? { ...view, title } : view} time={!status && !message.past ? formatTime(message.createdAt) : null} sent={message.text} />;
 }
 
-function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart, controls, onSetOption, turnSince, calm, calmSaving, calmError, onCalm, onDismissCalmError }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: () => void; onResend: (id: string, text: string) => void; onRestart: () => void; controls: SessionControls | null; onSetOption: (category: PickedCategory, value: string) => Promise<unknown>; turnSince: number | null; calm: CalmRead | null; calmSaving: boolean; calmError: string | null; onCalm: (on: boolean) => void; onDismissCalmError: () => void }) {
+function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, reply, fleetRead, onReply, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart, controls, onSetOption, turnSince, calm, calmSaving, calmError, onCalm, onDismissCalmError }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; reply: ReplyDraft | null; fleetRead: FleetRead; onReply: (reply: ReplyDraft | null) => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: (withReply: boolean) => void; onResend: (id: string, text: string) => void; onRestart: () => void; controls: SessionControls | null; onSetOption: (category: PickedCategory, value: string) => Promise<unknown>; turnSince: number | null; calm: CalmRead | null; calmSaving: boolean; calmError: string | null; onCalm: (on: boolean) => void; onDismissCalmError: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate, or type / for its commands" : "The first mate isn't running. It'll read this when it starts.";
@@ -2319,6 +2336,145 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
   const items = chatItems(shown, artifacts, reviews, calls);
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const chatView = useRef<HTMLDivElement>(null);
+  // The first mate's replies to one of the captain's messages, by its quote line, matched against the captain's messages before it.
+  const mateReplies = useMemo(() => {
+    const found = new Map<string, MateReply>();
+    const captains: { id: string; words: string }[] = [];
+    for (const message of shown) {
+      if (message.who === "captain") captains.push({ id: message.id, words: captainWords(message.text) });
+      if (message.who !== "mate") continue;
+      const replied = mateReplyOf(message.text, captains);
+      if (replied) found.set(message.id, replied);
+    }
+    return found;
+  }, [shown]);
+  // A sent reply's place is looked for again only when what the chat shows changes.
+  const placesVersion = useMemo(() => ({}), [shown, calls, artifacts]);
+  // Everything a reply can point at, in order: messages and cards, never steps or labels.
+  const replyable = items.filter((item) => item.type === "message" ? item.message.who === "mate" || item.message.who === "captain" : item.type !== "steps" && item.type !== "label");
+  /** The place an element on screen is, as a reply captures it: a card, a block of a message, or selected words in one. */
+  function placeOf(element: HTMLElement, span?: ReturnType<typeof selectionStretch>): Place | null {
+    const card = element.closest<HTMLElement>(CARDS);
+    const back = (index: number) => replyable.length - index;
+    if (card) {
+      const kind = card.dataset.testid;
+      const message = card.dataset.messageId;
+      const index = replyable.findIndex((item) => kind === "call-card" ? item.type === "call" && item.call.id === card.dataset.callId
+        : kind === "artifact-card" ? item.type === "artifact" && pageId(item.artifact) === card.dataset.page && String(item.revision.rev) === card.dataset.rev
+        : (item.type === "answer" || item.type === "review") && item.message.id === message);
+      const item = replyable[index];
+      if (!item) return null;
+      const base = { back: back(index), unit: null, selected: false, around: null, message: "" };
+      if (item.type === "call") return { ...base, owner: { kind: "call", id: item.call.id }, said: item.call.raised_at ? { at: item.call.raised_at } : null, quote: collapse(item.call.question ?? item.call.title) };
+      if (item.type === "artifact") return { ...base, owner: { kind: "page", id: pageId(item.artifact), rev: item.revision.rev }, said: { at: item.revision.presented_at }, quote: collapse(item.revision.title) };
+      if (item.type === "answer") return { ...base, owner: { kind: "answer", call: item.answer.call }, said: saidOf(item.message), quote: collapse(item.answer.kind === "recorded" ? [item.answer.label, item.answer.note].filter(Boolean).join(". ") : item.answer.words) };
+      if (item.type === "review") return { ...base, owner: { kind: "review", page: pageId(item.sent.ref) }, said: saidOf(item.message), quote: collapse(item.message.text.split("\n")[0]) };
+      return null;
+    }
+    const article = element.closest<HTMLElement>("article[data-message-id]");
+    const words = article && wordsOf(article);
+    if (!article || !words) return null;
+    const index = replyable.findIndex((item) => item.type === "message" && item.message.id === article.dataset.messageId);
+    const item = replyable[index];
+    if (item?.type !== "message") return null;
+    const block = span?.place ?? placeAt(element, words);
+    const got = span ?? (block && blockStretch(block, words));
+    if (!block || !got?.quote) return null;
+    const { message } = item;
+    return {
+      owner: { kind: message.who === "mate" ? "mate" : "captain" },
+      said: saidOf(message),
+      back: back(index),
+      unit: unitOf(block, words),
+      quote: got.quote,
+      selected: Boolean(span),
+      around: { before: got.before, after: got.after },
+      block: span ? blockStretch(block, words)?.quote : undefined,
+      message: message.who === "mate" ? mateReplies.get(message.id)?.words ?? message.text : splitAttachments(captainWords(message.text)).text,
+    };
+  }
+  /** Points the reply at an element's place, and puts the caret in the draft to say something about it. */
+  function attach(element: HTMLElement, span?: ReturnType<typeof selectionStretch>) {
+    const place = placeOf(element, span);
+    if (!place) return;
+    onReply({ place, picked: null });
+    setHover(null);
+    setPicked(null);
+    composer.current?.focus();
+  }
+  // The place under the pointer, with the arrow beside it, and words the captain has selected, with their button.
+  const [hover, setHover] = useState<{ element: HTMLElement; top: number; left: number } | null>(null);
+  const [picked, setPicked] = useState<{ top: number; left: number; words: HTMLElement; span: NonNullable<ReturnType<typeof selectionStretch>> } | null>(null);
+  useEffect(() => {
+    const element = hover?.element;
+    element?.classList.add("reply-hot");
+    return () => element?.classList.remove("reply-hot");
+  }, [hover?.element]);
+  useSelectionChange(useCallback(() => {
+    if (window.getSelection()?.isCollapsed !== false) setPicked(null);
+  }, []));
+  // R replies to the place under the pointer, unless the captain is typing.
+  useEffect(() => {
+    if (!hover) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "r" || event.metaKey || event.ctrlKey || event.altKey || typing(event.target)) return;
+      event.preventDefault();
+      attach(hover.element);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  /** What the pointer is over that a reply could point at: a card, or a block of a message's words. */
+  function hoverable(target: HTMLElement) {
+    const card = target.closest<HTMLElement>(CARDS);
+    if (card) return card;
+    const article = target.closest<HTMLElement>("article[data-message-id]");
+    const words = article && wordsOf(article);
+    return words && words.contains(target) ? placeAt(target, words) : null;
+  }
+  const onPointer = (event: React.MouseEvent) => {
+    const target = event.target as HTMLElement;
+    const element = hoverable(target);
+    if (element === hover?.element) return;
+    // Crossing the gap between a block and its arrow keeps the arrow, so long as the pointer stays on that message.
+    if (!element && hover && target.closest("article, [data-testid]") === hover.element.closest("article, [data-testid]")) return;
+    setHover(element ? arrowBeside(element) : null);
+  };
+  /** Where the arrow goes: beside the block's bubble or card, on the side away from the speaker. */
+  function arrowBeside(element: HTMLElement) {
+    const view = chatView.current?.getBoundingClientRect();
+    if (!view) return null;
+    const rect = element.getBoundingClientRect();
+    const captain = element.closest(".captain-message") !== null;
+    const edge = (element.closest(".markdown, .captain-words") ?? element).getBoundingClientRect();
+    // A narrow window has little margin, so the arrow stays inside it, over the bubble's edge if it must.
+    const left = captain ? edge.left - view.left - 34 : edge.right - view.left + 8;
+    return { element, top: rect.top - view.top + Math.min(rect.height, 26) / 2 - 13, left: Math.max(4, Math.min(left, view.width - 30)) };
+  }
+  /** Where the button for selected words goes: just under where the selection ends. */
+  function belowSelection(selection: Selection) {
+    const view = chatView.current?.getBoundingClientRect();
+    if (!view || selection.rangeCount === 0) return null;
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    return { top: rect.bottom - view.top + 6, left: Math.max(8, Math.min(rect.right - view.left - 60, view.width - 130)) };
+  }
+  const onLeave = (event: React.MouseEvent) => {
+    if (!(event.relatedTarget as HTMLElement | null)?.closest?.("[data-testid='reply-arrow']")) setHover(null);
+  };
+  const onRelease = () => {
+    const selection = window.getSelection();
+    const anchor = selection?.anchorNode;
+    const element = anchor?.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor as HTMLElement | null;
+    const article = element?.closest<HTMLElement>("article[data-message-id]");
+    const words = article && wordsOf(article);
+    const span = selection && words ? selectionStretch(selection, words) : null;
+    const spot = selection && belowSelection(selection);
+    setPicked(span && words && spot ? { ...spot, words, span } : null);
+  };
+  const commandNames = useMemo(() => controls?.commands?.map((command) => command.name) ?? null, [controls]);
+  // A slash command goes to Claude Code, not the first mate, so a reply cannot go with one; a setting the composer makes itself is not sent at all.
+  const refusedCommand = reply && !typedSetting(draft, controls) ? commandOf(draft, commandNames) : null;
   // The palette: what the session advertises, for a draft that starts with a slash while the caret is in its first word.
   const [caret, setCaret] = useState(draft.length);
   const [active, setActive] = useState(0);
@@ -2367,7 +2523,8 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       void choose(typed.category, typed.value);
       return;
     }
-    onSend();
+    if (refusedCommand) return;
+    onSend(true);
   };
   const toggleCalm = () => {
     setNotice(null);
@@ -2378,6 +2535,11 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
     if (palette.open && event.key === "Escape") {
       event.preventDefault();
       setDismissedFor(draft);
+      return;
+    }
+    if (reply && event.key === "Escape") {
+      event.preventDefault();
+      onReply(null);
       return;
     }
     if (matches.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
@@ -2421,8 +2583,15 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
   const onScroll = () => {
     const element = scroller.current;
     if (element) following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+    // The arrow and the selection's button follow their place as the chat moves under them.
+    setHover((current) => current && arrowBeside(current.element));
+    setPicked((current) => {
+      const selection = window.getSelection();
+      const spot = current && selection && belowSelection(selection);
+      return current && spot ? { ...current, ...spot } : null;
+    });
   };
-  return <div className="chat-view">{banners}<div className="chat-messages" ref={scroller} onScroll={onScroll} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
+  return <div className="chat-view" ref={chatView}>{banners}<div className="chat-messages" ref={scroller} onScroll={onScroll} onMouseMove={onPointer} onMouseLeave={onLeave} onMouseUp={onRelease} data-testid="chat-messages">{messages.length === 0 && items.length === 1 && <><div className="day-label">Today</div><div className="chat-empty">{running ? "The first mate is getting its bearings. Its first message will show up here." : "No messages yet."}</div></>}{items.length > 1 && items.map((item, index) => item.type === "label"
     ? <div key={item.id} className={`day-label ${index > 0 ? "later" : ""}`}>{item.text}</div>
     : item.type === "artifact"
       ? <ArtifactChatCard key={item.id} artifact={item.artifact} revision={item.revision} tasks={tasks} reviews={reviews} onOpen={() => onOpenArtifact(item.artifact, item.revision.rev)} />
@@ -2436,7 +2605,11 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       ? <StepGroup key={item.id} steps={item.steps} live={turnLive && !item.past && index === items.length - 1} home={home} />
       : item.message.who === "notice"
         ? <div key={item.message.id} className="chat-notice" role="status">{item.message.text}</div>
-        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} />)}{calmOn && turnLive && <WorkingRow since={turnSince} />}</div>{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer"><SlashPalette state={palette} active={active} controls={controls} onHover={setActive} onChoose={pick} />{files.length > 0 && <ul className="file-chips composer-files" aria-label="Attached files">{files.map((file) => <li key={file.source} className="file-chip" title={`${file.source}\nCopied into the home when the message is sent`}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => onRemoveFile(file.source)} disabled={copying} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}{attachProblems.length > 0 && <ul className="attach-problems" role="alert">{attachProblems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={onDismissProblems} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}<div className="composer-draft"><GhostHint draft={draft} hint={ghostHint(draft, commands)} /><textarea ref={composer} value={draft} readOnly={copying} onChange={(event) => { onDraft(event.target.value); readCaret(event); }} onSelect={readCaret} onKeyDown={onKeyDown} placeholder={placeholder} aria-label="Message the first mate" aria-autocomplete="list" aria-controls={matches.length ? "slash-palette" : undefined} aria-activedescendant={matches.length ? `slash-${active}` : undefined} /></div><div className="composer-bar"><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /><span>{hostLabel}</span></span><SessionPills controls={controls} live={sessionLive} openMenu={openMenu} notice={notice} onOpen={setOpenMenu} onChoose={(category, value) => void choose(category, value)} /><CalmPill calm={calm} saving={calmSaving} failed={notice?.kind === "calm"} onToggle={toggleCalm} /><span className="composer-grow" /><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" onClick={onAttach} disabled={attaching || copying} title="Attach files for the first mate to read">{attaching ? "Attaching…" : "Attach"}</button><button className="send-button" onClick={submit} disabled={(!draft.trim() && files.length === 0) || !sendReady || copying} title={sendReady ? "Send message (⏎) · ⇧⏎ for a new line" : "Start the first mate to send messages"}>{copying ? "Sending…" : "Send"}</button></div><SessionNotices controls={controls} calm={calm} notice={notice} dismissedProblems={dismissedProblems} onRetry={() => { if (notice?.kind === "refused") void choose(notice.category, notice.value); else if (notice?.kind === "calm") { setNotice(null); onDismissCalmError(); onCalm(!calmOn); } }} onRestart={() => { setNotice(null); onRestart(); }} onDismiss={() => setNotice(null)} onDismissProblem={(key) => setDismissedProblems((current) => [...current, key])} /></div></div>;
+        : <ChatMessageView key={item.message.id} message={item.message} outbox={outbox[item.message.id]} running={running} onResend={() => onResend(item.message.id, item.message.text)} mateReply={mateReplies.get(item.message.id)} fleetRead={fleetRead} list={scroller} placesVersion={placesVersion} />)}{calmOn && turnLive && <WorkingRow since={turnSince} />}</div><ReplyAffordances hover={hover} selection={picked} onHoverReply={() => hover && attach(hover.element)} onSelectionReply={() => {
+      if (!picked) return;
+      attach(picked.span.place ?? picked.words, picked.span);
+      window.getSelection()?.removeAllRanges();
+    }} />{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer"><SlashPalette state={palette} active={active} controls={controls} onHover={setActive} onChoose={pick} />{reply && <ReplyStrip draft={reply} fleet={fleetRead} said={saidLabel(reply.place)} command={refusedCommand} onPick={(key) => onReply({ ...reply, picked: key })} onRemove={() => { onReply(null); composer.current?.focus(); }} onSendWithout={() => { onReply(null); onSend(false); }} onKeep={() => { composer.current?.focus(); composer.current?.select(); }} />}{files.length > 0 && <ul className="file-chips composer-files" aria-label="Attached files">{files.map((file) => <li key={file.source} className="file-chip" title={`${file.source}\nCopied into the home when the message is sent`}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => onRemoveFile(file.source)} disabled={copying} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}{attachProblems.length > 0 && <ul className="attach-problems" role="alert">{attachProblems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={onDismissProblems} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}<div className="composer-draft"><GhostHint draft={draft} hint={ghostHint(draft, commands)} /><textarea ref={composer} value={draft} readOnly={copying} onChange={(event) => { onDraft(event.target.value); readCaret(event); }} onSelect={readCaret} onKeyDown={onKeyDown} placeholder={placeholder} aria-label="Message the first mate" aria-autocomplete="list" aria-controls={matches.length ? "slash-palette" : undefined} aria-activedescendant={matches.length ? `slash-${active}` : undefined} /></div><div className="composer-bar"><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /><span>{hostLabel}</span></span><SessionPills controls={controls} live={sessionLive} openMenu={openMenu} notice={notice} onOpen={setOpenMenu} onChoose={(category, value) => void choose(category, value)} /><CalmPill calm={calm} saving={calmSaving} failed={notice?.kind === "calm"} onToggle={toggleCalm} /><span className="composer-grow" /><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" onClick={onAttach} disabled={attaching || copying} title="Attach files for the first mate to read">{attaching ? "Attaching…" : "Attach"}</button><button className="send-button" onClick={submit} disabled={(!draft.trim() && files.length === 0) || !sendReady || copying || refusedCommand !== null} title={sendReady ? "Send message (⏎) · ⇧⏎ for a new line" : "Start the first mate to send messages"}>{copying ? "Sending…" : "Send"}</button></div><SessionNotices controls={controls} calm={calm} notice={notice} dismissedProblems={dismissedProblems} onRetry={() => { if (notice?.kind === "refused") void choose(notice.category, notice.value); else if (notice?.kind === "calm") { setNotice(null); onDismissCalmError(); onCalm(!calmOn); } }} onRestart={() => { setNotice(null); onRestart(); }} onDismiss={() => setNotice(null)} onDismissProblem={(key) => setDismissedProblems((current) => [...current, key])} /></div></div>;
 }
 
 /**
@@ -2486,18 +2659,43 @@ function delivery(message: ChatMessage, outbox: OutboxView | undefined, running:
   return { status, tooltip };
 }
 
-function ChatMessageView({ message, outbox, running, onResend }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void }) {
+/** A captain's own words in a message: what follows a reply's block, or the whole message when it carries none. */
+function captainWords(text: string) {
+  return splitReply(text)?.words ?? text;
+}
+
+/** When a message was said, as a reply records it: its time, or for a resumed conversation's, when its history was read. */
+function saidOf(message: ChatMessage): Place["said"] {
+  if (!message.past) return message.createdAt ? { at: message.createdAt } : null;
+  return message.before ? { before: message.before } : null;
+}
+
+/** When a place was said, as the chat shows times. */
+function saidLabel(place: Place) {
+  if (!place.said) return null;
+  return "at" in place.said ? formatWhen(place.said.at) : "earlier";
+}
+
+function ChatMessageView({ message, outbox, running, onResend, mateReply, fleetRead, list, placesVersion }: { message: ChatMessage; outbox?: OutboxView; running: boolean; onResend: () => void; mateReply?: MateReply; fleetRead: FleetRead; list: React.RefObject<HTMLDivElement | null>; placesVersion: unknown }) {
   const { status, tooltip } = delivery(message, outbox, running);
+  // A captain's message may open with the block of a reply, which shows as the line it answers and the things it named.
+  const replied = message.who === "mate" ? null : splitReply(message.text);
   const resendAction = !outbox?.error ? null : outbox.resent
     ? <span className="resent-note">Sent again</span>
     : <button onClick={onResend}>{outbox.errorKind === "not_sent" ? "Retry" : "Send again"}</button>;
   // A message from a resumed session's history has no time or delivery status to show.
   const footer = status
-    ? <><div className={`message-state ${outbox?.error ? "message-error" : ""}`} title={tooltip}><time>{status}</time>{resendAction}</div>{outbox?.error && <small className="message-reason">{outbox.error}</small>}</>
+    ? <><div className={`message-state ${outbox?.error ? "message-error" : ""}`} title={tooltip}><time>{status}</time>{resendAction}</div>{outbox?.error && <small className="message-reason">{outbox.error}</small>}{outbox?.error && replied && !outbox.resent && <small className="message-reason" data-testid="reply-resend-note">Send again goes with the same reply.</small>}</>
     : !message.past && <time>{formatTime(message.createdAt)}</time>;
   // A captain's message names its attached files in its words; they show as files, the same live and in history.
-  const said = message.who === "mate" ? null : splitAttachments(message.text);
-  return <article className={`${message.who === "mate" ? "mate-message" : "captain-message"} ${message.past ? "past" : ""}`}>{message.who === "mate" && <span className="avatar small">FM</span>}<div><strong>{message.who === "mate" ? "First Mate" : "You"}</strong>{!said ? <MateText text={message.text} /> : <>{said.text && <p>{said.text}</p>}{said.files.length > 0 && <ul className="file-chips message-files" aria-label="Attached files">{said.files.map((file) => <li key={file.path} className="file-chip" title={file.path}><Paperclip size={13} /><span>{file.name}</span>{file.size && <small>{file.size}</small>}</li>)}</ul>}</>}{footer}</div></article>;
+  const said = message.who === "mate" ? null : splitAttachments(replied ? replied.words : message.text);
+  const toMessage = () => {
+    const words = mateReply && list.current?.querySelector<HTMLElement>(`article[data-message-id="${CSS.escape(mateReply.message)}"] .captain-words`);
+    if (words) showPlace(words);
+  };
+  return <article className={`${message.who === "mate" ? "mate-message" : "captain-message"} ${message.past ? "past" : ""}`} data-message-id={message.id}>{message.who === "mate" && <span className="avatar small">FM</span>}<div><strong>{message.who === "mate" ? "First Mate" : "You"}</strong>{!said
+    ? <>{mateReply && <MateReplyHeader quote={mateReply.quote} onGo={toMessage} />}<MateText text={mateReply ? mateReply.words : message.text} /></>
+    : <>{replied && <ReplyHeader reply={replied.reply} version={placesVersion} />}{said.text && <p className="captain-words">{said.text}</p>}{replied && <SentThings reply={replied.reply} fleet={fleetRead} />}{said.files.length > 0 && <ul className="file-chips message-files" aria-label="Attached files">{said.files.map((file) => <li key={file.path} className="file-chip" title={file.path}><Paperclip size={13} /><span>{file.name}</span>{file.size && <small>{file.size}</small>}</li>)}</ul>}</>}{footer}</div></article>;
 }
 
 function OfflineBanner({ onStart }: { onStart: () => void }) {
@@ -2823,7 +3021,7 @@ function ArtifactChatCard({ artifact, revision, tasks, reviews, onOpen }: { arti
   // A revision that answers the captain's comments says so, since the review card above is where they are settled.
   const sentIds = new Set((reviews?.[reviewKey(artifact)]?.threads ?? []).map((thread) => thread.id));
   const answering = [...(revision.answers?.addressed ?? []), ...(revision.answers?.replies ?? []).map((reply) => reply.thread)].filter((id, index, all) => sentIds.has(id) && all.indexOf(id) === index);
-  return <article className="artifact-card" data-testid="artifact-card"><span className="artifact-thumb" aria-hidden="true" /><div><strong>{revision.title}</strong><small>{from} · <time>{formatWhen(revision.presented_at)}</time></small>{revision.note && <p>{revision.note}</p>}{answering.length > 0 && <p className="artifact-card-answers" data-testid="answers-review">Answers {answering.length === 1 ? "your comment" : `${answering.length} of your comments`}: {answering.join(", ")}</p>}</div><button onClick={onOpen}>Open review</button></article>;
+  return <article className="artifact-card" data-testid="artifact-card" data-page={pageId(artifact)} data-rev={revision.rev}><span className="artifact-thumb" aria-hidden="true" /><div><strong>{revision.title}</strong><small>{from} · <time>{formatWhen(revision.presented_at)}</time></small>{revision.note && <p>{revision.note}</p>}{answering.length > 0 && <p className="artifact-card-answers" data-testid="answers-review">Answers {answering.length === 1 ? "your comment" : `${answering.length} of your comments`}: {answering.join(", ")}</p>}</div><button onClick={onOpen}>Open review</button></article>;
 }
 
 const VERDICT_WORDS: Record<ReviewVerdict, string> = { changes: "Requests changes", approve: "Approved", comment: "Comments only" };
@@ -2861,7 +3059,7 @@ function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettl
     }
   };
   if (threads.length > 0 && threads.every((thread) => thread.state === "resolved")) {
-    return <article className="review-card settled" data-testid="review-card" data-state="settled">
+    return <article className="review-card settled" data-testid="review-card" data-state="settled" data-message-id={message.id} data-page={pageId(sent.ref)}>
       <CheckCheck size={15} />
       <span><strong>Review of {title} settled</strong> · {threads.length === 1 ? "1 comment" : `${threads.length} comments`} · rev {writtenOn}{answeredIn > writtenOn ? ` → rev ${answeredIn}` : ""}</span>
       {artifact && <button onClick={() => onOpen(answeredIn || review.rev)}>Open</button>}
@@ -2871,7 +3069,7 @@ function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettl
   const task = artifact?.scope === "task" ? tasks.find((candidate) => candidate.id === artifact.task) : undefined;
   const working = task && LIVE_STATES.has(task.current_state.state) && !answeredIn ? `${task.id} · ${stateLabel(task.current_state.state)}` : null;
   const where = artifact?.scope === "task" ? artifact.task : "Shared in chat";
-  return <article className="review-card" data-testid="review-card" data-state={answeredIn ? "answered" : "sent"}>
+  return <article className="review-card" data-testid="review-card" data-state={answeredIn ? "answered" : "sent"} data-message-id={message.id} data-page={pageId(sent.ref)}>
     <header>
       <span className="review-card-kicker">Your review</span>
       <strong>{title}</strong>

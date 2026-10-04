@@ -10,6 +10,7 @@ import { MockSession, STAGED_TURN } from "./mock-session";
 import { addRefusal, linkedBody, linkFixtureRow, mockIssues, mockSources } from "./mock-sources";
 import { mockPipeline } from "./mock-pipeline";
 import { applyTaskEdit, mockTaskRecords, reparse } from "./mock-tasks";
+import { FLEET_FAILED, replyFleet, replyHistory } from "./mock-replies";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
 import type {
@@ -69,6 +70,8 @@ declare global {
   interface Window {
     /** `?replay`: a host recording (`recording-latest.jsonl` as an array) for the review to play through the UI. */
     __FM_REPLAY__?: { t_ms: number; type: string; payload: Record<string, unknown> }[];
+    /** Set by a check to an array to read back every message the app sent, word for word. */
+    __FM_SENT__?: string[];
   }
 }
 
@@ -717,7 +720,9 @@ export class MockHostAdapter implements HostAdapter {
   private homeChosen = false;
   private startThrown = false;
   /** The session's conversation so far, which a resumed session sends back as `history`. */
-  private transcript: HistoryItem[] = reviewFlag("markdown")
+  private transcript: HistoryItem[] = reviewFlag("chat-reply")
+    ? replyHistory()
+    : reviewFlag("markdown")
     ? [...MARKDOWN_SAMPLE]
     : reviewFlag("resumed-day")
       ? [...RESUMED_DAY]
@@ -761,7 +766,7 @@ export class MockHostAdapter implements HostAdapter {
   private readonly openedAt = Date.now();
 
   private static fixtureSnapshot() {
-    const base = MockHostAdapter.pipelineSnapshot(MockHostAdapter.tasksSnapshot(MockHostAdapter.artifactSnapshot()));
+    const base = MockHostAdapter.replySnapshot(MockHostAdapter.pipelineSnapshot(MockHostAdapter.tasksSnapshot(MockHostAdapter.artifactSnapshot())));
     if (!reviewFlag("sources")) return base;
     // `?sources`: GitHub connected as resonance's task source (src/host/mock-sources.ts).
     const variant = reviewValue("sources") || null;
@@ -780,6 +785,17 @@ export class MockHostAdapter implements HostAdapter {
         ...(sources.read ? { sources: sources.read } : {}),
       },
     };
+  }
+
+  /** `?chat-reply`: the tasks and calls its conversation names (src/host/mock-replies.ts). */
+  private static replySnapshot(base: { bearings: BearingsSnapshot; fleet: FleetSnapshot }) {
+    if (!reviewFlag("chat-reply")) return base;
+    return { bearings: base.bearings, fleet: replyFleet(base.fleet, backlogRow) };
+  }
+
+  /** `?chat-reply=fleet-failed`: the last fleet read failed, so the host reports the error beside the fleet it had. */
+  private snapshotErrors() {
+    return reviewValue("chat-reply") === "fleet-failed" ? { errors: [FLEET_FAILED] } : {};
   }
 
   /** `?tasks`: the task list's backlog (src/host/mock-tasks.ts), read by the parser's rules on the captain's day today. */
@@ -1340,6 +1356,7 @@ export class MockHostAdapter implements HostAdapter {
       this.awaitingSend = null;
       return id;
     }
+    window.__FM_SENT__?.push(text);
     const id = `mock-${++this.sequence}`;
     this.outstanding.add(id);
     this.emit({ type: "outbox", payload: { id, status: "queued" } });
@@ -1950,7 +1967,7 @@ export class MockHostAdapter implements HostAdapter {
         errors: [{ source: "fm-bearings-snapshot.sh", error: "fm-bearings-snapshot.sh exited with exit status: 1: jq: error (at data/backlog.md:0): Cannot iterate over null" }],
       };
     }
-    return { phase: "ready", ...this.snapshot };
+    return { phase: "ready", ...this.snapshot, ...this.snapshotErrors() };
   }
 
   /** The browser review path keeps the fixtures, so it reports the fixture's home. `?first-launch` shows the folder question instead. */
@@ -2173,6 +2190,7 @@ export class MockHostAdapter implements HostAdapter {
         if (item.type === "snapshot" && payload.phase === "ready") {
           payload.bearings = this.snapshot.bearings;
           payload.fleet = this.snapshot.fleet;
+          Object.assign(payload, this.snapshotErrors());
           payload.projects = [
             // `?start`: resonance ships product work checked and internal tooling straight to a PR, as quarterdeck does.
             { name: "resonance", mode: reviewFlag("start") ? "no-mistakes-prod-only" : "no-mistakes", yolo: false, description: "Desktop podcast tools" },
@@ -2182,7 +2200,7 @@ export class MockHostAdapter implements HostAdapter {
         // `?session-lost`: the host couldn't resume the previous session, so the startup opens a fresh one.
         if (item.type === "session" && reviewFlag("session-lost")) payload.previous_session_lost = true;
         // `?history` and `?resumed-day`: the startup resumes the previous session instead of opening a new one.
-        if (item.type === "session" && (reviewFlag("history") || reviewFlag("resumed-day")) && !reviewFlag("session-lost")) payload.mode = "loaded";
+        if (item.type === "session" && (reviewFlag("history") || reviewFlag("resumed-day") || reviewFlag("chat-reply")) && !reviewFlag("session-lost")) payload.mode = "loaded";
         const event = this.normalize(item.type, payload);
         this.emit(event);
         if (event.type === "session" && event.payload.mode === "loaded") this.emit({ type: "history", payload: { items: [...this.transcript] } });

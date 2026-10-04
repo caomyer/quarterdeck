@@ -129,8 +129,10 @@ export function CallOpenCard({ call, heading, question, view, form, evidence, ar
  * One of the captain's answers to a call, drawn where he gave it instead of the text written for the first mate. The
  * text the first mate got stays one click away.
  */
-export function AnswerCard({ callId, view, time, sent }: {
+export function AnswerCard({ callId, messageId, view, time, sent }: {
   callId: string;
+  /** The captain's message the card draws, which a reply to the card names. */
+  messageId?: string;
   view: AnswerCardView;
   /** When he said it, for a live message the chat shows no delivery for. */
   time: string | null;
@@ -139,12 +141,12 @@ export function AnswerCard({ callId, view, time, sent }: {
 }) {
   if (view.line) {
     // Gone from the snapshot, so all that is known is the app's own line, which is enough for one.
-    return <article className="answer-chat-card line" data-testid="answer-card" data-kind="recorded" data-call-id={callId}>
+    return <article className="answer-chat-card line" data-testid="answer-card" data-kind="recorded" data-call-id={callId} data-message-id={messageId}>
       <CircleCheck size={15} className="tone-green" /><span className="grow">Your call · <strong>{view.title}</strong> · {view.said}</span><span className="call-pill">closed</span>
     </article>;
   }
   const recorded = view.kind === "recorded";
-  return <article className={`answer-chat-card tone-${view.tone}`} data-testid="answer-card" data-kind={view.kind} data-call-id={callId} data-tone={view.tone}>
+  return <article className={`answer-chat-card tone-${view.tone}`} data-testid="answer-card" data-kind={view.kind} data-call-id={callId} data-message-id={messageId} data-tone={view.tone}>
     <span className="answer-chat-kicker">{view.kicker}</span>
     <strong className="answer-chat-title">{view.title}</strong>
     <div className="answer-chat-said">{recorded ? <Check size={14} /> : <Ellipsis size={14} />}<span>{view.said}</span></div>
