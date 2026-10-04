@@ -882,10 +882,10 @@ FIELDS
     return 1
   fi
 
-  # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+  # Consumed by bin/fm-crew-state.sh passed_pr_read.
   # shellcheck disable=SC2034
   FM_PR_RECORD_STATE=$state
-  # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+  # Consumed by bin/fm-crew-state.sh passed_pr_read.
   # shellcheck disable=SC2034
   FM_PR_RECORD_MERGED=$merged
 }
@@ -905,26 +905,26 @@ fm_pr_github_read_record_with_gh_axi() {  # <owner> <repo> <number>
   fi
   case "$state" in
     MERGED|merged)
-      # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+      # Consumed by bin/fm-crew-state.sh passed_pr_read.
       # shellcheck disable=SC2034
       FM_PR_RECORD_STATE=MERGED
-      # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+      # Consumed by bin/fm-crew-state.sh passed_pr_read.
       # shellcheck disable=SC2034
       FM_PR_RECORD_MERGED=true
       ;;
     OPEN|open)
-      # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+      # Consumed by bin/fm-crew-state.sh passed_pr_read.
       # shellcheck disable=SC2034
       FM_PR_RECORD_STATE=OPEN
-      # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+      # Consumed by bin/fm-crew-state.sh passed_pr_read.
       # shellcheck disable=SC2034
       FM_PR_RECORD_MERGED=false
       ;;
     CLOSED|closed)
-      # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+      # Consumed by bin/fm-crew-state.sh passed_pr_read.
       # shellcheck disable=SC2034
       FM_PR_RECORD_STATE=CLOSED
-      # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+      # Consumed by bin/fm-crew-state.sh passed_pr_read.
       # shellcheck disable=SC2034
       FM_PR_RECORD_MERGED=false
       ;;
@@ -980,10 +980,10 @@ FIELDS
     return 1
   fi
 
-  # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+  # Consumed by bin/fm-crew-state.sh passed_pr_read.
   # shellcheck disable=SC2034
   FM_PR_RECORD_STATE=$state
-  # Consumed by bin/fm-crew-state.sh passed_pr_detail.
+  # Consumed by bin/fm-crew-state.sh passed_pr_read.
   # shellcheck disable=SC2034
   FM_PR_RECORD_MERGED=$merged
 }

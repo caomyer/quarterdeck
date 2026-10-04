@@ -79,6 +79,7 @@ make_fakebin() {  # <dir> -> echoes fakebin path
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ -z "${FM_FAKE_CALL_LOG:-}" ] || printf 'no-mistakes %s\n' "$*" >> "$FM_FAKE_CALL_LOG"
 case "${1:-}" in
   axi)
     shift
@@ -105,6 +106,7 @@ SH
   cat > "$fb/gh" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ -z "${FM_FAKE_CALL_LOG:-}" ] || printf 'gh %s\n' "$*" >> "$FM_FAKE_CALL_LOG"
 case "${1:-} ${2:-}" in
   "api graphql")
     [ -z "${FM_FAKE_PR_READ_LOG:-}" ] || printf 'gh\n' >> "$FM_FAKE_PR_READ_LOG"
@@ -128,6 +130,7 @@ SH
   cat > "$fb/gh-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ -z "${FM_FAKE_CALL_LOG:-}" ] || printf 'gh-axi %s\n' "$*" >> "$FM_FAKE_CALL_LOG"
 case "${1:-} ${2:-}" in
   "pr view")
     [ -z "${FM_FAKE_PR_READ_LOG:-}" ] || printf 'gh-axi\n' >> "$FM_FAKE_PR_READ_LOG"
@@ -140,6 +143,7 @@ SH
   cat > "$fb/glab" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ -z "${FM_FAKE_CALL_LOG:-}" ] || printf 'glab %s\n' "$*" >> "$FM_FAKE_CALL_LOG"
 case "${1:-} ${2:-}" in
   "mr view")
     [ -z "${FM_FAKE_GLAB_READ_LOG:-}" ] || printf '%s|%s\n' "${GITLAB_HOST:-}" "$*" >> "$FM_FAKE_GLAB_READ_LOG"
@@ -246,8 +250,59 @@ make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
 
 # Run the helper for one case dir. FM_FAKE_* env (run output, busy flag) are read
 # from the caller's environment by the fakes above.
+# Every read also runs under --json, and both are checked against each other:
+# the line must come back byte-identical as the object's raw (so --json can
+# never drift from the line the first mate reads), state/source/detail must be
+# the line's own fields, and the --json run must make exactly the same
+# no-mistakes, gh, gh-axi and glab calls in the same order, which is what
+# proves the structured output adds no daemon or forge read. The object is
+# kept in <case-dir>/last.json for assert_pipeline. Callers read the line
+# through a command substitution, where fail cannot stop the suite, so a
+# mismatch is also recorded in $JSON_MISMATCHES, which the suite checks after
+# every assert_pipeline and once more before it reports success.
+JSON_MISMATCHES="$TMP_ROOT/json-mismatches"
+: > "$JSON_MISMATCHES"
 run_crew_state() {  # <case-dir> <id>
-  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" "$2"
+  local line json rc line_calls="$1/calls.line" json_calls="$1/calls.json"
+  : > "$line_calls"
+  : > "$json_calls"
+  line=$(FM_FAKE_CALL_LOG="$line_calls" PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" "$2")
+  rc=$?
+  json=$(FM_FAKE_CALL_LOG="$json_calls" PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" --json "$2")
+  printf '%s\n' "$json" > "$1/last.json"
+  check_json_matches_line "$line" "$json"
+  cmp -s "$line_calls" "$json_calls" \
+    || json_mismatch "--json made different calls than the line read in $1: $(diff "$line_calls" "$json_calls" | tr '\n' ' ')"
+  printf '%s\n' "$line"
+  return "$rc"
+}
+
+json_mismatch() {  # <message>
+  printf '%s\n' "$1" >> "$JSON_MISMATCHES"
+  fail "$1"
+}
+
+check_json_matches_line() {  # <line> <json>
+  local line=$1 json=$2 rest state source detail='' sep=' · '
+  rest=${line#state: }
+  state=${rest%%"$sep"source: *}
+  rest=${rest#*"$sep"source: }
+  case "$rest" in
+    *"$sep"*) source=${rest%%"$sep"*}; detail=${rest#*"$sep"} ;;
+    *) source=$rest ;;
+  esac
+  printf '%s' "$json" | jq -e --arg line "$line" --arg state "$state" --arg source "$source" \
+    --arg detail "$detail" \
+    '.raw == $line and .state == $state and .source == $source and .detail == $detail
+     and has("pipeline")' >/dev/null \
+    || json_mismatch "--json does not match the line: line=[$line] json=[$json]"
+}
+
+# Assert a jq predicate over the pipeline object of the case's last read.
+assert_pipeline() {  # <case-dir> <jq-predicate> <message>
+  [ ! -s "$JSON_MISMATCHES" ] || fail "--json drifted from the line: $(cat "$JSON_MISMATCHES")"
+  jq -e ".pipeline | $2" "$1/last.json" >/dev/null \
+    || fail "$3: pipeline=$(jq -c .pipeline "$1/last.json")"
 }
 
 new_case() {  # <name> -> echoes case dir with an empty state/
@@ -617,6 +672,141 @@ run:
 EOF
 }
 
+# --- --json: the structured pipeline read ------------------------------------
+# run_crew_state already proves, for every case above, that --json returns the
+# line byte-identically and makes the same calls. These pin the facts only the
+# object carries.
+
+# The base-advance re-arm stays working on the line (pinned, untouched, by
+# test_ci_monitoring_green_then_rearm_stays_working); the object names it as its
+# own ci state, so a green PR whose base moved is not shown as plain running.
+test_json_ci_rearm_reads_rearmed() {
+  reset_fakes
+  local d; d=$(new_case json-ci-rearm)
+  make_repo_on_branch "$d/wt" fm/feat-jrearm
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-jrearm.meta" "window=fm:fm-feat-jrearm" "worktree=$d/wt" "kind=ship" "mode=no-mistakes"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-jrearm)"
+  FM_FAKE_CI_LOGS=$(cat <<'EOF'
+all CI checks passed - still monitoring until merged or closed
+base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
+EOF
+)
+  local out; out=$(run_crew_state "$d" feat-jrearm)
+  assert_contains "$out" "state: working" "the rearm line keeps its state"
+  assert_contains "$out" "validating (running)" "the rearm line keeps its detail"
+  assert_pipeline "$d" '.ci == "rearmed" and .pr.state == "open" and .pr.via == "run"' \
+    "--json: base advance after green reads rearmed"
+  pass "--json names a base-advance re-arm as rearmed without changing the line"
+}
+
+# The ask-user test reads the findings table's action column. A finding whose
+# description, file or the branch merely says ask-user is not one.
+test_json_ask_user_is_the_action_column() {
+  reset_fakes
+  local d; d=$(new_case json-ask-user-column)
+  make_repo_on_branch "$d/wt" fm/ask-user-notes
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-jau.meta" "window=fm:fm-feat-jau" "worktree=$d/wt" "kind=ship" "mode=no-mistakes"
+  FM_FAKE_AXI_STATUS="$(cat <<EOF
+run:
+  id: "01RUN"
+  branch: fm/ask-user-notes
+  status: awaiting_approval
+  awaiting_agent: parked 40s
+  head: "$FM_FAKE_RUN_HEAD"
+  pr: ""
+  findings[2]{id,severity,file,line,action,description}:
+    r1,warning,docs/ask-user.md,3,auto-fix,"the ask-user flow, as documented, skips a step"
+    r2,info,a.go,,no-op,"mentions \"ask-user\" in a comment"
+gate: review
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-jau)
+  assert_contains "$out" "parked at review: 2 finding(s)" "the gate and its count still read"
+  assert_not_contains "$out" "ask-user: authority decision" "a mention of ask-user is not an ask-user finding"
+  assert_pipeline "$d" '.findings.ask_user == 0 and .findings.rows[0].description == "the ask-user flow, as documented, skips a step" and .findings.rows[1].description == "mentions \"ask-user\" in a comment" and .findings.rows[0].line == "3"' \
+    "--json: quoted cells unquote verbatim and none is ask-user"
+  pass "ask-user is read from the action column, never a substring"
+}
+
+# A terminal run prints its findings as a scalar, `findings: 1 awaiting`, with
+# no table; the count is carried even though no row is.
+test_json_scalar_findings_count_is_carried() {
+  reset_fakes
+  local d; d=$(new_case json-scalar-findings)
+  make_repo_on_branch "$d/wt" fm/feat-jsf
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-jsf.meta" "window=fm:fm-feat-jsf" "worktree=$d/wt" "kind=ship" "mode=no-mistakes"
+  FM_FAKE_AXI_STATUS="$(cat <<EOF
+run:
+  id: "01M3GQHA9Q05RK4F1EJRRKTW1T"
+  branch: fm/feat-jsf
+  status: completed
+  head: "$FM_FAKE_RUN_HEAD"
+  pr: "https://github.com/o/r/pull/30"
+  findings: 1 awaiting
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,425
+    rebase,skipped,0,0
+    review,completed,1,609236
+outcome: passed
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-jsf)
+  assert_contains "$out" "state: done" "terminal passed run reads done"
+  assert_pipeline "$d" '.findings == {total:1,ask_user:null,rows:[]} and .steps[2] == {step:"review",status:"completed",findings:1,duration_ms:609236}' \
+    "--json: the scalar count is carried and the ask-user split is unknown"
+  pass "a scalar findings count is carried in the structured read"
+}
+
+# direct-PR and local-only ships, like a scout, say how they ship and never
+# imply a pipeline.
+test_json_direct_pr_and_local_only_have_no_pipeline() {
+  reset_fakes
+  local d mode; d=$(new_case json-no-pipeline-modes)
+  make_repo_on_branch "$d/wt" fm/feat-jnp
+  make_fakebin "$d" >/dev/null
+  for mode in direct-PR local-only; do
+    fm_write_meta "$d/state/feat-jnp.meta" "window=fm:fm-feat-jnp" "worktree=$d/wt" "kind=ship" "mode=$mode"
+    run_crew_state "$d" feat-jnp >/dev/null
+    assert_pipeline "$d" ".applies == false and .reason == \"$mode\" and .run == null" \
+      "--json: $mode ships with no pipeline"
+  done
+  pass "direct-PR and local-only report how they ship, with no pipeline"
+}
+
+# Missing metadata has nothing to say about a pipeline at all.
+test_json_missing_meta_has_null_pipeline() {
+  reset_fakes
+  local d; d=$(new_case json-nometa)
+  make_fakebin "$d" >/dev/null
+  run_crew_state "$d" ghost-j >/dev/null
+  assert_pipeline "$d" '. == null' "--json: no metadata, no pipeline object"
+  pass "missing metadata yields a null pipeline"
+}
+
+# The coarse-ledger probe's answer is carried: down when it fails, up when it
+# answers. Nothing else probes, so every other read says not_probed.
+test_json_coarse_daemon_probe_is_carried() {
+  reset_fakes
+  local d other; d=$(new_case json-coarse-daemon)
+  make_repo_on_branch "$d/wt" fm/feat-jcd
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-jcd.meta" "window=fm:fm-feat-jcd" "worktree=$d/wt" "kind=ship" "mode=no-mistakes"
+  other=$(run_running fm/someone-else)
+  FM_FAKE_AXI_STATUS=$other
+  FM_FAKE_RUNS_LIST="  failed     fm/feat-jcd $(git -C "$d/wt" rev-parse --short=8 HEAD)  2026-08-27 12:09"
+  FM_FAKE_DAEMON_DOWN=1
+  run_crew_state "$d" feat-jcd >/dev/null
+  assert_pipeline "$d" '.read == "coarse" and .run.status == "failed" and .daemon == "down"' \
+    "--json: a failed probe reads down"
+  FM_FAKE_DAEMON_DOWN=0
+  run_crew_state "$d" feat-jcd >/dev/null
+  assert_pipeline "$d" '.read == "coarse" and .daemon == "up"' "--json: an answering probe reads up"
+  pass "the coarse path's daemon probe is carried"
+}
+
 # ---------------------------------------------------------------------------
 # (a) active run-step is authoritative
 test_active_run_is_authoritative() {
@@ -630,6 +820,12 @@ test_active_run_is_authoritative() {
   assert_contains "$out" "state: working" "active run -> working"
   assert_contains "$out" "source: run-step" "active run -> run-step source"
   assert_contains "$out" "validating (running)" "active run reports the step"
+  assert_pipeline "$d" '.applies and .reason == null and .read == "full" and .run == {id:"01RUN",head:env.FM_FAKE_RUN_HEAD,status:"running",outcome:null}' \
+    "--json: full read carries the run"
+  assert_pipeline "$d" '(.steps | map(.step + ":" + .status)) == ["intent:completed","review:running"] and .steps[0].duration_ms == 0' \
+    "--json: steps[] is the pipeline table"
+  assert_pipeline "$d" '.gate == null and .active == null and .ci == null and .pr == null and .findings == {total:0,ask_user:0,rows:[]} and .daemon == "not_probed"' \
+    "--json: a running review has no gate, ci or PR"
   pass "active run-step is authoritative"
 }
 
@@ -646,6 +842,8 @@ test_stale_needs_decision_superseded() {
   assert_contains "$out" "state: working" "resumed run -> working despite needs-decision log"
   assert_contains "$out" "source: run-step" "resumed run -> run-step source"
   assert_contains "$out" "superseded" "stale needs-decision log flagged superseded"
+  assert_pipeline "$d" '.run.status == "fixing" and .steps == null and .ci == null' \
+    "--json: a fix round off the ci step never reads as ci"
   pass "stale needs-decision over active run is superseded"
 }
 
@@ -661,6 +859,8 @@ test_stale_blocked_superseded() {
   local out; out=$(run_crew_state "$d" feat-bb)
   assert_contains "$out" "state: working" "resumed run -> working despite blocked log"
   assert_contains "$out" "superseded" "stale blocked log flagged superseded"
+  assert_pipeline "$d" '.run.status == "running" and .read == "full"' \
+    "--json: resumed run is read in full"
   pass "stale blocked over active run is superseded"
 }
 
@@ -685,6 +885,8 @@ test_daemon_claim_over_live_run_reads_run_alive() {
   assert_contains "$out" "reattach" "the reading names the reattach steer"
   assert_not_contains "$out" "superseded by active run" \
     "the daemon claim gets the sharper reading, not the generic one"
+  assert_pipeline "$d" '.active == {step:"review",active_for:"12m3s",last_activity:"8s",quiet:false,round:"auto-fix 1/3"} and .daemon == "not_probed"' \
+    "--json: active step carries the fix round and recency"
   pass "daemon/timeout blocked claim over a live fixing run reads as run alive"
 }
 
@@ -718,6 +920,8 @@ test_socket_refusal_over_stale_fixing_run_reports_blocked() {
   assert_contains "$out" "state: blocked" "missing socket outranks a stale fixing record"
   assert_contains "$out" "source: status-log" "missing socket remains status-log evidence"
   assert_not_contains "$out" "state: working" "missing socket cannot be suppressed by a stale active record"
+  assert_pipeline "$d" '.active.quiet and .active.last_activity == "quiet 31m2s" and .daemon == "down"' \
+    "--json: a quiet step and a socket-down line read as such"
   pass "socket refusal or missing socket over a stale fixing run reports blocked"
 }
 
@@ -737,6 +941,8 @@ test_socket_refusal_over_terminal_run_reports_blocked() {
   assert_contains "$out" "state: blocked" "socket refusal outranks a terminal run record"
   assert_contains "$out" "source: status-log" "terminal run cannot suppress socket-failure evidence"
   assert_not_contains "$out" "state: failed" "terminal run state is not emitted over socket-failure evidence"
+  assert_pipeline "$d" '.run.outcome == "failed" and .daemon == "down"' \
+    "--json: socket-down blocked line marks the daemon down"
   pass "socket refusal over a terminal attributed run reports blocked"
 }
 
@@ -754,6 +960,8 @@ test_ordinary_blocked_over_live_run_keeps_plain_superseded() {
   assert_contains "$out" "state: working" "ordinary blocked log over an active run -> working"
   assert_contains "$out" "superseded by active run" "ordinary blocked keeps the generic reading"
   assert_not_contains "$out" "run alive" "broken pipe is not a pipeline-unreachable alias"
+  assert_pipeline "$d" '.daemon == "not_probed" and .active.quiet == false' \
+    "--json: an ordinary blocker says nothing of the daemon"
   pass "broken-pipe blocker over a live run keeps the plain superseded reading"
 }
 
@@ -773,6 +981,8 @@ test_genuine_daemon_down_reports_blocked() {
   assert_contains "$out" "state: blocked" "a genuine daemon-down claim with no run stays blocked"
   assert_contains "$out" "source: status-log" "no run -> status-log source"
   assert_not_contains "$out" "run alive" "nothing is alive to report"
+  assert_pipeline "$d" '.read == "unanswered" and .run == null and .daemon == "down"' \
+    "--json: an empty axi status is unanswered, not no pipeline"
   pass "genuine daemon-down blocked line still reports blocked"
 }
 
@@ -791,6 +1001,10 @@ test_genuine_parked_not_superseded() {
   assert_contains "$out" "2 finding(s)" "parked includes gate finding count"
   assert_contains "$out" "ask-user" "parked surfaces ask-user finding"
   assert_not_contains "$out" "superseded" "agreeing parked+needs-decision not flagged stale"
+  assert_pipeline "$d" '.gate == {step:"review",status:"awaiting_approval",parked_for:"2m10s"}' \
+    "--json: gate names step, status and how long parked"
+  assert_pipeline "$d" '.findings.total == 2 and .findings.ask_user == 1 and .findings.rows[1] == {id:"r2",severity:"error",file:"b.go",line:"",action:"ask-user",description:"changes product behavior"}' \
+    "--json: findings rows are the table verbatim"
   pass "genuine parked run is not flagged superseded"
 }
 
@@ -808,6 +1022,8 @@ test_scalar_gate_parked_not_superseded() {
   assert_contains "$out" "parked at review" "scalar gate wait names the gate"
   assert_contains "$out" "1 finding(s)" "scalar gate wait includes finding count"
   assert_not_contains "$out" "superseded" "scalar gate wait not flagged stale"
+  assert_pipeline "$d" '.gate == {step:"review",status:null,parked_for:null} and .findings.ask_user == 1 and .findings.total == 1' \
+    "--json: a scalar gate names only its step"
   pass "scalar gate parked run is not flagged superseded"
 }
 
@@ -825,6 +1041,8 @@ test_gate_block_parked_not_superseded() {
   assert_contains "$out" "parked at review" "gate block wait names the gate"
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
+  assert_pipeline "$d" '.gate == {step:"review",status:"fix_review",parked_for:null} and (.steps | map(.status)) == ["completed","fix_review","pending"]' \
+    "--json: a gate block names its fix_review status"
   pass "gate block parked run is not flagged superseded"
 }
 
@@ -841,6 +1059,8 @@ test_ci_ready_done_log_beats_monitoring_run() {
   assert_contains "$out" "source: status-log" "ci-ready state comes from the status log"
   assert_contains "$out" "checks green" "ci-ready detail preserves the report"
   assert_not_contains "$out" "state: working" "ci-ready is not hidden by monitoring run"
+  assert_pipeline "$d" '.ci == "unknown" and .pr == {url:"https://github.com/o/r/pull/2",state:"open",via:"run"}' \
+    "--json: an empty ci log is unknown; a run on ci proves its PR open"
   pass "ci-ready status log beats monitoring run"
 }
 
@@ -867,6 +1087,8 @@ EOF
   assert_contains "$out" "source: run-step" "green ci-monitor -> run-step source"
   assert_contains "$out" "checks green" "green ci-monitor detail mentions checks green"
   assert_not_contains "$out" "state: working" "green ci-monitor must not read as still validating"
+  assert_pipeline "$d" '.ci == "green" and .pr.state == "open" and .pr.via == "run"' \
+    "--json: green ci log reads green"
   pass "ci-monitoring run with checks already green surfaces done"
 }
 
@@ -883,6 +1105,8 @@ test_top_level_ci_checks_green_surfaces_done() {
   assert_contains "$out" "source: run-step" "top-level ci green -> run-step source"
   assert_contains "$out" "checks green" "top-level ci green detail mentions checks green"
   assert_not_contains "$out" "state: working" "top-level ci green must not stay working"
+  assert_pipeline "$d" '.ci == "green" and .steps == null and .pr.via == "run"' \
+    "--json: top-level ci status with a green log reads green"
   pass "top-level ci status uses ci log green marker"
 }
 
@@ -897,6 +1121,8 @@ test_ci_monitoring_no_checks_terminal_surfaces_done() {
   local out; out=$(run_crew_state "$d" feat-cinochecks)
   assert_contains "$out" "state: done" "terminal no-checks ci-monitor run -> done"
   assert_contains "$out" "checks green" "terminal no-checks ci-monitor detail mentions checks green"
+  assert_pipeline "$d" '.ci == "green"' \
+    "--json: no checks, still monitoring, reads green"
   pass "terminal no-checks ci-monitor marker surfaces done"
 }
 
@@ -936,6 +1162,8 @@ EOF
   assert_contains "$out" "state: working" "pending no-checks marker -> working"
   assert_not_contains "$out" "state: done" "pending no-checks marker must not read as done"
   assert_not_contains "$out" "checks green" "pending no-checks marker must not read as checks green"
+  assert_pipeline "$d" '.ci == "running"' \
+    "--json: checks not yet registered read running"
   pass "pending no-checks ci-monitor marker stays working"
 }
 
@@ -950,6 +1178,8 @@ test_ci_monitoring_still_waiting_stays_working() {
   local out; out=$(run_crew_state "$d" feat-ciwait)
   assert_contains "$out" "state: working" "ci step still red -> working"
   assert_not_contains "$out" "checks green" "no green marker present -> no checks-green detail"
+  assert_pipeline "$d" '.ci == "running"' \
+    "--json: checks running read running"
   pass "ci-monitoring run with checks not yet green stays working"
 }
 
@@ -971,6 +1201,8 @@ EOF
   local out; out=$(run_crew_state "$d" feat-cirelapse)
   assert_contains "$out" "state: working" "a later relapse marker must win over an earlier green one"
   assert_not_contains "$out" "state: done" "relapsed ci run must not read as done"
+  assert_pipeline "$d" '.ci == "not-ready"' \
+    "--json: an issue after green reads not-ready"
   pass "a fresh issue after an earlier green reading is not masked"
 }
 
@@ -992,6 +1224,8 @@ EOF
   assert_contains "$out" "state: working" "a stale ready status must not mask a later CI relapse"
   assert_contains "$out" "source: run-step" "relapsed ci run remains run-step sourced"
   assert_not_contains "$out" "state: done" "relapsed ci run with stale done log must not read as done"
+  assert_pipeline "$d" '.ci == "running"' \
+    "--json: checks running again after a re-arm read running"
   pass "stale checks-green status log does not mask CI relapse"
 }
 
@@ -1008,6 +1242,8 @@ test_ci_fixing_after_green_stays_working() {
   assert_contains "$out" "state: working" "ci fixing step must stay working"
   assert_contains "$out" "source: run-step" "ci fixing remains run-step sourced"
   assert_not_contains "$out" "state: done" "ci fixing must not read as checks-green done"
+  assert_pipeline "$d" '.ci == "fixing"' \
+    "--json: a ci fix round reads fixing"
   pass "ci fixing is not overridden by an earlier green marker"
 }
 
@@ -1024,6 +1260,8 @@ test_top_level_fixing_ci_running_after_green_stays_working() {
   assert_contains "$out" "source: run-step" "top-level fixing with ci running remains run-step sourced"
   assert_contains "$out" "validating (fixing)" "top-level fixing keeps fixing detail"
   assert_not_contains "$out" "state: done" "top-level fixing must not use stale green marker"
+  assert_pipeline "$d" '.ci == "fixing" and .run.status == "fixing"' \
+    "--json: a fix round on the ci step reads fixing"
   pass "top-level fixing is not overridden by a stale ci running row"
 }
 
@@ -1057,6 +1295,8 @@ test_terminal_passed() {
   assert_contains "$out" "source: run-step" "passed -> run-step source"
   assert_contains "$out" "run passed: PR merged" "passed run reports merged only after the PR record says merged"
   assert_not_contains "$out" "merged/closed" "passed merged PR must not keep the old ambiguous label"
+  assert_pipeline "$d" '.run.outcome == "passed" and .ci == "green" and .pr.url == "https://github.com/o/r/pull/1" and .pr.state == "merged" and .pr.via == "forge"' \
+    "--json: passed run: merged by forge read"
   pass "terminal passed run is authoritative"
 }
 
@@ -1079,6 +1319,8 @@ test_terminal_passed_uses_matching_retirement_receipt_without_forge() {
   assert_contains "$out" "state: done" "passed run with retired PR receipt -> done"
   assert_contains "$out" "run passed: PR merged" "matching retirement receipt is local merged evidence"
   [ ! -s "$read_log" ] || fail "matching retirement receipt still attempted a forge read"
+  assert_pipeline "$d" '.pr.state == "merged" and .pr.via == "receipt"' \
+    "--json: merge receipt is the PR evidence"
   pass "terminal passed run uses matching retirement receipt without forge"
 }
 
@@ -1123,6 +1365,8 @@ test_terminal_passed_with_open_pr_does_not_claim_merged() {
   assert_contains "$out" "run passed: PR open" "open PR state is named"
   assert_not_contains "$out" "merged/closed" "open PR must not get the old merged/closed label"
   assert_not_contains "$out" "PR merged" "open PR must not be reported merged"
+  assert_pipeline "$d" '.pr.state == "open" and .pr.via == "forge"' \
+    "--json: open PR read from the forge"
   pass "terminal passed run with open PR does not claim merged"
 }
 
@@ -1157,6 +1401,8 @@ test_terminal_passed_without_readable_pr_identity_reports_unknown() {
   assert_contains "$out" "run passed: PR state unknown (no PR identity)" "missing PR identity is honest unknown"
   assert_not_contains "$out" "merged/closed" "unknown PR state must not get the old merged/closed label"
   assert_not_contains "$out" "PR merged" "unknown PR state must not be reported merged"
+  assert_pipeline "$d" '.pr == {url:null,state:"unknown",via:null}' \
+    "--json: no PR identity is unknown"
   pass "terminal passed run without readable PR identity reports unknown"
 }
 
@@ -1178,6 +1424,8 @@ test_terminal_passed_with_open_gitlab_mr_does_not_claim_merged() {
   assert_not_contains "$out" "PR merged" "open GitLab MR must not be reported merged"
   assert_grep 'git.example.com|mr view 9 -R https://git.example.com/group/subgroup/repo -F json' "$read_log" \
     "GitLab MR read uses the parsed host and project URL"
+  assert_pipeline "$d" '.pr.state == "open" and .pr.via == "forge"' \
+    "--json: open MR read from the forge"
   pass "terminal passed run reads open GitLab MR state"
 }
 
@@ -1193,6 +1441,8 @@ test_terminal_passed_with_merged_gitlab_mr_reports_merged() {
   FM_FAKE_AXI_STATUS="$(run_passed_with_pr fm/feat-dgitlabmerged https://gitlab.com/group/repo/-/merge_requests/10)"
   out=$(run_crew_state "$d" feat-dgitlabmerged)
   assert_contains "$out" "run passed: PR merged" "merged GitLab MR is reported merged"
+  assert_pipeline "$d" '.pr.state == "merged" and .pr.via == "forge"' \
+    "--json: merged MR read from the forge"
   pass "terminal passed run reads merged GitLab MR state"
 }
 
@@ -1209,6 +1459,8 @@ test_terminal_passed_with_failed_gitlab_read_reports_unknown() {
   out=$(run_crew_state "$d" feat-dgitlabunknown)
   assert_contains "$out" "run passed: PR state unknown (unreadable)" "failed GitLab read is honest unknown"
   assert_not_contains "$out" "PR merged" "failed GitLab read must not be reported merged"
+  assert_pipeline "$d" '.pr.state == "unknown" and .pr.via == "unreadable"' \
+    "--json: a failed forge read is unreadable"
   pass "terminal passed run handles failed GitLab read"
 }
 
@@ -1222,6 +1474,8 @@ test_terminal_failed() {
   local out; out=$(run_crew_state "$d" feat-e)
   assert_contains "$out" "state: failed" "failed run -> failed"
   assert_contains "$out" "source: run-step" "failed -> run-step source"
+  assert_pipeline "$d" '.run.outcome == "failed" and .ci == null and .pr == null' \
+    "--json: failed run carries its outcome"
   pass "terminal failed run is authoritative"
 }
 
@@ -1239,6 +1493,8 @@ daemon shutting down"
   assert_contains "$out" "source: run-step" "reclassified held run stays run-step sourced"
   assert_contains "$out" "https://github.com/o/r/pull/203" "PR URL surfaced from the run"
   assert_not_contains "$out" "state: failed" "monitor death must not read as a failed run"
+  assert_pipeline "$d" '.run.outcome == "failed" and .ci == "green" and .pr == {url:"https://github.com/o/r/pull/203",state:"unknown",via:null}' \
+    "--json: green-held: ci green, PR state not read"
   pass "orphaned ci monitor after green reads as held-for-merge done"
 }
 
@@ -1254,6 +1510,8 @@ daemon shutting down"
   local out; out=$(run_crew_state "$d" feat-ci-orphan2)
   assert_contains "$out" "state: done" "status-only failed orphaned monitor after green reads done"
   assert_contains "$out" "https://github.com/o/r/pull/203" "PR URL surfaced from the run"
+  assert_pipeline "$d" '.run.status == "failed" and .run.outcome == null and .ci == "green"' \
+    "--json: green-held from status alone"
   pass "status-only failed orphaned ci monitor after green reads done"
 }
 
@@ -1270,6 +1528,8 @@ daemon shutting down"
   local out; out=$(run_crew_state "$d" feat-ci-red)
   assert_contains "$out" "state: failed" "a genuinely red check keeps the run failed"
   assert_not_contains "$out" "state: done" "genuine CI failure must not reclassify to done"
+  assert_pipeline "$d" '.ci == "not-ready"' \
+    "--json: a red ci log reads not-ready"
   pass "genuinely failing CI keeps the failed verdict"
 }
 
@@ -1285,6 +1545,8 @@ daemon shutting down"
   local out; out=$(run_crew_state "$d" feat-ci-2fail)
   assert_contains "$out" "state: failed" "a second failed step keeps the run failed"
   assert_not_contains "$out" "state: done" "a second failed step must not reclassify to done"
+  assert_pipeline "$d" '.ci == null' \
+    "--json: a second failed step never reads the ci log"
   pass "a second failed step disqualifies the orphaned-monitor reclassification"
 }
 
@@ -1317,6 +1579,8 @@ EOF
   local out; out=$(run_crew_state "$d" feat-f)
   assert_contains "$out" "state: working" "this branch's own run attributed via the runs list"
   assert_contains "$out" "source: run-step" "runs-list-resolved run -> run-step source"
+  assert_pipeline "$d" '.read == "coarse" and .run == {id:null,head:null,status:"running",outcome:null} and .steps == null and .findings == null and .gate == null' \
+    "--json: a ledger read carries only the status word"
   pass "cross-branch run is attributed via the real runs list"
 }
 
@@ -1631,6 +1895,8 @@ EOF
   assert_not_contains "$out" "source: run-step" "another branch's run not misattributed"
   assert_contains "$out" "source: status-log" "no own run -> falls back to status-log"
   assert_contains "$out" "state: done" "falls back to the log verb"
+  assert_pipeline "$d" '.read == "none" and .run == null' \
+    "--json: another branch run is no run"
   pass "another branch's run is ignored, falls back"
 }
 
@@ -2149,6 +2415,8 @@ test_scout_skips_run_lookup() {
   local out; out=$(run_crew_state "$d" scout-j)
   assert_not_contains "$out" "source: run-step" "scout ignores no-mistakes run-step"
   assert_contains "$out" "source: pane" "scout reads its semantic busy state"
+  assert_pipeline "$d" '.applies == false and .reason == "scout" and .read == "none" and .run == null' \
+    "--json: a scout has no pipeline"
   pass "scout skips the run lookup"
 }
 
@@ -2163,6 +2431,8 @@ test_torn_down_worktree() {
   expect_code 0 "$rc" "torn-down worktree exits 0"
   assert_contains "$out" "state: unknown" "torn-down -> unknown"
   assert_contains "$out" "source: none" "torn-down -> none source"
+  assert_pipeline "$d" '.read == "not_asked" and .run == null' \
+    "--json: a torn-down worktree was never asked"
   pass "torn-down worktree is handled gracefully"
 }
 
@@ -2205,8 +2475,16 @@ SH
 }
 
 run_remote_crew_state() {  # <case-dir> <id>
-  PATH="$1/fakebin:$PATH" FM_HOME="$1" FM_STATE_OVERRIDE="$1/state" \
-    FM_SSH_BIN="$1/fakebin/fake-ssh" "$CREW_STATE" "$2"
+  local line json rc
+  line=$(PATH="$1/fakebin:$PATH" FM_HOME="$1" FM_STATE_OVERRIDE="$1/state" \
+    FM_SSH_BIN="$1/fakebin/fake-ssh" "$CREW_STATE" "$2")
+  rc=$?
+  json=$(PATH="$1/fakebin:$PATH" FM_HOME="$1" FM_STATE_OVERRIDE="$1/state" \
+    FM_SSH_BIN="$1/fakebin/fake-ssh" "$CREW_STATE" --json "$2")
+  printf '%s\n' "$json" > "$1/last.json"
+  check_json_matches_line "$line" "$json"
+  printf '%s\n' "$line"
+  return "$rc"
 }
 
 test_remote_alive_with_log_uses_status_log() {
@@ -2455,6 +2733,8 @@ EOF
   assert_contains "$out" "state: working" "pipeline-owned live run -> working"
   assert_contains "$out" "source: run-step" "pipeline-owned live run -> run-step source"
   assert_not_contains "$out" "state: failed" "superseded failed row must not surface over the live run"
+  assert_pipeline "$d" '.read == "full" and .run.id == "01RUNLIVE"' \
+    "--json: pipeline-owned run read in full"
   pass "pipeline-owned active run binds without head equality and beats the failed row"
 }
 
@@ -2835,4 +3115,11 @@ test_runs_list_continuation_found_when_axi_answers_other_branch
 test_no_run_herdr_stale_registration_over_shell_reads_agent_gone
 test_no_run_herdr_stale_working_record_is_never_busy
 
+test_json_ci_rearm_reads_rearmed
+test_json_ask_user_is_the_action_column
+test_json_scalar_findings_count_is_carried
+test_json_direct_pr_and_local_only_have_no_pipeline
+test_json_missing_meta_has_null_pipeline
+test_json_coarse_daemon_probe_is_carried
+[ ! -s "$JSON_MISMATCHES" ] || fail "--json drifted from the line: $(cat "$JSON_MISMATCHES")"
 echo "all fm-crew-state tests passed"

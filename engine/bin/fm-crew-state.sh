@@ -59,7 +59,7 @@
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
-#      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
+#      checks" from "checks green, waiting on merge" (see nm_ci_checks_read) -
 #      a ci-step log-tail check overrides working -> done once checks read
 #      green, so a green PR is never silently read as still-validating. And a
 #      terminal FAILED run whose only failure is the ci monitor step, after
@@ -96,6 +96,46 @@
 #      classified by step 4. Backends with no classifier keep reading a failed
 #      capture as gone. The fallback's own comment owns the per-verdict rules.
 #
+# Structured output: `fm-crew-state.sh --json <id>` makes exactly the same
+# reads and prints one object instead of the line:
+#   {state, source, detail, raw, pipeline}
+# where raw is the line, byte for byte, and pipeline holds what those reads
+# found, with no further no-mistakes, forge or backend call
+# (tests/fm-crew-state.test.sh compares both modes' calls on every case):
+#   applies   true for a ship task validating through no-mistakes (or a ship
+#             row with no recorded mode); false otherwise, with
+#   reason    scout | direct-PR | local-only | secondmate, else null
+#   read      full (axi status TOON) | coarse (the runs ledger's status word)
+#             | none (asked, and no run is this worktree's; or nothing to ask)
+#             | unanswered (axi status came back empty: the CLI did not answer,
+#             which is not the same as no run) | not_asked (the lookup was
+#             never reached: no CLI, a torn-down worktree, a remote mate)
+#   run       {id, head, status, outcome}; a coarse read carries only status
+#   steps     the steps[] table as [{step, status, findings, duration_ms}];
+#             null unless read is full
+#   active    the first active_steps[] row as {step, active_for, last_activity,
+#             quiet, round}; quiet is the pipeline's own "quiet" prefix
+#   gate      {step, status: awaiting_approval | fix_review | null, parked_for}
+#             while parked; parked_for is awaiting_agent's "parked <for>"
+#   findings  {total, ask_user, rows}: rows are the findings[] table verbatim,
+#             ask_user counts rows whose action column is ask-user; a scalar
+#             "findings: N awaiting" carries total N with rows [] and ask_user
+#             null, "findings: none" is zero
+#   ci        the ci step only: running | fixing | green | rearmed (checks were
+#             green, then the base advanced; the line still reads working) |
+#             not-ready | unknown (the log could not be read) | null when the
+#             ci step is not running and no log was read. A passed or
+#             checks-passed outcome reads green.
+#   pr        {url, state: open | merged | closed | unknown, via}: via is
+#             receipt or forge (a passed run's merge evidence), skipped
+#             (FM_CREW_STATE_NO_FORGE), unreadable, run (the run is still on
+#             its ci step, which ends when the PR merges or closes), or null
+#   daemon    down (the coarse probe failed, or a blocked line reports a
+#             refused or missing socket) | up (the coarse probe answered) |
+#             not_probed
+# pipeline is null when the task has no metadata. The ci log carries no
+# timestamps, so nothing here says when checks turned green.
+#
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
 # of state; exit 2 only on a usage error (no id).
 set -u
@@ -120,8 +160,21 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
-ID=${1:-}
-[ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
+# --json prints the same read as one JSON object instead of the line; the
+# header's "Structured output" section owns its shape.
+JSON_MODE=0
+ID=
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON_MODE=1 ;;
+    *) [ -n "$ID" ] || ID=$arg ;;
+  esac
+done
+[ -n "$ID" ] || { echo "usage: fm-crew-state.sh [--json] <id>" >&2; exit 2; }
+if [ "$JSON_MODE" = 1 ] && ! command -v jq >/dev/null 2>&1; then
+  echo "fm-crew-state: --json needs jq" >&2
+  exit 1
+fi
 
 # Fleet snapshot composition supplies its captured metadata path here so every
 # state read resolves the same task generation selected by that snapshot.
@@ -139,12 +192,245 @@ FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 SEP=' · '
 
-# Emit the one canonical line and exit 0. Detail is optional.
+# Emit the one canonical line and exit 0. Detail is optional. Under --json the
+# same state, source, detail and line are printed as one object beside the
+# pipeline facts this read already gathered (pipeline_json, below).
 emit() {  # <state> <source> [detail]
   local line="state: $1${SEP}source: $2"
   [ -n "${3:-}" ] && line="$line${SEP}$3"
+  if [ "$JSON_MODE" = 1 ]; then
+    jq -cn --arg state "$1" --arg source "$2" --arg detail "${3:-}" --arg raw "$line" \
+      --argjson pipeline "$(pipeline_json)" \
+      '{state:$state,source:$source,detail:$detail,raw:$raw,pipeline:$pipeline}'
+    exit 0
+  fi
   printf '%s\n' "$line"
   exit 0
+}
+
+# --- structured output (--json) ---------------------------------------------
+# Every fact below comes from a read this script already makes on the path it
+# took; building the object adds no no-mistakes, forge or backend call. The
+# P_* variables record what each read found as the script goes, and
+# pipeline_json folds them with $RUN_OUT's own tables when emit runs.
+P_META=0          # 1 once state/<id>.meta was found
+P_APPLIES=false   # kind=ship validating through no-mistakes
+P_REASON=         # why not: scout | direct-PR | local-only | secondmate
+P_READ=none       # full | coarse | none | unanswered | not_asked
+P_GATE_STEP=
+P_GATE_STATUS=
+P_PARKED_FOR=
+P_CI=             # set where an outcome itself says checks passed
+P_PR_URL=
+P_PR_STATE=
+P_PR_VIA=
+P_DAEMON=not_probed
+HAVE_RUN=0
+RUN_SOURCE=full
+RUN_OUT=""
+RUN_STATUS=""
+COARSE_STATUS=""
+CI_STEP_STATUS=""
+CI_LOG_STATE=""
+CI_LOG_MARK=""
+CI_LOG_READ=0
+LOG_LINE=""
+LOG_VERB=""
+
+# One TOON table from $RUN_OUT: its header's column list on the first line,
+# then each row verbatim. Empty when the table is absent. The header's own
+# indentation bounds the block, as nm_steps_rows does.
+nm_toon_table() {  # <name>
+  printf '%s\n' "$RUN_OUT" | awk -v name="$1" '
+    !inblock {
+      line = $0
+      sub(/^[ \t]+/, "", line)
+      if (index(line, name "[") == 1 && match(line, /^[A-Za-z_]+\[[0-9]+\]\{[^}]*\}:/)) {
+        hdr = index($0, name)
+        cols = substr(line, index(line, "{") + 1)
+        cols = substr(cols, 1, index(cols, "}") - 1)
+        print cols
+        inblock = 1
+      }
+      next
+    }
+    {
+      if ($0 ~ /^[ \t]*$/) exit
+      match($0, /[^ \t]/)
+      if (RSTART <= hdr) exit
+      sub(/^[ \t]+/, "")
+      print
+    }
+  '
+}
+
+# 0 when a row of the findings table has action ask-user. The action column is
+# found by name and each row is split respecting TOON quoting, so a finding
+# whose description, file or branch merely mentions ask-user never counts.
+nm_findings_ask_user() {
+  nm_toon_table findings | awk '
+    function cells(line, out,    n, i, c, q, esc, cur) {
+      n = 0; cur = ""; q = 0; esc = 0
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (esc) { cur = cur c; esc = 0; continue }
+        if (q && c == "\\") { cur = cur c; esc = 1; continue }
+        if (c == "\"") { q = !q; cur = cur c; continue }
+        if (c == "," && !q) { out[++n] = cur; cur = ""; continue }
+        cur = cur c
+      }
+      out[++n] = cur
+      return n
+    }
+    function clean(v) {
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
+      return v
+    }
+    NR == 1 {
+      n = split($0, hdr, ",")
+      for (i = 1; i <= n; i++) if (clean(hdr[i]) == "action") col = i
+      if (!col) exit 1
+      next
+    }
+    { cells($0, row); if (clean(row[col]) == "ask-user") { found = 1; exit } }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+# jq definitions that turn nm_toon_table output into objects keyed by the
+# header's own column names, unquoting each TOON cell.
+# shellcheck disable=SC2016  # jq program text, not shell expansion.
+PIPELINE_JQ_DEFS='
+def cells:
+  reduce (explode[]) as $c ({cur: [], out: [], q: false, esc: false};
+    if .esc then .cur += [$c] | .esc = false
+    elif .q and $c == 92 then .cur += [$c] | .esc = true
+    elif $c == 34 then .cur += [$c] | .q = (.q | not)
+    elif $c == 44 and (.q | not) then .out += [.cur | implode] | .cur = []
+    else .cur += [$c] end)
+  | .out + [.cur | implode]
+  | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")
+        | if test("^\".*\"$") then (try fromjson catch .[1:-1]) else . end);
+def table:
+  if . == "" then null
+  else split("\n") as $lines
+    | ($lines[0] | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; ""))) as $cols
+    | [$lines[1:][] | select(length > 0) | cells as $v
+       | reduce range(0; $cols | length) as $i ({}; .[$cols[$i]] = ($v[$i] // ""))]
+  end;
+def nullish: if . == "" then null else . end;
+def num: if test("^[0-9]+$") then tonumber else nullish end;
+'
+
+# The ci field reads only the ci step itself: its steps[] row (or a run whose
+# top-level status is ci), and the ci log when this read already fetched it.
+# A fix round on another step never reads as ci.
+pipeline_ci() {
+  [ -n "$P_CI" ] && { printf '%s' "$P_CI"; return; }
+  [ "$HAVE_RUN" = 1 ] && [ "$RUN_SOURCE" = full ] || return 0
+  local step
+  step=$(nm_ci_step_status)
+  [ -z "$step" ] && [ "$RUN_STATUS" = ci ] && step=running
+  # Steps run in order, so a fix round while ci is the running step is ci's.
+  [ "$step" = running ] && [ "$RUN_STATUS" = fixing ] && step=fixing
+  if [ "$CI_LOG_READ" = 1 ]; then
+    case "$CI_LOG_STATE:$CI_LOG_MARK" in
+      green:*) printf 'green' ;;
+      not-ready:rearmed|not-ready:running) printf '%s' "$CI_LOG_MARK" ;;
+      not-ready:*) if [ "$step" = fixing ]; then printf 'fixing'; else printf 'not-ready'; fi ;;
+      *) printf 'unknown' ;;
+    esac
+    return
+  fi
+  printf '%s' "$step"
+}
+
+pipeline_json() {
+  [ "$P_META" = 1 ] || { printf 'null'; return; }
+  local full=0 steps='' active='' findings='' findings_scalar='' daemon=$P_DAEMON
+  local run_id='' run_head='' run_status='' run_outcome='' has_run=false
+  if [ "$HAVE_RUN" = 1 ]; then
+    has_run=true
+    if [ "$RUN_SOURCE" = full ]; then
+      full=1
+      steps=$(nm_toon_table steps)
+      active=$(nm_toon_table active_steps)
+      findings=$(nm_toon_table findings)
+      findings_scalar=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" findings)")
+      run_id=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" id)")
+      run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" head)")
+      run_status=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" status)")
+      run_outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" outcome)")
+      # A PR the run names before it ends: its ci step monitors it until it
+      # merges or closes, so a run still on that step proves it open; any
+      # other point says nothing about its state.
+      if [ -z "$P_PR_URL" ] && [ -z "$P_PR_STATE" ]; then
+        P_PR_URL=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" pr)")
+        if [ -n "$P_PR_URL" ] && [ -z "$run_outcome" ] \
+          && { [ "$run_status" = ci ] || [ -n "$(nm_ci_step_status)" ]; }; then
+          P_PR_STATE=open
+          P_PR_VIA=run
+        fi
+      fi
+    else
+      run_status=$COARSE_STATUS
+    fi
+  fi
+  if [ "$LOG_VERB" = blocked ] && declare -F log_reports_daemon_socket_down >/dev/null \
+    && log_reports_daemon_socket_down "$LOG_LINE"; then
+    daemon=down
+  fi
+  jq -cn \
+    --argjson applies "$P_APPLIES" --arg reason "$P_REASON" --arg read "$P_READ" \
+    --argjson has_run "$has_run" --argjson full "$full" \
+    --arg run_id "$run_id" --arg run_head "$run_head" \
+    --arg run_status "$run_status" --arg run_outcome "$run_outcome" \
+    --arg steps "$steps" --arg active "$active" \
+    --arg findings "$findings" --arg findings_scalar "$findings_scalar" \
+    --arg gate_step "$P_GATE_STEP" --arg gate_status "$P_GATE_STATUS" --arg parked_for "$P_PARKED_FOR" \
+    --arg ci "$(pipeline_ci)" \
+    --arg pr_url "$P_PR_URL" --arg pr_state "$P_PR_STATE" --arg pr_via "$P_PR_VIA" \
+    --arg daemon "$daemon" \
+    "$PIPELINE_JQ_DEFS"'
+    ($findings | table) as $rows
+    | {
+        applies: $applies,
+        reason: ($reason | nullish),
+        read: $read,
+        run: (if $has_run then
+                {id: ($run_id | nullish), head: ($run_head | nullish),
+                 status: ($run_status | nullish), outcome: ($run_outcome | nullish)}
+              else null end),
+        steps: (if $full == 1 then
+                  ($steps | table | if . == null then null else
+                    map({step, status, findings: ((.findings // "") | num),
+                         duration_ms: ((.duration_ms // "") | num)}) end)
+                else null end),
+        active: (if $full == 1 then
+                   ($active | table | if . == null or length == 0 then null else .[0]
+                     | {step, active_for: ((.active_for // "") | nullish),
+                        last_activity: ((.last_activity // "") | nullish),
+                        quiet: ((.last_activity // "") | startswith("quiet")),
+                        round: ((.round // "") | nullish)} end)
+                 else null end),
+        gate: (if $gate_step == "" then null else
+                 {step: $gate_step, status: ($gate_status | nullish), parked_for: ($parked_for | nullish)} end),
+        findings: (if $full != 1 then null
+                   elif $rows != null then
+                     {total: ($rows | length),
+                      ask_user: ([$rows[] | select(.action == "ask-user")] | length),
+                      rows: $rows}
+                   elif ($findings_scalar | test("^[0-9]+")) then
+                     {total: ($findings_scalar | capture("^(?<n>[0-9]+)").n | tonumber), ask_user: null, rows: []}
+                   elif $findings_scalar == "none" then {total: 0, ask_user: 0, rows: []}
+                   else null end),
+        ci: ($ci | nullish),
+        pr: (if $pr_url == "" and $pr_state == "" then null else
+               {url: ($pr_url | nullish), state: (if $pr_state == "" then "unknown" else $pr_state end),
+                via: ($pr_via | nullish)} end),
+        daemon: $daemon
+      }'
 }
 
 # --- meta resolution --------------------------------------------------------
@@ -160,6 +446,17 @@ KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
 REMOTE_HOST=$(meta_value remote_host)
 [ -n "$KIND" ] || KIND=ship
+P_META=1
+# Only a ship task validating through no-mistakes ever has a run to read; the
+# rest say how they ship instead. A ship row with no recorded mode predates
+# modes, and the run lookup below reads runs for it as for no-mistakes.
+case "$KIND:$(meta_value mode)" in
+  ship:direct-PR) P_REASON=direct-PR ;;
+  ship:local-only) P_REASON=local-only ;;
+  ship:*) P_APPLIES=true; P_READ=not_asked ;;
+  secondmate:*) P_REASON=secondmate ;;
+  *) P_REASON=scout ;;
+esac
 
 # A torn-down (or never-created) worktree has no current state to read. A
 # remote secondmate's recorded worktree is a path on ITS host, so the local
@@ -320,7 +617,14 @@ mr_read_record_bounded() {  # <host> <path> <number>
   FM_PR_RECORD_MERGED=$merged
 }
 
-passed_pr_detail() {
+# Read a terminal passed run's PR state. Sets PASSED_PR_DETAIL to the line's
+# detail and P_PR_URL, P_PR_STATE and P_PR_VIA to the same answer for --json.
+passed_pr_answer() {  # <state> <via> <detail>
+  P_PR_STATE=$1
+  P_PR_VIA=$2
+  PASSED_PR_DETAIL=$3
+}
+passed_pr_read() {
   local provider url host path number owner repo raw_pr state_lc
   raw_pr=$(strip_quotes "$(nm_field pr)")
   if fm_pr_url_parse "$raw_pr"; then
@@ -336,20 +640,21 @@ passed_pr_detail() {
     path=$FM_PR_META_PATH
     number=$FM_PR_META_NUMBER
   else
-    printf 'run passed: PR state unknown (no PR identity)'
+    passed_pr_answer unknown '' 'run passed: PR state unknown (no PR identity)'
     return
   fi
+  P_PR_URL=$url
   if fm_pr_poll_retirement_receipt_valid "$STATE" "$ID" \
     && [ "$FM_PR_RETIRE_PROVIDER" = "$provider" ] \
     && [ "$FM_PR_RETIRE_URL" = "$url" ] \
     && [ "$FM_PR_RETIRE_HOST" = "$host" ] \
     && [ "$FM_PR_RETIRE_PATH" = "$path" ] \
     && [ "$FM_PR_RETIRE_NUMBER" = "$number" ]; then
-    printf 'run passed: PR merged'
+    passed_pr_answer merged receipt 'run passed: PR merged'
     return
   fi
   if [ "${FM_CREW_STATE_NO_FORGE:-0}" = 1 ]; then
-    printf 'run passed: PR state unknown (forge read skipped)'
+    passed_pr_answer unknown skipped 'run passed: PR state unknown (forge read skipped)'
     return
   fi
 
@@ -358,38 +663,38 @@ passed_pr_detail() {
       owner=${path%%/*}
       repo=${path#*/}
       if ! pr_read_record_bounded "$owner" "$repo" "$number"; then
-        printf 'run passed: PR state unknown (unreadable)'
+        passed_pr_answer unknown unreadable 'run passed: PR state unknown (unreadable)'
         return
       fi
       if [ "$FM_PR_RECORD_MERGED" = true ]; then
-        printf 'run passed: PR merged'
+        passed_pr_answer merged forge 'run passed: PR merged'
         return
       fi
       state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
       case "$state_lc" in
-        open)   printf 'run passed: PR open' ;;
-        closed) printf 'run passed: PR closed' ;;
-        *)      printf 'run passed: PR state %s' "$state_lc" ;;
+        open)   passed_pr_answer open forge 'run passed: PR open' ;;
+        closed) passed_pr_answer closed forge 'run passed: PR closed' ;;
+        *)      passed_pr_answer unknown forge "run passed: PR state $state_lc" ;;
       esac
       ;;
     gitlab)
       if ! mr_read_record_bounded "$host" "$path" "$number"; then
-        printf 'run passed: PR state unknown (unreadable)'
+        passed_pr_answer unknown unreadable 'run passed: PR state unknown (unreadable)'
         return
       fi
       if [ "$FM_PR_RECORD_MERGED" = true ]; then
-        printf 'run passed: PR merged'
+        passed_pr_answer merged forge 'run passed: PR merged'
         return
       fi
       state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
       case "$state_lc" in
-        open|opened) printf 'run passed: PR open' ;;
-        closed)      printf 'run passed: PR closed' ;;
-        *)           printf 'run passed: PR state %s' "$state_lc" ;;
+        open|opened) passed_pr_answer open forge 'run passed: PR open' ;;
+        closed)      passed_pr_answer closed forge 'run passed: PR closed' ;;
+        *)           passed_pr_answer unknown forge "run passed: PR state $state_lc" ;;
       esac
       ;;
     *)
-      printf 'run passed: PR state unknown (unreadable: %s)' "$url"
+      passed_pr_answer unknown unreadable "run passed: PR state unknown (unreadable: $url)"
       ;;
   esac
 }
@@ -535,7 +840,7 @@ nm_run_activity_is_recent() {
 # ci log's last recognized marker reads checks green. Requires the exact
 # shape, all on positive evidence: a steps[] table where every step completed
 # except exactly `ci` failed (any other non-completed status, or a second
-# failed step, disqualifies), plus nm_ci_checks_state=green (a genuinely red
+# failed step, disqualifies), plus nm_ci_checks_read's green (a genuinely red
 # check, or an unreadable ci log, keeps the failure a failure). This is the
 # orphaned-CI-monitor gap (2026-09-05 jr-voice): a run held for a captain
 # merge decision polls until the shared daemon restarts under it and marks
@@ -564,7 +869,8 @@ nm_failed_run_is_green_held_ci() {
 $rows
 EOF
   [ "$saw_ci_failed" = 1 ] || return 1
-  [ "$(nm_ci_checks_state)" = green ]
+  nm_ci_checks_read
+  [ "$CI_LOG_STATE" = green ]
 }
 
 # Reclassify a terminal failed run as done (held-for-merge) when
@@ -631,19 +937,30 @@ nm_effective_ci_step_status() {
 # for the MOST RECENT recognized marker (the log is append-only/chronological,
 # so the last match is current): green with nothing red after it means CI is
 # green right now, still only waiting on merge/close.
-nm_ci_checks_state() {
+#
+# Sets CI_LOG_STATE to green, not-ready or unknown, and CI_LOG_MARK to which
+# kind of marker decided it, for --json only: "rearmed" when the last marker is
+# the base-advance re-arm (which still reads not-ready: a green PR whose base
+# moved is held to working on purpose), "running" when checks are running or
+# not yet registered, else empty. Callers read the variables rather than a
+# command substitution so the mark survives without a second log read.
+nm_ci_checks_read() {
   local run_id log_tail marker
+  CI_LOG_STATE=unknown
+  CI_LOG_MARK=
+  CI_LOG_READ=1
   run_id=$(strip_quotes "$(nm_field id)")
-  [ -n "$run_id" ] || { printf 'unknown'; return; }
+  [ -n "$run_id" ] || return 0
   log_tail=$(nm_run axi logs --step ci --run "$run_id") || true
-  [ -n "$log_tail" ] || { printf 'unknown'; return; }
+  [ -n "$log_tail" ] || return 0
   marker=$(printf '%s\n' "$log_tail" \
     | grep -E 'CI checks passed|no CI checks reported - still monitoring|no CI checks reported yet|checks failed|issues detected|CI checks running|base branch advanced.*re-arming CI monitor timeout' \
     | tail -1)
   case "$marker" in
-    *"checks passed"*|*"no CI checks reported - still monitoring"*) printf 'green' ;;
-    *"no CI checks reported yet"*|*"checks failed"*|*"issues detected"*|*"CI checks running"*|*"base branch advanced"*"re-arming CI monitor timeout"*) printf 'not-ready' ;;
-    *) printf 'unknown' ;;
+    *"checks passed"*|*"no CI checks reported - still monitoring"*) CI_LOG_STATE=green ;;
+    *"base branch advanced"*"re-arming CI monitor timeout"*) CI_LOG_STATE=not-ready; CI_LOG_MARK=rearmed ;;
+    *"no CI checks reported yet"*|*"CI checks running"*) CI_LOG_STATE=not-ready; CI_LOG_MARK=running ;;
+    *"checks failed"*|*"issues detected"*) CI_LOG_STATE=not-ready ;;
   esac
 }
 # Coarse fallback when the bare `axi status` answer is not this branch's own
@@ -690,9 +1007,15 @@ RUN_SOURCE=full
 COARSE_STATUS=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
+# P_READ records what the lookup found for --json: no branch means no run can
+# be this crew's (none), and an `axi status` that came back empty means the
+# CLI did not answer (unanswered), which is not the same as no run.
+[ "$KIND" = ship ] && [ -z "$CREW_BRANCH" ] && P_READ=none
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
+  P_READ=unanswered
   if [ -n "$RUN_OUT" ]; then
+    P_READ=none
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Head equality, or the pipeline-owned-active exemption: while the
     # pipeline owns this branch, the daemon's own branch attribution is
@@ -745,6 +1068,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
+  P_READ=$RUN_SOURCE
   if [ "$RUN_SOURCE" = coarse ]; then
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
@@ -762,7 +1086,9 @@ if [ "$HAVE_RUN" = 1 ]; then
         # and no ci log, so the orphaned-monitor shape cannot be recognized
         # here. With the daemon provably down, the row is unverified evidence
         # from a dead instrument and must not read as work failure.
+        P_DAEMON=up
         if nm_daemon_probe_down; then
+          P_DAEMON=down
           RUN_STATE=unknown
           RUN_DETAIL="no-mistakes daemon unreachable; last ledger record failed - unverified"
         else
@@ -782,8 +1108,8 @@ if [ "$HAVE_RUN" = 1 ]; then
 
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL=$(passed_pr_detail) ;;
-        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
+        passed)        RUN_STATE="done"; passed_pr_read; RUN_DETAIL=$PASSED_PR_DETAIL; P_CI=green ;;
+        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review"; P_CI=green ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
             RUN_STATE=failed; RUN_DETAIL="run failed"
@@ -801,9 +1127,16 @@ if [ "$HAVE_RUN" = 1 ]; then
       [ -n "$gate" ] || gate=gate
       RUN_STATE=parked
       RUN_DETAIL="parked at $gate"
+      P_GATE_STEP=$gate
+      case "$gate_status" in
+        awaiting_approval|fix_review) P_GATE_STATUS=$gate_status ;;
+        *) case "$status" in awaiting_approval|fix_review) P_GATE_STATUS=$status ;; esac ;;
+      esac
+      parked=$(strip_quotes "$(trim "${awaiting#*:}")")
+      case "$parked" in parked\ *) P_PARKED_FOR=${parked#parked } ;; esac
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
-      if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
+      if nm_findings_ask_user; then
         RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
       fi
     else
@@ -823,7 +1156,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         CI_STEP_STATUS=$(nm_effective_ci_step_status)
         case "$CI_STEP_STATUS" in
           running)
-            CI_LOG_STATE=$(nm_ci_checks_state)
+            nm_ci_checks_read
             if [ "$CI_LOG_STATE" = green ]; then
               RUN_STATE="done"
               RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
@@ -845,7 +1178,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     if [ "$RUN_STATUS" = fixing ]; then
       CI_LOG_STATE=not-ready
     elif [ "$CI_STEP_STATUS" = running ] && [ -z "$CI_LOG_STATE" ]; then
-      CI_LOG_STATE=$(nm_ci_checks_state)
+      nm_ci_checks_read
     elif [ "$CI_STEP_STATUS" = fixing ]; then
       CI_LOG_STATE=not-ready
     fi
