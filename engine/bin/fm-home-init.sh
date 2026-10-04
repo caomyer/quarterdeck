@@ -106,9 +106,11 @@ is_firstmate_code() {
 physical() {
   local path=${1%/} rest='' dir
   while [ -n "$path" ] && [ ! -d "$path" ]; do
-    if [ -e "$path" ] || [ -L "$path" ]; then
+    # A concurrent run may create the directory between the two tests.
+    if { [ -e "$path" ] || [ -L "$path" ]; } && [ ! -d "$path" ]; then
       return 1
     fi
+    [ -d "$path" ] && break
     rest="/${path##*/}$rest"
     path=${path%/*}
   done
