@@ -1040,6 +1040,12 @@ outcome: $run_outcome" \
       ' >/dev/null || fail "a $verb line must not clear $id's open decision from the snapshot: $out"
     done
   done
+  # The holder fold (bin/fm-waiting-on-lib.sh) reads the same set, so a finished
+  # scout still owing an answer waits on the first mate, not "report in".
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "scout-terminal-done")
+    | .waiting_on.who == "first_mate" and .waiting_on.rule == 3
+  ' >/dev/null || fail "a finished scout with an open decision must wait on the first mate: $out"
 
   # Only the decision's own keyed resolution closes it.
   for kind in scout ship; do
