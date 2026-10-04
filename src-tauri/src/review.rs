@@ -18,7 +18,10 @@
 //!                                                 and that message's first line, which is how
 //!                                                 the chat finds it again in a resumed conversation,
 //!                                                 and for a crewmate's page the review-files/ name
-//!                                                 of the file its author was sent
+//!                                                 of the file its author was sent; a null message and
+//!                                                 header when the author was sent it but the first
+//!                                                 mate could not be told
+//!   {at, kind: "retold", sent_at, message, header}  the first mate told, later, of that review
 //!   {at, kind: "delivered", rev, file, to, inbox_msg} that file reached its author's inbox
 //!   {at, kind: "undelivered", rev, file, to, reason}  it did not, and why (`retired`: torn down)
 //!   {at, kind: "answer", decision, option, label, on_answer, note?, defer?}
@@ -200,6 +203,7 @@ pub fn view(path: &Path) -> Value {
                 "picture_skipped": event.get("picture_skipped").cloned().unwrap_or(Value::Null),
                 "at": event.get("at").cloned().unwrap_or(Value::Null),
                 "sent_at": Value::Null,
+                "told": false,
                 "state": "draft",
                 "resolved_at": Value::Null,
                 "comments": [{"body": event.get("body").cloned().unwrap_or(Value::Null), "at": event.get("at").cloned().unwrap_or(Value::Null)}],
@@ -247,6 +251,7 @@ pub fn view(path: &Path) -> Value {
                         "defer": event.get("defer").cloned().unwrap_or(Value::Null),
                         "at": event.get("at").cloned().unwrap_or(Value::Null),
                         "sent_at": Value::Null,
+                        "told": false,
                         "recorded": Value::Null,
                         "reply": Value::Null,
                     }));
@@ -277,14 +282,18 @@ pub fn view(path: &Path) -> Value {
                 for answer in answers.iter_mut() {
                     if answer["sent_at"].is_null() && carried.iter().any(|decision| *decision == answer["decision"]) {
                         answer["sent_at"] = at.clone();
+                        answer["told"] = json!(true);
                     }
                 }
             }
             "sent" => {
                 let at = event.get("at").cloned().unwrap_or(Value::Null);
+                // The author was sent it, but the first mate has not been told yet.
+                let told = !event.get("message").is_some_and(Value::is_null);
                 for named in event.get("threads").and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(thread) = threads.iter_mut().find(|thread| thread["id"] == named) {
                         thread["sent_at"] = at.clone();
+                        thread["told"] = json!(told);
                         if thread["state"] == "draft" {
                             thread["state"] = json!("open");
                         }
@@ -295,6 +304,7 @@ pub fn view(path: &Path) -> Value {
                 for answer in answers.iter_mut() {
                     if answer["sent_at"].is_null() && carried.iter().any(|decision| *decision == answer["decision"]) {
                         answer["sent_at"] = at.clone();
+                        answer["told"] = json!(told);
                     }
                 }
                 // What became of the review the author was sent: the last attempt with this review's file.
@@ -308,6 +318,7 @@ pub fn view(path: &Path) -> Value {
                 });
                 sent.push(json!({
                     "delivery": delivery,
+                    "told": told,
                     "at": at,
                     "verdict": event.get("verdict").cloned().unwrap_or(Value::Null),
                     "rev": event.get("rev").cloned().unwrap_or(Value::Null),
@@ -317,6 +328,20 @@ pub fn view(path: &Path) -> Value {
                     "answers": event.get("answers").cloned().unwrap_or(json!([])),
                 }));
             }
+            "retold" => {
+                let at = event.get("sent_at").cloned().unwrap_or(Value::Null);
+                let Some(review) = sent.iter_mut().find(|review| review["at"] == at && review["told"] == false) else { continue };
+                review["told"] = json!(true);
+                review["message"] = event.get("message").cloned().unwrap_or(Value::Null);
+                review["header"] = event.get("header").cloned().unwrap_or(Value::Null);
+                let named = review["threads"].as_array().cloned().unwrap_or_default();
+                for thread in threads.iter_mut().filter(|thread| named.contains(&thread["id"])) {
+                    thread["told"] = json!(true);
+                }
+                for answer in answers.iter_mut().filter(|answer| answer["sent_at"] == at) {
+                    answer["told"] = json!(true);
+                }
+            }
             _ => {}
         }
     }
@@ -324,11 +349,13 @@ pub fn view(path: &Path) -> Value {
     // Waiting to go: answers not through the intake yet, and recorded ones the first mate has not been told of.
     let staged = answers.iter().filter(|answer| is_staged(answer) || is_untold(answer)).count();
     let open = threads.iter().filter(|thread| thread["state"] == "open").count();
+    let untold = sent.iter().filter(|review| review["told"] == false).count();
     json!({
         "threads": threads,
         "answers": answers,
         "earlier": earlier,
-        "draft_count": draft.len() + staged,
+        "draft_count": draft.len() + staged + untold,
+        "untold_count": untold,
         "staged_answers": staged,
         "open_count": open,
         "sent": sent,
@@ -408,7 +435,7 @@ fn author_line(revision: &Value, relay: Option<(&Path, &Value)>) -> String {
         _ => {
             let quoted = shown.replace('\'', "'\\''");
             format!(
-                "Written by {task}. Not delivered to {task}: {}. Relay it unchanged yourself: bin/fm-send.sh {task} \"$(cat '{quoted}')\". Add any framing of your own in a separate message.",
+                "Written by {task}. Not delivered to {task}: {}. Relay it unchanged yourself: FM_SEND_IDEMPOTENT=1 bin/fm-send.sh {task} \"$(cat '{quoted}')\". Add any framing of your own in a separate message.",
                 delivery["reason"].as_str().unwrap_or("no reason given"),
             )
         }
@@ -1014,16 +1041,28 @@ async fn run_deliver(home: &Path, revision: &Value, rev: u64, file: &Path) -> Re
         .args(["--rev", &rev.to_string()])
         .arg("--file")
         .arg(file);
+    // Its own process group, so a timeout stops the fm-send it started too, and nothing arrives after it is recorded as undelivered.
     let child = command
         .env("FM_HOME", home)
         .current_dir(home)
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
         .kill_on_drop(true)
-        .output();
-    let output = match tokio::time::timeout(DELIVER_TIMEOUT, child).await {
+        .spawn()
+        .map_err(|e| format!("bin/fm-artifact.sh could not be run: {e}"))?;
+    let group = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok());
+    let output = match tokio::time::timeout(DELIVER_TIMEOUT, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => return Err(format!("bin/fm-artifact.sh could not be run: {e}")),
-        Err(_) => return Err(format!("bin/fm-artifact.sh did not finish within {}s, so whether it arrived is unknown", DELIVER_TIMEOUT.as_secs())),
+        Err(_) => {
+            if let Some(group) = group {
+                // SAFETY: killpg only sends a signal; it has no memory-safety preconditions.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
+            }
+            return Err(format!("bin/fm-artifact.sh did not finish within {}s, so whether it arrived is unknown", DELIVER_TIMEOUT.as_secs()));
+        }
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
     let said = |prefix: &str| stdout.lines().find_map(|line| line.strip_prefix(prefix).map(str::trim).map(str::to_string));
@@ -1042,13 +1081,15 @@ async fn run_deliver(home: &Path, revision: &Value, rev: u64, file: &Path) -> Re
 
 /// Records that the draft went, under the id the host gave the message, with the
 /// message's first line so the chat can find it again in a resumed conversation.
+/// With no message, its author was sent it but the first mate was not told, and
+/// the next send tells it (`retell`).
 #[allow(clippy::too_many_arguments)]
-pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answers: &[Value], message: &str, text: &str, relay: Option<&str>) -> Result<Value, String> {
+pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answers: &[Value], message: Option<&str>, text: &str, relay: Option<&str>) -> Result<Value, String> {
     append(
         log,
         &json!({
             "at": now_ms(), "kind": "sent", "verdict": verdict, "rev": rev, "message": message,
-            "header": text.lines().next().unwrap_or_default(), "relay": relay,
+            "header": message.map(|_| text.lines().next().unwrap_or_default()), "relay": relay,
             "threads": threads.iter().filter_map(|thread| thread["id"].as_str()).collect::<Vec<_>>(),
             "answers": answers.iter().filter_map(|answer| answer["decision"].as_str()).collect::<Vec<_>>(),
         }),
@@ -1086,7 +1127,9 @@ pub async fn record_staged(home: &Path, log: &Path, only: Option<&str>) -> Resul
 /// is reported alongside the sent message rather than as a failed send: a send
 /// shown as failed invites sending the same review twice. An answer the intake
 /// recorded stays recorded, and words kept on a call stay kept, if the message
-/// then cannot go, and are told with the next review.
+/// then cannot go, and are told with the next review. A review its author was
+/// sent stays sent when the first mate cannot be told, and the next send tells
+/// the first mate of it before anything new goes.
 #[tauri::command]
 pub async fn review_submit(
     app: AppHandle,
@@ -1105,18 +1148,63 @@ pub async fn review_submit(
 pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64, verdict: String) -> Result<Value, String> {
     let dir = dir.to_path_buf();
     let log = dir.join("review.jsonl");
+    let retold = match retell(home, host, &dir).await {
+        Ok(retold) => retold,
+        Err((problem, text)) => {
+            let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
+            return Ok(json!({
+                "message": Value::Null, "text": text, "review": review, "outcomes": [], "retold": [],
+                "warning": format!("The first mate has still not been told of a review its author was sent: {problem}. Nothing else was sent; Send review tells the first mate."),
+            }));
+        }
+    };
+    let retold_shown: Vec<Value> = retold.iter().map(|(message, text)| json!({"message": message, "text": text})).collect();
+    if let Some((message, text)) = retold.last() {
+        let current = {
+            let log = log.clone();
+            blocking(move || Ok(view(&log))).await?
+        };
+        let unsent = current["threads"].as_array().is_some_and(|threads| threads.iter().any(|thread| thread["sent_at"].is_null()));
+        if !unsent && current["staged_answers"].as_u64().unwrap_or(0) == 0 {
+            return Ok(json!({"message": message, "text": text, "review": current, "outcomes": [], "retold": retold_shown}));
+        }
+    }
     let outcomes = record_staged(home, &log, None).await?;
     let replied = reply_worded(home, &log).await?;
     let sent_with = |message: &str| name_replies(home, &replied, message.to_string());
     let (text, threads, answers, relay) = draft(home, &dir, rev, &verdict).await?;
     let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
-        Err(problem) if !outcomes.is_empty() || !replied.is_empty() || relay.is_some() => {
-            // The intake has run, words were kept or the author was sent the review, so the screen has to show them even though the first mate was not told.
+        Err(problem) if relay.is_some() => {
+            // A delivery was attempted, so the review is on the record as sent to its author whatever became of it, and the first mate is told on the next send.
+            let recorded = {
+                let (log, text) = (log.clone(), text.clone());
+                blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, None, &text, relay.as_deref())).await
+            };
+            let review = match recorded {
+                Ok(review) => review,
+                Err(failed) => {
+                    log::error!("a review its author was sent could not be recorded: {failed}");
+                    blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null)
+                }
+            };
+            let delivery = &review["sent"].as_array().and_then(|sent| sent.last()).map_or(Value::Null, |sent| sent["delivery"].clone());
+            let author = match (delivery["result"].as_str(), delivery["to"].as_str()) {
+                (Some("delivered"), Some(to)) => format!("The review reached {to}"),
+                (_, Some(to)) => format!("The review did not reach {to}"),
+                _ => "Whether the review reached its author is not on record".to_string(),
+            };
+            return Ok(json!({
+                "message": Value::Null, "text": text, "review": review, "outcomes": outcomes, "retold": retold_shown,
+                "warning": format!("{author}, but the first mate was not told: {problem}. Send review tells the first mate, and sends the author nothing twice."),
+            }));
+        }
+        Err(problem) if !outcomes.is_empty() || !replied.is_empty() || !retold.is_empty() => {
+            // The intake has run, words were kept or an earlier review was told, so the screen has to show them even though the first mate was not told of this one.
             let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
             return Ok(json!({
-                "message": Value::Null, "text": text, "review": review, "outcomes": outcomes,
-                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded, words shown as kept are kept on their call, and a review delivered to its author has arrived; send the review again to tell the first mate, which delivers nothing twice."),
+                "message": Value::Null, "text": text, "review": review, "outcomes": outcomes, "retold": retold_shown,
+                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded and words shown as kept are kept on their call; send the review again to tell the first mate."),
             }));
         }
         Err(problem) => return Err(problem),
@@ -1125,16 +1213,73 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
     let recorded = {
         let (log, message) = (log.clone(), message.clone());
         let text = text.clone();
-        blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, &message, &text, relay.as_deref())).await
+        blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, Some(&message), &text, relay.as_deref())).await
     };
     match recorded {
-        Ok(review) => Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes})),
+        Ok(review) => Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes, "retold": retold_shown})),
         Err(problem) => {
             log::error!("review {message} was sent but not recorded: {problem}");
             let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
-            Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes, "warning": format!("Sent, but the app could not note that it went: {problem}")}))
+            Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes, "retold": retold_shown, "warning": format!("Sent, but the app could not note that it went: {problem}")}))
         }
     }
+}
+
+/// Tells the first mate of each review its author was sent while the first mate
+/// could not be told, composed again from that review's own record: the
+/// delivery already made is reported, never made again. Returns each message
+/// that went with its text, or why one could not go and its text; nothing after
+/// a failure is tried.
+async fn retell(home: &Path, host: &HostHandle, dir: &Path) -> Result<Vec<(String, String)>, (String, String)> {
+    let untold = {
+        let dir = dir.to_path_buf();
+        blocking(move || untold_reviews(&dir)).await.map_err(|problem| (problem, String::new()))?
+    };
+    let mut told = Vec::new();
+    for (sent_at, text, replied) in untold {
+        let message = host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent).map_err(|problem| (problem, text.clone()))?;
+        name_replies(home, &replied, message.clone()).await;
+        let event = json!({"at": now_ms(), "kind": "retold", "sent_at": sent_at, "message": message, "header": text.lines().next().unwrap_or_default()});
+        let log = dir.join("review.jsonl");
+        if let Err(problem) = blocking(move || append(&log, &event)).await {
+            log::error!("review {message} was told but not recorded: {problem}");
+        }
+        told.push((message, text));
+    }
+    Ok(told)
+}
+
+/// Every review sent to its author but not yet told to the first mate: when it
+/// went, the message it becomes, and the words it carries that firstmate kept
+/// on their calls, so the message can be named on them once it has gone.
+#[allow(clippy::type_complexity)]
+fn untold_reviews(dir: &Path) -> Result<Vec<(Value, String, Vec<(String, String)>)>, String> {
+    let log = dir.join("review.jsonl");
+    let current = view(&log);
+    let events = read_events(&log);
+    let list = |key: &str| current[key].as_array().cloned().unwrap_or_default();
+    let (threads, answers) = (list("threads"), [list("answers"), list("earlier")].concat());
+    let mut untold = Vec::new();
+    for review in list("sent").into_iter().filter(|review| review["told"] == false) {
+        let at = review["at"].clone();
+        let revision = revision_record(dir, review["rev"].as_u64().unwrap_or(0))?;
+        let named = review["threads"].as_array().cloned().unwrap_or_default();
+        let carried: Vec<Value> = threads.iter().filter(|thread| named.contains(&thread["id"])).cloned().collect();
+        let said: Vec<Value> = answers.iter().filter(|answer| answer["sent_at"] == at).cloned().collect();
+        let relay = events.iter().find(|event| event["kind"] == "sent" && event["at"] == at).and_then(|event| event["relay"].as_str()).map(|name| dir.join("review-files").join(name));
+        let delivery = relay.as_ref().and_then(|file| {
+            let name = file.file_name()?.to_string_lossy().to_string();
+            events.iter().rev().find(|event| matches!(event["kind"].as_str(), Some("delivered" | "undelivered")) && event["file"] == name.as_str())
+        });
+        let text = compose(&revision, review["verdict"].as_str().unwrap_or_default(), &carried, &said, &log, relay.as_deref().zip(delivery))?;
+        let replied = said
+            .iter()
+            .filter(|answer| !is_keyed(answer) && answer["reply"]["result"] == "kept")
+            .map(|answer| (answer["decision"].as_str().unwrap_or_default().to_string(), answer_words(answer)))
+            .collect();
+        untold.push((at, text, replied));
+    }
+    Ok(untold)
 }
 
 /// Keeps every answer in words this review is about to carry on its call, as
@@ -1946,7 +2091,7 @@ mod tests {
         let (text, threads, told, _) = draft(&home, &dir, 1, "comment").await.unwrap();
         assert!(text.contains("Recorded: res-model-download = wifi-only"), "{text}");
         assert!(!text.contains("res-model-cellular"), "a skipped answer is never claimed: {text}");
-        record_sent(&log, "comment", 1, &threads, &told, "out-1", "A review", None).unwrap();
+        record_sent(&log, "comment", 1, &threads, &told, Some("out-1"), "A review", None).unwrap();
         let current = view(&log);
         assert_eq!(current["staged_answers"], 0);
         assert_eq!(summary(&home.join("data"))["chat/board"]["answered"], json!(["res-model-download"]));
@@ -2016,7 +2161,7 @@ mod tests {
         assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-10-03.\n"), "{text}");
         assert!(text.contains("\nres-refused: Too late for this one. (not kept on the call: call res-refused is already closed)"), "{text}");
         assert_eq!(carried.len(), 4);
-        record_sent(&log, "approve", 1, &threads, &carried, "out-1", &text, None).unwrap();
+        record_sent(&log, "approve", 1, &threads, &carried, Some("out-1"), &text, None).unwrap();
 
         // Sent, an answer in words went to the first mate, but only the intake's record is final: the page's
         // answered calls are the recorded one alone, and words and a dated not now alike can be answered anew,
@@ -2047,7 +2192,7 @@ mod tests {
         let (text, threads, carried, _) = draft(&home, &dir, 1, "comment").await.unwrap();
         assert!(text.contains("\nres-model-cellular: Finish on cellular after all."), "{text}");
         assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-11-01."), "{text}");
-        record_sent(&log, "comment", 1, &threads, &carried, "out-2", &text, None).unwrap();
+        record_sent(&log, "comment", 1, &threads, &carried, Some("out-2"), &text, None).unwrap();
         let page = &summary(&home.join("data"))["chat/board"];
         assert_eq!(page["sent"][1]["answers"][0]["note"], "Finish on cellular after all.");
         assert_eq!(page["sent"][0]["answers"][1]["note"], "Pause, but tell the user why.");
@@ -2284,8 +2429,51 @@ mod tests {
         assert!(again.contains("Delivered to qd-plan-1 as inbox message 001"), "{again}");
         assert!(!home.join("state/qd-plan-1.inbox/002.msg").exists(), "a retry delivered the review twice");
 
-        let current = record_sent(&log, "changes", 1, &threads, &told, "out-1", &text, relay.as_deref()).unwrap();
+        let current = record_sent(&log, "changes", 1, &threads, &told, Some("out-1"), &text, relay.as_deref()).unwrap();
         assert_eq!(current["sent"][0]["delivery"], json!({"result": "delivered", "to": "qd-plan-1", "inbox_msg": "001", "reason": null}));
+    }
+
+    #[tokio::test]
+    async fn a_review_its_author_got_stays_sent_and_the_first_mate_is_told_on_the_next_send() {
+        let (home, dir) = engine_home("deliver-untold", true);
+        let log = dir.join("review.jsonl");
+        let sent = submit(&home, &HostHandle::stopped(), &dir, 1, "changes".into()).await.unwrap();
+        assert_eq!(sent["message"], Value::Null, "{sent}");
+        let warning = sent["warning"].as_str().unwrap();
+        assert!(warning.starts_with("The review reached qd-plan-1, but the first mate was not told: the first mate host is not running."), "{warning}");
+        let current = view(&log);
+        assert_eq!((&current["threads"][0]["state"], &current["threads"][0]["told"]), (&json!("open"), &json!(false)), "{current}");
+        assert_eq!((&current["untold_count"], &current["draft_count"]), (&json!(1), &json!(1)), "{current}");
+        assert!(discard(&log, "t1").is_err(), "a comment its author has cannot be taken back");
+        let events = read_events(&log);
+        let recorded = events.iter().find(|event| event["kind"] == "sent").expect("the delivery is not left without a sent review");
+        assert_eq!((&recorded["message"], &recorded["header"], &recorded["relay"]), (&Value::Null, &Value::Null, &json!("review-1.md")));
+        assert!(events.iter().any(|event| event["kind"] == "delivered" && event["file"] == "review-1.md"));
+        assert!(home.join("state/qd-plan-1.inbox/001.msg").is_file());
+
+        let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let again = submit(&home, &HostHandle::taking(told.clone()), &dir, 1, "changes".into()).await.unwrap();
+        assert_eq!((&again["message"], again.get("warning")), (&json!("told-1"), None), "{again}");
+        let texts = told.lock().unwrap().clone();
+        assert_eq!(texts.len(), 1, "only the review the first mate missed goes: {texts:?}");
+        assert!(texts[0].contains("Delivered to qd-plan-1 as inbox message 001"), "{}", texts[0]);
+        assert!(texts[0].contains("t1 on \"The plan, in short.\": Say what"), "{}", texts[0]);
+        assert!(!home.join("state/qd-plan-1.inbox/002.msg").exists(), "telling the first mate delivered the review again");
+        let current = view(&log);
+        assert_eq!(current["sent"].as_array().unwrap().len(), 1, "{current}");
+        assert_eq!((&current["sent"][0]["message"], current["sent"][0]["header"].as_str()), (&json!("told-1"), texts[0].lines().next()));
+        assert_eq!((&current["untold_count"], &current["draft_count"], &current["threads"][0]["told"]), (&json!(0), &json!(0), &json!(true)), "{current}");
+
+        // A new comment after a missed review: the missed one is told first, then the new one goes as its own review.
+        add_comment(&log, 1, "Shorter still.", Some(anchor("The plan, in short.")), None, None).unwrap();
+        submit(&home, &HostHandle::stopped(), &dir, 1, "comment".into()).await.unwrap();
+        let both = submit(&home, &HostHandle::taking(told.clone()), &dir, 1, "comment".into()).await.unwrap();
+        let texts = told.lock().unwrap().clone();
+        assert_eq!(texts.len(), 2, "the missed review is told once, and nothing new goes with it: {texts:?}");
+        assert!(texts[1].contains("Delivered to qd-plan-1 as inbox message 002") && texts[1].contains("t2 on"), "{}", texts[1]);
+        assert_eq!((&both["message"], &both["retold"][0]["message"]), (&json!("told-2"), &json!("told-2")), "{both}");
+        assert!(!home.join("state/qd-plan-1.inbox/003.msg").exists());
+        assert_eq!(view(&log)["untold_count"], 0);
     }
 
     #[tokio::test]
@@ -2300,7 +2488,7 @@ mod tests {
         let undelivered = read_events(&log).into_iter().find(|event| event["kind"] == "undelivered").expect("the failure is in the review's own record");
         assert_eq!((&undelivered["to"], &undelivered["reason"]), (&json!("qd-plan-1"), &json!("retired")));
         assert!(read_events(&log).iter().all(|event| event["kind"] != "delivered"));
-        let current = record_sent(&log, "changes", 1, &threads, &told, "out-1", &text, relay.as_deref()).unwrap();
+        let current = record_sent(&log, "changes", 1, &threads, &told, Some("out-1"), &text, relay.as_deref()).unwrap();
         assert_eq!(current["sent"][0]["delivery"], json!({"result": "undelivered", "to": "qd-plan-1", "inbox_msg": null, "reason": "retired"}));
     }
 
@@ -2330,7 +2518,7 @@ mod tests {
         let block = std::fs::read_to_string(&relay).expect("the review the crewmate receives is a file");
         // A home whose firstmate cannot deliver it tells the first mate to pass the file on, not to retell it.
         assert!(text.contains("Not delivered to qd-usage-design-1: this home's firstmate has no bin/fm-artifact.sh."), "{text}");
-        assert!(text.contains(&format!("bin/fm-send.sh qd-usage-design-1 \"$(cat '{}')\"", relay.display())), "{text}");
+        assert!(text.contains(&format!("FM_SEND_IDEMPOTENT=1 bin/fm-send.sh qd-usage-design-1 \"$(cat '{}')\"", relay.display())), "{text}");
         assert!(text.contains("Add any framing of your own in a separate message."), "{text}");
         assert!(!block.contains("Relay this review"), "the crewmate's copy carries no instructions meant for the first mate: {block}");
         for said in [&text, &block] {
@@ -2424,7 +2612,7 @@ mod tests {
         stage_answer(&log, "qd-usage-design-1", Some("strip"), Some("One quiet strip in the sidebar footer"), Some("release"), &Words::default()).unwrap();
         append(&log, &json!({"at": 2, "kind": "recorded", "decision": "qd-usage-design-1", "result": "closed", "detail": ""})).unwrap();
         let (text, threads, told, relay) = draft(&scratch("chat-card-home"), &dir, 1, "changes").await.unwrap();
-        record_sent(&log, "changes", 1, &threads, &told, "m1790147648486-20", &text, relay.as_deref()).unwrap();
+        record_sent(&log, "changes", 1, &threads, &told, Some("m1790147648486-20"), &text, relay.as_deref()).unwrap();
         let data = dir.parent().unwrap().parent().unwrap().parent().unwrap();
         let page = &summary(data)["task/qd-usage-design-1/usage-panel"];
         let sent = &page["sent"][0];

@@ -77,7 +77,8 @@
 #   retry of the same review lands on the same inbox message rather than a
 #   second one. A task with no record has been torn down and nothing is sent.
 #   A secondmate author is not sent to either: fm-send marks every request to
-#   one, so what arrived would not be the file.
+#   one, so what arrived would not be the file. Nor is an author on another
+#   host, whose inbox is not this home's.
 #   This command writes nothing else: the caller keeps the review's record.
 #   Output, exit 0: "delivered: <task> inbox <NNN>" then "record: <inbox file>".
 #   Output, exit 4: "undelivered: <task>" then "reason: retired" (torn down) or
@@ -643,8 +644,12 @@ cmd_deliver_review() {
   fi
   # A secondmate gets a marked request and a remote one a record on another
   # host: neither is the file byte for byte in this home's inbox.
-  if meta_has "$STATE/$author.meta" kind secondmate || ! meta_has "$STATE/$author.meta" remote_host ''; then
+  if meta_has "$STATE/$author.meta" kind secondmate; then
     printf 'undelivered: %s\nreason: send failed: %s is a secondmate, which takes only marked requests\n' "$author" "$author"
+    return 4
+  fi
+  if ! meta_has "$STATE/$author.meta" remote_host ''; then
+    printf 'undelivered: %s\nreason: send failed: %s runs on another host\n' "$author" "$author"
     return 4
   fi
   # Read the file whole: a command substitution would drop its last newline.

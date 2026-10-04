@@ -343,7 +343,7 @@ HTML
 
 # A crewmate's page with one review file the app wrote, and a stub tmux so
 # fm-send's doorbell lands nowhere. Prints the page directory.
-review_case() {  # <label> <author meta: live|retired|secondmate> [presented_by role]
+review_case() {  # <label> <author meta: live|retired|secondmate|remote> [presented_by role]
   local home dir fb
   home=$(new_home "$1")
   fb="$TMP_ROOT/$1/fakebin"
@@ -366,6 +366,7 @@ SH
   case "$2" in
     live) fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=claude" ;;
     secondmate) fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=secondmate" "harness=claude" ;;
+    remote) fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=claude" "remote_host=builder" ;;
     retired) ;;
   esac
   mkdir -p "$dir/review-files"
@@ -423,7 +424,14 @@ test_deliver_review_reports_a_torn_down_author() {
   expect_code 4 "$rc" "a secondmate author"
   assert_contains "$out" "reason: send failed: t1 is a secondmate" "a marked request would not be the file"
   assert_absent "$home/state/t1.inbox" "nothing may be sent to a secondmate"
-  pass "fm-artifact.sh: deliver-review says a review did not reach a torn-down or secondmate author"
+  dir=$(review_case deliver-remote remote)
+  home=${dir%/data/t1/artifacts/plan}
+  out=$(deliver deliver-remote "$dir"); rc=$?
+  expect_code 4 "$rc" "an author on another host"
+  assert_contains "$out" "reason: send failed: t1 runs on another host" "names the host as the reason"
+  assert_not_contains "$out" "secondmate" "an author on another host is not called a secondmate"
+  assert_absent "$home/state/t1.inbox" "nothing may be written here for an author on another host"
+  pass "fm-artifact.sh: deliver-review says a review did not reach a torn-down, secondmate or remote author"
 }
 
 test_deliver_review_refusals() {

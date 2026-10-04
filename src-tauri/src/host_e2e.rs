@@ -1098,7 +1098,7 @@ async fn review_e2e_live_decision() {
         let message = id.clone().unwrap_or_default();
         let picked = events.find(from, REPLY_WAIT, outbox(&message, "picked_up")).await;
         if picked.is_some() {
-            review::record_sent(&log, "approve", rev, &threads, &answers, &message, &text, relay.as_deref()).expect("record that it went");
+            review::record_sent(&log, "approve", rev, &threads, &answers, Some(&message), &text, relay.as_deref()).expect("record that it went");
         }
         record(
             &mut steps,
@@ -1361,7 +1361,7 @@ async fn reply_e2e_live_scratch_home() {
         let (text, threads, answers, relay) = review::draft(&home, &dir, rev, "comment").await.expect("compose the review");
         let id = send(&host, text.clone()).await.unwrap_or_default();
         review::name_replies(&home, &replied, id.clone()).await;
-        review::record_sent(&log, "comment", rev, &threads, &answers, &id, &text, relay.as_deref()).expect("record that it went");
+        review::record_sent(&log, "comment", rev, &threads, &answers, Some(&id), &text, relay.as_deref()).expect("record that it went");
         let now = call_now(&home, &call);
         record(
             &mut steps,

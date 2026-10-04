@@ -347,8 +347,8 @@ check((await threads.first().innerText()).includes("Written on rev 2"), "a comme
 await page.locator(".verdict-picker select").selectOption("changes");
 await page.locator(".send-review").click();
 await page.locator(".review-last").waitFor();
-check((await threads.first().innerText()).includes("Sent"), "a sent comment says so");
-check((await page.locator(".review-last").innerText()).includes("Request changes"), "the review records its verdict");
+check((await threads.first().locator(".thread-state").innerText()).startsWith("Sent to the first mate "), "a sent comment says who it was sent to");
+check((await page.locator(".review-last").innerText()).startsWith("Sent to the first mate ") && (await page.locator(".review-last").innerText()).includes("Request changes"), "the review says it went to the first mate, with its verdict");
 check((await page.locator(".send-review").innerText()) === "Send review", "the draft count clears once it is sent");
 check(await threads.first().locator("button[title='Take this comment back']").count() === 0, "a sent comment cannot be taken back");
 // The app delivers a crewmate's review to it, and the rail says so from the review's own record.
@@ -932,7 +932,7 @@ await resumed.close();
   await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
   await again.locator(".send-review").click();
   await download.locator(".decision-sent").waitFor();
-  check((await download.locator(".decision-sent").innerText()).endsWith("for the first mate to record") && await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "held until its day, the page shows the Not now that went and asks nothing");
+  check((await download.locator(".decision-sent").innerText()).startsWith("Sent to the first mate ") && (await download.locator(".decision-sent").innerText()).endsWith("for it to record") && await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "held until its day, the page shows the Not now that went and asks nothing");
 
   await again.locator(".nav-item", { hasText: "Bearings" }).click();
   const card = again.locator(".decision-card[data-call-id='res-model-download']");
@@ -1138,6 +1138,9 @@ await plain.close();
   check(await notDelivered.getAttribute("data-result") === "undelivered", "torn down: the rail reads as not delivered");
   check((await notDelivered.innerText()).trim() === "Not delivered: res-titles-scout is torn down", `torn down: the rail says why (${await notDelivered.innerText()})`);
   check(await notDelivered.getAttribute("role") === "status", "torn down: a review that went nowhere is announced");
+  check((await gone.locator(".review-last").innerText()).startsWith("Sent to the first mate "), "torn down: the rail says the review went to the first mate");
+  const goneRail = await gone.locator(".review-rail").innerText();
+  check(!/\bSent (?!to the first mate)/.test(goneRail), "torn down: nothing in the rail says a bare Sent a captain could read as delivered");
   await shot(gone, "25-not-delivered");
   await gone.locator(".nav-item", { hasText: "Chat" }).click();
   const goneCard = gone.locator("[data-testid='review-card']").last();

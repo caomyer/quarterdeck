@@ -904,6 +904,7 @@ export function App() {
               onComment={(body, anchor, thread, picture) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread, picture).then(setReview)}
               onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
               onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => {
+                for (const told of sent.retold ?? []) bridge.noteSent(told.message, told.text);
                 if (sent.message) bridge.noteSent(sent.message, sent.text);
                 setReview(sent.review);
                 return sent.warning;
@@ -3326,8 +3327,10 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
         <div className="review-send">
           {calls.some(isOpen) && <span className="review-send-label">Answer the decision</span>}
           {problem && <p className="review-problem" role="alert">{problem}</p>}
-          {lastSent && draftCount === 0 && <p className="review-last">Sent {formatWhen(new Date(lastSent.at).toISOString())} · {VERDICTS.find((item) => item.id === lastSent.verdict)?.label ?? lastSent.verdict}</p>}
-          {lastSent?.delivery && draftCount === 0 && <ReviewDeliveryLine delivery={lastSent.delivery} />}
+          {lastSent && lastSent.message === null
+            ? <p className="review-last untold" role="status">Not yet told to the first mate · Send review tells it</p>
+            : lastSent && draftCount === 0 && <p className="review-last">Sent to the first mate {formatWhen(new Date(lastSent.at).toISOString())} · {VERDICTS.find((item) => item.id === lastSent.verdict)?.label ?? lastSent.verdict}</p>}
+          {lastSent?.delivery && (draftCount === 0 || lastSent.message === null) && <ReviewDeliveryLine delivery={lastSent.delivery} />}
           <label className="verdict-picker"><span className="sr-only">Verdict</span><select value={verdict} onChange={(event) => { setVerdictChosen(true); setVerdict(event.target.value as ReviewVerdict); }}>{VERDICTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown size={14} /></label>
           <button className="send-review" disabled={!sendReady || sending} title={sendHint} onClick={() => void send()}>{sending ? "Sending…" : draftCount > 0 ? `Send review · ${draftCount}` : "Send review"}</button>
           <small>{sendHint}</small>
@@ -3481,7 +3484,9 @@ function RailCall({ call, revision, beside, chosen, before, onAnswer, onOpenEvid
       : recorded
         ? <small className="decision-sent">Recorded {when(chosen!.recorded!.at)}</small>
         : handedOver
-          ? <small className="decision-sent">Sent {when(chosen!.sent_at!)}{worded ? ", for the first mate to record" : ""}</small>
+          ? chosen!.told === false
+            ? <small className="decision-sent untold">Not yet told to the first mate</small>
+            : <small className="decision-sent">Sent to the first mate {when(chosen!.sent_at!)}{worded ? ", for it to record" : ""}</small>
           : current
             ? <small className="decision-staged">{worded ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
             : reply
@@ -3507,7 +3512,9 @@ function ReviewThreadCard({ thread, answer, rev, missing, picture, onFocus, onDi
         ? <em className="thread-state draft">Not sent yet</em>
         : thread.state === "resolved"
           ? <em className="thread-state settled">Settled</em>
-          : <em className="thread-state">Sent {formatWhen(new Date(thread.sent_at!).toISOString())}</em>}
+          : thread.told
+            ? <em className="thread-state">Sent to the first mate {formatWhen(new Date(thread.sent_at!).toISOString())}</em>
+            : <em className="thread-state untold">Not yet told to the first mate</em>}
       {draft
         ? <button className="icon-button" title="Take this comment back" onClick={(event) => { event.stopPropagation(); onDiscard(); }}><Trash2 size={14} /></button>
         : <button className="icon-button" title={thread.state === "resolved" ? "Open this again" : "Settle this"} onClick={(event) => { event.stopPropagation(); onSettle(thread.state !== "resolved"); }}>{thread.state === "resolved" ? <RotateCcw size={14} /> : <CheckCheck size={14} />}</button>}

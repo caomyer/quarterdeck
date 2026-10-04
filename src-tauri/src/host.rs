@@ -174,6 +174,25 @@ impl HostHandle {
         HostHandle { tx, groups: Groups::default(), started_home: std::sync::Mutex::new(None) }
     }
 
+    /// A handle whose host takes every message, naming the nth `told-<n>`, and keeps what it was sent.
+    #[cfg(test)]
+    pub(crate) fn taking(sent: Arc<std::sync::Mutex<Vec<String>>>) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                if let Cmd::Send { text, reply } = cmd {
+                    let count = {
+                        let mut sent = sent.lock().unwrap();
+                        sent.push(text);
+                        sent.len()
+                    };
+                    let _ = reply.send(Ok(format!("told-{count}")));
+                }
+            }
+        });
+        HostHandle { tx, groups: Groups::default(), started_home: std::sync::Mutex::new(None) }
+    }
+
     /// Process groups of the adapters running now.
     #[cfg(test)]
     pub(crate) fn live_groups(&self) -> Vec<u32> {

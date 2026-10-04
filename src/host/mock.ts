@@ -892,10 +892,10 @@ export class MockHostAdapter implements HostAdapter {
   /** Reviews live in memory here; the app keeps them in the home beside the revisions. */
   private readonly reviews = new Map<string, ReviewView>(reviewFlag("resumed-day") ? [[`task/${USAGE_TASK}/usage-panel`, {
     threads: [{
-      id: "t1", rev: 1, anchor: { quote: "under pace" } as ReviewAnchor, at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, sent_at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000,
+      id: "t1", rev: 1, anchor: { quote: "under pace" } as ReviewAnchor, at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, sent_at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, told: true,
       resolved_at: null, state: "open", comments: [{ body: "what does under pace mean?", at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000 }],
     }],
-    answers: [], earlier: [], draft_count: 0, staged_answers: 0, open_count: 1, seen_rev: 2, log: `${this.snapshot.fleet.fm_home}/data/${USAGE_TASK}/review.jsonl`,
+    answers: [], earlier: [], draft_count: 0, staged_answers: 0, untold_count: 0, open_count: 1, seen_rev: 2, log: `${this.snapshot.fleet.fm_home}/data/${USAGE_TASK}/review.jsonl`,
     // Sent by the window before this one, so its message id is not one this window has.
     sent: [{ at: Date.now() - RESUMED_DAY_MINUTES.review * 60_000, verdict: "changes", rev: 1, message: "m-yesterday", header: RESUMED_DAY_REVIEW, threads: ["t1"] }],
   }]] : []);
@@ -911,7 +911,7 @@ export class MockHostAdapter implements HostAdapter {
 
   private review(ref: ArtifactRef): ReviewView {
     const key = `${ref.scope}/${ref.task}/${ref.name}`;
-    const current = this.reviews.get(key) ?? { threads: [], answers: [], earlier: [], draft_count: 0, staged_answers: 0, open_count: 0, sent: [], seen_rev: null, log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
+    const current = this.reviews.get(key) ?? { threads: [], answers: [], earlier: [], draft_count: 0, staged_answers: 0, untold_count: 0, open_count: 0, sent: [], seen_rev: null, log: `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review.jsonl` };
     this.reviews.set(key, current);
     return current;
   }
@@ -946,7 +946,7 @@ export class MockHostAdapter implements HostAdapter {
     const kept = picture && "jpeg" in picture
       ? { picture: { file: `review-files/${id}-r${rev}.jpg`, crop: picture.crop, method: "redraw" as const, took_ms: picture.took_ms, bytes: Math.round((picture.jpeg.length - 23) * 3 / 4) }, picture_preview: picture.jpeg }
       : picture && "skipped" in picture ? { picture_skipped: picture.skipped } : {};
-    return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, resolved_at: null, state: "draft", comments: [{ body, at }], ...kept }]);
+    return this.settle(ref, [...current.threads, { id, rev, anchor: anchor ?? null, at, sent_at: null, told: false, resolved_at: null, state: "draft", comments: [{ body, at }], ...kept }]);
   }
 
   async reviewScene(ref: ArtifactRef, rev: number, scene: string, label: string, path: string, summary: string, sceneJson: string, png: string) {
@@ -956,7 +956,7 @@ export class MockHostAdapter implements HostAdapter {
     const folder = `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/review-files`;
     void sceneJson;
     return this.settle(ref, [...current.threads, {
-      id, rev, at, sent_at: null, resolved_at: null, state: "draft" as const,
+      id, rev, at, sent_at: null, told: false, resolved_at: null, state: "draft" as const,
       // The app writes these beside the review; the mock keeps the picture inline so the rail can show it.
       anchor: { scene, label, path, quote: label, scene_file: `${folder}/${id}.excalidraw`, picture: png ? `${folder}/${id}.png` : null, preview: png },
       comments: [{ body: summary, at }],
@@ -979,7 +979,7 @@ export class MockHostAdapter implements HostAdapter {
     const earlier = then ? [...current.earlier.filter((answer) => answer.decision !== decision), then] : current.earlier;
     const kept = current.answers.filter((answer) => answer.decision !== decision);
     // Choosing nothing and saying nothing takes the answer back off the tray.
-    const answers = option || note || defer ? [...kept, { decision, option: option ?? null, label: option ? label ?? option : null, on_answer: onAnswer ?? null, note, defer, at: Date.now(), sent_at: null, recorded: null }] : kept;
+    const answers = option || note || defer ? [...kept, { decision, option: option ?? null, label: option ? label ?? option : null, on_answer: onAnswer ?? null, note, defer, at: Date.now(), sent_at: null, told: false, recorded: null }] : kept;
     this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers, earlier });
     return this.settle(ref, current.threads);
   }
@@ -1014,7 +1014,7 @@ export class MockHostAdapter implements HostAdapter {
     if (page) {
       const current = this.review(page);
       const at = Date.now();
-      this.reviews.set(`${page.scope}/${page.task}/${page.name}`, { ...current, answers: current.answers.map((answer) => answer.decision === call && answer.sent_at === null ? { ...answer, sent_at: at } : answer) });
+      this.reviews.set(`${page.scope}/${page.task}/${page.name}`, { ...current, answers: current.answers.map((answer) => answer.decision === call && answer.sent_at === null ? { ...answer, sent_at: at, told: true } : answer) });
       this.settle(page, current.threads);
     }
     return { outcome, message, text, review: page ? this.review(page) : null };
@@ -1164,11 +1164,11 @@ export class MockHostAdapter implements HostAdapter {
     const at = Date.now();
     const carried = [...told, ...worded];
     const went = (answer: ReviewView["answers"][number]) => carried.some((item) => item.decision === answer.decision && item.at === answer.at);
-    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => went(answer) ? { ...answer, sent_at: at, reply: worded.find((item) => item.decision === answer.decision)?.reply ?? answer.reply } : answer) });
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => went(answer) ? { ...answer, sent_at: at, told: true, reply: worded.find((item) => item.decision === answer.decision)?.reply ?? answer.reply } : answer) });
     this.holdUntilTheDay(worded.filter((answer) => answer.defer).map((answer) => answer.decision));
     const review = this.settle(
       ref,
-      current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
+      current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, told: true, state: "open" as const } : thread),
       [...current.sent, { at, verdict, rev, message, header: text.split("\n")[0], threads: draft.map((thread) => thread.id), answers: carried.map((answer) => answer.decision), delivery: relay?.delivery ?? null }],
     );
     return { message, text, review, outcomes };
