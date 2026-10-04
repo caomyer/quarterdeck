@@ -347,6 +347,32 @@ const latestCaptain = (page) => chat(page).locator(".captain-message").last();
   await page.close();
 }
 
+// K: what arrives between picking a place and sending moves it further back, and on counts it as the message goes.
+{
+  const page = await open();
+  const items = "article[data-message-id], [data-testid='call-card'], [data-testid='answer-card'], [data-testid='artifact-card'], [data-testid='review-card']";
+  /** How many messages and cards the chat shows from the headline on, the headline included. */
+  const backNow = () => chat(page).evaluate((element, { items, headline }) => {
+    const all = [...element.querySelectorAll(items)].filter((item) => !item.parentElement.closest(items));
+    const at = all.findIndex((item) => [...item.querySelectorAll(".markdown > p")].some((p) => p.textContent === headline));
+    return all.length - at;
+  }, { items, headline: HEADLINE });
+  await replyTo(page, headline(page));
+  const picked = await backNow();
+  const card = chat(page).locator(`[data-testid='call-card'][data-call-id='${GUARD_CALL}']`);
+  await card.scrollIntoViewIfNeeded();
+  const mates = await chat(page).locator(".mate-message").count();
+  await card.locator(".reply-field textarea").fill("Merge it and send it upstream.");
+  await card.getByRole("button", { name: "Send" }).click();
+  await page.waitForFunction((count) => document.querySelectorAll(".mate-message").length > count, mates);
+  await page.waitForFunction(() => document.querySelector(".chat-status i")?.className.includes("state-idle"));
+  const arrived = await backNow();
+  check(arrived > picked && await strip(page).count() === 1, "messages arrived after the place was picked, and the reply is still on");
+  const text = await send(page, "then why i saw it was on paused state?");
+  check(new RegExp(`^on {8}your message .*, ${arrived} before this one, paragraph 1 of 4$`, "m").test(text), `on counts the place back as it is when sent (${arrived}), not when picked (${picked})`);
+  await page.close();
+}
+
 // J: a narrow window keeps the strip, its chips and the headers inside the column.
 {
   const page = await open("", 420);

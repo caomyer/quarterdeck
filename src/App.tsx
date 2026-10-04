@@ -164,7 +164,7 @@ export function App() {
   const [attaching, setAttaching] = useState(false);
   const [copying, setCopying] = useState(false);
   /** The place the message being written replies to, if any. */
-  const [chatReply, setChatReply] = useState<ReplyDraft | null>(null);
+  const [chatReply, setChatReply] = useState<HeldReply | null>(null);
   // Files picked, and a place pointed at, while one home was chosen are not carried into another.
   useEffect(() => {
     setChatFiles([]);
@@ -559,7 +559,7 @@ export function App() {
     if (task) setActiveTask(task);
   }
 
-  async function sendChat(reply: ReplyDraft | null = chatReply) {
+  async function sendChat(reply: ReplyDraft | null) {
     // Keep the draft: it can go once the first mate has started in this folder.
     if ((!chatDraft.trim() && chatFiles.length === 0) || !bridge.sendReady || copying) return;
     let attached: Attachment[] = [];
@@ -863,7 +863,7 @@ export function App() {
           </div>
         )}
 
-        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} reply={chatReply} fleetRead={fleetRead} onReply={setChatReply} onSend={(withReply) => void sendChat(withReply ? chatReply : null)} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} controls={bridge.controls} onSetOption={bridge.setOption} turnSince={bridge.turnSince} calm={calm.calm} calmSaving={calm.saving} calmError={calm.error} onCalm={(on) => void calm.setOn(on)} onDismissCalmError={calm.dismissError} />}
+        {view === "chat" && <ChatView messages={messages} artifacts={artifacts} reviews={reviews} calls={chatCalls} renderCall={chatCall} callTitle={chatCallTitle} answeredFrom={answeredFrom} onSettle={(ref, threads) => settleFromChat(ref, threads)} tasks={fleet?.tasks ?? []} onOpenArtifact={showArtifact} outbox={outbox} draft={chatDraft} runtime={runtime.state} hostLabel={hostLabel} degraded={degraded} home={bridge.home} sendReady={bridge.sendReady} banners={hostBanners(setChatDraft)} approvals={bridge.permissionRequests} onAnswer={(id, optionId) => void bridge.answerPermission(id, optionId)} onDraft={setChatDraft} files={chatFiles} attachProblems={attachProblems} attaching={attaching} copying={copying} onAttach={() => void attachToChat()} onRemoveFile={(source) => setChatFiles((current) => current.filter((file) => file.source !== source))} onDismissProblems={() => setAttachProblems([])} reply={chatReply} fleetRead={fleetRead} onReply={setChatReply} onSend={(reply) => void sendChat(reply)} onResend={(id, text) => void bridge.resend(id, text)} onRestart={() => void bridge.restart()} controls={bridge.controls} onSetOption={bridge.setOption} turnSince={bridge.turnSince} calm={calm.calm} calmSaving={calm.saving} calmError={calm.error} onCalm={(on) => void calm.setOn(on)} onDismissCalmError={calm.dismissError} />}
         {view === "projects" && <ProjectsView projects={projects} waitingIn={(name) => awaitingIn(name).length} underwayIn={(project) => underwayIn(project).length} queuedIn={(name) => upNext(backlogRecords, name).length} onOpen={openProject} />}
         {view === "project" && selectedProjectData && <ProjectView
           project={selectedProjectData}
@@ -2146,6 +2146,14 @@ function LogbookDrawer({ entry, project, now, artifacts, reviews, source, upstre
   </aside></div>;
 }
 
+/** A reply in the composer, with the key of the message or card its place is in, so its count back is made again as it goes. */
+type HeldReply = ReplyDraft & { from: string };
+
+/** A chat item's key: its own id, or its message's. */
+function itemKey(item: ChatItem) {
+  return "id" in item ? item.id : item.message.id;
+}
+
 type ChatItem = { type: "message"; message: ChatMessage } | { type: "steps"; id: string; steps: ChatMessage[]; past: boolean } | { type: "label"; id: string; text: string } | { type: "artifact"; id: string; artifact: Artifact; revision: ArtifactRevision } | { type: "review"; message: ChatMessage; sent: SentPage } | { type: "call"; id: string; call: Call } | { type: "answer"; message: ChatMessage; answer: MessageAnswer };
 
 /** A review the captain sent, with the page it is about, as the chat draws it. */
@@ -2322,7 +2330,7 @@ function ChatAnswer({ message, answer, call, title, outbox, running, from }: { m
   return <AnswerCard callId={answer.call} messageId={message.id} view={title ? { ...view, title } : view} time={!status && !message.past ? formatTime(message.createdAt) : null} sent={message.text} />;
 }
 
-function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, reply, fleetRead, onReply, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart, controls, onSetOption, turnSince, calm, calmSaving, calmError, onCalm, onDismissCalmError }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; reply: ReplyDraft | null; fleetRead: FleetRead; onReply: (reply: ReplyDraft | null) => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: (withReply: boolean) => void; onResend: (id: string, text: string) => void; onRestart: () => void; controls: SessionControls | null; onSetOption: (category: PickedCategory, value: string) => Promise<unknown>; turnSince: number | null; calm: CalmRead | null; calmSaving: boolean; calmError: string | null; onCalm: (on: boolean) => void; onDismissCalmError: () => void }) {
+function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, answeredFrom, onSettle, tasks, onOpenArtifact, outbox, draft, files, attachProblems, attaching, copying, onAttach, onRemoveFile, onDismissProblems, reply, fleetRead, onReply, runtime, hostLabel, degraded, home, sendReady, banners, approvals, onAnswer, onDraft, onSend, onResend, onRestart, controls, onSetOption, turnSince, calm, calmSaving, calmError, onCalm, onDismissCalmError }: { messages: ChatMessage[]; artifacts: Artifact[]; reviews: ReviewSummary; calls: Call[]; renderCall: (call: Call) => React.ReactNode; callTitle: (id: string) => string | undefined; answeredFrom: Record<string, AnsweredFrom>; onSettle: (ref: ArtifactRef, threads: string[]) => Promise<unknown>; tasks: FleetTask[]; onOpenArtifact: (artifact: Artifact, rev?: number) => void; outbox: Record<string, OutboxView>; draft: string; files: PickedFile[]; attachProblems: string[]; attaching: boolean; copying: boolean; onAttach: () => void; onRemoveFile: (path: string) => void; onDismissProblems: () => void; reply: HeldReply | null; fleetRead: FleetRead; onReply: (reply: HeldReply | null) => void; runtime: HostRuntimeState; hostLabel: string; degraded: boolean; home: string; sendReady: boolean; banners: React.ReactNode; approvals: PermissionView[]; onAnswer: (id: string, optionId: string) => void; onDraft: (value: string) => void; onSend: (reply: ReplyDraft | null) => void; onResend: (id: string, text: string) => void; onRestart: () => void; controls: SessionControls | null; onSetOption: (category: PickedCategory, value: string) => Promise<unknown>; turnSince: number | null; calm: CalmRead | null; calmSaving: boolean; calmError: string | null; onCalm: (on: boolean) => void; onDismissCalmError: () => void }) {
   const running = ["starting", "idle", "prompt_turn", "agent_turn", "restarting"].includes(runtime);
   const turnLive = runtime === "prompt_turn" || runtime === "agent_turn";
   const placeholder = !sendReady ? "Start the first mate to send it a message." : runtime === "locked_by_other" ? "The first mate is running somewhere else. What you write here waits until it runs in this app." : running ? "Message the first mate, or type / for its commands" : "The first mate isn't running. It'll read this when it starts.";
@@ -2354,7 +2362,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
   // Everything a reply can point at, in order: messages and cards, never steps or labels.
   const replyable = items.filter((item) => item.type === "message" ? item.message.who === "mate" || item.message.who === "captain" : item.type !== "steps" && item.type !== "label");
   /** The place an element on screen is, as a reply captures it: a card, a block of a message, or selected words in one. */
-  function placeOf(element: HTMLElement, span?: ReturnType<typeof selectionStretch>): Place | null {
+  function placeOf(element: HTMLElement, span?: ReturnType<typeof selectionStretch>): { place: Place; from: string } | null {
     const card = element.closest<HTMLElement>(CARDS);
     const back = (index: number) => replyable.length - index;
     if (card) {
@@ -2366,10 +2374,11 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       const item = replyable[index];
       if (!item) return null;
       const base = { back: back(index), unit: null, selected: false, around: null, message: "" };
-      if (item.type === "call") return { ...base, owner: { kind: "call", id: item.call.id }, said: item.call.raised_at ? { at: item.call.raised_at } : null, quote: collapse(item.call.question ?? item.call.title) };
-      if (item.type === "artifact") return { ...base, owner: { kind: "page", id: pageId(item.artifact), rev: item.revision.rev }, said: { at: item.revision.presented_at }, quote: collapse(item.revision.title) };
-      if (item.type === "answer") return { ...base, owner: { kind: "answer", call: item.answer.call }, said: saidOf(item.message), quote: collapse(item.answer.kind === "recorded" ? [item.answer.label, item.answer.note].filter(Boolean).join(". ") : item.answer.words) };
-      if (item.type === "review") return { ...base, owner: { kind: "review", page: pageId(item.sent.ref) }, said: saidOf(item.message), quote: collapse(item.message.text.split("\n")[0]) };
+      const from = itemKey(item);
+      if (item.type === "call") return { from, place: { ...base, owner: { kind: "call", id: item.call.id }, said: item.call.raised_at ? { at: item.call.raised_at } : null, quote: collapse(item.call.question ?? item.call.title) } };
+      if (item.type === "artifact") return { from, place: { ...base, owner: { kind: "page", id: pageId(item.artifact), rev: item.revision.rev }, said: { at: item.revision.presented_at }, quote: collapse(item.revision.title) } };
+      if (item.type === "answer") return { from, place: { ...base, owner: { kind: "answer", call: item.answer.call }, said: saidOf(item.message), quote: collapse(item.answer.kind === "recorded" ? [item.answer.label, item.answer.note].filter(Boolean).join(". ") : item.answer.words) } };
+      if (item.type === "review") return { from, place: { ...base, owner: { kind: "review", page: pageId(item.sent.ref) }, said: saidOf(item.message), quote: collapse(item.message.text.split("\n")[0]) } };
       return null;
     }
     const article = element.closest<HTMLElement>("article[data-message-id]");
@@ -2382,7 +2391,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
     const got = span ?? (block && blockStretch(block, words));
     if (!block || !got?.quote) return null;
     const { message } = item;
-    return {
+    return { from: message.id, place: {
       owner: { kind: message.who === "mate" ? "mate" : "captain" },
       said: saidOf(message),
       back: back(index),
@@ -2392,13 +2401,18 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       around: { before: got.before, after: got.after },
       block: span ? blockStretch(block, words)?.quote : undefined,
       message: message.who === "mate" ? mateReplies.get(message.id)?.words ?? message.text : splitAttachments(captainWords(message.text)).text,
-    };
+    } };
+  }
+  /** The reply as it goes: its place counted back from the chat as it is now, since more may have come since it was picked. */
+  function counted({ from, ...reply }: HeldReply): ReplyDraft {
+    const index = replyable.findIndex((item) => itemKey(item) === from);
+    return index < 0 ? reply : { ...reply, place: { ...reply.place, back: replyable.length - index } };
   }
   /** Points the reply at an element's place, and puts the caret in the draft to say something about it. */
   function attach(element: HTMLElement, span?: ReturnType<typeof selectionStretch>) {
-    const place = placeOf(element, span);
-    if (!place) return;
-    onReply({ place, picked: null });
+    const found = placeOf(element, span);
+    if (!found) return;
+    onReply({ ...found, picked: null });
     setHover(null);
     setPicked(null);
     composer.current?.focus();
@@ -2524,7 +2538,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       return;
     }
     if (refusedCommand) return;
-    onSend(true);
+    onSend(reply && counted(reply));
   };
   const toggleCalm = () => {
     setNotice(null);
@@ -2609,7 +2623,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       if (!picked) return;
       attach(picked.span.place ?? picked.words, picked.span);
       window.getSelection()?.removeAllRanges();
-    }} />{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer"><SlashPalette state={palette} active={active} controls={controls} onHover={setActive} onChoose={pick} />{reply && <ReplyStrip draft={reply} fleet={fleetRead} said={saidLabel(reply.place)} command={refusedCommand} onPick={(key) => onReply({ ...reply, picked: key })} onRemove={() => { onReply(null); composer.current?.focus(); }} onSendWithout={() => { onReply(null); onSend(false); }} onKeep={() => { composer.current?.focus(); composer.current?.select(); }} />}{files.length > 0 && <ul className="file-chips composer-files" aria-label="Attached files">{files.map((file) => <li key={file.source} className="file-chip" title={`${file.source}\nCopied into the home when the message is sent`}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => onRemoveFile(file.source)} disabled={copying} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}{attachProblems.length > 0 && <ul className="attach-problems" role="alert">{attachProblems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={onDismissProblems} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}<div className="composer-draft"><GhostHint draft={draft} hint={ghostHint(draft, commands)} /><textarea ref={composer} value={draft} readOnly={copying} onChange={(event) => { onDraft(event.target.value); readCaret(event); }} onSelect={readCaret} onKeyDown={onKeyDown} placeholder={placeholder} aria-label="Message the first mate" aria-autocomplete="list" aria-controls={matches.length ? "slash-palette" : undefined} aria-activedescendant={matches.length ? `slash-${active}` : undefined} /></div><div className="composer-bar"><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /><span>{hostLabel}</span></span><SessionPills controls={controls} live={sessionLive} openMenu={openMenu} notice={notice} onOpen={setOpenMenu} onChoose={(category, value) => void choose(category, value)} /><CalmPill calm={calm} saving={calmSaving} failed={notice?.kind === "calm"} onToggle={toggleCalm} /><span className="composer-grow" /><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" onClick={onAttach} disabled={attaching || copying} title="Attach files for the first mate to read">{attaching ? "Attaching…" : "Attach"}</button><button className="send-button" onClick={submit} disabled={(!draft.trim() && files.length === 0) || !sendReady || copying || refusedCommand !== null} title={sendReady ? "Send message (⏎) · ⇧⏎ for a new line" : "Start the first mate to send messages"}>{copying ? "Sending…" : "Send"}</button></div><SessionNotices controls={controls} calm={calm} notice={notice} dismissedProblems={dismissedProblems} onRetry={() => { if (notice?.kind === "refused") void choose(notice.category, notice.value); else if (notice?.kind === "calm") { setNotice(null); onDismissCalmError(); onCalm(!calmOn); } }} onRestart={() => { setNotice(null); onRestart(); }} onDismiss={() => setNotice(null)} onDismissProblem={(key) => setDismissedProblems((current) => [...current, key])} /></div></div>;
+    }} />{approvals.length > 0 && <div className="approval-stack">{approvals.map((request) => <ApprovalCard key={request.id} request={request} home={home} onAnswer={(optionId) => onAnswer(request.id, optionId)} />)}</div>}<div className="composer"><SlashPalette state={palette} active={active} controls={controls} onHover={setActive} onChoose={pick} />{reply && <ReplyStrip draft={reply} fleet={fleetRead} said={saidLabel(reply.place)} command={refusedCommand} onPick={(key) => onReply({ ...reply, picked: key })} onRemove={() => { onReply(null); composer.current?.focus(); }} onSendWithout={() => { onReply(null); onSend(null); }} onKeep={() => { composer.current?.focus(); composer.current?.select(); }} />}{files.length > 0 && <ul className="file-chips composer-files" aria-label="Attached files">{files.map((file) => <li key={file.source} className="file-chip" title={`${file.source}\nCopied into the home when the message is sent`}><Paperclip size={13} /><span>{file.name}</span><small>{formatBytes(file.bytes)}</small><button onClick={() => onRemoveFile(file.source)} disabled={copying} title={`Remove ${file.name}`} aria-label={`Remove ${file.name}`}><X size={12} /></button></li>)}</ul>}{attachProblems.length > 0 && <ul className="attach-problems" role="alert">{attachProblems.map((problem, index) => <li key={index}>{problem}</li>)}<li><button onClick={onDismissProblems} title="Dismiss" aria-label="Dismiss"><X size={12} /></button></li></ul>}<div className="composer-draft"><GhostHint draft={draft} hint={ghostHint(draft, commands)} /><textarea ref={composer} value={draft} readOnly={copying} onChange={(event) => { onDraft(event.target.value); readCaret(event); }} onSelect={readCaret} onKeyDown={onKeyDown} placeholder={placeholder} aria-label="Message the first mate" aria-autocomplete="list" aria-controls={matches.length ? "slash-palette" : undefined} aria-activedescendant={matches.length ? `slash-${active}` : undefined} /></div><div className="composer-bar"><span className="chat-status" title={`First Mate: ${hostLabel}`}><i className={`state-${runtime} ${degraded ? "degraded" : ""}`} /><span>{hostLabel}</span></span><SessionPills controls={controls} live={sessionLive} openMenu={openMenu} notice={notice} onOpen={setOpenMenu} onChoose={(category, value) => void choose(category, value)} /><CalmPill calm={calm} saving={calmSaving} failed={notice?.kind === "calm"} onToggle={toggleCalm} /><span className="composer-grow" /><button className="icon-button" onClick={onRestart} title="Restart the first mate"><RefreshCw size={15} /></button><button className="attach-button" onClick={onAttach} disabled={attaching || copying} title="Attach files for the first mate to read">{attaching ? "Attaching…" : "Attach"}</button><button className="send-button" onClick={submit} disabled={(!draft.trim() && files.length === 0) || !sendReady || copying || refusedCommand !== null} title={sendReady ? "Send message (⏎) · ⇧⏎ for a new line" : "Start the first mate to send messages"}>{copying ? "Sending…" : "Send"}</button></div><SessionNotices controls={controls} calm={calm} notice={notice} dismissedProblems={dismissedProblems} onRetry={() => { if (notice?.kind === "refused") void choose(notice.category, notice.value); else if (notice?.kind === "calm") { setNotice(null); onDismissCalmError(); onCalm(!calmOn); } }} onRestart={() => { setNotice(null); onRestart(); }} onDismiss={() => setNotice(null)} onDismissProblem={(key) => setDismissedProblems((current) => [...current, key])} /></div></div>;
 }
 
 /**

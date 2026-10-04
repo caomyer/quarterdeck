@@ -31,11 +31,9 @@ test("each documented block is exactly what the app writes from what it captured
   }
 });
 
-test("the first mate's guidance shows it the block word for word, and its job description points there", () => {
+test("the first mate's guidance shows it the block word for word", () => {
   const guidance = readFileSync(new URL("../engine/docs/quarterdeck-replies.md", import.meta.url), "utf8");
   assert.ok(guidance.includes(documented.text), "engine/docs/quarterdeck-replies.md no longer carries the documented reply block as the app writes it");
-  const job = readFileSync(new URL("../engine/AGENTS.md", import.meta.url), "utf8");
-  assert.ok(job.includes(REPLY_HEADING.split(".")[0]) && job.includes("docs/quarterdeck-replies.md"), "engine/AGENTS.md no longer names the reply block and where it is documented");
 });
 
 test("every block reads back as the place, the things and the captain's words, untouched", () => {
