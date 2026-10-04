@@ -11,6 +11,7 @@
 #                  [--name <name>] [--title <title>] [--note <text>] [--assets <dir>]
 #                  [--accept-layout] [--covers <task-id,...>]
 #                  [--addressed <t1,t2>] [--reply <t3>=<text>]
+#   fm-artifact.sh deliver-review (--task <id> | --chat) --name <name> --rev <n> --file <review-file>
 #   fm-artifact.sh list [--json]
 #   fm-artifact.sh mode
 #
@@ -64,6 +65,24 @@
 #   Output: "presented: <name> rev <n>" or "unchanged: <name> rev <n>", then
 #   "entry: <absolute path of the revision's HTML>".
 #
+# deliver-review
+#   Delivers the captain's review of a crewmate's page to that crewmate, byte
+#   for byte. The page is named the way present names it, plus the revision the
+#   review is about; the recipient is that revision's own presented_by.task,
+#   never the caller's guess, and a revision firstmate presented is refused.
+#   --file must be a regular file in the page's own review-files/ folder, where
+#   the Quarterdeck app writes the exact text the author receives.
+#   When the author still has a task record (state/<task>.meta), the file goes
+#   through bin/fm-send.sh into its steering inbox, enqueued idempotently, so a
+#   retry of the same review lands on the same inbox message rather than a
+#   second one. A task with no record has been torn down and nothing is sent.
+#   A secondmate author is not sent to either: fm-send marks every request to
+#   one, so what arrived would not be the file.
+#   This command writes nothing else: the caller keeps the review's record.
+#   Output, exit 0: "delivered: <task> inbox <NNN>" then "record: <inbox file>".
+#   Output, exit 4: "undelivered: <task>" then "reason: retired" (torn down) or
+#   "reason: send failed: <why>"; nothing reached the author.
+#
 # Store layout, under the home's data directory:
 #   <task-id>/artifacts/<name>/rev-<n>/files/...     task artifacts
 #   .artifacts/<name>/rev-<n>/files/...              chat artifacts
@@ -95,7 +114,7 @@
 #
 # Exit codes: 0 success; 1 refused (invalid input, unknown task, over the size
 # cap, bad mode) or a --covers attachment failed after the present; 2 usage;
-# 3 refused for layout findings.
+# 3 refused for layout findings; 4 a review was not delivered.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -114,7 +133,7 @@ LAYOUT_MARKER='__fm_artifact_layout__'
 . "$SCRIPT_DIR/fm-pr-lib.sh"  # fm_task_id_path_safe: the shared task id alphabet
 
 usage() {
-  sed -n '9,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '9,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -562,6 +581,89 @@ cmd_list() {
   fi
 }
 
+# The artifact directory a page lives in, refusing a name or task that could
+# step outside the store.
+page_dir() {  # <task or empty for chat> <name>
+  name_valid "$2" || die "invalid artifact name '$2'"
+  if [ -z "$1" ]; then
+    printf '%s/.artifacts/%s' "$DATA" "$2"
+  else
+    fm_task_id_path_safe "$1" || die "invalid task id '$1'"
+    printf '%s/%s/artifacts/%s' "$DATA" "$1" "$2"
+  fi
+}
+
+# Whether a task record's last <key>= line says exactly <value> (an absent key reads as '').
+meta_has() {  # <meta> <key> <value>
+  local line value=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "$2="*) value=${line#*=} ;; esac
+  done < "$1"
+  [ "$value" = "$3" ]
+}
+
+cmd_deliver_review() {
+  local task='' chat=0 name='' rev='' file='' dir record author body out err rc=0 inbox why
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --task) [ $# -ge 2 ] || usage; task=$2; shift 2 ;;
+      --chat) chat=1; shift ;;
+      --name) [ $# -ge 2 ] || usage; name=$2; shift 2 ;;
+      --rev) [ $# -ge 2 ] || usage; rev=$2; shift 2 ;;
+      --file) [ $# -ge 2 ] || usage; file=$2; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$name" ] && [ -n "$rev" ] && [ -n "$file" ] || usage
+  if [ "$chat" = 1 ]; then
+    [ -z "$task" ] || die "--task and --chat are mutually exclusive"
+  else
+    [ -n "$task" ] || die "say where the page lives: --task <id> or --chat"
+  fi
+  case "$rev" in ''|0*|*[!0-9]*) die "invalid revision '$rev'" ;; esac
+  dir=$(page_dir "$task" "$name") || exit 1
+  record="$dir/rev-$rev/revision.json"
+  [ -f "$record" ] || die "no revision $rev of '$name' in this home"
+  author=$(jq -r 'if .presented_by.role == "crew" then .presented_by.task // "" else "" end' "$record" 2>/dev/null) ||
+    die "cannot read $record"
+  [ -n "$author" ] || die "revision $rev of '$name' was not presented by a crewmate, so it has no author to deliver to"
+  fm_task_id_path_safe "$author" || die "revision $rev of '$name' names an invalid author '$author'"
+  case "$file" in
+    "$dir/review-files/"*) ;;
+    *) die "the review must be a file in $dir/review-files/" ;;
+  esac
+  case "${file#"$dir/review-files/"}" in
+    */*|.*|'') die "the review must be a file in $dir/review-files/" ;;
+  esac
+  [ -f "$file" ] && [ ! -L "$file" ] || die "not a regular file: $file"
+
+  if [ ! -f "$STATE/$author.meta" ]; then
+    printf 'undelivered: %s\nreason: retired\n' "$author"
+    return 4
+  fi
+  # A secondmate gets a marked request and a remote one a record on another
+  # host: neither is the file byte for byte in this home's inbox.
+  if meta_has "$STATE/$author.meta" kind secondmate || ! meta_has "$STATE/$author.meta" remote_host ''; then
+    printf 'undelivered: %s\nreason: send failed: %s is a secondmate, which takes only marked requests\n' "$author" "$author"
+    return 4
+  fi
+  # Read the file whole: a command substitution would drop its last newline.
+  body=$(cat "$file" && printf .) || die "cannot read $file"
+  body=${body%.}
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-deliver-review.XXXXXX") || die "cannot make a scratch file"
+  out=$(FM_HOME="$FM_HOME" FM_SEND_IDEMPOTENT=1 FM_SEND_PRINT_RECORD=1 "$SCRIPT_DIR/fm-send.sh" "$author" "$body" 2>"$err") || rc=$?
+  inbox=$(printf '%s\n' "$out" | sed -n 's/^record: //p' | tail -n 1)
+  if [ "$rc" -ne 0 ] || [ -z "$inbox" ]; then
+    why=$(grep -v '^[[:space:]]*$' "$err" | tail -n 1 | tr -d '\r')
+    rm -f "$err"
+    [ "$rc" -ne 0 ] || why="bin/fm-send.sh did not name the inbox message it wrote"
+    printf 'undelivered: %s\nreason: send failed: %s\n' "$author" "${why:-bin/fm-send.sh exited $rc}"
+    return 4
+  fi
+  rm -f "$err"
+  printf 'delivered: %s inbox %s\nrecord: %s\n' "$author" "$(basename "$inbox" .msg)" "$inbox"
+}
+
 [ $# -ge 1 ] || usage
 sub=$1
 shift
@@ -570,6 +672,7 @@ shift
 [ "$sub" = mode ] || command -v jq >/dev/null 2>&1 || die "jq is required"
 case "$sub" in
   present) cmd_present "$@" ;;
+  deliver-review) cmd_deliver_review "$@" ;;
   list) cmd_list "$@" ;;
   mode) [ $# -eq 0 ] || usage; cmd_mode ;;
   -h|--help) usage ;;

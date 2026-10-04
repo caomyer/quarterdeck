@@ -1191,6 +1191,14 @@ a { color: var(--sea); }
 .send-review:hover:not(:disabled) { background: var(--sea-strong); }
 .review-send small { width: 100%; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .review-send .review-last { width: 100%; margin: 0; color: var(--green); font-size: 12.5px; font-weight: 500; }
+/* What became of a crewmate's review: in its inbox, or not, never read as sent when it did not arrive. */
+.review-delivery { display: inline-flex; align-items: flex-start; gap: 6px; font-size: 12.5px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.review-delivery svg { flex: none; margin-top: 2px; }
+.review-delivery.delivered { color: var(--green); }
+.review-delivery.undelivered { color: var(--amber); }
+.review-delivery.compact { gap: 5px; font-family: var(--mono); font-size: 11.5px; font-weight: 400; }
+.review-delivery.compact svg { margin-top: 1px; }
+.review-send .review-delivery { width: 100%; margin-top: -6px; }
 .review-send .review-problem { width: 100%; margin: 0; color: var(--coral); font-size: 12.5px; line-height: 1.45; }
 
 /* A call this page argues, answered where the argument is. */

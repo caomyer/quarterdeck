@@ -13,10 +13,14 @@
 //!                                                 picture of its place kept in review-files/
 //!   {at, kind: "comment", id, body}               another comment on a thread
 //!   {at, kind: "discarded", id}                   an unsent thread taken back
-//!   {at, kind: "sent", verdict, rev, threads[], answers[], message, header}
+//!   {at, kind: "sent", verdict, rev, threads[], answers[], message, header, relay}
 //!                                                 one review, sent: the chat message it became
 //!                                                 and that message's first line, which is how
-//!                                                 the chat finds it again in a resumed conversation
+//!                                                 the chat finds it again in a resumed conversation,
+//!                                                 and for a crewmate's page the review-files/ name
+//!                                                 of the file its author was sent
+//!   {at, kind: "delivered", rev, file, to, inbox_msg} that file reached its author's inbox
+//!   {at, kind: "undelivered", rev, file, to, reason}  it did not, and why (`retired`: torn down)
 //!   {at, kind: "answer", decision, option, label, on_answer, note?, defer?}
 //!                                                 an answer to a call the page argues: one of its
 //!                                                 options, with anything the captain added, or,
@@ -60,7 +64,11 @@
 //! mate. It is let go when its draft is taken back, or when its thread is
 //! settled while its words are still on the page. A review of a crewmate's page
 //! is also written to `review-files/review-<n>.md`, the exact text the crewmate
-//! receives, and the first mate is told to pass that file on unchanged.
+//! receives, and the app delivers that file to the crewmate itself through
+//! firstmate's `fm-artifact.sh deliver-review`, before the first mate is told.
+//! The first mate still gets the whole review, with a report of the delivery in
+//! place of an instruction to relay it, and a review that did not arrive reads
+//! as not delivered everywhere, never as sent.
 //!
 //! A change the captain makes to a diagram the page owns is a thread like any
 //! other: its anchor names the scene instead of quoting words, its body says
@@ -178,6 +186,7 @@ pub fn view(path: &Path) -> Value {
     let mut answers: Vec<Value> = Vec::new();
     let mut earlier: Vec<Value> = Vec::new();
     let mut seen: Option<u64> = None;
+    let mut deliveries: Vec<&Value> = Vec::new();
     for event in &events {
         let kind = event.get("kind").and_then(Value::as_str).unwrap_or_default();
         let id = event.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -214,6 +223,7 @@ pub fn view(path: &Path) -> Value {
                 }
             }
             "seen" => seen = event.get("rev").and_then(Value::as_u64).max(seen),
+            "delivered" | "undelivered" => deliveries.push(event),
             "answer" => {
                 let decision = event.get("decision").and_then(Value::as_str).unwrap_or_default().to_string();
                 // A recorded answer is on the record; nothing after it changes it.
@@ -287,7 +297,17 @@ pub fn view(path: &Path) -> Value {
                         answer["sent_at"] = at.clone();
                     }
                 }
+                // What became of the review the author was sent: the last attempt with this review's file.
+                let relay = event.get("relay").and_then(Value::as_str);
+                let delivery = relay.and_then(|file| deliveries.iter().rev().find(|delivery| delivery["file"] == file)).map(|delivery| {
+                    json!({
+                        "result": delivery["kind"], "to": delivery["to"],
+                        "inbox_msg": delivery.get("inbox_msg").cloned().unwrap_or(Value::Null),
+                        "reason": delivery.get("reason").cloned().unwrap_or(Value::Null),
+                    })
+                });
                 sent.push(json!({
+                    "delivery": delivery,
                     "at": at,
                     "verdict": event.get("verdict").cloned().unwrap_or(Value::Null),
                     "rev": event.get("rev").cloned().unwrap_or(Value::Null),
@@ -371,17 +391,27 @@ fn crew_author(revision: &Value) -> Option<&str> {
     (by.get("role").and_then(Value::as_str) == Some("crew")).then(|| by.get("task").and_then(Value::as_str).unwrap_or("the worker"))
 }
 
-/// Who a revision came from, in a sentence the first mate can act on: for a
-/// crewmate's page, how to pass the review on without rewording where each
-/// comment sits.
-fn author_line(revision: &Value, relay: Option<&Path>) -> String {
-    match (crew_author(revision), relay) {
-        (Some(task), Some(relay)) => {
-            let file = relay.to_string_lossy().replace('\'', "'\\''");
-            format!("Written by {task}. Relay this review to it unchanged, since its lines say where on the page each comment sits: bin/fm-send.sh {task} \"$(cat '{file}')\". Add any framing of your own in a separate message.")
+/// Who a revision came from, and for a crewmate's page what became of the
+/// review the app delivered to it: a report, never an instruction to relay.
+/// Only a delivery that failed for a reason other than a torn-down author says
+/// how to pass the file on by hand, since the author is still there to read it.
+fn author_line(revision: &Value, relay: Option<(&Path, &Value)>) -> String {
+    let Some(task) = crew_author(revision) else { return "Written by you.".to_string() };
+    let Some((file, delivery)) = relay else { return format!("Written by {task}.") };
+    let shown = file.to_string_lossy();
+    match delivery["kind"].as_str() {
+        Some("delivered") => format!(
+            "Written by {task}. Delivered to {task} as inbox message {}, exactly as written in {shown}. Send any framing of your own as a separate message.",
+            delivery["inbox_msg"].as_str().unwrap_or("?"),
+        ),
+        _ if delivery["reason"] == "retired" => format!("Written by {task}. Not delivered: {task} is torn down. What it would have received is {shown}."),
+        _ => {
+            let quoted = shown.replace('\'', "'\\''");
+            format!(
+                "Written by {task}. Not delivered to {task}: {}. Relay it unchanged yourself: bin/fm-send.sh {task} \"$(cat '{quoted}')\". Add any framing of your own in a separate message.",
+                delivery["reason"].as_str().unwrap_or("no reason given"),
+            )
         }
-        (Some(task), None) => format!("Written by {task}. Relay this review to it unchanged."),
-        (None, _) => "Written by you.".to_string(),
     }
 }
 
@@ -514,10 +544,10 @@ pub fn review_block(revision: &Value, verdict: &str, threads: &[Value], log: &Pa
 }
 
 /// The one message a sent review becomes: the review as its author receives it,
-/// with how to pass it on and the answers already recorded added after its
-/// first line. The log path is included so the author can read the whole review
-/// rather than only what fits here.
-pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Value], log: &Path, relay: Option<&Path>) -> Result<String, String> {
+/// with what became of its delivery to a crewmate and the answers already
+/// recorded added after its first line. The log path is included so the author
+/// can read the whole review rather than only what fits here.
+pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Value], log: &Path, relay: Option<(&Path, &Value)>) -> Result<String, String> {
     let block = review_block(revision, verdict, threads, log)?;
     let (header, rest) = block.split_once('\n').unwrap_or((block.as_str(), ""));
     let mut lines = vec![header.to_string(), author_line(revision, relay)];
@@ -892,10 +922,34 @@ pub fn note_outcomes(log: &Path, answers: &[Keyed], outcomes: &[Outcome]) -> Res
 }
 
 /// The one message a review sends, with the draft comments and answers it is
-/// made of, so what goes out and what is noted as sent cannot drift apart.
-/// Composed after the intake has run: of the options, only those it recorded
-/// are in it, and every answer in words is.
-pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>, Vec<Value>), String> {
+/// made of and the relay file it delivered, so what goes out and what is noted
+/// as sent cannot drift apart. Composed after the intake has run: of the
+/// options, only those it recorded are in it, and every answer in words is.
+///
+/// A crewmate's page gets the review as a file, the exact text it receives,
+/// so nothing about where a comment sits is retold; the app delivers that file
+/// itself (`deliver`) before the first mate is told, and the message reports
+/// what became of it.
+pub async fn draft(home: &Path, dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>, Vec<Value>, Option<String>), String> {
+    let written = {
+        let (dir, verdict) = (dir.to_path_buf(), verdict.to_string());
+        blocking(move || relay_file(&dir, rev, &verdict)).await?
+    };
+    let (revision, threads, answers, relay) = written;
+    let log = dir.join("review.jsonl");
+    let delivery = match (&relay, crew_author(&revision)) {
+        (Some(file), Some(_)) => Some(deliver(home, &log, &revision, file).await?),
+        _ => None,
+    };
+    let text = compose(&revision, verdict, &threads, &answers, &log, relay.as_deref().zip(delivery.as_ref()))?;
+    let name = relay.as_ref().and_then(|file| file.file_name()).map(|name| name.to_string_lossy().to_string());
+    Ok((text, threads, answers, name))
+}
+
+/// What a review is made of, read from its log, and for a crewmate's page the
+/// review written to `review-files/review-<n>.md` as the author receives it.
+#[allow(clippy::type_complexity)]
+fn relay_file(dir: &Path, rev: u64, verdict: &str) -> Result<(Value, Vec<Value>, Vec<Value>, Option<PathBuf>), String> {
     let log = dir.join("review.jsonl");
     let current = view(&log);
     let threads: Vec<Value> = current["threads"]
@@ -904,7 +958,6 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
         .unwrap_or_default();
     let answers = answers_where(&log, goes_with_review);
     let revision = revision_record(dir, rev)?;
-    // A crewmate's page gets the review through firstmate, as a file, so nothing about where a comment sits is retold.
     let relay = match crew_author(&revision) {
         Some(_) => {
             let folder = dir.join("review-files");
@@ -917,19 +970,85 @@ pub fn draft(dir: &Path, rev: u64, verdict: &str) -> Result<(String, Vec<Value>,
         }
         None => None,
     };
-    let text = compose(&revision, verdict, &threads, &answers, &log, relay.as_deref())?;
-    Ok((text, threads, answers))
+    Ok((revision, threads, answers, relay))
+}
+
+/// How long delivering one review may take: fm-send waits on the author's task
+/// lock, and a review is small.
+const DELIVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Delivers a crewmate's review file to its author through firstmate's
+/// `fm-artifact.sh deliver-review`, the one writer of a crewmate's inbox, and
+/// appends what became of it to the review's log: `delivered`, naming the
+/// author and the inbox message, or `undelivered`, naming why. Anything short of
+/// the engine saying it delivered is undelivered, never sent.
+pub async fn deliver(home: &Path, log: &Path, revision: &Value, file: &Path) -> Result<Value, String> {
+    let to = crew_author(revision).unwrap_or_default().to_string();
+    let rev = revision.get("rev").and_then(Value::as_u64).unwrap_or(0);
+    let name = file.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+    let outcome = run_deliver(home, revision, rev, file).await;
+    let event = match outcome {
+        Ok(inbox_msg) => json!({"at": now_ms(), "kind": "delivered", "rev": rev, "file": name, "to": to, "inbox_msg": inbox_msg}),
+        Err(reason) => json!({"at": now_ms(), "kind": "undelivered", "rev": rev, "file": name, "to": to, "reason": reason}),
+    };
+    let (at, written) = (log.to_path_buf(), event.clone());
+    blocking(move || append(&at, &written)).await?;
+    Ok(event)
+}
+
+/// The inbox message `deliver-review` names, or why nothing reached the author:
+/// `retired` for a torn-down author, otherwise the engine's own words.
+async fn run_deliver(home: &Path, revision: &Value, rev: u64, file: &Path) -> Result<String, String> {
+    let script = home.join("bin").join("fm-artifact.sh");
+    if !script.is_file() {
+        return Err("this home's firstmate has no bin/fm-artifact.sh".to_string());
+    }
+    let mut command = crate::envpath::command(&script);
+    command.arg("deliver-review");
+    match revision.get("task").and_then(Value::as_str) {
+        Some(task) if revision.get("scope").and_then(Value::as_str) == Some("task") => command.args(["--task", task]),
+        _ => command.arg("--chat"),
+    };
+    command
+        .args(["--name", revision.get("name").and_then(Value::as_str).unwrap_or_default()])
+        .args(["--rev", &rev.to_string()])
+        .arg("--file")
+        .arg(file);
+    let child = command
+        .env("FM_HOME", home)
+        .current_dir(home)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = match tokio::time::timeout(DELIVER_TIMEOUT, child).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("bin/fm-artifact.sh could not be run: {e}")),
+        Err(_) => return Err(format!("bin/fm-artifact.sh did not finish within {}s, so whether it arrived is unknown", DELIVER_TIMEOUT.as_secs())),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let said = |prefix: &str| stdout.lines().find_map(|line| line.strip_prefix(prefix).map(str::trim).map(str::to_string));
+    match output.status.code() {
+        Some(0) => said("delivered: ")
+            .and_then(|line| line.split_once(" inbox ").map(|(_, msg)| msg.trim().to_string()))
+            .ok_or_else(|| "bin/fm-artifact.sh did not name the inbox message it wrote".to_string()),
+        Some(4) => Err(said("reason: ").map(|reason| reason.strip_prefix("send failed: ").map(str::to_string).unwrap_or(reason)).unwrap_or_else(|| "no reason given".to_string())),
+        Some(2) => Err("this home's firstmate predates delivering reviews".to_string()),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(stderr.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().trim_start_matches("fm-artifact: ").to_string()).unwrap_or_else(|| format!("bin/fm-artifact.sh exited with {}", output.status)))
+        }
+    }
 }
 
 /// Records that the draft went, under the id the host gave the message, with the
 /// message's first line so the chat can find it again in a resumed conversation.
 #[allow(clippy::too_many_arguments)]
-pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answers: &[Value], message: &str, text: &str) -> Result<Value, String> {
+pub fn record_sent(log: &Path, verdict: &str, rev: u64, threads: &[Value], answers: &[Value], message: &str, text: &str, relay: Option<&str>) -> Result<Value, String> {
     append(
         log,
         &json!({
             "at": now_ms(), "kind": "sent", "verdict": verdict, "rev": rev, "message": message,
-            "header": text.lines().next().unwrap_or_default(),
+            "header": text.lines().next().unwrap_or_default(), "relay": relay,
             "threads": threads.iter().filter_map(|thread| thread["id"].as_str()).collect::<Vec<_>>(),
             "answers": answers.iter().filter_map(|answer| answer["decision"].as_str()).collect::<Vec<_>>(),
         }),
@@ -989,18 +1108,15 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
     let outcomes = record_staged(home, &log, None).await?;
     let replied = reply_worded(home, &log).await?;
     let sent_with = |message: &str| name_replies(home, &replied, message.to_string());
-    let (text, threads, answers) = {
-        let (dir, verdict) = (dir.clone(), verdict.clone());
-        blocking(move || draft(&dir, rev, &verdict)).await?
-    };
+    let (text, threads, answers, relay) = draft(home, &dir, rev, &verdict).await?;
     let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
         Ok(message) => message,
-        Err(problem) if !outcomes.is_empty() || !replied.is_empty() => {
-            // The intake has run or words were kept, so the screen has to show them even though nothing went.
+        Err(problem) if !outcomes.is_empty() || !replied.is_empty() || relay.is_some() => {
+            // The intake has run, words were kept or the author was sent the review, so the screen has to show them even though the first mate was not told.
             let review = blocking(move || Ok(view(&log))).await.unwrap_or(Value::Null);
             return Ok(json!({
                 "message": Value::Null, "text": text, "review": review, "outcomes": outcomes,
-                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded, and words shown as kept are kept on their call, where the first mate sees them when it starts; send the review again to tell the first mate."),
+                "warning": format!("The review did not reach the first mate: {problem}. Any answer shown as recorded is recorded, words shown as kept are kept on their call, and a review delivered to its author has arrived; send the review again to tell the first mate, which delivers nothing twice."),
             }));
         }
         Err(problem) => return Err(problem),
@@ -1009,7 +1125,7 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
     let recorded = {
         let (log, message) = (log.clone(), message.clone());
         let text = text.clone();
-        blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, &message, &text)).await
+        blocking(move || record_sent(&log, &verdict, rev, &threads, &answers, &message, &text, relay.as_deref())).await
     };
     match recorded {
         Ok(review) => Ok(json!({"message": message, "text": text, "review": review, "outcomes": outcomes})),
@@ -1693,7 +1809,7 @@ mod tests {
         ];
         let text = compose(&revision, "changes", &threads, &[], Path::new("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), None).unwrap();
         assert!(text.starts_with("Captain's review of \"AI titles for snips\" (task res-titles-scout, rev 2): Requests changes.\n"), "{text}");
-        assert!(text.contains("Written by res-titles-scout. Relay this review to it unchanged."), "{text}");
+        assert!(text.contains("\nWritten by res-titles-scout.\n"), "{text}");
         assert!(text.contains("/home/data/res-titles-scout/artifacts/titles-plan/review.jsonl"), "{text}");
         assert!(text.contains("t1 on \"Runs after transcription, free, private.\": Say what happens on an older phone. And on a metered hotspot."), "{text}");
         assert!(text.contains("t2 on \"a very long quote"), "{text}");
@@ -1827,10 +1943,10 @@ mod tests {
         assert_eq!(current["staged_answers"], 1);
         assert!(staged(&log).is_empty());
 
-        let (text, threads, told) = draft(&dir, 1, "comment").unwrap();
+        let (text, threads, told, _) = draft(&home, &dir, 1, "comment").await.unwrap();
         assert!(text.contains("Recorded: res-model-download = wifi-only"), "{text}");
         assert!(!text.contains("res-model-cellular"), "a skipped answer is never claimed: {text}");
-        record_sent(&log, "comment", 1, &threads, &told, "out-1", "A review").unwrap();
+        record_sent(&log, "comment", 1, &threads, &told, "out-1", "A review", None).unwrap();
         let current = view(&log);
         assert_eq!(current["staged_answers"], 0);
         assert_eq!(summary(&home.join("data"))["chat/board"]["answered"], json!(["res-model-download"]));
@@ -1892,7 +2008,7 @@ mod tests {
         let refused = view(&log)["answers"].as_array().unwrap().iter().find(|a| a["decision"] == "res-refused").unwrap()["reply"].clone();
         assert_eq!(refused, json!({"result": "not_kept", "detail": "call res-refused is already closed"}));
 
-        let (text, threads, carried) = draft(&dir, 1, "approve").unwrap();
+        let (text, threads, carried, _) = draft(&home, &dir, 1, "approve").await.unwrap();
         assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only\")\n  The captain added: Say so in Settings."), "{text}");
         assert!(text.contains("\nAnswered in words, kept on each call as the captain's reply; nothing has recorded them. Record one with bin/fm-captain-hold.sh answer only if"), "{text}");
         assert!(text.contains("Never infer an answer from the words alone."), "{text}");
@@ -1900,7 +2016,7 @@ mod tests {
         assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-10-03.\n"), "{text}");
         assert!(text.contains("\nres-refused: Too late for this one. (not kept on the call: call res-refused is already closed)"), "{text}");
         assert_eq!(carried.len(), 4);
-        record_sent(&log, "approve", 1, &threads, &carried, "out-1", &text).unwrap();
+        record_sent(&log, "approve", 1, &threads, &carried, "out-1", &text, None).unwrap();
 
         // Sent, an answer in words went to the first mate, but only the intake's record is final: the page's
         // answered calls are the recorded one alone, and words and a dated not now alike can be answered anew,
@@ -1928,10 +2044,10 @@ mod tests {
         assert_eq!(page["sent"][0]["answers"][1]["note"], "Pause, but tell the user why.");
         assert_eq!(page["sent"][0]["answers"][2]["defer"], "2026-10-03");
         // The answer again goes with the next review.
-        let (text, threads, carried) = draft(&dir, 1, "comment").unwrap();
+        let (text, threads, carried, _) = draft(&home, &dir, 1, "comment").await.unwrap();
         assert!(text.contains("\nres-model-cellular: Finish on cellular after all."), "{text}");
         assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-11-01."), "{text}");
-        record_sent(&log, "comment", 1, &threads, &carried, "out-2", &text).unwrap();
+        record_sent(&log, "comment", 1, &threads, &carried, "out-2", &text, None).unwrap();
         let page = &summary(&home.join("data"))["chat/board"];
         assert_eq!(page["sent"][1]["answers"][0]["note"], "Finish on cellular after all.");
         assert_eq!(page["sent"][0]["answers"][1]["note"], "Pause, but tell the user why.");
@@ -2117,8 +2233,90 @@ mod tests {
         (dir, log)
     }
 
-    #[test]
-    fn the_captains_t2_reaches_the_crewmate_saying_which_row_and_how_to_see_it() {
+    /// A home running this repository's own engine, with a crewmate's page
+    /// presented through it and one comment drafted. `live` gives the author a
+    /// task record; without one it has been torn down.
+    fn engine_home(name: &str, live: bool) -> (PathBuf, PathBuf) {
+        let home = scratch(name);
+        std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/bin"), home.join("bin")).unwrap();
+        std::fs::create_dir_all(home.join("state")).unwrap();
+        std::fs::create_dir_all(home.join("data/qd-plan-1")).unwrap();
+        if live {
+            // No such terminal: the doorbell rings nowhere, and the inbox record is still the delivery.
+            std::fs::write(home.join("state/qd-plan-1.meta"), "window=fm-review-test-none:fm-qd-plan-1\nkind=ship\nharness=claude\n").unwrap();
+        }
+        let page = home.join("plan.html");
+        std::fs::write(&page, "<html><head><title>Plan</title></head><body><p>The plan, in short.</p></body></html>").unwrap();
+        let presented = std::process::Command::new(home.join("bin/fm-artifact.sh"))
+            .args(["present", "--task", "qd-plan-1"])
+            .arg(&page)
+            .env("FM_HOME", &home)
+            .env("FM_TASK_ID", "qd-plan-1")
+            .env("FM_ARTIFACT_LAYOUT", "0")
+            .output()
+            .unwrap();
+        assert!(presented.status.success(), "{}", String::from_utf8_lossy(&presented.stderr));
+        let dir = home.join("data/qd-plan-1/artifacts/plan");
+        add_comment(&dir.join("review.jsonl"), 1, "Say what \"short\" leaves out.\nAnd why.", Some(anchor("The plan, in short.")), None, None).unwrap();
+        (home, dir)
+    }
+
+    #[tokio::test]
+    async fn a_crewmates_review_reaches_it_unchanged_and_the_first_mate_is_told_so() {
+        let (home, dir) = engine_home("deliver-live", true);
+        let log = dir.join("review.jsonl");
+        let (text, threads, told, relay) = draft(&home, &dir, 1, "changes").await.unwrap();
+        assert_eq!(relay.as_deref(), Some("review-1.md"));
+        let file = dir.join("review-files/review-1.md");
+        let inbox = home.join("state/qd-plan-1.inbox/001.msg");
+        let record = std::fs::read(&inbox).expect("the review is in the author's inbox");
+        let body = &record[record.windows(4).position(|w| w == b"\n--\n").expect("an inbox record") + 4..];
+        assert_eq!(body, std::fs::read(&file).unwrap().as_slice(), "the author gets the file byte for byte");
+        // The first mate still gets the whole review, and a report in place of an instruction.
+        assert!(text.contains("Delivered to qd-plan-1 as inbox message 001"), "{text}");
+        assert!(text.contains("t1 on \"The plan, in short.\": Say what"), "{text}");
+        assert!(!text.contains("bin/fm-send.sh"), "nothing is left for the first mate to relay: {text}");
+        let delivered = read_events(&log).into_iter().find(|event| event["kind"] == "delivered").expect("the delivery is in the review's own record");
+        assert_eq!((&delivered["to"], &delivered["inbox_msg"], &delivered["file"], &delivered["rev"]), (&json!("qd-plan-1"), &json!("001"), &json!("review-1.md"), &json!(1)));
+
+        // The first mate was not told, so the captain sends again: the author does not get it twice.
+        let (again, ..) = draft(&home, &dir, 1, "changes").await.unwrap();
+        assert!(again.contains("Delivered to qd-plan-1 as inbox message 001"), "{again}");
+        assert!(!home.join("state/qd-plan-1.inbox/002.msg").exists(), "a retry delivered the review twice");
+
+        let current = record_sent(&log, "changes", 1, &threads, &told, "out-1", &text, relay.as_deref()).unwrap();
+        assert_eq!(current["sent"][0]["delivery"], json!({"result": "delivered", "to": "qd-plan-1", "inbox_msg": "001", "reason": null}));
+    }
+
+    #[tokio::test]
+    async fn a_review_for_a_torn_down_crewmate_says_it_was_not_delivered() {
+        let (home, dir) = engine_home("deliver-retired", false);
+        let log = dir.join("review.jsonl");
+        let (text, threads, told, relay) = draft(&home, &dir, 1, "changes").await.unwrap();
+        assert!(!home.join("state/qd-plan-1.inbox").exists(), "nothing is written for an author that is gone");
+        assert!(text.contains(&format!("Not delivered: qd-plan-1 is torn down. What it would have received is {}.", dir.join("review-files/review-1.md").display())), "{text}");
+        assert!(!text.contains("Delivered to"), "{text}");
+        assert!(text.contains("t1 on \"The plan, in short.\": Say what"), "the first mate still gets the whole review: {text}");
+        let undelivered = read_events(&log).into_iter().find(|event| event["kind"] == "undelivered").expect("the failure is in the review's own record");
+        assert_eq!((&undelivered["to"], &undelivered["reason"]), (&json!("qd-plan-1"), &json!("retired")));
+        assert!(read_events(&log).iter().all(|event| event["kind"] != "delivered"));
+        let current = record_sent(&log, "changes", 1, &threads, &told, "out-1", &text, relay.as_deref()).unwrap();
+        assert_eq!(current["sent"][0]["delivery"], json!({"result": "undelivered", "to": "qd-plan-1", "inbox_msg": null, "reason": "retired"}));
+    }
+
+    #[tokio::test]
+    async fn firstmates_own_page_is_delivered_to_nobody() {
+        let home = scratch("deliver-own");
+        let dir = home.join("data/.artifacts/board");
+        revision_on_disk(&dir);
+        let (text, _, _, relay) = draft(&home, &dir, 1, "approve").await.unwrap();
+        assert_eq!(relay, None);
+        assert!(text.contains("Written by you."), "{text}");
+        assert!(read_events(&dir.join("review.jsonl")).iter().all(|event| event["kind"] != "delivered" && event["kind"] != "undelivered"));
+    }
+
+    #[tokio::test]
+    async fn the_captains_t2_reaches_the_crewmate_saying_which_row_and_how_to_see_it() {
         let (dir, log) = crew_page("t2", "under pace: lasts past the reset");
         let current = add_comment(&log, 1, "what does underpace mean? is this really helpful? I think can remove this column for simplicity?", Some(t2_anchor()), None, picture(data_url("jpeg", &tiny_jpeg(337, 255)))).unwrap();
         let thread = &current["threads"][0];
@@ -2127,10 +2325,11 @@ mod tests {
         assert!(dir.join("review-files/t1-r1.jpg").is_file(), "the picture is kept beside the review");
         assert_eq!(thread["anchor"]["occurrence"], json!({"n": 1, "of": 4, "shown": 2}));
 
-        let (text, _, _) = draft(&dir, 1, "changes").unwrap();
+        let (text, _, _, _) = draft(&scratch("t2-home"), &dir, 1, "changes").await.unwrap();
         let relay = dir.join("review-files/review-1.md");
         let block = std::fs::read_to_string(&relay).expect("the review the crewmate receives is a file");
-        // The first mate is told to pass the file on, not to retell it.
+        // A home whose firstmate cannot deliver it tells the first mate to pass the file on, not to retell it.
+        assert!(text.contains("Not delivered to qd-usage-design-1: this home's firstmate has no bin/fm-artifact.sh."), "{text}");
         assert!(text.contains(&format!("bin/fm-send.sh qd-usage-design-1 \"$(cat '{}')\"", relay.display())), "{text}");
         assert!(text.contains("Add any framing of your own in a separate message."), "{text}");
         assert!(!block.contains("Relay this review"), "the crewmate's copy carries no instructions meant for the first mate: {block}");
@@ -2218,14 +2417,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_summary_gives_the_chat_each_review_as_it_went() {
+    #[tokio::test]
+    async fn the_summary_gives_the_chat_each_review_as_it_went() {
         let (dir, log) = crew_page("chat-card", "under pace: lasts past the reset");
         add_comment(&log, 1, "what does underpace mean?", Some(t2_anchor()), None, picture(data_url("jpeg", &tiny_jpeg(20, 20)))).unwrap();
         stage_answer(&log, "qd-usage-design-1", Some("strip"), Some("One quiet strip in the sidebar footer"), Some("release"), &Words::default()).unwrap();
         append(&log, &json!({"at": 2, "kind": "recorded", "decision": "qd-usage-design-1", "result": "closed", "detail": ""})).unwrap();
-        let (text, threads, told) = draft(&dir, 1, "changes").unwrap();
-        record_sent(&log, "changes", 1, &threads, &told, "m1790147648486-20", &text).unwrap();
+        let (text, threads, told, relay) = draft(&scratch("chat-card-home"), &dir, 1, "changes").await.unwrap();
+        record_sent(&log, "changes", 1, &threads, &told, "m1790147648486-20", &text, relay.as_deref()).unwrap();
         let data = dir.parent().unwrap().parent().unwrap().parent().unwrap();
         let page = &summary(data)["task/qd-usage-design-1/usage-panel"];
         let sent = &page["sent"][0];

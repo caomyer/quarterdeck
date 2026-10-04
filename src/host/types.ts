@@ -339,13 +339,18 @@ export type ReviewComment = { body: string; at: number };
 export type ReviewThreadState = "draft" | "open" | "resolved";
 export type ReviewThread = { id: string; rev: number; anchor: ReviewAnchor | SceneAnchor | null; at: number; sent_at: number | null; resolved_at: number | null; state: ReviewThreadState; comments: ReviewComment[]; picture?: ThreadPicture | null; picture_skipped?: string | null; /** Only the browser mock, which has no home to serve the picture from. */ picture_preview?: string };
 export type ReviewVerdict = "approve" | "changes" | "comment";
-export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[]; /** The message's first line; absent in reviews sent before it was kept. */ header?: string | null; answers?: string[] | SentAnswer[] };
+/**
+ * What became of a crewmate's review the app delivered to it through firstmate's `fm-artifact.sh deliver-review`:
+ * in its inbox, or not, with why (`retired`: the crewmate was torn down). Only the review's own log says so.
+ */
+export type ReviewDelivery = { result: "delivered" | "undelivered"; to: string; inbox_msg: string | null; reason: string | null };
+export type ReviewSent = { at: number; verdict: ReviewVerdict; rev: number; message: string; threads: string[]; /** The message's first line; absent in reviews sent before it was kept. */ header?: string | null; answers?: string[] | SentAnswer[]; /** For a crewmate's page; null for firstmate's own and for reviews sent before the app delivered them. */ delivery?: ReviewDelivery | null };
 /** A sent comment as the chat shows it. */
 export type SentThread = { id: string; rev: number; state: ReviewThreadState; quote: string; said: string; picture: boolean };
 /** An answer a review carried: an option the intake recorded, or, with no option, the captain's words for the first mate to record. */
 export type SentAnswer = { decision: string; option: string | null; label: string | null; note?: string | null; defer?: string | null };
 /** A review as the chat shows it: what went, and the answers it carried. */
-export type SentReview = { at: number; verdict: ReviewVerdict; rev: number; message: string; header?: string | null; threads: string[]; answers: SentAnswer[] };
+export type SentReview = { at: number; verdict: ReviewVerdict; rev: number; message: string; header?: string | null; threads: string[]; answers: SentAnswer[]; delivery?: ReviewDelivery | null };
 /** What firstmate's intake did with an answer: `closed` is recorded; anything else is not. */
 export type IntakeResult = "closed" | "skipped" | "not_recorded";
 export type IntakeOutcome = { call: string; result: IntakeResult; detail: string };

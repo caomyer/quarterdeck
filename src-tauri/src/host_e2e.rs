@@ -1090,7 +1090,7 @@ async fn review_e2e_live_decision() {
         // What sending does first: firstmate's own intake records the answer.
         let outcomes = review::record_staged(&home, &log, None).await.expect("run the intake");
         println!("intake: {outcomes:?}");
-        let (text, threads, answers) = review::draft(&dir, rev, "approve").expect("compose the review");
+        let (text, threads, answers, relay) = review::draft(&home, &dir, rev, "approve").await.expect("compose the review");
         println!("--- the message ---\n{text}\n-------------------");
         let carries = text.contains(&format!("Recorded: {call} = {key}"));
         let from = events.now();
@@ -1098,7 +1098,7 @@ async fn review_e2e_live_decision() {
         let message = id.clone().unwrap_or_default();
         let picked = events.find(from, REPLY_WAIT, outbox(&message, "picked_up")).await;
         if picked.is_some() {
-            review::record_sent(&log, "approve", rev, &threads, &answers, &message, &text).expect("record that it went");
+            review::record_sent(&log, "approve", rev, &threads, &answers, &message, &text, relay.as_deref()).expect("record that it went");
         }
         record(
             &mut steps,
@@ -1358,10 +1358,10 @@ async fn reply_e2e_live_scratch_home() {
         let words = "I read the page, but I want the cost of each option spelled out before I choose.";
         review::stage_answer(&log, &call, None, None, Some("done"), &review::Words { note: Some(words.into()), defer: None }).expect("stage the words");
         let replied = review::reply_worded(&home, &log).await.expect("keep the words on the call");
-        let (text, threads, answers) = review::draft(&dir, rev, "comment").expect("compose the review");
+        let (text, threads, answers, relay) = review::draft(&home, &dir, rev, "comment").await.expect("compose the review");
         let id = send(&host, text.clone()).await.unwrap_or_default();
         review::name_replies(&home, &replied, id.clone()).await;
-        review::record_sent(&log, "comment", rev, &threads, &answers, &id, &text).expect("record that it went");
+        review::record_sent(&log, "comment", rev, &threads, &answers, &id, &text, relay.as_deref()).expect("record that it went");
         let now = call_now(&home, &call);
         record(
             &mut steps,

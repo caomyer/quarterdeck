@@ -45,6 +45,7 @@ import type {
   ReasonKind,
   CommentPicture,
   ReviewAnchor,
+  ReviewDelivery,
   ReviewSummary,
   ReviewThread,
   ReviewVerdict,
@@ -428,7 +429,8 @@ function mockArtifacts(home: string): MockHome {
   }
   return {
     artifacts,
-    tasks: reviewFlag("usage-t2") ? [planTask, reportTask, usageTask] : [planTask, reportTask],
+    // `?retired-author`: the titles scout was torn down after it presented, so a review of its page reaches nobody.
+    tasks: [...(reviewFlag("retired-author") ? [] : [planTask]), reportTask, ...(reviewFlag("usage-t2") ? [usageTask] : [])],
     // `?plain-report`: the transcripts scout's report argues no call, so it is offered on its own card.
     calls: (reviewFlag("plain-report") ? calls.filter((call) => call.origin !== REPORT_TASK) : calls).map(repliedBefore),
     inFlight: [
@@ -713,6 +715,9 @@ export class MockHostAdapter implements HostAdapter {
   /** Messages the review already sent, which the replay need not wait for when it reaches them. */
   private replaySent = new Set<string>();
   private sequence = 0;
+  /** The last inbox message each crewmate was sent, and which review file each delivery carried. */
+  private inboxes = new Map<string, number>();
+  private delivered = new Map<string, string>();
   private startupPlayed = false;
   private homeChosen = false;
   private startThrown = false;
@@ -1105,6 +1110,26 @@ export class MockHostAdapter implements HostAdapter {
     return this.settle(ref, current.threads.filter((item) => item.id !== thread || item.sent_at !== null));
   }
 
+  /**
+   * As the app does for a crewmate's page: the review goes to the author's inbox while it has a worker, and is
+   * recorded as not delivered once it has been torn down. Firstmate's own pages go to nobody. A retry of the same
+   * review file lands on the inbox message it already wrote, as `fm-artifact.sh deliver-review` does.
+   */
+  private deliverReview(ref: ArtifactRef, rev: number, file: number): { delivery: ReviewDelivery; line: string } | null {
+    const revision = this.snapshot.fleet.artifacts?.find((item) => item.scope === ref.scope && item.task === ref.task && item.name === ref.name)?.revisions.find((item) => item.rev === rev);
+    if (revision?.presented_by.role !== "crew") return null;
+    const to = revision.presented_by.task;
+    const where = `${this.snapshot.fleet.fm_home}/data/${ref.task ?? ".artifacts"}/artifacts/${ref.name}/review-files/review-${file}.md`;
+    if (!this.snapshot.fleet.tasks.some((task) => task.id === to)) {
+      return { delivery: { result: "undelivered", to, inbox_msg: null, reason: "retired" }, line: `Written by ${to}. Not delivered: ${to} is torn down. What it would have received is ${where}.` };
+    }
+    const key = `${to}/${where}`;
+    const inbox_msg = this.delivered.get(key) ?? String((this.inboxes.get(to) ?? 0) + 1).padStart(3, "0");
+    this.inboxes.set(to, Number(inbox_msg));
+    this.delivered.set(key, inbox_msg);
+    return { delivery: { result: "delivered", to, inbox_msg, reason: null }, line: `Written by ${to}. Delivered to ${to} as inbox message ${inbox_msg}, exactly as written in ${where}. Send any framing of your own as a separate message.` };
+  }
+
   async reviewSubmit(ref: ArtifactRef, rev: number, verdict: ReviewVerdict) {
     // As in the app: the intake records the answers first, and only what it recorded is told.
     const outcomes = this.recordStaged(ref);
@@ -1117,8 +1142,10 @@ export class MockHostAdapter implements HostAdapter {
       return { ...answer, reply: problem ? { result: "not_kept" as const, detail: problem } : { result: "kept" as const, detail: "" } };
     });
     const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
+    const relay = this.deliverReview(ref, rev, current.sent.length + 1);
     const text = [
       `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
+      ...(relay ? [relay.line] : []),
       ...recordedLines(told),
       ...wordedLines(worded),
       // The same shape the app's own composer writes, so the browser review sees what a first mate would.
@@ -1142,7 +1169,7 @@ export class MockHostAdapter implements HostAdapter {
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, state: "open" as const } : thread),
-      [...current.sent, { at, verdict, rev, message, header: text.split("\n")[0], threads: draft.map((thread) => thread.id), answers: carried.map((answer) => answer.decision) }],
+      [...current.sent, { at, verdict, rev, message, header: text.split("\n")[0], threads: draft.map((thread) => thread.id), answers: carried.map((answer) => answer.decision), delivery: relay?.delivery ?? null }],
     );
     return { message, text, review, outcomes };
   }
