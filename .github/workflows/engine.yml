@@ -138,15 +138,27 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # Every npm tool this workflow installs names an exact top-level version,
+      # so an upstream release of one of them can no longer change a result.
+      # The stock macOS Bash job keeps its own earlier tasks-axi@0.2.5 pin.
+      # Still floating: tasks-axi's own dependencies resolve from semver ranges
+      # at run time (Pi 0.87.1 ships an npm-shrinkwrap.json, which locks its
+      # dependency tree), and the uses: actions float on major tags such as
+      # actions/checkout@v6. Unpinned, Pi 0.99.0 (2026-09-29) reached every run
+      # and failed fm-pi-branch-extension and fm-calm-pi-extension with no
+      # change of ours: its stock tool rows began drawing their arguments, and
+      # Calm's export and e2e checks broke.
+      # 0.87.1 is the newest Pi both pass on; moving past it is its own change,
+      # made with whatever the extensions need, never by a floating install.
       - name: Install tasks-axi
         run: |
           set -eu
-          npm install -g tasks-axi
+          npm install -g tasks-axi@0.2.6
           tasks-axi --version
       - name: Install the Pi package for the Pi extension tests
         run: |
           set -eu
-          npm install -g @earendil-works/pi-coding-agent
+          npm install -g @earendil-works/pi-coding-agent@0.87.1
           npm ls -g --depth 0 @earendil-works/pi-coding-agent
       # tests/fm-pi-primary-types.test.sh needs a `tsc` on PATH, and the shard
       # below refuses to let it skip quietly. The hosted Ubuntu image happened
@@ -211,7 +223,7 @@ jobs:
       - name: Install tasks-axi
         run: |
           set -eu
-          npm install -g tasks-axi
+          npm install -g tasks-axi@0.2.6
           tasks-axi --version
       - name: Run portable parallel shard 2
         run: |
@@ -285,15 +297,16 @@ jobs:
       - name: Install tasks-axi for backlog-handoff delegation
         run: |
           set -eu
-          npm install -g tasks-axi
+          npm install -g tasks-axi@0.2.6
           tasks-axi --version
       # The Pi extension tests read the installed Pi package's own types and
       # runtime, so without it they gate-skip and pass silently. It is a public
       # npm package and needs no credential, so CI can hold the real thing.
+      # Pinned with portable parallel shard 1 above, which says why.
       - name: Install the Pi package for the Pi extension tests
         run: |
           set -eu
-          npm install -g @earendil-works/pi-coding-agent
+          npm install -g @earendil-works/pi-coding-agent@0.87.1
           npm ls -g --depth 0 @earendil-works/pi-coding-agent
       - name: Run portable serial shard ${{ matrix.shard }}
         env:
