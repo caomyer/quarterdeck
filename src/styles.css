@@ -1151,6 +1151,7 @@ a { color: var(--sea); }
 .thread-state { flex: 1; color: var(--fainter); font: normal 11px var(--mono); }
 .thread-state.draft { color: var(--sea); }
 .thread-state.settled { color: var(--green); }
+.thread-state.untold { color: var(--amber); }
 .review-thread header .icon-button { width: 26px; height: 26px; border-radius: 7px; }
 .review-thread blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid color-mix(in srgb, var(--sea) 45%, var(--border)); color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .review-thread p { margin: 0 0 4px; color: var(--ink-2); font-size: 13.5px; line-height: 1.55; }
@@ -1191,6 +1192,15 @@ a { color: var(--sea); }
 .send-review:hover:not(:disabled) { background: var(--sea-strong); }
 .review-send small { width: 100%; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .review-send .review-last { width: 100%; margin: 0; color: var(--green); font-size: 12.5px; font-weight: 500; }
+.review-send .review-last.untold { color: var(--amber); }
+/* What became of a crewmate's review: in its inbox, or not, never read as sent when it did not arrive. */
+.review-delivery { display: inline-flex; align-items: flex-start; gap: 6px; font-size: 12.5px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.review-delivery svg { flex: none; margin-top: 2px; }
+.review-delivery.delivered { color: var(--green); }
+.review-delivery.undelivered { color: var(--amber); }
+.review-delivery.compact { gap: 5px; font-family: var(--mono); font-size: 11.5px; font-weight: 400; }
+.review-delivery.compact svg { margin-top: 1px; }
+.review-send .review-delivery { width: 100%; margin-top: -6px; }
 .review-send .review-problem { width: 100%; margin: 0; color: var(--coral); font-size: 12.5px; line-height: 1.45; }
 
 /* A call this page argues, answered where the argument is. */
@@ -1212,6 +1222,7 @@ a { color: var(--sea); }
 .decision-choices button.selected small { color: inherit; opacity: .85; }
 .decision-staged { display: block; margin-top: 9px; color: var(--sea); font-size: 12px; font-weight: 500; }
 .decision-sent { display: block; margin-top: 9px; color: var(--green); font-size: 12px; font-weight: 500; }
+.decision-sent.untold { color: var(--amber); }
 .decision-replied { display: block; margin-top: 9px; color: var(--amber); font-size: 12px; font-weight: 500; }
 .decision-missing { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .decision-refused { display: block; margin-top: 9px; color: var(--coral); font-size: 12px; font-weight: 500; line-height: 1.45; }

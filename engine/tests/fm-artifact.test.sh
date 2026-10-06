@@ -7,7 +7,8 @@
 # the presentation-mode decision, the fleet
 # snapshot carrying the listing, and the pre-present layout check through a fake
 # Chrome (refuse, accept, clean, fail-open) plus one real headless Chrome run
-# that skips when no Chrome is installed.
+# that skips when no Chrome is installed, and delivering the captain's review
+# of a crewmate's page to its author.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -340,6 +341,118 @@ HTML
   pass "fm-artifact.sh: real headless Chrome finds planted layout faults and ignores intentional ones"
 }
 
+# A crewmate's page with one review file the app wrote, and a stub tmux so
+# fm-send's doorbell lands nowhere. Prints the page directory.
+review_case() {  # <label> <author meta: live|retired|secondmate|remote> [presented_by role]
+  local home dir fb
+  home=$(new_home "$1")
+  fb="$TMP_ROOT/$1/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) printf 'fakepane\n' ;;
+  capture-pane) printf '\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/tmux"
+  write_page "$TMP_ROOT/$1/src/plan.html" Plan
+  FM_HOME="$home" FM_TASK_ID=t1 "$ARTIFACT" present --task t1 "$TMP_ROOT/$1/src/plan.html" >/dev/null || fail "$1: present failed"
+  dir="$home/data/t1/artifacts/plan"
+  if [ "${3:-crew}" != crew ]; then
+    jq '.presented_by = {role:"firstmate"}' "$dir/rev-1/revision.json" > "$dir/rev-1/r" && mv "$dir/rev-1/r" "$dir/rev-1/revision.json"
+  fi
+  case "$2" in
+    live) fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=claude" ;;
+    secondmate) fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=secondmate" "harness=claude" ;;
+    remote) fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=claude" "remote_host=builder" ;;
+    retired) ;;
+  esac
+  mkdir -p "$dir/review-files"
+  # Lines that say where each comment sits, quotes and a trailing newline: all of it must arrive as written.
+  cat > "$dir/review-files/review-1.md" <<'MD'
+Captain's review of "Plan" (task t1, rev 1): Requests changes.
+t1 on "the $HOME `x` part": say it plainly.
+  around   "…a" ▸here◂ "b…"
+MD
+  printf '%s\n' "$dir"
+}
+
+deliver() {  # <label> <page dir> [extra args...]
+  local home=${2%/data/t1/artifacts/plan}
+  local label=$1 dir=$2
+  shift 2
+  PATH="$TMP_ROOT/$label/fakebin:$PATH" FM_HOME="$home" FM_SEND_SETTLE=0 \
+    "$ARTIFACT" deliver-review --task t1 --name plan --rev 1 --file "$dir/review-files/review-1.md" "$@" 2>&1
+}
+
+inbox_body() {  # <record>
+  bash -c '. "$1"; fm_task_inbox_body "$2"' _ "$ROOT/bin/fm-task-inbox-lib.sh" "$1"
+}
+
+test_deliver_review_reaches_a_live_author_byte_for_byte() {
+  local dir out rc home
+  dir=$(review_case deliver-live live)
+  home=${dir%/data/t1/artifacts/plan}
+  out=$(deliver deliver-live "$dir"); rc=$?
+  expect_code 0 "$rc" "delivering to a live author"
+  assert_contains "$out" "delivered: t1 inbox 001" "names the author and the inbox message"
+  assert_contains "$out" "record: $home/state/t1.inbox/001.msg" "names the inbox file"
+  inbox_body "$home/state/t1.inbox/001.msg" > "$TMP_ROOT/deliver-live/body"
+  cmp -s "$dir/review-files/review-1.md" "$TMP_ROOT/deliver-live/body" ||
+    fail "the inbox message is not the review file byte for byte:"$'\n'"$(od -c "$TMP_ROOT/deliver-live/body" | tail -n 3)"
+  out=$(deliver deliver-live "$dir"); rc=$?
+  expect_code 0 "$rc" "delivering the same review again"
+  assert_contains "$out" "delivered: t1 inbox 001" "a retry lands on the message already sent"
+  assert_absent "$home/state/t1.inbox/002.msg" "a retry sent the review twice"
+  pass "fm-artifact.sh: deliver-review sends the review file unchanged to a live author, once"
+}
+
+test_deliver_review_reports_a_torn_down_author() {
+  local dir out rc home
+  dir=$(review_case deliver-retired retired)
+  home=${dir%/data/t1/artifacts/plan}
+  out=$(deliver deliver-retired "$dir"); rc=$?
+  expect_code 4 "$rc" "a torn-down author"
+  assert_contains "$out" "undelivered: t1" "names who it did not reach"
+  assert_contains "$out" "reason: retired" "says why"
+  assert_absent "$home/state/t1.inbox" "nothing may be written for a torn-down author"
+  dir=$(review_case deliver-mate secondmate)
+  home=${dir%/data/t1/artifacts/plan}
+  out=$(deliver deliver-mate "$dir"); rc=$?
+  expect_code 4 "$rc" "a secondmate author"
+  assert_contains "$out" "reason: send failed: t1 is a secondmate" "a marked request would not be the file"
+  assert_absent "$home/state/t1.inbox" "nothing may be sent to a secondmate"
+  dir=$(review_case deliver-remote remote)
+  home=${dir%/data/t1/artifacts/plan}
+  out=$(deliver deliver-remote "$dir"); rc=$?
+  expect_code 4 "$rc" "an author on another host"
+  assert_contains "$out" "reason: send failed: t1 runs on another host" "names the host as the reason"
+  assert_not_contains "$out" "secondmate" "an author on another host is not called a secondmate"
+  assert_absent "$home/state/t1.inbox" "nothing may be written here for an author on another host"
+  pass "fm-artifact.sh: deliver-review says a review did not reach a torn-down, secondmate or remote author"
+}
+
+test_deliver_review_refusals() {
+  local dir out rc home
+  dir=$(review_case deliver-refuse live)
+  home=${dir%/data/t1/artifacts/plan}
+  printf 'elsewhere\n' > "$TMP_ROOT/deliver-refuse/other.md"
+  out=$(PATH="$TMP_ROOT/deliver-refuse/fakebin:$PATH" FM_HOME="$home" "$ARTIFACT" deliver-review --task t1 --name plan --rev 1 --file "$TMP_ROOT/deliver-refuse/other.md" 2>&1); rc=$?
+  expect_code 1 "$rc" "a file outside the page's review-files"
+  assert_contains "$out" "review-files" "says where the review must be"
+  out=$(PATH="$TMP_ROOT/deliver-refuse/fakebin:$PATH" FM_HOME="$home" "$ARTIFACT" deliver-review --task t1 --name plan --rev 2 --file "$dir/review-files/review-1.md" 2>&1); rc=$?
+  expect_code 1 "$rc" "a revision that does not exist"
+  dir=$(review_case deliver-own live firstmate)
+  home=${dir%/data/t1/artifacts/plan}
+  out=$(deliver deliver-own "$dir"); rc=$?
+  expect_code 1 "$rc" "a page firstmate presented"
+  assert_contains "$out" "not presented by a crewmate" "says there is no author to deliver to"
+  assert_absent "$home/state/t1.inbox" "nothing may be sent for firstmate's own page"
+  pass "fm-artifact.sh: deliver-review refuses a stray file, a missing revision and firstmate's own page"
+}
+
 test_present_creates_an_immutable_revision
 test_represent_is_idempotent_and_changes_add_revisions
 test_chat_scope_and_assets
@@ -352,3 +465,6 @@ test_layout_findings_refuse_until_fixed_or_accepted
 test_layout_check_fails_open
 test_layout_check_with_real_chrome
 test_answers_are_recorded_on_the_revision
+test_deliver_review_reaches_a_live_author_byte_for_byte
+test_deliver_review_reports_a_torn_down_author
+test_deliver_review_refusals

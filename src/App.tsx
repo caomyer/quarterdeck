@@ -47,7 +47,7 @@ import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type Landed, type FleetTask, type TaskEdit, type TaskEdited, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
+import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type Landed, type FleetTask, type TaskEdit, type TaskEdited, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewDelivery, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
@@ -904,6 +904,7 @@ export function App() {
               onComment={(body, anchor, thread, picture) => host.reviewComment(artifactRef!, shownRevision.rev, body, anchor, thread, picture).then(setReview)}
               onDiscard={(thread) => host.reviewDiscard(artifactRef!, thread).then(setReview)}
               onSubmit={(verdict) => host.reviewSubmit(artifactRef!, shownRevision.rev, verdict).then((sent) => {
+                for (const told of sent.retold ?? []) bridge.noteSent(told.message, told.text);
                 if (sent.message) bridge.noteSent(sent.message, sent.text);
                 setReview(sent.review);
                 return sent.warning;
@@ -2169,7 +2170,7 @@ function reviewsOf(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
   const { byMessage, byHeader } = sentReviews(reviews, artifacts);
   const found = new Map<string, SentPage>();
   const ids = new Set(messages.map((message) => message.id));
-  const unclaimed = new Map([...byHeader].map(([header, pages]) => [header, pages.filter((page) => !ids.has(page.review.message))]));
+  const unclaimed = new Map([...byHeader].map(([header, pages]) => [header, pages.filter((page) => !(page.review.message && ids.has(page.review.message)))]));
   for (const message of [...messages].reverse()) {
     if (message.who !== "captain") continue;
     const own = byMessage.get(message.id) ?? unclaimed.get(message.text.split("\n")[0])?.pop();
@@ -2678,7 +2679,9 @@ function layoutNote(revision: ArtifactRevision) {
  */
 function reviewChip(review?: ReviewSummary[string], artifact?: Artifact, landed = false) {
   if (!artifact) return null;
-  if (review && review.draft_count > 0) return { label: review.draft_count === 1 ? "1 comment not sent" : `${review.draft_count} comments not sent`, tone: "draft" };
+  const unsent = review && review.draft_count > 0 ? review.draft_count === 1 ? "1 comment not sent" : `${review.draft_count} comments not sent` : null;
+  const untold = review?.untold_count ? "Not yet told to the first mate" : null;
+  if (unsent || untold) return { label: [unsent, untold].filter(Boolean).join(" · "), tone: "draft" };
   if (landed) return null;
   const seen = review?.seen_rev ?? null;
   if (seen === null) return { label: "Not looked at yet", tone: "new" };
@@ -2745,7 +2748,7 @@ export type ArtifactStanding = "needs-you" | "discussion" | "settled";
 export function artifactStanding(artifact: Artifact, artifacts: Artifact[], review: ReviewSummary[string] | undefined, backlog: Map<string, BacklogRecord>, calls: Call[]): ArtifactStanding {
   const task = artifact.scope === "task" ? artifact.task : null;
   if (task && backlog.get(task)?.state === "done") return "settled";
-  if (review && review.draft_count > 0) return "needs-you";
+  if (review && (review.draft_count > 0 || (review.untold_count ?? 0) > 0)) return "needs-you";
   const comments = openComments(artifact, review);
   const argued = callsArguedBy(calls, artifact, artifacts);
   // A call this page argues: yours until you answer or reply to it, then firstmate's until it records or asks again.
@@ -2834,6 +2837,20 @@ const VERDICT_WORDS: Record<ReviewVerdict, string> = { changes: "Requests change
  * follows the review from sent to settled, then shrinks to one line, the way an answered call does. The text the
  * first mate got stays one click away.
  */
+/**
+ * What became of a crewmate's review the app delivered: in its inbox, or not delivered, never read as sent when it
+ * did not arrive. Read only from the review's own log.
+ */
+function ReviewDeliveryLine({ delivery, compact = false }: { delivery: ReviewDelivery; compact?: boolean }) {
+  const delivered = delivery.result === "delivered";
+  const words = delivered
+    ? `Delivered to ${delivery.to}`
+    : delivery.reason === "retired" ? `Not delivered: ${delivery.to} is torn down` : `Not delivered to ${delivery.to}: ${delivery.reason ?? "no reason given"}`;
+  const tooltip = delivered ? `In ${delivery.to}'s inbox as message ${delivery.inbox_msg ?? "?"}, exactly as the review reads` : "The first mate was told it did not arrive";
+  const Icon = delivered ? Check : CircleAlert;
+  return <span className={`review-delivery ${delivered ? "delivered" : "undelivered"} ${compact ? "compact" : ""}`} role={delivered ? undefined : "status"} title={tooltip} data-testid="review-delivery" data-result={delivery.result}><Icon size={compact ? 12 : 13} />{words}</span>;
+}
+
 function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettle }: { message: ChatMessage; sent: SentPage; outbox?: OutboxView; running: boolean; tasks: FleetTask[]; onOpen: (rev?: number) => void; onSettle: (threads: string[]) => Promise<unknown> }) {
   const { artifact, review } = sent;
   const [settling, setSettling] = useState(false);
@@ -2907,6 +2924,7 @@ function ReviewChatCard({ message, sent, outbox, running, tasks, onOpen, onSettl
       {!status && !message.past && <time>{formatTime(message.createdAt)}</time>}
       {working && <span className="review-card-live">{working}</span>}
       {answeredIn > 0 && <span className="review-card-answered">Answered in rev {answeredIn}</span>}
+      {review.delivery && <ReviewDeliveryLine delivery={review.delivery} compact />}
     </footer>
     {(answeredIn > 0 || settleable.length > 0) && <div className="review-card-actions">
       {artifact && answeredIn > 0 && <button className="primary" onClick={() => onOpen(answeredIn)}>Open rev {answeredIn}</button>}
@@ -3311,7 +3329,10 @@ function ArtifactReview({ artifact, revision, url, review, stake, sendReady, run
         <div className="review-send">
           {calls.some(isOpen) && <span className="review-send-label">Answer the decision</span>}
           {problem && <p className="review-problem" role="alert">{problem}</p>}
-          {lastSent && draftCount === 0 && <p className="review-last">Sent {formatWhen(new Date(lastSent.at).toISOString())} · {VERDICTS.find((item) => item.id === lastSent.verdict)?.label ?? lastSent.verdict}</p>}
+          {lastSent && lastSent.message === null
+            ? <p className="review-last untold" role="status">Not yet told to the first mate · Send review tells it</p>
+            : lastSent && draftCount === 0 && <p className="review-last">Sent to the first mate {formatWhen(new Date(lastSent.at).toISOString())} · {VERDICTS.find((item) => item.id === lastSent.verdict)?.label ?? lastSent.verdict}</p>}
+          {lastSent?.delivery && (draftCount === 0 || lastSent.message === null) && <ReviewDeliveryLine delivery={lastSent.delivery} />}
           <label className="verdict-picker"><span className="sr-only">Verdict</span><select value={verdict} onChange={(event) => { setVerdictChosen(true); setVerdict(event.target.value as ReviewVerdict); }}>{VERDICTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><ChevronDown size={14} /></label>
           <button className="send-review" disabled={!sendReady || sending} title={sendHint} onClick={() => void send()}>{sending ? "Sending…" : draftCount > 0 ? `Send review · ${draftCount}` : "Send review"}</button>
           <small>{sendHint}</small>
@@ -3465,7 +3486,9 @@ function RailCall({ call, revision, beside, chosen, before, onAnswer, onOpenEvid
       : recorded
         ? <small className="decision-sent">Recorded {when(chosen!.recorded!.at)}</small>
         : handedOver
-          ? <small className="decision-sent">Sent {when(chosen!.sent_at!)}{worded ? ", for the first mate to record" : ""}</small>
+          ? chosen!.told === false
+            ? <small className="decision-sent untold">Not yet told to the first mate</small>
+            : <small className="decision-sent">Sent to the first mate {when(chosen!.sent_at!)}{worded ? ", for it to record" : ""}</small>
           : current
             ? <small className="decision-staged">{worded ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
             : reply
@@ -3491,7 +3514,9 @@ function ReviewThreadCard({ thread, answer, rev, missing, picture, onFocus, onDi
         ? <em className="thread-state draft">Not sent yet</em>
         : thread.state === "resolved"
           ? <em className="thread-state settled">Settled</em>
-          : <em className="thread-state">Sent {formatWhen(new Date(thread.sent_at!).toISOString())}</em>}
+          : thread.told
+            ? <em className="thread-state">Sent to the first mate {formatWhen(new Date(thread.sent_at!).toISOString())}</em>
+            : <em className="thread-state untold">Not yet told to the first mate</em>}
       {draft
         ? <button className="icon-button" title="Take this comment back" onClick={(event) => { event.stopPropagation(); onDiscard(); }}><Trash2 size={14} /></button>
         : <button className="icon-button" title={thread.state === "resolved" ? "Open this again" : "Settle this"} onClick={(event) => { event.stopPropagation(); onSettle(thread.state !== "resolved"); }}>{thread.state === "resolved" ? <RotateCcw size={14} /> : <CheckCheck size={14} />}</button>}
