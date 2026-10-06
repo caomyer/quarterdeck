@@ -1574,10 +1574,14 @@ test_projection_and_toon_fail_closed() {
   pass "projection and TOON rendering failures exit nonzero with diagnostics"
 }
 
-# The Lavish-103 defect, end to end: a COMPLETED scout that raised a decision and
-# then finished (done), whose report body reads like that decision, must surface as
-# a report POINTER only - never in decisions_open. Report prose must never open or
-# reopen a pending decision; only the keyed durable state does.
+# The Lavish-103 defect, end to end: a COMPLETED scout whose report body reads like
+# a decision surfaces as a report POINTER, and report prose never opens a decision.
+# decisions_open is the captain's call list, built only from backlog captain-hold
+# records. Status-keyed worker decisions (tasks[].hints.open_decisions) are not
+# projected into it: they are a worker's raw questions for firstmate to triage
+# under its ask-user authority, and one reaches this list only once firstmate
+# raises it as a backlog captain-hold. So the scout's unanswered needs-decision
+# line stays out of decisions_open here whether or not the scout has finished.
 test_completed_scout_report_not_pending() {
   local home fakebin json
   home=$(make_home completed-scout); write_fixture "$home"
