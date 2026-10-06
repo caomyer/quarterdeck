@@ -279,6 +279,25 @@ const latestCaptain = (page) => chat(page).locator(".captain-message").last();
   await page.close();
 }
 
+// F, stopped: sending without the reply goes through Send's own checks, so a typed setting waits for the first mate.
+{
+  const page = await open();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Stop" }).click();
+  await page.waitForFunction(() => document.querySelector(".session-pill[data-category=model]")?.hasAttribute("disabled"));
+  await replyTo(page, headline(page));
+  await composer(page).fill("/model bogus");
+  const refused = page.locator("[data-testid='reply-refused']");
+  await refused.waitFor();
+  const count = (await sent(page)).length;
+  await refused.getByRole("button", { name: "Send without the reply" }).click();
+  await page.locator(".session-notice").waitFor();
+  check((await page.locator(".session-notice").innerText()).includes("once the first mate is running, so nothing was sent"), "stopped, the command without the reply is held with Send's own notice");
+  check((await sent(page)).length === count && await composer(page).inputValue() === "/model bogus", "nothing is sent and the draft stays");
+  check(!(await strip(page).count()), "and the reply is gone");
+  await page.close();
+}
+
 // G: when the fleet could not be read, the strip warns before sending, and the block says nothing was checked.
 {
   const page = await open("=fleet-failed");
