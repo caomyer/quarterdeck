@@ -996,7 +996,9 @@ test_a_proposal_that_does_not_parse_is_refused_at_its_line() {
   out=$(run_captain "$home" raise "$id" 2>&1); rc=$?
   expect_code 1 "$rc" "raise of an option too long for a call"
   assert_contains "$out" "$home/data/$id/report.md:$line: option \`full\` is" "the refusal names the report line at fault"
-  assert_contains "$out" "at most 200" "the refusal says what the call cannot hold"
+  assert_contains "$out" "option \`full\` is $(sed -n "${line}p" "$home/data/$id/report.md" | sed 's/^- `full` - //' | jq -Rr length) characters after its key, over the 200 a call's option holds" \
+    "the refusal names the option, its length, and the limit"
+  assert_contains "$out" "shorten that label in the report" "the refusal says how to fix it at its source"
   assert_contains "$out" "nothing was raised" "the refusal says nothing was taken"
   assert_absent "$home/state/calls/$id.json" "a refused proposal left a record"
   assert_equals "$before" "$(shasum "$home/data/backlog.md")" "a refused proposal changed the backlog"

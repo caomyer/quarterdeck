@@ -3313,7 +3313,7 @@ proposal_read() {  # <task-id>
       fi
       count=$(text_length "$text")
       if [ "$count" -gt 200 ]; then
-        proposal_refuse "$n" "option \`$key\` is $count characters after its key, and a call's option holds at most 200" "$line"
+        proposal_refuse "$n" "option \`$key\` is $count characters after its key, over the 200 a call's option holds on a card; shorten that label in the report, moving its cost into the report's body" "$line"
         return 2
       fi
       PROPOSAL_OPTIONS+=("$key=$text")
