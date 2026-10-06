@@ -347,10 +347,14 @@ check((await threads.first().innerText()).includes("Written on rev 2"), "a comme
 await page.locator(".verdict-picker select").selectOption("changes");
 await page.locator(".send-review").click();
 await page.locator(".review-last").waitFor();
-check((await threads.first().innerText()).includes("Sent"), "a sent comment says so");
-check((await page.locator(".review-last").innerText()).includes("Request changes"), "the review records its verdict");
+check((await threads.first().locator(".thread-state").innerText()).startsWith("Sent to the first mate "), "a sent comment says who it was sent to");
+check((await page.locator(".review-last").innerText()).startsWith("Sent to the first mate ") && (await page.locator(".review-last").innerText()).includes("Request changes"), "the review says it went to the first mate, with its verdict");
 check((await page.locator(".send-review").innerText()) === "Send review", "the draft count clears once it is sent");
 check(await threads.first().locator("button[title='Take this comment back']").count() === 0, "a sent comment cannot be taken back");
+// The app delivers a crewmate's review to it, and the rail says so from the review's own record.
+const railDelivery = page.locator(".review-send [data-testid='review-delivery']");
+check(await railDelivery.getAttribute("data-result") === "delivered", "a review of a crewmate's page reads as delivered");
+check((await railDelivery.innerText()).trim() === "Delivered to res-titles-scout", `the rail names who it was delivered to (${await railDelivery.innerText()})`);
 await shot(page, "09-sent");
 await page.locator(".nav-item", { hasText: "Chat" }).click();
 const reviewCard = page.locator("[data-testid='review-card']").last();
@@ -358,6 +362,10 @@ const firstReview = await sentText(reviewCard);
 check(firstReview.includes("Requests changes."), "the first mate is told the verdict");
 check(firstReview.includes("Say what happens on an older phone."), "the review's comments reach the first mate");
 check(!firstReview.includes("Add the on-device title"), "a comment taken back is never sent");
+// The first mate is told what became of the delivery, not asked to make it.
+check(firstReview.includes("Delivered to res-titles-scout as inbox message 001"), "the first mate is told the review was delivered, and as which inbox message");
+check(!firstReview.includes("bin/fm-send.sh") && !firstReview.includes("Relay this review"), "the first mate is not asked to relay a review already delivered");
+check((await reviewCard.locator("[data-testid='review-delivery']").innerText()).includes("Delivered to res-titles-scout"), "the chat card says the review was delivered");
 // In chat the review is a card, not the text written for the first mate.
 check(await page.locator(".captain-message", { hasText: "Captain's review of" }).count() === 0, "a sent review is not shown as a bubble of its own text");
 const cardText = (await reviewCard.locator("header").textContent()) ?? "";
@@ -924,7 +932,7 @@ await resumed.close();
   await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
   await again.locator(".send-review").click();
   await download.locator(".decision-sent").waitFor();
-  check((await download.locator(".decision-sent").innerText()).endsWith("for the first mate to record") && await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "held until its day, the page shows the Not now that went and asks nothing");
+  check((await download.locator(".decision-sent").innerText()).startsWith("Sent to the first mate ") && (await download.locator(".decision-sent").innerText()).endsWith("for it to record") && await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "held until its day, the page shows the Not now that went and asks nothing");
 
   await again.locator(".nav-item", { hasText: "Bearings" }).click();
   const card = again.locator(".decision-card[data-call-id='res-model-download']");
@@ -1108,6 +1116,41 @@ await plain.close();
   check(/  match    1 of the \d+ places these words appear in the page's text, 2 of them on screen/.test(sent), "t2: which of the two cells on screen");
   check(!sent.includes("nth-of-type"), "t2: the positional path stays in the log");
   await t2.close();
+}
+
+// A crewmate torn down after it presented: the review is kept and said not to have arrived, never shown as sent.
+{
+  const gone = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  gone.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
+  await gone.goto(`${baseUrl}/?artifacts&retired-author`);
+  await gone.waitForFunction(() => !document.querySelector(".app-loading"));
+  await gone.locator(".nav-item", { hasText: "Artifacts" }).click();
+  await gone.locator(".artifact-list .artifact-row", { hasText: "AI titles for snips" }).click();
+  const goneFrame = gone.frameLocator(".artifact-stage iframe");
+  await goneFrame.locator("h1").waitFor();
+  await gone.locator(".comment-toggle").click();
+  await goneFrame.locator("h1").click();
+  await gone.locator(".comment-composer textarea").fill("Who reads this now?");
+  await gone.locator(".comment-composer button", { hasText: "Comment" }).click();
+  await gone.locator(".send-review").click();
+  await gone.locator(".review-last").waitFor();
+  const notDelivered = gone.locator(".review-send [data-testid='review-delivery']");
+  check(await notDelivered.getAttribute("data-result") === "undelivered", "torn down: the rail reads as not delivered");
+  check((await notDelivered.innerText()).trim() === "Not delivered: res-titles-scout is torn down", `torn down: the rail says why (${await notDelivered.innerText()})`);
+  check(await notDelivered.getAttribute("role") === "status", "torn down: a review that went nowhere is announced");
+  check((await gone.locator(".review-last").innerText()).startsWith("Sent to the first mate "), "torn down: the rail says the review went to the first mate");
+  const goneRail = await gone.locator(".review-rail").innerText();
+  check(!/\bSent (?!to the first mate)/.test(goneRail), "torn down: nothing in the rail says a bare Sent a captain could read as delivered");
+  await shot(gone, "25-not-delivered");
+  await gone.locator(".nav-item", { hasText: "Chat" }).click();
+  const goneCard = gone.locator("[data-testid='review-card']").last();
+  const told = await sentText(goneCard);
+  check(told.includes("Not delivered: res-titles-scout is torn down.") && told.includes("Who reads this now?"), "torn down: the first mate gets the whole review and is told it did not arrive");
+  check(!told.includes("Delivered to"), "torn down: nothing claims it was delivered");
+  check((await goneCard.locator("[data-testid='review-delivery']").innerText()).includes("Not delivered"), "torn down: the chat card says it was not delivered");
+  await goneCard.scrollIntoViewIfNeeded();
+  await shot(gone, "26-not-delivered-card");
+  await gone.close();
 }
 
 await browser.close();

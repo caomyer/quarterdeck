@@ -198,6 +198,12 @@
 # refused with --key, with an explicit backend target (no task ledger in this
 # home), and with an empty message.
 #
+# FM_SEND_PRINT_RECORD=1 prints "record: <inbox file>" on stdout once a local
+# inbox-plane steer is durably recorded, for a caller that reports which inbox
+# message it sent (bin/fm-artifact.sh deliver-review). FM_SEND_IDEMPOTENT=1
+# enqueues through the idempotent primitive, so re-sending the exact same body
+# names the record already written instead of adding another.
+#
 # After a successful TYPED-plane submit fm-send pauses FM_SEND_SETTLE seconds
 # (default 1, 0 disables) before returning: submit confirmation only proves the
 # text was accepted, but the harness needs a beat to spin up the turn before its
@@ -1039,6 +1045,8 @@ else
       fm_send_close_resolved_keys "$RESOLVE_ANSWER_TEXT" || exit 1
       fm_send_feed_resolved_holds "$RESOLVE_ANSWER_TEXT" || exit 1
     fi
+    # A caller that has to say which message it sent asks for the record.
+    [ "${FM_SEND_PRINT_RECORD:-0}" != 1 ] || printf 'record: %s\n' "$INBOX_RECORD"
     # Ring the doorbell, best-effort: no ring outcome changes the exit status,
     # because the watcher owns loss detection from here, either through its
     # bounded re-ring ladder or direct unavailable-endpoint recovery.
