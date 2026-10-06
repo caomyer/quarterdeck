@@ -4228,6 +4228,87 @@ test_a_relayed_captain_answer_needs_no_decision_of_its_own() {
   pass "a relayed captain answer is recorded by its call, and a relay of no captain's answer is refused"
 }
 
+# Before calls recorded the proposal they handle, a scout's proposal was raised
+# by hand on its own row, and the captain may already have answered it. After
+# the upgrade every completion path refuses it; `stamp` records that the call
+# was the proposal's without holding it again, asking the captain again, or
+# changing anything else about it.
+test_a_call_raised_before_proposals_were_recorded_is_stamped_not_reasked() {
+  local home id rc out record_before show_before
+  home=$(make_home stamp-upgrade)
+  id=qd-update-flow-1
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Scout signing" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the scout row"
+  write_origin_meta "$home" "$id"
+  printf 'done: report written\n' > "$home/state/$id.status"
+  cp "$ROOT/tests/fixtures/proposed-call/$id.md" "$home/data/$id/report.md"
+  run_captain "$home" hold "$id" --reason 'signing identity' --question 'How should Quarterdeck be signed?' \
+    --option both=Both --option devid='Developer ID' >/dev/null || fail "the hand-raised hold failed"
+  assert_equals "$id|null|null" "$(jq -r '[.origin, (.proposals|tostring), (.proposal|tostring)] | join("|")' "$home/state/calls/$id.json")" \
+    "setup: the hand-raised call names the scout as origin and records no proposal"
+  printf '%s\tboth\tBoth\n' "$id" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer was not recorded"
+  record_before=$(jq -S . "$home/state/calls/$id.json")
+  show_before=$(tasks_in "$home" show "$id" --full)
+
+  rc=0; out=$(run_captain "$home" complete "$id" "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "complete beside a proposal only a pre-upgrade call raised"
+  assert_contains "$out" "unstamped call: $id names $id as its origin" "complete names the call to stamp"
+  assert_contains "$out" "bin/fm-captain-hold.sh stamp $id --proposal-of $id" "complete prints the exact stamp command"
+  printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$id" >> "$home/state/$id.meta"
+  rc=0; out=$(run_captain "$home" verify "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "verify beside a proposal only a pre-upgrade call raised"
+  assert_contains "$out" "stamp $id --proposal-of $id" "verify prints the stamp command"
+  rc=0; run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "cleanup passed beside a proposal only a pre-upgrade call raised"
+  assert_present "$home/state/$id.meta" "a refused cleanup deleted the task record"
+  out=$(run_captain "$home" proposals)
+  assert_contains "$out" "$id	parses	" "PROPOSED CALLS lists the proposal"
+  assert_contains "$out" "$id	stamp	call $id names it as origin; if that call raised or settled it: bin/fm-captain-hold.sh stamp $id --proposal-of $id" \
+    "PROPOSED CALLS names the call and its stamp command"
+
+  out=$(run_captain "$home" stamp "$id" --proposal-of "$id") || fail "stamp failed"
+  assert_equals "stamped: $id records the proposal of $id" "$out" "stamp says what it recorded"
+  assert_equals "$record_before" "$(jq -S 'del(.proposals)' "$home/state/calls/$id.json")" \
+    "stamp changed the call's content, timestamps, reply, or answer"
+  assert_equals "$show_before" "$(tasks_in "$home" show "$id" --full)" \
+    "stamp changed the row: its hold, answer, or resolution block"
+  assert_equals "$id" "$(jq -r '.proposals[0].task' "$home/state/calls/$id.json")" "stamp recorded the proposal"
+  record_before=$(cat "$home/state/calls/$id.json")
+  out=$(run_captain "$home" stamp "$id" --proposal-of "$id") || fail "a second stamp failed"
+  assert_contains "$out" "unchanged: $id" "a second stamp says it changed nothing"
+  assert_equals "$record_before" "$(cat "$home/state/calls/$id.json")" "a second stamp wrote the record"
+  assert_equals "" "$(run_captain "$home" proposals)" "a stamped proposal left PROPOSED CALLS"
+  run_captain "$home" complete "$id" "$id" >/dev/null || fail "complete refused a stamped proposal"
+  run_captain "$home" verify "$id" >/dev/null || fail "verify refused a stamped proposal"
+  assert_equals "$show_before" "$(tasks_in "$home" show "$id" --full)" "completion re-asked or changed the answered call"
+
+  # A section too long to raise is still stamped, from its text alone.
+  id=qd-approve-flow-1
+  mkdir -p "$home/data/$id"
+  printf 'kind=scout\n' > "$home/state/$id.meta"
+  cp "$ROOT/tests/fixtures/proposed-call/$id.md" "$home/data/$id/report.md"
+  run_captain "$home" proposal "$id" >/dev/null 2>&1 && fail "setup: the long-option fixture parsed"
+  run_captain "$home" hold sample-approve-call --title 'Approve flow' --reason 'approve flow' --origin "$id" \
+    --question 'How far should the approve flow go?' --option full=Full --option lite=Lite >/dev/null \
+    || fail "the hand-raised hold of the long proposal failed"
+  run_captain "$home" stamp sample-approve-call --proposal-of "$id" >/dev/null || fail "a section too long to raise could not be stamped"
+  run_captain "$home" gate "$id" >/dev/null || fail "the gate refused a stamped long proposal"
+
+  rc=0; out=$(run_captain "$home" stamp sample-no-call --proposal-of "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "stamp of a call that does not exist"
+  assert_contains "$out" "no call sample-no-call" "the refusal names the missing call"
+  rc=0; out=$(run_captain "$home" stamp sample-approve-call --proposal-of sample-no-report 2>&1) || rc=$?
+  expect_code 1 "$rc" "stamp of a task with no proposal"
+  assert_contains "$out" "has no Proposed call section" "the refusal names the missing section"
+
+  id=qd-update-flow-1
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err" \
+    || fail "cleanup refused a stamped proposal: $(cat "$home/teardown.err")"
+  pass "a call raised by hand before proposals were recorded is stamped, not re-asked, and every gate then passes"
+}
+
 # A ship task, and a promoted scout that becomes one, used to pass no captain
 # call gate at all: cleanup deleted the status log, and with it any question
 # still open, any answer nobody recorded, and a report's proposed call. Cleanup
@@ -4286,6 +4367,7 @@ EOF
 
 test_ship_teardown_passes_the_captain_call_gate
 test_a_relayed_captain_answer_needs_no_decision_of_its_own
+test_a_call_raised_before_proposals_were_recorded_is_stamped_not_reasked
 test_uninventoried_report_decision_refuses_completion
 test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
 test_retained_body_keeps_its_utf8_bytes

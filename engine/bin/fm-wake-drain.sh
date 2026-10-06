@@ -650,7 +650,7 @@ EOF
 print_proposed_calls_section() {
   print_captain_hold_report_section proposals \
     'PROPOSED CALLS (a report proposes a call that nobody has raised or declined - your overdue work; nothing reaches the captain until you act):' \
-    'read the report, then raise the call with bin/fm-captain-hold.sh raise <task> [--onto <task-id>] when it is the captain'"'"'s to answer, or record that you settled it with bin/fm-captain-hold.sh decline <task> --what <what you decided> --why <why>; a malformed section is raised by hand with bin/fm-captain-hold.sh hold <task-id> --proposal-of <task>, and a revised proposal is listed again.' \
+    'read the report, then raise the call with bin/fm-captain-hold.sh raise <task> [--onto <task-id>] when it is the captain'"'"'s to answer, or record that you settled it with bin/fm-captain-hold.sh decline <task> --what <what you decided> --why <why>; a malformed section is raised by hand with bin/fm-captain-hold.sh hold <task-id> --proposal-of <task>, a revised proposal is listed again, and a [stamp] line names a call already made from that task: stamp it with the command it gives only when it raised or settled this proposal.' \
     '%s [%s]: %s'
 }
 

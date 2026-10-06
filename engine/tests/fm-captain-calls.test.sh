@@ -1095,7 +1095,7 @@ test_only_a_call_that_records_this_proposal_handles_it() {
 
   tasks_in "$home" add sample-signing "Sign the app" --kind ship --repo sample >/dev/null || fail "could not file the gated row"
   run_captain "$home" raise "$id" --onto sample-signing >/dev/null || fail "raise failed"
-  assert_equals "$id" "$(jq -r .proposal.task "$home/state/calls/sample-signing.json")" "the raised call records the proposal"
+  assert_equals "$id" "$(jq -r '.proposals[].task' "$home/state/calls/sample-signing.json")" "the raised call records the proposal"
   run_captain "$home" gate "$id" >/dev/null || fail "the gate refused a raised proposal"
   assert_equals "" "$(run_captain "$home" proposals)" "a raised proposal left PROPOSED CALLS"
 
@@ -1106,13 +1106,33 @@ test_only_a_call_that_records_this_proposal_handles_it() {
   assert_contains "$out" "a revised proposal is a new one" "the refusal says a revision is a new proposal"
   run_captain "$home" raise "$id" --onto sample-signing >/dev/null || fail "raising the revision failed"
   run_captain "$home" gate "$id" >/dev/null || fail "the gate refused the raised revision"
-  printf '\nA closing note after the call.\n' >> "$home/data/$id/report.md"
+  printf '\n## Appendix\n\nA closing note after the call.\n' >> "$home/data/$id/report.md"
   run_captain "$home" gate "$id" >/dev/null || fail "prose outside the proposal read as a revision"
 
   out=$(run_captain "$home" hold sample-other --title 'Other' --reason 'other' --proposal-of sample-none 2>&1); rc=$?
   expect_code 1 "$rc" "hold --proposal-of a task with no proposal"
   assert_contains "$out" "has no Proposed call section" "the refusal names the missing section"
   pass "only a call that records this proposal handles it, and a revised proposal surfaces again"
+}
+
+# Two proposals raised onto one work item: each call records every proposal it
+# handles, so the second never unhandles the first.
+test_two_proposals_raised_onto_one_row_both_stay_handled() {
+  local home id
+  home=$(make_home proposal-fold)
+  proposing_scout "$home" qd-update-flow-1
+  proposing_scout "$home" qd-kirocrew-1
+  tasks_in "$home" add sample-gated "One gated work item" --kind ship --repo sample >/dev/null || fail "could not file the gated row"
+  run_captain "$home" raise qd-update-flow-1 --onto sample-gated >/dev/null || fail "the first raise failed"
+  run_captain "$home" raise qd-kirocrew-1 --onto sample-gated >/dev/null || fail "the second raise failed"
+  assert_equals "qd-kirocrew-1 qd-update-flow-1" \
+    "$(jq -r '[.proposals[].task] | sort | join(" ")' "$home/state/calls/sample-gated.json")" \
+    "the call records both proposals"
+  for id in qd-update-flow-1 qd-kirocrew-1; do
+    run_captain "$home" gate "$id" >/dev/null || fail "the gate of $id refused after a second proposal was raised onto its row"
+  done
+  assert_equals "" "$(run_captain "$home" proposals)" "neither proposal is unhandled"
+  pass "two proposals raised onto one work item both stay handled"
 }
 
 test_completion_refuses_an_unraised_proposal_until_it_is_raised() {
@@ -1287,6 +1307,7 @@ test_a_proposed_call_is_raised_exactly_as_written
 test_a_proposal_that_does_not_parse_is_refused_at_its_line
 test_a_variant_heading_is_still_a_proposal
 test_only_a_call_that_records_this_proposal_handles_it
+test_two_proposals_raised_onto_one_row_both_stay_handled
 test_completion_refuses_an_unraised_proposal_until_it_is_raised
 test_a_declined_proposal_passes_and_leaves_a_decision
 test_an_answer_the_first_mate_gave_needs_its_record

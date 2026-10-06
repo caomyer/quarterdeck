@@ -963,6 +963,8 @@ test_promote_passes_the_captain_call_gate() {
   status=$?
   [ "$status" -ne 0 ] || fail "promotion passed beside an unraised proposal and an unrecorded answer"
   assert_contains "$out" "unraised proposal: sign-audit's report proposes a call" "promotion did not name the unraised proposal"
+  assert_contains "$out" "bin/fm-captain-hold.sh stamp sign-audit --proposal-of sign-audit" \
+    "promotion did not name the call already made from the scout and how to stamp it"
   assert_contains "$out" "unrecorded decision: you answered sign-audit [key=cert] yourself" "promotion did not name the unrecorded answer"
   assert_contains "$out" "has not passed the captain-call gate" "promotion did not say why it refused"
   assert_contains "$out" "nothing was changed" "promotion did not say it changed nothing"

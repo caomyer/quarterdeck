@@ -41,6 +41,7 @@
 #   fm-captain-hold.sh proposals
 #   fm-captain-hold.sh unrecorded
 #   fm-captain-hold.sh answered <task-id>
+#   fm-captain-hold.sh stamp <call-task-id> --proposal-of <task-id>
 #   fm-captain-hold.sh gate <task-id>
 #   fm-captain-hold.sh list [--json] [--since <days>]
 #   fm-captain-hold.sh migrate
@@ -311,18 +312,27 @@
 # ask the captain: a `decide --about <task-id> --origin <task-id> --kind scope`
 # titled with the proposal's question (or `<task-id>'s proposed call` when the
 # section does not parse) and carrying its options, so the captain can see it
-# was settled rather than lost. A proposal's DIGEST is the sha256 of its parsed
-# question, options and recommendation, or of the raw section text when it does
-# not parse. A proposal is HANDLED once a call carries `proposal: {task, digest}`
-# naming its task and its current digest, which `raise`, `decline`, and a call
-# held by hand with `hold --proposal-of <task-id>` record; naming the task as
-# origin alone does not handle it, since a call about something else can. A
-# revised report changes the digest, so a changed proposal is a new proposal
-# and surfaces again until it is raised or declined in turn.
+# was settled rather than lost. A proposal's DIGEST is the sha256 of its raw
+# section text, from its heading to the section's end, whether or not it parses.
+# A proposal is HANDLED once a call's `proposals` list carries `{task, digest}`
+# naming its task and its current digest. `raise`, `decline`, and a call held by
+# hand with `hold --proposal-of <task-id>` add one to the call they make, never
+# replacing another, so several proposals folded onto one row stay handled.
+# Naming the task as origin alone does not handle it, since a call about
+# something else can. A revised report changes the digest, so a changed
+# proposal is a new proposal and surfaces again until it is raised or declined
+# in turn. `stamp <call> --proposal-of <task-id>` adds the current digest to an
+# EXISTING call and changes nothing else about it (no hold, no timestamp, no
+# reply, no answer), for a proposal that call already raised or settled, such as
+# one raised by hand before calls recorded proposals; it needs no parse, and
+# re-running it prints `unchanged:` and writes nothing.
 # `proposals` is the read-only report bin/fm-wake-drain.sh
 # prints as PROPOSED CALLS: one `<task-id>\t<parses|malformed>\t<question or the
 # refusal>` line per task still in this home (it has a state/<id>.meta) whose
-# report proposes a call that is not handled, silent when there are none.
+# report proposes a call that is not handled, silent when there are none,
+# followed by one `<task-id>\tstamp\t<the call and its exact stamp command>`
+# line per call already naming that task as origin. The gate names the same
+# calls with the same command.
 #
 # A QUESTION THE FIRST MATE ANSWERED ITSELF IS A CALL IT MADE.
 # bin/fm-send.sh --resolve-key closes a worker's open keyed needs-decision with
@@ -1421,7 +1431,11 @@ call_record_compose() {  # <task-id> <now> <raised-at> <default-on-answer> <orig
         if any(.[]; . == $e) then . else . + [$e] end)
     | if $about_set == 1 then .about = $about else . end
     | if $origin != "" then .origin = $origin else . end
-    | if $proposal != null then .proposal = $proposal else . end
+    | if $proposal != null then
+        .proposals = (((.proposals // (if .proposal then [.proposal] else [] end)) + [$proposal])
+          | reduce .[] as $p ([]; if any(.[]; . == $p) then . else . + [$p] end))
+        | del(.proposal)
+      else . end
     | if $raised_at != "" then .raised_at = $raised_at else . end
     | if $question_set == 1 or $options != null or $recommend_set == 1 or $on_answer != ""
       then .updated_at = $now else . end' 2>&1) \
@@ -3412,32 +3426,37 @@ proposal_section_text() {
 
 # Read <task-id>'s proposal as proposal_read does, setting PROPOSAL_RC to what
 # it returned and PROPOSAL_DIGEST to this proposal's identity (see the header):
-# the digest of its parsed content, or of its raw section when it does not
-# parse, and empty when there is no proposal.
+# the digest of its raw section, parsed or not, and empty when there is none.
 PROPOSAL_RC=1
 PROPOSAL_DIGEST=''
 proposal_identify() {  # <task-id>
   PROPOSAL_RC=0
   PROPOSAL_DIGEST=''
   proposal_read "$1" || PROPOSAL_RC=$?
-  case "$PROPOSAL_RC" in
-    0) PROPOSAL_DIGEST=$(sha256_text "$(printf '%s\n' "question=$PROPOSAL_QUESTION" "${PROPOSAL_OPTIONS[@]}" \
-         "recommend=$PROPOSAL_RECOMMEND")") ;;
-    2) PROPOSAL_DIGEST=$(sha256_text "$(proposal_section_text)") ;;
-  esac
+  [ "$PROPOSAL_RC" = 1 ] || PROPOSAL_DIGEST=$(sha256_text "$(proposal_section_text)")
 }
 
-# Every proposal some call handles, one `<task-id>\t<digest>` per line: what
-# `raise`, `decline`, and `hold --proposal-of` record on the call they make.
-handled_proposals() {
+# What every call record says about proposals, one line each: `handled\t<task>\t
+# <digest>` for each proposal it records (`raise`, `decline`, `hold
+# --proposal-of`, and `stamp` add one, never replacing another; a single
+# `proposal` object reads as one), and `origin\t<task>\t<call>` for the task it
+# names as origin, a call `stamp` may record a proposal on.
+proposal_index() {
   [ -d "$CALLS_DIR" ] || return 0
   require_jq
-  call_records_read | jq -r 'select(.ok) | .record.proposal // empty | "\(.task)\t\(.digest)"'
+  call_records_read | jq -r 'select(.ok) | .task as $call | .record
+    | ((.proposals // (if .proposal then [.proposal] else [] end))[] | "handled\t\(.task)\t\(.digest)"),
+      (.origin // empty | "origin\t\(.)\t\($call)")'
 }
 
 # Is <task-id>'s current proposal, as proposal_identify last read it, handled?
-proposal_handled() {  # <task-id> <handled-proposals>
-  list_has_line "$2" "$1"$'\t'"$PROPOSAL_DIGEST"
+proposal_handled() {  # <task-id> <proposal-index>
+  list_has_line "$2" "handled"$'\t'"$1"$'\t'"$PROPOSAL_DIGEST"
+}
+
+# The calls naming <task-id> as origin, one per line.
+proposal_origin_calls() {  # <task-id> <proposal-index>
+  printf '%s\n' "$2" | awk -F '\t' -v id="$1" '$1 == "origin" && $2 == id { print $3 }'
 }
 
 # A worker's answered question is recorded once a decided call names its key on
@@ -3485,7 +3504,7 @@ validate_slug_ok() {  # <value>
 # per problem naming what would satisfy it. <check-open> = 0 leaves open status
 # keys to the caller (`complete` transfers them, `verify` names them itself).
 gate_problems() {  # <task-id> <check-open-0-or-1>
-  local id=$1 check_open=$2 rc=0 key verb note
+  local id=$1 check_open=$2 rc=0 key verb note index call
   if [ "$check_open" = 1 ]; then
     while IFS=$'\t' read -r key verb note; do
       [ -n "$key" ] || continue
@@ -3497,7 +3516,16 @@ EOF
   fi
   proposal_identify "$id"
   rc=$PROPOSAL_RC
-  if [ "$rc" != 1 ] && ! proposal_handled "$id" "$(handled_proposals)"; then
+  index=''
+  [ "$rc" = 1 ] || index=$(proposal_index)
+  if [ "$rc" != 1 ] && ! proposal_handled "$id" "$index"; then
+    while IFS= read -r call; do
+      [ -n "$call" ] || continue
+      printf "unstamped call: %s names %s as its origin but does not record this proposal; if it raised or settled it, record that with bin/fm-captain-hold.sh stamp %s --proposal-of %s\n" \
+        "$call" "$id" "$call" "$id"
+    done <<EOF
+$(proposal_origin_calls "$id" "$index")
+EOF
     if [ "$rc" = 0 ]; then
       printf "unraised proposal: %s's report proposes a call at %s:%s that nobody raised or declined (a revised proposal is a new one); raise it with bin/fm-captain-hold.sh raise %s [--onto <task-id>], or record that you settled it yourself with bin/fm-captain-hold.sh decline %s --what <what you decided> --why <why>\n" \
         "$id" "$PROPOSAL_PATH" "$PROPOSAL_LINE" "$id" "$id"
@@ -3619,10 +3647,10 @@ command_decline() {
 }
 
 command_proposals() {
-  local handled meta id rc
+  local index meta id rc call
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
   command -v jq >/dev/null 2>&1 || return 0
-  handled=$(handled_proposals) || exit 1
+  index=$(proposal_index) || exit 1
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=${meta##*/}; id=${id%.meta}
@@ -3630,13 +3658,49 @@ command_proposals() {
     proposal_identify "$id"
     rc=$PROPOSAL_RC
     [ "$rc" != 1 ] || continue
-    proposal_handled "$id" "$handled" && continue
+    proposal_handled "$id" "$index" && continue
     if [ "$rc" = 0 ]; then
       printf '%s\tparses\t%s\n' "$id" "$(sanitize_field "$PROPOSAL_QUESTION")"
     else
       printf '%s\tmalformed\t%s\n' "$id" "$(sanitize_field "$PROPOSAL_ERROR")"
     fi
+    while IFS= read -r call; do
+      [ -n "$call" ] || continue
+      printf '%s\tstamp\tcall %s names it as origin; if that call raised or settled it: bin/fm-captain-hold.sh stamp %s --proposal-of %s\n' \
+        "$id" "$call" "$call" "$id"
+    done <<EOF
+$(proposal_origin_calls "$id" "$index")
+EOF
   done
+}
+
+# Record on an existing call that it handles <task-id>'s current proposal,
+# changing nothing else about the call: no hold, no timestamp, no reply, no
+# answer. It needs only the section, never a parse, so a section too long to
+# raise can still be stamped.
+command_stamp() {
+  local call=${1:-} proposal_of='' record
+  [ "$#" -eq 3 ] && [ "${2:-}" = --proposal-of ] || { usage >&2; exit 2; }
+  proposal_of=$3
+  validate_slug call-id "$call"
+  validate_slug proposal-of "$proposal_of"
+  require_jq
+  proposal_identify "$proposal_of"
+  [ "$PROPOSAL_RC" != 1 ] || fail "$PROPOSAL_PATH has no Proposed call section"
+  acquire_task_control_lock "$call"
+  call_record_load "$call"
+  [ -n "$CALL_RECORD" ] || fail "no call $call: it has no call record at $(call_record_path "$call")"
+  if printf '%s' "$CALL_RECORD" | jq -e --arg task "$proposal_of" --arg digest "$PROPOSAL_DIGEST" \
+    'any((.proposals // (if .proposal then [.proposal] else [] end))[]; . == {task:$task, digest:$digest})' >/dev/null; then
+    printf 'unchanged: %s already records the proposal of %s\n' "$call" "$proposal_of"
+    return 0
+  fi
+  record=$(printf '%s' "$CALL_RECORD" | jq -c --arg task "$proposal_of" --arg digest "$PROPOSAL_DIGEST" \
+    '.proposals = ((.proposals // (if .proposal then [.proposal] else [] end)) + [{task:$task, digest:$digest}])
+     | del(.proposal)') || fail "cannot compose the call content for $call"
+  call_record_store "$call" "$record"
+  release_task_control_lock
+  printf 'stamped: %s records the proposal of %s\n' "$call" "$proposal_of"
 }
 
 # Who recorded the newest answer on call <task-id>: `captain` or `firstmate`.
@@ -3889,6 +3953,7 @@ case "${1:-}" in
   decline) shift; command_decline "$@" ;;
   unrecorded) shift; command_unrecorded "$@" ;;
   answered) shift; command_answered "$@" ;;
+  stamp) shift; command_stamp "$@" ;;
   gate) shift; command_gate "$@" ;;
   reconcile) shift; command_reconcile "$@" ;;
   -h|--help) usage ;;
