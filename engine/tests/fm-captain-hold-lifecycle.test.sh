@@ -4152,6 +4152,63 @@ test_retained_body_keeps_its_utf8_bytes() {
   pass "cleanup preserves every byte of a retained body's non-ASCII characters"
 }
 
+# A ship task, and a promoted scout that becomes one, used to pass no captain
+# call gate at all: cleanup deleted the status log, and with it any question
+# still open, any answer nobody recorded, and a report's proposed call. Cleanup
+# now refuses each, naming what satisfies it, and proceeds once it is settled.
+test_ship_teardown_passes_the_captain_call_gate() {
+  local home id repo wt rc
+  home=$(make_home ship-gate)
+  id=sample-gated-ship
+  repo="$home/projects/sample-gated"
+  wt="$home/projects/$id"
+  fm_git_worktree "$repo" "$wt" "fm/$id"
+  tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+    || fail "could not create the ship fixture"
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" "worktree=$wt" \
+    "project=$repo" "harness=codex" "kind=ship" "mode=local-only" "spawn_gen=fixture-$id"
+  cat > "$home/state/$id.status" <<'EOF'
+working: building
+needs-decision [key=scope]: narrow or wide?
+done: built
+EOF
+  # A promoted scout keeps its report, and with it the call it proposed.
+  mkdir -p "$home/data/$id"
+  cp "$ROOT/tests/fixtures/proposed-call/qd-update-flow-1.md" "$home/data/$id/report.md"
+
+  set +e
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "cleanup of a ship deleted an open question with its status log"
+  assert_grep "REFUSED: task $id has not passed the captain-call gate" "$home/teardown.err" "the refusal names the gate"
+  assert_grep "open needs-decision [key=scope] on $id" "$home/teardown.err" "the refusal names the open question"
+  assert_grep "fm-send.sh $id --resolve-key scope" "$home/teardown.err" "the refusal says how to answer it"
+  assert_grep "unraised proposal: $id's report proposes a call" "$home/teardown.err" "the refusal names the unraised proposal"
+  assert_present "$home/state/$id.status" "a refused cleanup deleted the status log"
+  assert_present "$home/state/$id.meta" "a refused cleanup deleted the task record"
+
+  printf 'resolved [key=scope]: answered: narrow\n' >> "$home/state/$id.status"
+  set +e
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "cleanup deleted an answer the first mate gave and never recorded"
+  assert_grep "unrecorded decision: you answered $id [key=scope] yourself (narrow)" "$home/teardown.err" \
+    "the refusal names the unrecorded answer"
+
+  run_captain "$home" decide --about "$id" --key scope --title 'Narrow or wide?' --what 'Kept it narrow' \
+    --why 'The captain asked for the smallest change' >/dev/null || fail "could not record the answer"
+  run_captain "$home" decline "$id" --what 'Kept today ad-hoc signing' --why 'Out of scope for this ship' >/dev/null \
+    || fail "could not decline the proposal"
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err" \
+    || fail "cleanup refused a ship whose calls were all settled: $(cat "$home/teardown.err")"
+  assert_absent "$home/state/$id.meta" "cleanup did not finish once the gate passed"
+  pass "ship cleanup refuses an open question, an unrecorded answer, and an unraised proposal, then proceeds once each is settled"
+}
+
+test_ship_teardown_passes_the_captain_call_gate
 test_uninventoried_report_decision_refuses_completion
 test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
 test_retained_body_keeps_its_utf8_bytes

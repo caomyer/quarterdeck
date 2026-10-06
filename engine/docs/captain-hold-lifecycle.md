@@ -32,6 +32,7 @@ With a non-empty inventory it appends a `captain-held [key=<key>]: tracked by <i
 
 Scout teardown calls the read-only `verify` subcommand after checking for the report and before removing any source state.
 `verify` requires the recorded attestation, requires every recorded inventory entry to still be durable (actively captain-held, or carrying a recorded answer), and fails on any keyed status decision that opened after the last `complete`, which makes re-running `complete` the repair.
+Every other task but a secondmate passes the read-only `gate` subcommand at teardown instead, and a scout passes it before `bin/fm-promote.sh` makes it a ship, so a promoted scout and a ship can no longer lose an open key with their status log; the next section says what it checks.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 ### One source of truth for a call
@@ -224,6 +225,20 @@ It needs no status log, so it prints on a home with no live work too, and it sto
 `captain-hold-lifecycle` owns what the first mate does with one.
 `tests/fm-captain-calls.test.sh` proves the record, the lock, the refusals, each clearing path, `list` and the drain section.
 
+## Proposed calls and the captain-call gate
+
+A scout ends its report with a `## Proposed call` section when its findings leave a decision for the captain, and turning that section into a call used to depend on the first mate remembering to.
+The section has a fixed grammar, stated once in `bin/fm-captain-hold.sh`'s header and asked for in exactly that shape by the scout brief, so copying it into a call is mechanical while deciding whether to ask the captain at all is not.
+`raise <task>` parses it and runs `hold` with exactly that content and `--origin <task>`, on the task's own row or with `--onto` on the work item the question gates, and refuses a section that does not parse by naming the report line at fault.
+`decline <task>` records that the first mate settled the proposal itself, as a `decide` about the task with the task as its origin, so the captain sees it was settled rather than lost.
+Nothing raises a call on its own: a call reaches the captain only after the first mate has read the report and judged the proposal his to answer.
+
+A proposal is handled once any call names its task as origin, whether raised, declined, or held by hand.
+A worker's keyed question the first mate answered itself through `bin/fm-send.sh --resolve-key` is recorded once a `decide --key <key>` about that task names it, or once its key is a call itself; a question meant for the captain reaches him as a call, whose key `complete` closes as captain-held instead.
+`gate <task>` refuses a task with an open keyed decision, an unhandled proposal, or an unrecorded answered question, naming each and what satisfies it, and `complete` and `verify` refuse the last two as well.
+Each refusal is also a drain section that prints on every drain until the first mate acts: `PROPOSED CALLS` from `proposals` and `UNRECORDED DECISIONS` from `unrecorded`, both read only for tasks still in the home.
+The gate never answers a call, picks an option, or raises one; every act it asks for is one the first mate already owns.
+
 ## Compatibility with pre-collapse installs
 
 Older installs created derived `<origin>-decision-<key>` identities through the retired `bin/fm-decision-hold.sh`.
@@ -261,6 +276,9 @@ That suite drives its Lavish session through a protocol-shaped stub, and `tests/
 [`verification/process-event-sources.md`](verification/process-event-sources.md) owns the process-event ownership and reclamation evidence exercised by `tests/fm-procevent.test.sh`.
 
 `tests/fm-captain-calls.test.sh` pins the call record and its surfaces: `hold` recording content and refusing what nobody could answer, a hold without content still listed as a call, evidence derived from `--origin` for pages presented before and after the call, a held task that produced work becoming its own origin without changing how an answer closes it, across a release and re-hold, `offer` and `evidence` (including `updated_at` and closed calls), `answers --source quarterdeck` writing the machine lines and honoring the declared `on_answer` in both directions, a freeform answer carrying no key, `answer --key`, an interrupted close reading as `answered` while a re-held call reads as open, `decide` and its idempotent retry, the listing window, damaged records, the snapshot's `calls[]` equalling `list --json`, an idempotent `migrate`, including the one-time backfill of older answers' machine lines with keys recovered only in the unambiguous cases and digests and retries still matching, `updated_at` moving only with the offered content, and both shims.
+
+The same suite pins proposed calls against real scout reports kept in `tests/fixtures/proposed-call/`: a section that parses and raises exactly, one refused for an option too long for a call and one for an option continued onto a second line, each naming its line, `complete --none` refused beside an unraised proposal, `decline` passing it while leaving a decided record, a recorded answer clearing `unrecorded`, and both drain sections appearing and then clearing.
+`tests/fm-captain-hold-lifecycle.test.sh` pins the ship-task teardown gate and the promotion gate.
 
 `tests/fm-classify-decision-key.test.sh` pins `status_key_closing_verb` itself: it separates a resolution from the durable-transfer close and from a still-open key, reports the last real transition across re-openings and both key positions, and treats a prose mention as no transition.
 

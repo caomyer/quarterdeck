@@ -24,6 +24,8 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
+# Promotion first requires bin/fm-captain-hold.sh `gate` to pass, because the
+# promoted task no longer meets the scout's completion gate at teardown.
 # The backlog row follows the task record: where this home's backlog transitions
 # apply (bin/fm-backlog-transition-lib.sh), promotion rewrites the row's kind to
 # ship, and to --title when the promotion gives the task a new objective, so the
@@ -164,6 +166,16 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
   exit 1
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
+
+# A scout's report is where a proposed call lives, and a promoted task stops
+# passing the scout's completion gate, so it passes the captain-call gate here,
+# before it becomes a ship: no open question, no proposal neither raised nor
+# declined, no answer nobody recorded. The gate names each and what satisfies it.
+if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-captain-hold.sh" gate "$ID" >/dev/null; then
+  echo "error: task $ID has not passed the captain-call gate; settle what it names above, then promote again; nothing was changed" >&2
+  exit 1
+fi
 
 # Read the backlog row before changing anything, so a row this home cannot
 # update refuses promotion instead of leaving a ship task behind a scout row.

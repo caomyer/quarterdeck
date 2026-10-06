@@ -6,8 +6,11 @@
 # fleet snapshot's calls[], the answer's machine lines written by `answers` and
 # `answer` with their closed channel vocabulary, the declared on_answer, the
 # one-time `migrate`, the captain's `reply` kept beside an open call until the
-# first mate acts, the UNHANDLED REPLIES drain section, and the shims that
-# replaced fm-decision-options.sh and `fm-artifact.sh present --covers`.
+# first mate acts, the UNHANDLED REPLIES drain section, the shims that
+# replaced fm-decision-options.sh and `fm-artifact.sh present --covers`, and a
+# report's proposed call: raised exactly from real reports, refused at its line,
+# gating completion until raised or declined, and listed by the drain beside the
+# answers the first mate gave and never recorded.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -909,6 +912,284 @@ test_a_refused_deferral_keeps_the_reply_and_a_valid_one_clears_it() {
   pass "a refused deferral keeps the captain's reply, and a valid one clears it"
 }
 
+PROPOSALS="$ROOT/tests/fixtures/proposed-call"
+
+# A finished scout still in this home: its row, its record, and a real report
+# from tests/fixtures/proposed-call, which keeps each one's own Proposed call.
+proposing_scout() {  # <home> <id> [<fixture-id>]
+  local home=$1 id=$2 fixture=${3:-$2}
+  mkdir -p "$home/data/$id"
+  cp "$PROPOSALS/$fixture.md" "$home/data/$id/report.md"
+  printf 'kind=scout\n' > "$home/state/$id.meta"
+  printf 'done: report written\n' > "$home/state/$id.status"
+  (cd "$home" && tasks-axi add "$id" "Scout $id" --kind scout --repo sample --start >/dev/null) \
+    || fail "could not file the scout row $id"
+}
+
+# The line of the fixture's report that first matches <pattern>.
+report_line() {  # <home> <id> <grep-pattern>
+  grep -n -e "$3" "$1/data/$2/report.md" | head -1 | cut -d: -f1
+}
+
+# What `proposal` must print, derived from the fixture by the grammar's own
+# shapes rather than by the parser under test.
+# shellcheck disable=SC2016 # backticks here are the grammar's own, never expansions
+expected_proposal() {  # <report>
+  sed -n 's/^Question: //p' "$1" | sed 's/^/question: /'
+  sed -n 's/^- `\([^`]*\)` - \(.*\)$/option: \1	\2/p' "$1"
+  sed -n 's/^Recommendation: `\([^`]*\)`.*$/recommend: \1/p' "$1"
+}
+
+test_a_proposed_call_is_raised_exactly_as_written() {
+  local home id out record expected labels
+  home=$(make_home proposal-raise)
+  id=qd-update-flow-1
+  proposing_scout "$home" "$id"
+  expected=$(expected_proposal "$home/data/$id/report.md")
+  assert_equals 6 "$(printf '%s\n' "$expected" | wc -l | tr -d ' ')" "setup: the fixture's own shape was not read"
+  out=$(run_captain "$home" proposal "$id") || fail "a report that follows the grammar did not parse"
+  assert_equals "$expected" "$out" "the parsed call is the section exactly, the Question: lead aside"
+
+  out=$(run_captain "$home" raise "$id") || fail "raise failed on a section that parses"
+  assert_equals "raised: $id from $home/data/$id/report.md" "$out" "raise names the call and where it came from"
+  record="$home/state/calls/$id.json"
+  labels=$(jq -r '.options[] | "option: \(.key)\t\(.label)"' "$record")
+  assert_equals "$expected" "$(printf 'question: %s\n%s\nrecommend: %s' "$(jq -r .question "$record")" "$labels" \
+    "$(jq -r '.options[] | select(.recommended) | .key' "$record")")" \
+    "the call carries exactly the proposal's question, options, and recommendation"
+  assert_equals "$id|$id" "$(jq -r '[.origin, .task] | join("|")' "$record")" \
+    "the call names the scout as its origin on the scout's own row"
+  assert_contains "$(call_json "$home" "$id" | jq -r '.evidence | join(" ")')" "report:$id" \
+    "the scout's report argues the raised call"
+  assert_equals "captain|yes" "$(tasks_in "$home" show "$id" --full | sed -n 's/^  hold_kind: //p; s/^  held: //p' | sort | paste -sd'|' -)" \
+    "the scout's row is held for the captain"
+
+  id=qd-kirocrew-1
+  proposing_scout "$home" "$id"
+  (cd "$home" && tasks-axi add sample-sandbox-work "Sandbox the crew" --kind ship --repo sample >/dev/null) \
+    || fail "could not file the gated work item"
+  out=$(run_captain "$home" raise "$id" --onto sample-sandbox-work) || fail "raise --onto failed"
+  record="$home/state/calls/sample-sandbox-work.json"
+  assert_equals "$id|optin|3|release" \
+    "$(jq -r '[.origin, (.options[] | select(.recommended) | .key), (.options | length), .on_answer] | join("|")' "$record")" \
+    "--onto holds the work item the question gates, with the scout as origin and a release close"
+  assert_contains "$(jq -r '.options[0].label' "$record")" "**Keep unrestricted workers.**" \
+    "a label is copied as written, its markdown included"
+  assert_absent "$home/state/calls/$id.json" "--onto also raised a call on the scout's own row"
+  pass "a report's proposed call is raised exactly as written, on its own row or the work it gates"
+}
+
+tasks_in() {  # <home> <tasks-axi args...>
+  local home=$1
+  shift
+  (cd "$home" && tasks-axi "$@")
+}
+
+# shellcheck disable=SC2016 # backticks here are the grammar's own, never expansions
+test_a_proposal_that_does_not_parse_is_refused_at_its_line() {
+  local home id out rc line before report bad
+  home=$(make_home proposal-refused)
+  id=qd-approve-flow-1
+  proposing_scout "$home" "$id"
+  before=$(shasum "$home/data/backlog.md")
+  line=$(report_line "$home" "$id" '^- `full` - ')
+  out=$(run_captain "$home" raise "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "raise of an option too long for a call"
+  assert_contains "$out" "$home/data/$id/report.md:$line: option \`full\` is" "the refusal names the report line at fault"
+  assert_contains "$out" "at most 200" "the refusal says what the call cannot hold"
+  assert_contains "$out" "nothing was raised" "the refusal says nothing was taken"
+  assert_absent "$home/state/calls/$id.json" "a refused proposal left a record"
+  assert_equals "$before" "$(shasum "$home/data/backlog.md")" "a refused proposal changed the backlog"
+
+  id=nm-rebase-guard-1
+  proposing_scout "$home" "$id"
+  line=$(report_line "$home" "$id" '^  Costs:')
+  out=$(run_captain "$home" proposal "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "an option continued onto a second line"
+  assert_contains "$out" "report.md:$line: an option continues onto this line" "the continuation is named at its line"
+
+  # Each break of the grammar, made to a real report that otherwise parses.
+  id=sample-broken
+  report="$home/data/$id/report.md"
+  mkdir -p "$home/data/$id"
+  for bad in 'no-recommendation' 'unknown-recommendation' 'repeated-key' 'second-section' 'two-line-question' 'one-option'; do
+    case "$bad" in
+      no-recommendation) sed '/^Recommendation:/d' "$PROPOSALS/qd-update-flow-1.md" > "$report" ;;
+      unknown-recommendation) sed 's/^Recommendation: `both`/Recommendation: `notary`/' "$PROPOSALS/qd-update-flow-1.md" > "$report" ;;
+      repeated-key) sed 's/^- `devid`/- `both`/' "$PROPOSALS/qd-update-flow-1.md" > "$report" ;;
+      second-section) { cat "$PROPOSALS/qd-update-flow-1.md"; printf '\n## Proposed call\n\nAnother?\n'; } > "$report" ;;
+      two-line-question) awk '{ print } /^Question: / { print "And one more line." }' "$PROPOSALS/qd-update-flow-1.md" > "$report" ;;
+      one-option) sed '/^- `devid`/d; /^- `selfsign`/d; /^- `unsigned`/d' "$PROPOSALS/qd-update-flow-1.md" > "$report" ;;
+    esac
+    case "$bad" in
+      no-recommendation) line=$(wc -l < "$report" | tr -d ' ') ;;
+      unknown-recommendation) line=$(report_line "$home" "$id" '^Recommendation:') ;;
+      repeated-key) line=$(grep -n '^- `both`' "$report" | sed -n '2p' | cut -d: -f1) ;;
+      second-section) line=$(grep -n '^## Proposed call' "$report" | sed -n '2p' | cut -d: -f1) ;;
+      two-line-question) line=$(report_line "$home" "$id" '^And one more line') ;;
+      one-option) line=$(report_line "$home" "$id" '^Recommendation:') ;;
+    esac
+    [ -n "$line" ] || fail "setup: no line to expect for $bad"
+    out=$(run_captain "$home" raise "$id" 2>&1); rc=$?
+    expect_code 1 "$rc" "raise of a section with $bad"
+    assert_contains "$out" "report.md:$line:" "the refusal for $bad names line $line: $out"
+    assert_absent "$home/state/calls/$id.json" "a refused $bad section left a record"
+  done
+
+  # A heading inside fenced code is an example, not a proposal.
+  printf '# Notes\n\n```\n## Proposed call\n\nNot a real one?\n```\n' > "$report"
+  out=$(run_captain "$home" proposal "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "a report whose only heading is fenced"
+  assert_contains "$out" "has no Proposed call section" "a fenced heading is not a section"
+  pass "a proposal that breaks the grammar is refused at the line at fault, and nothing is guessed at"
+}
+
+test_completion_refuses_an_unraised_proposal_until_it_is_raised() {
+  local home id out rc
+  home=$(make_home proposal-complete)
+  id=qd-update-flow-1
+  proposing_scout "$home" "$id"
+  out=$(run_captain "$home" complete "$id" --none 2>&1); rc=$?
+  expect_code 1 "$rc" "complete --none beside an unraised proposal"
+  assert_contains "$out" "unraised proposal: $id's report proposes a call at $home/data/$id/report.md:$(report_line "$home" "$id" '^## Proposed call')" \
+    "the refusal says what is missing and where"
+  assert_contains "$out" "fm-captain-hold.sh raise $id" "the refusal names raising it"
+  assert_contains "$out" "fm-captain-hold.sh decline $id" "the refusal names declining it"
+  assert_no_grep "decisions_reviewed" "$home/state/$id.meta" "a refused completion attested the inventory"
+
+  printf 'decisions_reviewed=1\ndecision_keys=\n' >> "$home/state/$id.meta"
+  out=$(run_captain "$home" verify "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "verify beside an unraised proposal, even with an attestation"
+  assert_contains "$out" "unraised proposal" "verify names the unraised proposal"
+
+  run_captain "$home" raise "$id" >/dev/null || fail "raise failed"
+  run_captain "$home" complete "$id" "$id" >/dev/null || fail "complete refused once the proposal was raised"
+  run_captain "$home" verify "$id" >/dev/null || fail "verify refused once the proposal was raised"
+  out=$(run_captain "$home" gate "$id") || fail "gate refused once the proposal was raised"
+  assert_equals "gate: $id clear" "$out" "the gate reads clear"
+  pass "complete and verify refuse an unraised proposal, naming how to proceed, and pass once it is raised"
+}
+
+test_a_declined_proposal_passes_and_leaves_a_decision() {
+  local home id out rc call
+  home=$(make_home proposal-decline)
+  id=qd-kirocrew-1
+  proposing_scout "$home" "$id"
+  out=$(run_captain "$home" decline "$id" --what 'Kept unrestricted workers' 2>&1); rc=$?
+  expect_code 1 "$rc" "a decline without why"
+  assert_absent "$home/state/calls" "a refused decline recorded something"
+  out=$(run_captain "$home" decline "$id" --what 'Kept unrestricted workers for now' \
+    --why 'The captain already ruled sandboxing out until a second user exists') || fail "decline failed"
+  case "$out" in "declined: $id (decided-"*")") ;; *) fail "decline printed '$out'" ;; esac
+  call=${out#*(}; call=${call%)}
+  assert_equals "closed|firstmate|decide|$id|$id|scope|Kept unrestricted workers for now|3|$(run_captain "$home" proposal "$id" | sed -n 's/^question: //p')" \
+    "$(call_json "$home" "$call" | jq -r '[.state, .answer.by, .answer.via, .origin, .about, .decided.kind, .decided.what,
+      (.options | length), .question] | join("|")')" \
+    "the decline is a decided call about the scout, carrying the proposal it settled"
+  assert_contains "$(call_json "$home" "$call" | jq -r '.evidence | join(" ")')" "report:$id" \
+    "the report that proposed it argues the decision"
+  run_captain "$home" complete "$id" --none >/dev/null || fail "complete --none refused a declined proposal"
+  run_captain "$home" verify "$id" >/dev/null || fail "verify refused a declined proposal"
+
+  id=qd-approve-flow-1
+  proposing_scout "$home" "$id"
+  out=$(run_captain "$home" decline "$id" --what 'Built the full loop' --why 'The captain chose full in chat') \
+    || fail "a malformed proposal could not be declined"
+  call=${out#*(}; call=${call%)}
+  assert_equals "$id's proposed call|0" "$(call_json "$home" "$call" | jq -r '[.question, (.options | length)] | join("|")')" \
+    "a section that does not parse is declined by name, with nothing guessed from it"
+  run_captain "$home" gate "$id" >/dev/null || fail "the gate refused a declined malformed proposal"
+  out=$(run_captain "$home" decline sample-nothing --what w --why y 2>&1); rc=$?
+  expect_code 1 "$rc" "a decline with no proposal to decline"
+  pass "a declined proposal passes the gate and leaves a decided call the captain can see"
+}
+
+test_an_answer_the_first_mate_gave_needs_its_record() {
+  local home id out rc
+  home=$(make_home unrecorded)
+  id=sample-ship
+  printf 'kind=ship\n' > "$home/state/$id.meta"
+  cat > "$home/state/$id.status" <<'EOF'
+working: building
+needs-decision [key=port]: which port should the sample serve on?
+resolved [key=port]: answered: use 9090, the default is taken
+needs-decision [key=retry]: retry the flaky step?
+resolved [key=retry]: retried it myself, it passed
+blocked [key=creds]: need the sample token
+resolved [key=creds]: answered: it is in the vault
+needs-decision [key=sample-call]: which export format?
+captain-held [key=sample-call]: tracked by sample-call
+needs-decision [key=again]: first ask
+resolved [key=again]: answered: yes
+needs-decision [key=again]: asked again after the answer
+done: built
+EOF
+  out=$(run_captain "$home" unrecorded) || fail "unrecorded failed"
+  assert_equals "$id	port	use 9090, the default is taken" "$out" \
+    "only a question the first mate answered itself is listed, not a worker's own close, a blocker, a transfer, or a re-opened question"
+  out=$(run_captain "$home" gate "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "the gate beside an unrecorded answer and an open question"
+  assert_contains "$out" "unrecorded decision: you answered $id [key=port] yourself (use 9090, the default is taken)" \
+    "the gate names the answer nothing records"
+  assert_contains "$out" "fm-captain-hold.sh decide --about $id --key port" "the gate names how to record it"
+  assert_contains "$out" "open needs-decision [key=again] on $id" "the gate names the open question"
+
+  run_captain "$home" decide --about "$id" --key port --title 'Which port should the sample serve on?' \
+    --what 'Serve on 9090' --why 'The default port is taken on every fleet host' >/dev/null || fail "decide --key failed"
+  assert_equals "" "$(run_captain "$home" unrecorded)" "a decided call naming the key records it"
+  assert_equals port "$(jq -r 'select(.about == "sample-ship") | .decided.key' "$home"/state/calls/decided-*.json)" \
+    "the decided call carries the key it settles"
+  printf 'resolved [key=again]: answered: no\n' >> "$home/state/$id.status"
+  out=$(run_captain "$home" unrecorded)
+  assert_equals "$id	again	no" "$out" "a second answer needs its own record"
+  run_captain "$home" hold again --title 'Ask again?' --reason 'held as a call' >/dev/null || fail "hold failed"
+  run_captain "$home" gate "$id" >/dev/null || fail "an answer whose key is itself a call still read as unrecorded"
+  pass "a question the first mate answered itself is a decision it must record, and the gate holds until it does"
+}
+
+test_the_wake_drain_lists_proposals_and_unrecorded_answers_until_handled() {
+  local home out
+  home=$(make_home gate-drain)
+  proposing_scout "$home" qd-update-flow-1
+  proposing_scout "$home" qd-approve-flow-1
+  proposing_scout "$home" qd-deterministic-1
+  mkdir -p "$home/data/sample-done"
+  cp "$PROPOSALS/qd-kirocrew-1.md" "$home/data/sample-done/report.md"
+  printf 'kind=ship\n' > "$home/state/sample-ship.meta"
+  printf 'needs-decision [key=port]: which port?\nresolved [key=port]: answered: 9090\n' > "$home/state/sample-ship.status"
+  drain() {
+    PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+      FM_CONFIG_OVERRIDE="$home/config" FM_CAPTAIN_HOLD_NOW="$NOW" "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null
+  }
+  out=$(drain)
+  assert_contains "$out" "PROPOSED CALLS (a report proposes a call that nobody has raised or declined" "the proposals heading"
+  assert_contains "$out" "qd-update-flow-1 [parses]: How should Quarterdeck get a stable signing identity" "a proposal that parses is named by its question"
+  assert_contains "$out" "qd-approve-flow-1 [malformed]: $home/data/qd-approve-flow-1/report.md:" "a malformed proposal is named with its line"
+  assert_contains "$out" "PROPOSED CALLS: read the report, then raise the call" "the hint names both ways to act"
+  assert_not_contains "$out" "sample-done" "a report whose task left this home is not listed"
+  assert_contains "$out" "UNRECORDED DECISIONS (you answered these worker questions yourself" "the unrecorded heading"
+  assert_contains "$out" "sample-ship [key=port]: you answered: 9090" "the answer nothing records is named"
+  assert_contains "$out" "UNRECORDED DECISIONS: record each with bin/fm-captain-hold.sh decide --about <task> --key <key>" \
+    "the hint names how to record it"
+  out=$(drain)
+  assert_contains "$out" "qd-update-flow-1 [parses]" "the section prints again on the next drain"
+  assert_contains "$out" "sample-ship [key=port]" "so does the unrecorded answer"
+
+  run_captain "$home" raise qd-update-flow-1 >/dev/null || fail "raise failed"
+  run_captain "$home" decline qd-approve-flow-1 --what 'Built the full loop' --why 'Already decided' >/dev/null || fail "decline failed"
+  run_captain "$home" hold qd-deterministic-1 --origin qd-deterministic-1 --reason 'raised by hand' \
+    --question 'How far?' --option gate=Gate --option mechanical=Mechanical --recommend mechanical >/dev/null \
+    || fail "a hand-raised call failed"
+  out=$(drain)
+  assert_not_contains "$out" "PROPOSED CALLS" "raised, declined, and hand-raised proposals all leave the section"
+  assert_contains "$out" "UNRECORDED DECISIONS" "recording a proposal does not record an unrelated answer"
+  run_captain "$home" decide --about sample-ship --key port --title 'Which port?' --what 'Serve on 9090' --why 'Free port' \
+    >/dev/null || fail "decide failed"
+  out=$(drain)
+  assert_not_contains "$out" "UNRECORDED DECISIONS" "a recorded answer leaves the section"
+  pass "the wake drain lists unhandled proposals and unrecorded answers on every drain until each is handled"
+}
+
 test_hold_records_the_call_and_refuses_what_nobody_could_answer
 test_a_hold_without_content_is_still_a_call
 test_origin_evidence_is_derived_whatever_the_presentation_order
@@ -931,3 +1212,9 @@ test_only_the_first_mate_acting_clears_a_reply
 test_replies_lists_what_waits_on_the_first_mate
 test_the_wake_drain_prints_unhandled_replies
 test_a_refused_deferral_keeps_the_reply_and_a_valid_one_clears_it
+test_a_proposed_call_is_raised_exactly_as_written
+test_a_proposal_that_does_not_parse_is_refused_at_its_line
+test_completion_refuses_an_unraised_proposal_until_it_is_raised
+test_a_declined_proposal_passes_and_leaves_a_decision
+test_an_answer_the_first_mate_gave_needs_its_record
+test_the_wake_drain_lists_proposals_and_unrecorded_answers_until_handled

@@ -934,6 +934,47 @@ test_promote_relabels_the_backlog_row_so_the_merge_lands() {
   pass "fm-promote: the backlog row follows the promotion, so the merged ship reaches Recently Landed"
 }
 
+# A promoted scout leaves the scout's completion gate behind, so promotion is
+# where its proposed call, an open question, and an unrecorded answer must be
+# settled: it refuses each by name and changes nothing until they are.
+test_promote_passes_the_captain_call_gate() {
+  local home meta out status
+  command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi is required for the promotion gate regression"
+  command -v jq >/dev/null 2>&1 || fail "jq is required for the promotion gate regression"
+  home="$TMP_ROOT/promote-gate/home"
+  mkdir -p "$home/state" "$home/config" "$home/projects"
+  cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
+  write_brief "$home" sign-audit
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  meta="$home/state/sign-audit.meta"
+  printf 'window=fm-sign-audit\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+  printf 'needs-decision [key=cert]: which certificate?\nresolved [key=cert]: answered: the self-signed one\ndone: report written\n' \
+    > "$home/state/sign-audit.status"
+  cp "$ROOT/tests/fixtures/proposed-call/qd-update-flow-1.md" "$home/data/sign-audit/report.md"
+  FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" add sign-audit "Audit app signing" \
+    --kind scout --repo quarterdeck --start >/dev/null || fail "could not create the scout row"
+
+  out=$(env -u FM_TASK_ID FM_HOME="$home" "$PROMOTE" sign-audit --mode direct-PR --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion passed beside an unraised proposal and an unrecorded answer"
+  assert_contains "$out" "unraised proposal: sign-audit's report proposes a call" "promotion did not name the unraised proposal"
+  assert_contains "$out" "unrecorded decision: you answered sign-audit [key=cert] yourself" "promotion did not name the unrecorded answer"
+  assert_contains "$out" "has not passed the captain-call gate" "promotion did not say why it refused"
+  assert_contains "$out" "nothing was changed" "promotion did not say it changed nothing"
+  assert_grep 'kind=scout' "$meta" "a refused promotion still changed the task record"
+  assert_absent "$home/data/sign-audit/ship-instructions.md" "a refused promotion wrote ship instructions"
+
+  FM_HOME="$home" env -u FM_TASK_ID "$ROOT/bin/fm-captain-hold.sh" raise sign-audit >/dev/null \
+    || fail "could not raise the proposal"
+  FM_HOME="$home" env -u FM_TASK_ID "$ROOT/bin/fm-captain-hold.sh" decide --about sign-audit --key cert \
+    --title 'Which certificate?' --what 'Use the self-signed one' --why 'It is the only one that exists today' >/dev/null \
+    || fail "could not record the answer"
+  out=$(env -u FM_TASK_ID FM_HOME="$home" "$PROMOTE" sign-audit --mode direct-PR --yolo off 2>&1)
+  expect_code 0 $? "promotion once the gate passes: $out"
+  assert_grep 'kind=ship' "$meta" "promotion did not change the kind once the gate passed"
+  pass "fm-promote: a scout passes the captain-call gate before it becomes a ship"
+}
+
 test_authorized_intent_keeps_words_without_composed_address
 test_spawn_refreshes_legacy_worker_roles
 test_ship_spawn_requires_a_valid_delivery_contract
@@ -947,4 +988,5 @@ test_promote_relabels_the_backlog_row_so_the_merge_lands
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
 test_spawn_and_promote_require_filled_task_subsections
+test_promote_passes_the_captain_call_gate
 echo "# all fm-task-delivery tests passed"
