@@ -1046,6 +1046,75 @@ test_a_proposal_that_does_not_parse_is_refused_at_its_line() {
   pass "a proposal that breaks the grammar is refused at the line at fault, and nothing is guessed at"
 }
 
+# A heading that varies from `## Proposed call` is still a proposal, never none.
+test_a_variant_heading_is_still_a_proposal() {
+  local home id heading out expected
+  home=$(make_home proposal-heading)
+  id=qd-update-flow-1
+  proposing_scout "$home" "$id"
+  expected=$(run_captain "$home" proposal "$id") || fail "setup: the fixture did not parse"
+  for heading in '### Proposed Call: signing' '## proposed calls' '#### PROPOSED CALL (for the captain)'; do
+    awk -v h="$heading" '/^## Proposed call$/ { print h; next } { print }' "$PROPOSALS/$id.md" > "$home/data/$id/report.md"
+    out=$(run_captain "$home" proposal "$id") || fail "the heading '$heading' was not read as a proposal"
+    assert_equals "$expected" "$out" "the heading '$heading' reads the same call"
+    out=$(run_captain "$home" gate "$id" 2>&1) && fail "the gate passed beside '$heading'"
+    assert_contains "$out" "unraised proposal: $id's report" "the gate names the proposal under '$heading'"
+  done
+  printf '# Notes\n\n## Proposed callback design\n\nNot a call.\n' > "$home/data/$id/report.md"
+  out=$(run_captain "$home" proposal "$id" 2>&1) && fail "a heading about something else read as a proposal"
+  assert_contains "$out" "has no Proposed call section" "a heading about something else is not a proposal"
+  pass "a variant Proposed call heading is read as a proposal, and the gate refuses it until handled"
+}
+
+# A call that only names the scout as its origin may be about anything, so it
+# handles no proposal; only a call that records this proposal does, and a
+# revised proposal is a new one.
+# shellcheck disable=SC2016 # backticks here are the grammar's own, never expansions
+test_only_a_call_that_records_this_proposal_handles_it() {
+  local home id out rc
+  home=$(make_home proposal-identity)
+  id=qd-update-flow-1
+  mkdir -p "$home/data/$id"
+  printf 'kind=scout\n' > "$home/state/$id.meta"
+  printf 'done: report written\n' > "$home/state/$id.status"
+  tasks_in "$home" add "$id" "Scout $id" --kind scout --repo sample --start >/dev/null || fail "could not file the scout row"
+  present "$home" "$id" sample-interim >/dev/null || fail "presenting the interim page failed"
+  run_captain "$home" hold "$id" --reason 'which page layout' --question 'Which layout for the interim page?' \
+    --option table=Table --option cards=Cards >/dev/null || fail "holding the scout's row failed"
+  assert_equals "$id" "$(jq -r .origin "$home/state/calls/$id.json")" "setup: the call about the page names the scout as origin"
+  cp "$PROPOSALS/$id.md" "$home/data/$id/report.md"
+
+  out=$(run_captain "$home" gate "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "the gate beside a proposal only an unrelated call names"
+  assert_contains "$out" "unraised proposal: $id's report proposes a call" "the gate names the unraised proposal"
+  printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$id" >> "$home/state/$id.meta"
+  out=$(run_captain "$home" verify "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "verify beside a proposal only an unrelated call names"
+  assert_contains "$out" "unraised proposal" "verify names the unraised proposal"
+  assert_contains "$(run_captain "$home" proposals)" "$id	parses	" "PROPOSED CALLS still lists it"
+
+  tasks_in "$home" add sample-signing "Sign the app" --kind ship --repo sample >/dev/null || fail "could not file the gated row"
+  run_captain "$home" raise "$id" --onto sample-signing >/dev/null || fail "raise failed"
+  assert_equals "$id" "$(jq -r .proposal.task "$home/state/calls/sample-signing.json")" "the raised call records the proposal"
+  run_captain "$home" gate "$id" >/dev/null || fail "the gate refused a raised proposal"
+  assert_equals "" "$(run_captain "$home" proposals)" "a raised proposal left PROPOSED CALLS"
+
+  sed 's/^- `devid` - /- `devid` - Revised: /' "$PROPOSALS/$id.md" > "$home/data/$id/report.md"
+  assert_contains "$(run_captain "$home" proposals)" "$id	parses	" "a revised proposal surfaces again"
+  out=$(run_captain "$home" gate "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "the gate beside a revised proposal"
+  assert_contains "$out" "a revised proposal is a new one" "the refusal says a revision is a new proposal"
+  run_captain "$home" raise "$id" --onto sample-signing >/dev/null || fail "raising the revision failed"
+  run_captain "$home" gate "$id" >/dev/null || fail "the gate refused the raised revision"
+  printf '\nA closing note after the call.\n' >> "$home/data/$id/report.md"
+  run_captain "$home" gate "$id" >/dev/null || fail "prose outside the proposal read as a revision"
+
+  out=$(run_captain "$home" hold sample-other --title 'Other' --reason 'other' --proposal-of sample-none 2>&1); rc=$?
+  expect_code 1 "$rc" "hold --proposal-of a task with no proposal"
+  assert_contains "$out" "has no Proposed call section" "the refusal names the missing section"
+  pass "only a call that records this proposal handles it, and a revised proposal surfaces again"
+}
+
 test_completion_refuses_an_unraised_proposal_until_it_is_raised() {
   local home id out rc
   home=$(make_home proposal-complete)
@@ -1095,7 +1164,7 @@ test_a_declined_proposal_passes_and_leaves_a_decision() {
 
   id=qd-approve-flow-1
   proposing_scout "$home" "$id"
-  out=$(run_captain "$home" decline "$id" --what 'Built the full loop' --why 'The captain chose full in chat') \
+  out=$(run_captain "$home" decline "$id" --what 'Built the full loop' --why 'Full was already the brief'"'"'s scope') \
     || fail "a malformed proposal could not be declined"
   call=${out#*(}; call=${call%)}
   assert_equals "$id's proposed call|0" "$(call_json "$home" "$call" | jq -r '[.question, (.options | length)] | join("|")')" \
@@ -1179,7 +1248,7 @@ test_the_wake_drain_lists_proposals_and_unrecorded_answers_until_handled() {
 
   run_captain "$home" raise qd-update-flow-1 >/dev/null || fail "raise failed"
   run_captain "$home" decline qd-approve-flow-1 --what 'Built the full loop' --why 'Already decided' >/dev/null || fail "decline failed"
-  run_captain "$home" hold qd-deterministic-1 --origin qd-deterministic-1 --reason 'raised by hand' \
+  run_captain "$home" hold qd-deterministic-1 --proposal-of qd-deterministic-1 --reason 'raised by hand' \
     --question 'How far?' --option gate=Gate --option mechanical=Mechanical --recommend mechanical >/dev/null \
     || fail "a hand-raised call failed"
   out=$(drain)
@@ -1216,6 +1285,8 @@ test_the_wake_drain_prints_unhandled_replies
 test_a_refused_deferral_keeps_the_reply_and_a_valid_one_clears_it
 test_a_proposed_call_is_raised_exactly_as_written
 test_a_proposal_that_does_not_parse_is_refused_at_its_line
+test_a_variant_heading_is_still_a_proposal
+test_only_a_call_that_records_this_proposal_handles_it
 test_completion_refuses_an_unraised_proposal_until_it_is_raised
 test_a_declined_proposal_passes_and_leaves_a_decision
 test_an_answer_the_first_mate_gave_needs_its_record

@@ -524,8 +524,10 @@ status_open_decisions() {  # <status-file>
 # `answered:` note, which only bin/fm-send.sh --resolve-key writes: the first
 # mate sent the worker an answer to an open question. A question the captain
 # answers reaches him as a call, and `fm-captain-hold.sh complete` closes its
-# key with the captain-held verb instead, so the shape read here is the first
-# mate settling the question itself. A key re-opened later is no longer
+# key with the captain-held verb instead, or fm-send.sh --for-call relays his
+# answer with a `relayed <call>:` note, which the call it names records; so the
+# shape read here is the first mate settling the question itself, and a
+# relayed close is never listed. A key re-opened later is no longer
 # settled; a blocker is not a question and is never listed. Same per-line fold
 # as status_open_decisions, so the two can never disagree about a key.
 status_settled_decisions() {  # <status-file>

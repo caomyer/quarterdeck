@@ -598,7 +598,8 @@ EOF
 # Print a bounded section from one read-only fm-captain-hold.sh report of
 # TAB-separated lines, the shape UNHANDLED REPLIES uses: stateless, printed on
 # every drain until the first mate acts, and a failure never changes the drain's
-# exit status.
+# exit status. A report that fails or runs past its bound says so in one line
+# instead of vanishing, since the section's promise is to list until handled.
 print_captain_hold_report_section() {  # <verb> <heading> <hint> <line-format>
   local verb=$1 heading=$2 hint=$3 format=$4 report task second third line shown=0 omitted=0 bound
   local output='' used=0 bytes item_bytes=300 global_bytes=2400
@@ -606,7 +607,11 @@ print_captain_hold_report_section() {  # <verb> <heading> <hint> <line-format>
   bound=${FM_DIVERGENCE_TIMEOUT:-20}
   case "$bound" in ''|*[!0-9]*|0) bound=20 ;; esac
 
-  report=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-captain-hold.sh" "$verb" 2>/dev/null) || return 0
+  if ! report=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-captain-hold.sh" "$verb" 2>/dev/null); then
+    printf '%s: could not be read this drain (bin/fm-captain-hold.sh %s failed or ran past %ss); run it to see what waits on you.\n' \
+      "${heading%% (*}" "$verb" "$bound" || return 1
+    return 0
+  fi
   [ -n "$report" ] || return 0
 
   while IFS=$(printf '\t') read -r task second third; do
@@ -638,14 +643,14 @@ EOF
 }
 
 # Print the PROPOSED CALLS section: every task still in this home whose report
-# ends in a `## Proposed call` that no call names as its origin, raised or
-# declined. Whether the captain is asked stays the first mate's judgement; what
+# ends in a `## Proposed call` that no call records as handled, raised or
+# declined, in its current revision. Whether the captain is asked stays the first mate's judgement; what
 # this ends is a proposal nobody turned into anything. `proposals` owns what
 # counts, and the completion gate refuses the same task until it is handled.
 print_proposed_calls_section() {
   print_captain_hold_report_section proposals \
     'PROPOSED CALLS (a report proposes a call that nobody has raised or declined - your overdue work; nothing reaches the captain until you act):' \
-    'read the report, then raise the call with bin/fm-captain-hold.sh raise <task> [--onto <task-id>] when it is the captain'"'"'s to answer, or record that you settled it with bin/fm-captain-hold.sh decline <task> --what <what you decided> --why <why>; a malformed section is raised by hand with bin/fm-captain-hold.sh hold <task-id> --origin <task>.' \
+    'read the report, then raise the call with bin/fm-captain-hold.sh raise <task> [--onto <task-id>] when it is the captain'"'"'s to answer, or record that you settled it with bin/fm-captain-hold.sh decline <task> --what <what you decided> --why <why>; a malformed section is raised by hand with bin/fm-captain-hold.sh hold <task-id> --proposal-of <task>, and a revised proposal is listed again.' \
     '%s [%s]: %s'
 }
 
@@ -656,7 +661,7 @@ print_proposed_calls_section() {
 print_unrecorded_decisions_section() {
   print_captain_hold_report_section unrecorded \
     'UNRECORDED DECISIONS (you answered these worker questions yourself and nothing records them for the captain - your overdue work):' \
-    'record each with bin/fm-captain-hold.sh decide --about <task> --key <key> --title <the question> --what <what you decided> --why <why>.' \
+    'record each with bin/fm-captain-hold.sh decide --about <task> --key <key> --title <the question> --what <what you decided> --why <why>; relaying the answer of a call the captain answered is bin/fm-send.sh <task> --resolve-key <key> --for-call <call>, which that call records.' \
     '%s [key=%s]: you answered: %s'
 }
 

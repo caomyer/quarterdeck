@@ -4152,6 +4152,82 @@ test_retained_body_keeps_its_utf8_bytes() {
   pass "cleanup preserves every byte of a retained body's non-ASCII characters"
 }
 
+# fm-send.sh against this suite's home, its typed doorbell going to a fake tmux.
+send_in() {  # <home> <fm-send args...>
+  local home=$1
+  shift
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SEND_SETTLE=0 "$ROOT/bin/fm-send.sh" "$@"
+}
+
+# A worker's question the first mate escalated reaches the captain as a call,
+# and once he answers it the first mate relays his words to the worker. That
+# close is his choice, recorded by his call, so neither the gate nor the drain
+# may ask the first mate to record it as a decision of its own; and a relay
+# naming a call he never answered is refused before anything is sent.
+test_a_relayed_captain_answer_needs_no_decision_of_its_own() {
+  local home id call out rc
+  home=$(make_home relayed-answer)
+  for id in sample-relay-ship sample-relay-new; do
+    tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+      || fail "could not create the ship $id"
+    write_origin_meta "$home" "$id" ship
+    printf 'working: building\nneeds-decision [key=scope]: narrow or wide?\n' > "$home/state/$id.status"
+  done
+
+  # On the ship's own row, the work item the question gates.
+  id=sample-relay-ship
+  run_captain "$home" hold "$id" --reason 'narrow or wide' --question 'Narrow or wide?' \
+    --option narrow=Narrow --option wide=Wide --recommend narrow >/dev/null || fail "could not hold the ship's row"
+  rc=0
+  out=$(send_in "$home" "$id" --resolve-key scope --for-call "$id" 'Captain says: narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "--for-call relayed a call the captain has not answered"
+  assert_contains "$out" "carries no recorded answer" "the refusal says the call has no answer"
+  assert_contains "$out" "nothing was sent" "the refusal says nothing was sent"
+  assert_absent "$home/state/$id.inbox/001.msg" "a refused relay reached the worker"
+  assert_grep 'needs-decision [key=scope]' "$home/state/$id.status" "setup: the question is open"
+  [ "$(grep -c 'key=scope' "$home/state/$id.status")" = 1 ] || fail "a refused relay closed the key"
+
+  printf '%s\tnarrow\tNarrow\trelease\n' "$id" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer was not recorded"
+  send_in "$home" "$id" --resolve-key scope --for-call "$id" 'Captain says: narrow' >/dev/null 2>&1 \
+    || fail "relaying the captain's answer was refused"
+  assert_grep "Captain says: narrow" "$home/state/$id.inbox/001.msg" "the relay never reached the worker"
+  assert_grep "resolved [key=scope]: relayed $id: Captain says: narrow" "$home/state/$id.status" \
+    "the close does not name the call it relays"
+
+  # On a new row the call was raised on.
+  id=sample-relay-new
+  call=sample-relay-scope
+  run_captain "$home" hold "$call" --title 'Narrow or wide?' --reason 'narrow or wide' --about "$id" \
+    --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null || fail "could not hold a new row"
+  printf '%s\twide\tWide\n' "$call" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer on the new row was not recorded"
+  send_in "$home" "$id" --resolve-key scope --for-call "$call" 'Captain says: wide' >/dev/null 2>&1 \
+    || fail "relaying the captain's answer on a new row was refused"
+
+  assert_equals "" "$(run_captain "$home" unrecorded)" "a relayed captain answer read as one the first mate gave itself"
+  for id in sample-relay-ship sample-relay-new; do
+    out=$(run_captain "$home" gate "$id") || fail "the gate asked to record a relayed captain answer on $id"
+    assert_equals "gate: $id clear" "$out" "the gate reads clear for $id"
+  done
+  assert_equals "" "$(jq -r 'select(.decided != null) | .task' "$home"/state/calls/*.json)" \
+    "a relay recorded a decision on the captain's behalf"
+
+  # A call the first mate decided itself is not the captain's answer to relay.
+  printf 'needs-decision [key=port]: which port?\n' >> "$home/state/sample-relay-new.status"
+  out=$(run_captain "$home" decide --about sample-relay-new --title 'Which port?' --what 9090 --why 'Free port') \
+    || fail "decide failed"
+  call=${out#decided: }
+  rc=0
+  out=$(send_in "$home" sample-relay-new --resolve-key port --for-call "$call" '9090' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "--for-call relayed a decision the first mate made as the captain's"
+  assert_contains "$out" "recorded by firstmate, not the captain" "the refusal says whose answer it is"
+  assert_no_grep 'key=port]: relayed' "$home/state/sample-relay-new.status" "a refused relay closed the key"
+  pass "a relayed captain answer is recorded by its call, and a relay of no captain's answer is refused"
+}
+
 # A ship task, and a promoted scout that becomes one, used to pass no captain
 # call gate at all: cleanup deleted the status log, and with it any question
 # still open, any answer nobody recorded, and a report's proposed call. Cleanup
@@ -4199,7 +4275,7 @@ EOF
     "the refusal names the unrecorded answer"
 
   run_captain "$home" decide --about "$id" --key scope --title 'Narrow or wide?' --what 'Kept it narrow' \
-    --why 'The captain asked for the smallest change' >/dev/null || fail "could not record the answer"
+    --why 'A narrow change is the one this ship can land and review today' >/dev/null || fail "could not record the answer"
   run_captain "$home" decline "$id" --what 'Kept today ad-hoc signing' --why 'Out of scope for this ship' >/dev/null \
     || fail "could not decline the proposal"
   run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err" \
@@ -4209,6 +4285,7 @@ EOF
 }
 
 test_ship_teardown_passes_the_captain_call_gate
+test_a_relayed_captain_answer_needs_no_decision_of_its_own
 test_uninventoried_report_decision_refuses_completion
 test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
 test_retained_body_keeps_its_utf8_bytes

@@ -953,6 +953,11 @@ test_promote_passes_the_captain_call_gate() {
   cp "$ROOT/tests/fixtures/proposed-call/qd-update-flow-1.md" "$home/data/sign-audit/report.md"
   FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" add sign-audit "Audit app signing" \
     --kind scout --repo quarterdeck --start >/dev/null || fail "could not create the scout row"
+  # A call about something else on the scout's own row names it as origin,
+  # and still handles nothing its report proposes.
+  FM_HOME="$home" env -u FM_TASK_ID "$ROOT/bin/fm-captain-hold.sh" hold sign-audit --reason 'audit depth' \
+    --question 'How deep should the audit go?' --option shallow=Shallow --option deep=Deep >/dev/null \
+    || fail "could not hold the scout's row"
 
   out=$(env -u FM_TASK_ID FM_HOME="$home" "$PROMOTE" sign-audit --mode direct-PR --yolo off 2>&1)
   status=$?
@@ -964,7 +969,9 @@ test_promote_passes_the_captain_call_gate() {
   assert_grep 'kind=scout' "$meta" "a refused promotion still changed the task record"
   assert_absent "$home/data/sign-audit/ship-instructions.md" "a refused promotion wrote ship instructions"
 
-  FM_HOME="$home" env -u FM_TASK_ID "$ROOT/bin/fm-captain-hold.sh" raise sign-audit >/dev/null \
+  FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" add sign-identity "Get a signing identity" \
+    --kind ship --repo quarterdeck >/dev/null || fail "could not file the gated row"
+  FM_HOME="$home" env -u FM_TASK_ID "$ROOT/bin/fm-captain-hold.sh" raise sign-audit --onto sign-identity >/dev/null \
     || fail "could not raise the proposal"
   FM_HOME="$home" env -u FM_TASK_ID "$ROOT/bin/fm-captain-hold.sh" decide --about sign-audit --key cert \
     --title 'Which certificate?' --what 'Use the self-signed one' --why 'It is the only one that exists today' >/dev/null \
