@@ -515,6 +515,26 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tests/fixtures/proposed-call/nm-rebase-guard-1.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/proposed-call/qd-approve-flow-1.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/proposed-call/qd-deterministic-1.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/proposed-call/qd-kirocrew-1.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/proposed-call/qd-update-flow-1.md",
+      "audience": "maintainer-verification"
     }
   ]
 }
