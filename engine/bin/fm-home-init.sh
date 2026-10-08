@@ -102,11 +102,15 @@ is_firstmate_code() {
 
 # physical <path>: the absolute <path> with its existing part resolved and the
 # part that does not exist yet appended as given. Creates nothing; fails when a
-# component exists and is not a directory.
+# component exists and is not a directory. A component is tested for existence
+# before it is tested as a directory: a concurrent run may create the home
+# between two tests, and in that order its mkdir can only make an absent path a
+# directory, never make a directory read as something else.
 physical() {
   local path=${1%/} rest='' dir
-  while [ -n "$path" ] && [ ! -d "$path" ]; do
+  while [ -n "$path" ]; do
     if [ -e "$path" ] || [ -L "$path" ]; then
+      [ -d "$path" ] && break
       return 1
     fi
     rest="/${path##*/}$rest"
