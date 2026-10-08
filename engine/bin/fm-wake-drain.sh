@@ -595,6 +595,76 @@ EOF
   printf 'UNHANDLED REPLIES: read each reply with bin/fm-captain-hold.sh list --json; record it with bin/fm-captain-hold.sh answer <task> --decision-file <path> (with --key when the words name an option) only if the words decide the call, otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with bin/fm-captain-hold.sh hold <task> --until <date> when the words put it off to a date; never infer an answer from the reply alone.\n' || return 1
 }
 
+# Print a bounded section from one read-only fm-captain-hold.sh report of
+# TAB-separated lines, the shape UNHANDLED REPLIES uses: stateless, printed on
+# every drain until the first mate acts, and a failure never changes the drain's
+# exit status. A report that fails or runs past its bound says so in one line
+# instead of vanishing, since the section's promise is to list until handled.
+print_captain_hold_report_section() {  # <verb> <heading> <hint> <line-format>
+  local verb=$1 heading=$2 hint=$3 format=$4 report task second third line shown=0 omitted=0 bound
+  local output='' used=0 bytes item_bytes=300 global_bytes=2400
+
+  bound=${FM_DIVERGENCE_TIMEOUT:-20}
+  case "$bound" in ''|*[!0-9]*|0) bound=20 ;; esac
+
+  if ! report=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-captain-hold.sh" "$verb" 2>/dev/null); then
+    printf '%s: could not be read this drain (bin/fm-captain-hold.sh %s failed or ran past %ss); run it to see what waits on you.\n' \
+      "${heading%% (*}" "$verb" "$bound" || return 1
+    return 0
+  fi
+  [ -n "$report" ] || return 0
+
+  while IFS=$(printf '\t') read -r task second third; do
+    [ -n "$task" ] || continue
+    # shellcheck disable=SC2059 # the caller's fixed format names the fields
+    printf -v line "$format" "$task" "$second" "$third"
+    fm_cap_line_var "$line" $((item_bytes - 1))
+    line=$FM_LINE_CAP_LINE
+    bytes=$(( ${#line} + 1 ))
+    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+      omitted=$((omitted + 1))
+      continue
+    fi
+    output="$output$line
+"
+    used=$((used + bytes))
+    shown=$((shown + 1))
+  done <<EOF
+$report
+EOF
+
+  [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0
+  printf '%s\n' "$heading" || return 1
+  printf '%s' "$output" || return 1
+  if [ "$omitted" -gt 0 ]; then
+    printf '%s: %d more omitted (byte cap)\n' "${heading%% (*}" "$omitted" || return 1
+  fi
+  printf '%s: %s\n' "${heading%% (*}" "$hint" || return 1
+}
+
+# Print the PROPOSED CALLS section: every task still in this home whose report
+# ends in a `## Proposed call` that no call records as handled, raised or
+# declined, in its current revision. Whether the captain is asked stays the first mate's judgement; what
+# this ends is a proposal nobody turned into anything. `proposals` owns what
+# counts, and the completion gate refuses the same task until it is handled.
+print_proposed_calls_section() {
+  print_captain_hold_report_section proposals \
+    'PROPOSED CALLS (a report proposes a call that nobody has raised or declined - your overdue work; nothing reaches the captain until you act):' \
+    'read the report, then raise the call with bin/fm-captain-hold.sh raise <task> [--onto <task-id>] when it is the captain'"'"'s to answer, or record that you settled it with bin/fm-captain-hold.sh decline <task> --what <what you decided> --why <why>; a malformed section is raised by hand with bin/fm-captain-hold.sh hold <task-id> --proposal-of <task>, a revised proposal is listed again, and a [stamp] line names a call already made from that task: stamp it with the command it gives only when it raised or settled this proposal.' \
+    '%s [%s]: %s'
+}
+
+# Print the UNRECORDED DECISIONS section: every worker question the first mate
+# answered itself (bin/fm-send.sh --resolve-key) that no decided call records,
+# so the captain's record of what was decided on his behalf stays complete.
+# `unrecorded` owns what counts, and the completion gate refuses the same task.
+print_unrecorded_decisions_section() {
+  print_captain_hold_report_section unrecorded \
+    'UNRECORDED DECISIONS (you answered these worker questions yourself and nothing records them for the captain - your overdue work):' \
+    'record each with bin/fm-captain-hold.sh decide --about <task> --key <key> --title <the question> --what <what you decided> --why <why>; relaying the answer of a call the captain answered is bin/fm-send.sh <task> --resolve-key <key> --for-call <call>, which that call records.' \
+    '%s [key=%s]: you answered: %s'
+}
+
 print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged prepared
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
@@ -654,6 +724,8 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
   fm_lock_release "$lock"
   print_unhandled_replies_section || true
+  print_proposed_calls_section || true
+  print_unrecorded_decisions_section || true
   return "$rc"
 }
 

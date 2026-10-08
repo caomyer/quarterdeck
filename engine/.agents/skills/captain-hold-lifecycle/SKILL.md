@@ -2,7 +2,7 @@
 name: captain-hold-lifecycle
 description: >-
   Agent-only policy for completing investigations and visual reviews without losing unresolved captain calls, and for closing what the captain owns with his actual words.
-  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, when a message says the captain replied to a call, and on any RECORD DIVERGENCE or UNHANDLED REPLIES line the wake drain prints.
+  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, when a message says the captain replied to a call, and on any RECORD DIVERGENCE, UNHANDLED REPLIES, PROPOSED CALLS, or UNRECORDED DECISIONS line the wake drain prints.
 user-invocable: false
 metadata:
   internal: true
@@ -21,8 +21,13 @@ Prefer holding the work item the question gates over minting a new row; create a
 Raise the call with its content: `hold` takes the question (`--question`), 2 to 8 keyed options (`--option <key>=<label>`), the recommendation (`--recommend`), and, when the call came out of another task's work, `--origin <task>`, which makes that task's report and every page it presented argue the call with nothing more to attach; holding the task whose work raised it needs no flag, because `hold` makes a held task that already has a report or a presented page its own origin.
 Keep the hold reason a short summary, and keep one held task per genuine gate: a multi-question review is one held task pointing at its report, not a row per question. Represent that task with exactly one board card that consolidates its questions and options; never fan one task id into duplicate same-key cards.
 Register or re-hold through `bin/fm-captain-hold.sh hold`, which is idempotent per task id; change an open call's content with `offer` and attach anything else that argues it with `evidence <task> add <ref>`.
-Every call has one owner: the first mate or a scout raises calls through `hold`, never any other way, and `bin/fm-captain-hold.sh` is the only writer of anything about a call.
-A crewmate's report proposes a call in its `## Proposed call` section; turn it into a call with one `hold --origin <that task>` carrying exactly those options and that recommendation.
+Every call has one owner: the first mate or a scout raises calls through `hold` (which `raise` runs), never any other way, and `bin/fm-captain-hold.sh` is the only writer of anything about a call.
+A crewmate's report proposes a call in its `## Proposed call` section, and whether it is the captain's to answer is your judgement under `ask-user-authority`: when it is, raise it with `bin/fm-captain-hold.sh raise <that task>`, adding `--onto <task>` when the question gates another work item, which copies the section into the call exactly; when it is not, record that you settled it with `bin/fm-captain-hold.sh decline <that task> --what ... --why ...`.
+A section `raise` refuses is raised by hand with one `hold --proposal-of <that task>` carrying the content in a shape a call can hold.
+Every finished task passes the captain-call gate, which refuses a proposal neither raised nor declined, and the wake drain lists one as `PROPOSED CALLS` until you act; a call that only names the task as its origin does not count, and a revised proposal is a new one to raise or decline again.
+When the gate or `proposals` names a call that already raised or settled the proposal, such as one raised by hand before calls recorded proposals, record that with the `bin/fm-captain-hold.sh stamp <call> --proposal-of <task>` it prints, which asks the captain nothing again.
+A worker's question you answer yourself with `bin/fm-send.sh --resolve-key` is a call you made: record it with `decide --about <task> --key <key>`, which the same gate and the drain's `UNRECORDED DECISIONS` section ask for until you do.
+When you relay the captain's answer to a call to the worker whose question it settles, send it with `bin/fm-send.sh <task> --resolve-key <key> --for-call <call>`, which refuses unless the captain answered that call and records the close as his, so you never record his choice as yours.
 After inventorying the whole report and review surface, run `bin/fm-captain-hold.sh complete` with every captain-held task id, or with `--none` only when the reviewed surface leaves nothing waiting on the captain.
 A completed investigation and an ended visual review use this same owner and completion command; a visual tool, including Lavish, never owns a parallel completion policy.
 Run the command in the originating work's authoritative `FM_HOME`; secondmate-owned work registers in that secondmate home's backlog, and a question already held anywhere is never re-registered as a second row.

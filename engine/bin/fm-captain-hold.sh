@@ -4,9 +4,11 @@
 # The semantic policy is owned once by
 # .agents/skills/captain-hold-lifecycle/SKILL.md. This script never reads
 # report, visual-review, chat, or terminal prose to guess whether the captain
-# owes an answer. The invoking agent decides what is genuinely waiting on the
-# captain; this script supplies guarded creation, a durable record of what the
-# captain actually said, the investigation completion gate, and the one
+# owes an answer; its one exception, a report's `## Proposed call` section, is
+# a call its author already wrote in a fixed shape (see "THE ONE PLACE THIS
+# SCRIPT READS A REPORT" below). The invoking agent decides what is genuinely
+# waiting on the captain; this script supplies guarded creation, a durable
+# record of what the captain actually said, the completion gates, and the one
 # keyed-answer intake every channel feeds.
 #
 # There is no separate decision type. A captain call is an ordinary backlog
@@ -23,14 +25,24 @@
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD] \
 #     [--question <text>] [--option <key>=<label>]... [--recommend <key>] \
-#     [--on-answer done|release] [--evidence <ref>]... [--about <task-id>]
+#     [--on-answer done|release] [--evidence <ref>]... [--about <task-id>] [--proposal-of <task-id>]
 #   fm-captain-hold.sh offer <task-id> [--question <text>] [--option <key>=<label>]... \
 #     [--recommend <key>] [--on-answer done|release]
 #   fm-captain-hold.sh evidence <task-id> (add | remove) <ref>
 #   fm-captain-hold.sh reply <task-id> --words-file <path> --via quarterdeck|review|chat [--message <id>]
 #   fm-captain-hold.sh replies [--older-than <minutes>]
 #   fm-captain-hold.sh decide --about <task-id> --title <title> --what <one line> --why <one line> \
-#     [--kind review-finding|merge|new-task|scope|other] [--link <url>] [--option <key>=<label>]...
+#     [--kind review-finding|merge|new-task|scope|other] [--link <url>] [--option <key>=<label>]... \
+#     [--origin <task-id>] [--key <status-key>] [--proposal-of <task-id>]
+#   fm-captain-hold.sh proposal <task-id>
+#   fm-captain-hold.sh raise <task-id> [--onto <task-id>] [--title <title>] [--reason <reason>] \
+#     [--on-answer done|release]
+#   fm-captain-hold.sh decline <task-id> --what <one line> --why <one line>
+#   fm-captain-hold.sh proposals
+#   fm-captain-hold.sh unrecorded
+#   fm-captain-hold.sh answered <task-id>
+#   fm-captain-hold.sh stamp <call-task-id> --proposal-of <task-id>
+#   fm-captain-hold.sh gate <task-id>
 #   fm-captain-hold.sh list [--json] [--since <days>]
 #   fm-captain-hold.sh migrate
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--key <option-key>] [--via <channel>]
@@ -133,7 +145,14 @@
 # `decided-<digest>` (the digest of every argument, so an exact retry names the
 # same row and is an idempotent no-op), records the content with `decided`
 # set, and answers it with `Answered by: firstmate` through the same `answer`
-# path. `--about` must be a task this home knows.
+# path. `--about` must be a task this home knows. `--origin` names the task
+# whose work the decision came out of, so its report and pages argue it as they
+# would a raised call; `--key` names the status decision key on --about that the
+# decision settles, recorded as `decided.key`; `--proposal-of` names the task
+# whose report proposed the call this decision settles (see `decline`). Each
+# joins the digest only when given, so a decision recorded before they existed
+# keeps its identity, and `--proposal-of` joins it with the proposal's digest,
+# so declining a revised proposal records a new decision.
 # `list` joins every call row with its record. A call is a backlog row held for
 # the captain now or ever (its hold kind survives a close) or one carrying a
 # resolution block; a record whose row is not a call is ignored, and a row with
@@ -261,6 +280,84 @@
 # stores. `binding` prints the stored value verbatim and `answers` accepts it,
 # so the process-event runner's feed seam is unchanged.
 #
+# THE ONE PLACE THIS SCRIPT READS A REPORT.
+# A report proposes a call in a `## Proposed call` section, which bin/fm-brief.sh
+# asks a scout to write in exactly this grammar. Reading it is the one exception
+# to never reading report prose, because the section is not prose to interpret:
+# its author already wrote the call in a fixed shape, so turning it into a call
+# is copying, which a script does exactly and a memory does not (proposals
+# nobody raised are how captain calls went missing). Nothing here judges
+# whether a proposal is the captain's to answer, and nothing raises one on its
+# own: `raise` and `decline` are each one deliberate first-mate act.
+# The heading is found loosely, so a variant is never mistaken for no proposal:
+# any `##` to `######` heading reading `Proposed call` (or `calls`) in any case,
+# with anything after it, such as `### Proposed Call: onboarding`.
+# The section runs from that heading to the next `#` or `##` heading, outside
+# fenced code, and a report carries at most one. Inside it, blank lines aside:
+#   one question line, optionally led by `Question:`;
+#   2 to 8 option lines `- `<key>` - <label and cost>` (or `- `<key>`: ...`),
+#     each one line whose text becomes the option's label;
+#   one `Recommendation: `<key>`` line naming one of the keys, after which
+#     anything (the why) is free.
+# Any other line before the recommendation is refused, and so is anything
+# `hold` would refuse: a bad or repeated key, an option over 200 characters, a
+# question over 400. The refusal names the report line at fault and quotes it;
+# nothing is ever guessed at or partly taken.
+# `proposal` prints the parsed call (`question:`, one `option: <key>\t<label>`
+# per option, `recommend:`) or that refusal. `raise` runs `hold` with exactly
+# that content and `--origin <task-id>`, on the task's own row or, with --onto,
+# on the work item the question gates; --title names a row --onto creates,
+# --reason defaults to `proposed by <task-id>`, and --on-answer passes through.
+# `decline` records that the first mate settled the proposal itself rather than
+# ask the captain: a `decide --about <task-id> --origin <task-id> --kind scope`
+# titled with the proposal's question (or `<task-id>'s proposed call` when the
+# section does not parse) and carrying its options, so the captain can see it
+# was settled rather than lost. A proposal's DIGEST is the sha256 of its raw
+# section text, from its heading to the section's end, whether or not it parses.
+# A proposal is HANDLED once a call's `proposals` list carries `{task, digest}`
+# naming its task and its current digest. `raise`, `decline`, and a call held by
+# hand with `hold --proposal-of <task-id>` add one to the call they make, never
+# replacing another, so several proposals folded onto one row stay handled.
+# Naming the task as origin alone does not handle it, since a call about
+# something else can. A revised report changes the digest, so a changed
+# proposal is a new proposal and surfaces again until it is raised or declined
+# in turn. `stamp <call> --proposal-of <task-id>` adds the current digest to an
+# EXISTING call and changes nothing else about it (no hold, no timestamp, no
+# reply, no answer), for a proposal that call already raised or settled, such as
+# one raised by hand before calls recorded proposals; it needs no parse, and
+# re-running it prints `unchanged:` and writes nothing.
+# `proposals` is the read-only report bin/fm-wake-drain.sh
+# prints as PROPOSED CALLS: one `<task-id>\t<parses|malformed>\t<question or the
+# refusal>` line per task still in this home (it has a state/<id>.meta) whose
+# report proposes a call that is not handled, silent when there are none,
+# followed by one `<task-id>\tstamp\t<the call and its exact stamp command>`
+# line per call already naming that task as origin. The gate names the same
+# calls with the same command.
+#
+# A QUESTION THE FIRST MATE ANSWERED ITSELF IS A CALL IT MADE.
+# bin/fm-send.sh --resolve-key closes a worker's open keyed needs-decision with
+# an `answered:` note, which bin/fm-classify-lib.sh status_settled_decisions
+# reads; a question for the captain reaches him as a call instead, and
+# `complete` closes its key as captain-held, or, once he has answered that
+# call, `fm-send.sh --resolve-key <key> --for-call <call>` relays his answer
+# with a `relayed <call>:` note, which that call records and the fold never
+# reads as the first mate's own answer. `answered` prints who recorded a call's
+# newest answer (captain or firstmate), the check --for-call makes before it
+# sends. Such an answered key is RECORDED
+# once a decided call names it (`decide --about <task-id> --key <key>`), or once
+# the key is a call itself (`<key>` or `<task-id>-decision-<key>`, the
+# identities fm-send answers through). `unrecorded` is the read-only report the
+# wake drain prints as UNRECORDED DECISIONS: one `<task-id>\t<key>\t<answer
+# excerpt>` line per unrecorded key on a task still in this home.
+#
+# `gate` is the read-only captain-call gate every finished task passes, whatever
+# its kind: no keyed status decision still open, no proposal unhandled, and no
+# answered question unrecorded. It prints `gate: <task-id> clear`, or refuses
+# with one line per thing missing that names what would satisfy it.
+# bin/fm-teardown.sh runs it for every task but a scout (which runs `verify`)
+# and a secondmate, and bin/fm-promote.sh before a scout becomes a ship, so no
+# cleanup deletes an open key, a proposal, or an unrecorded answer unseen.
+#
 # `complete` is the shared investigation and visual-review completion gate.
 # It attests, in the origin task's metadata, the reviewed inventory of
 # captain-held tasks that carry the origin's unresolved captain calls.
@@ -276,6 +373,8 @@
 # `verify` is read-only and is called by scout teardown, so teardown cannot
 # erase a source before this gate has succeeded: every recorded inventory
 # entry must still be durable and no keyed status decision may be open.
+# Both also refuse what `gate` refuses: an unhandled proposal and an
+# unrecorded answer.
 # Metadata compatibility: the attestation keeps the historical
 # `decisions_reviewed=1` and `decision_keys=` keys, and an inventory entry that
 # names no existing task resolves through the legacy `<origin>-decision-<entry>`
@@ -383,8 +482,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-backlog-parse-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-parse-lib.sh"
-# `list` and `replies` only read, and the fleet snapshot runs `list` on homes that have no state yet.
-case "${1:-}" in list|replies) FM_WAKE_READ_ONLY=1 ;; esac
+# These only read, and the fleet snapshot runs `list` on homes that have no state yet.
+case "${1:-}" in list|replies|proposal|proposals|unrecorded|answered|gate) FM_WAKE_READ_ONLY=1 ;; esac
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -1203,6 +1302,16 @@ newest_answered_at() {  # <decoded-task-body>
   '
 }
 
+# Who recorded the newest resolution block's answer in a decoded body, or nothing.
+newest_answered_by() {  # <decoded-task-body>
+  printf '%s\n' "$1" | awk '
+    /^Resolution recorded by fm-(captain|decision)-hold\.$/ { if (seen) exit; seen = 1; next }
+    !seen { next }
+    /^Answered by: / { sub(/^Answered by: /, ""); print; exit }
+    !/^(Decision digest|Resolution mode|Answer key|Answer label): / { exit }
+  '
+}
+
 # --- the content flags hold, offer, and decide share -----------------------
 
 CALL_CONTENT_GIVEN=0
@@ -1216,6 +1325,7 @@ CALL_ON_ANSWER=''
 CALL_EVIDENCE=()
 CALL_ABOUT=''
 CALL_ABOUT_SET=0
+CALL_PROPOSAL_JSON=null
 
 # Record one content flag; returns 1 for a flag that is not a content flag.
 call_content_flag() {  # <flag> <value>
@@ -1302,6 +1412,7 @@ call_record_compose() {  # <task-id> <now> <raised-at> <default-on-answer> <orig
     --arg on_answer "$CALL_ON_ANSWER" --arg default_on_answer "$default_on_answer" \
     --argjson evidence "$evidence" \
     --arg about "$CALL_ABOUT" --argjson about_set "$CALL_ABOUT_SET" \
+    --argjson proposal "$CALL_PROPOSAL_JSON" \
     --arg origin "$origin" '
     ($cur // {schema:$schema, task:$id, question:"", options:[], on_answer:null,
               origin:null, about:null, evidence:[], raised_by:$raised_by,
@@ -1320,6 +1431,11 @@ call_record_compose() {  # <task-id> <now> <raised-at> <default-on-answer> <orig
         if any(.[]; . == $e) then . else . + [$e] end)
     | if $about_set == 1 then .about = $about else . end
     | if $origin != "" then .origin = $origin else . end
+    | if $proposal != null then
+        .proposals = (((.proposals // (if .proposal then [.proposal] else [] end)) + [$proposal])
+          | reduce .[] as $p ([]; if any(.[]; . == $p) then . else . + [$p] end))
+        | del(.proposal)
+      else . end
     | if $raised_at != "" then .raised_at = $raised_at else . end
     | if $question_set == 1 or $options != null or $recommend_set == 1 or $on_answer != ""
       then .updated_at = $now else . end' 2>&1) \
@@ -1376,7 +1492,7 @@ answer_machine_lines() {  # <task-id> <key> <label> <by> <via>
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence captain_today
   local existing_hold_kind='' existing_held='' preserve_hold_set=0 created=0 existing_kind='' default_on_answer
-  local stamp raised_at record
+  local stamp raised_at record proposal_of=''
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -1385,6 +1501,7 @@ command_hold() {
       --reason) shift; reason=${1:-} ;;
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
+      --proposal-of) shift; proposal_of=${1:-} ;;
       --until) shift; until=${1:-} ;;
       --question|--option|--recommend|--on-answer|--evidence|--about)
         [ "$#" -ge 2 ] || { usage >&2; exit 2; }
@@ -1400,6 +1517,17 @@ command_hold() {
   case "$reason" in *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;; esac
   if [ -n "$origin" ]; then
     validate_slug origin-id "$origin"
+  fi
+  if [ -n "$proposal_of" ]; then
+    validate_slug proposal-of "$proposal_of"
+    [ -z "$origin" ] || [ "$origin" = "$proposal_of" ] \
+      || fail "--proposal-of $proposal_of and --origin $origin name different tasks; the proposing task is the call's origin"
+    origin=$proposal_of
+    require_jq
+    proposal_identify "$proposal_of"
+    [ "$PROPOSAL_RC" != 1 ] || fail "$PROPOSAL_PATH has no Proposed call section"
+    CALL_PROPOSAL_JSON=$(jq -nc --arg task "$proposal_of" --arg digest "$PROPOSAL_DIGEST" '{task:$task, digest:$digest}') \
+      || fail "cannot record the proposal of $proposal_of"
   fi
   call_content_validate
   if [ -n "$until" ]; then
@@ -1947,7 +2075,7 @@ decided_decision_text() {  # <task-id> <what> <why>
 
 command_decide() {
   local about='' title='' what='' why='' kind=other link='' what_set=0 why_set=0 pair id digest err
-  local repo='' show state tmp record decided
+  local repo='' show state tmp record decided origin='' key='' proposal_of='' proposal=''
   local -a hold_args=()
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { usage >&2; exit 2; }
@@ -1958,6 +2086,9 @@ command_decide() {
       --why) why=$2; why_set=1 ;;
       --kind) kind=$2 ;;
       --link) link=$2 ;;
+      --origin) origin=$2 ;;
+      --key) key=$2 ;;
+      --proposal-of) proposal_of=$2 ;;
       --option) call_content_flag --option "$2" ;;
       *) usage >&2; exit 2 ;;
     esac
@@ -1975,6 +2106,19 @@ command_decide() {
     review-finding|merge|new-task|scope|other) : ;;
     *) fail "--kind must be one of review-finding, merge, new-task, scope, other (got '$kind')" ;;
   esac
+  [ -z "$origin" ] || validate_slug origin-id "$origin"
+  if [ -n "$proposal_of" ]; then
+    validate_slug proposal-of "$proposal_of"
+    require_jq
+    proposal_identify "$proposal_of"
+    [ "$PROPOSAL_RC" != 1 ] || fail "$PROPOSAL_PATH has no Proposed call section"
+    proposal="$proposal_of:$PROPOSAL_DIGEST"
+  fi
+  if [ -n "$key" ]; then
+    case "$key" in
+      *[!A-Za-z0-9._-]*) fail "--key must be a status decision key (A-Z a-z 0-9 . _ -), got '$key'" ;;
+    esac
+  fi
   if [ -n "$link" ]; then
     case "$link" in
       http://?*|https://?*) : ;;
@@ -1996,11 +2140,15 @@ command_decide() {
   fi
   # The identity is the digest of every argument, so an exact retry names the
   # same row and a different decision can never land on an existing one.
+  # --origin, --key and --proposal-of join it only when given, so a decision
+  # recorded before they existed keeps its identity on an exact retry.
   digest=$(sha256_text "$(printf '%s\n' "$about" "$title" "$what" "$why" "$kind" "$link" \
-    "${CALL_OPTION_PAIRS[@]+"${CALL_OPTION_PAIRS[@]}"}")")
+    "${CALL_OPTION_PAIRS[@]+"${CALL_OPTION_PAIRS[@]}"}" \
+    ${origin:+"origin=$origin"} ${key:+"key=$key"} ${proposal:+"proposal=$proposal"})")
   id="decided-${digest:0:12}"
-  decided=$(jq -nc --arg what "$what" --arg why "$why" --arg kind "$kind" --arg link "$link" \
-    '{what:$what, why:$why, kind:$kind, link:(if $link == "" then null else $link end)}')
+  decided=$(jq -nc --arg what "$what" --arg why "$why" --arg kind "$kind" --arg link "$link" --arg key "$key" \
+    '{what:$what, why:$why, kind:$kind, link:(if $link == "" then null else $link end)}
+     + (if $key == "" then {} else {key:$key} end)')
   if task_show "$id"; then
     show=$TASK_SHOW_OUTPUT
     state=$(show_field "$show" state)
@@ -2019,6 +2167,8 @@ command_decide() {
   [ -n "$repo" ] || repo=firstmate
   hold_args=(--title "$title" --reason "decided by firstmate on the captain's behalf" --repo "$repo"
     --question "$title" --on-answer "done" --about "$about")
+  [ -z "$origin" ] || hold_args+=(--origin "$origin")
+  [ -z "$proposal_of" ] || hold_args+=(--proposal-of "$proposal_of")
   for pair in "${CALL_OPTION_PAIRS[@]+"${CALL_OPTION_PAIRS[@]}"}"; do
     hold_args+=(--option "$pair")
   done
@@ -2981,7 +3131,7 @@ reconcile_note() {
 }
 
 command_complete() {
-  local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open has_meta=0 transfer_rc resolved
+  local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open has_meta=0 transfer_rc resolved problems
   local resolved_how attested_by_prefix=''
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
@@ -3029,6 +3179,8 @@ EOF
   if [ -n "$open" ] && [ -z "$keys" ]; then
     fail "origin $origin still has open captain decisions in its status stream; hold a captain task for what remains, or answer them, before attesting --none"
   fi
+  problems=$(gate_problems "$origin" 0) || exit 1
+  [ -z "$problems" ] || fail_gate "origin $origin's captain-call inventory cannot be attested yet:" "$problems"
 
   if [ "$has_meta" = 1 ]; then
     if [ "$(meta_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
@@ -3060,7 +3212,7 @@ EOF
 }
 
 command_verify() {
-  local origin=${1:-} meta reviewed keys entry key open resolved
+  local origin=${1:-} meta reviewed keys entry key open resolved problems
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
   meta="$STATE/$origin.meta"
@@ -3084,7 +3236,502 @@ EOF
   done <<EOF
 $open
 EOF
+  problems=$(gate_problems "$origin" 0) || exit 1
+  [ -z "$problems" ] || fail_gate "origin $origin has not passed the captain-call gate:" "$problems"
   printf 'verified: %s captain-call inventory\n' "$origin"
+}
+
+# --- proposed calls and the captain-call gate --------------------------------
+#
+# The header's "THE ONE PLACE THIS SCRIPT READS A REPORT" owns the grammar and
+# what each verb does; proposal_read is its only reader.
+
+PROPOSAL_PATH=''
+PROPOSAL_LINE=0
+PROPOSAL_ERROR=''
+PROPOSAL_QUESTION=''
+PROPOSAL_RECOMMEND=''
+PROPOSAL_OPTIONS=()
+
+# Characters as jq counts them, which is how `hold` measures the same text.
+text_length() {  # <text>
+  jq -nr --arg s "$1" '$s | length'
+}
+
+trim_space() {  # <text>
+  local text=$1
+  text=${text#"${text%%[![:space:]]*}"}
+  text=${text%"${text##*[![:space:]]}"}
+  printf '%s' "$text"
+}
+
+# Name the report line at fault, quoting the start of it.
+proposal_refuse() {  # <line-number> <reason> [<line-text>]
+  local quoted=${3-}
+  PROPOSAL_ERROR="$PROPOSAL_PATH:$1: $2"
+  if [ -n "$quoted" ]; then
+    [ "${#quoted}" -le 80 ] || quoted="${quoted:0:77}..."
+    PROPOSAL_ERROR="$PROPOSAL_ERROR (the line reads: $quoted)"
+  fi
+}
+
+# Read <task-id>'s report for a proposed call. Returns 1 when there is no report
+# or it has no section, 0 when the section parses into PROPOSAL_QUESTION,
+# PROPOSAL_OPTIONS (<key>=<label> pairs, the shape `hold --option` takes) and
+# PROPOSAL_RECOMMEND, and 2 when it does not, with PROPOSAL_ERROR naming the
+# line at fault. PROPOSAL_LINE is the heading's line whenever there is one.
+# shellcheck disable=SC2016 # backticks here are the grammar's own, never expansions
+proposal_read() {  # <task-id>
+  local id=$1 line n=0 phase=before fence=0 key text count
+  local seen=' '
+  local heading_re='^#{2,6}[[:space:]]+[Pp][Rr][Oo][Pp][Oo][Ss][Ee][Dd][[:space:]]+[Cc][Aa][Ll][Ll][Ss]?([^[:alnum:]].*)?$'
+  local end_re='^#{1,2}[[:space:]]'
+  local fence_re='^[[:space:]]{0,3}(```|~~~)'
+  local option_re='^-[[:space:]]+`([^`]*)`([[:space:]]+-[[:space:]]+|:[[:space:]]+)(.*)$'
+  local recommend_re='^Recommendation:[[:space:]]+`([^`]*)`'
+  PROPOSAL_PATH="$DATA/$id/report.md"
+  PROPOSAL_LINE=0
+  PROPOSAL_ERROR=''
+  PROPOSAL_QUESTION=''
+  PROPOSAL_RECOMMEND=''
+  PROPOSAL_OPTIONS=()
+  task_id_path_safe "$id" || return 1
+  [ -f "$PROPOSAL_PATH" ] && [ ! -L "$PROPOSAL_PATH" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line=${line%$'\r'}
+    case "$phase" in
+      before|why|after)
+        if [[ $line =~ $fence_re ]]; then
+          fence=$((1 - fence))
+          continue
+        fi
+        [ "$fence" = 0 ] || continue
+        if [ "$phase" = why ] && [[ $line =~ $end_re ]]; then
+          phase=after
+        fi
+        if [[ $line =~ $heading_re ]]; then
+          if [ "$phase" = before ]; then
+            PROPOSAL_LINE=$n
+            phase=question
+            continue
+          fi
+          proposal_refuse "$n" "a second Proposed call section; a report proposes one call" "$line"
+          return 2
+        fi
+        continue
+        ;;
+    esac
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    if [[ $line =~ $end_re ]]; then
+      if [ "$phase" = question ]; then
+        proposal_refuse "$n" "the Proposed call section ends before its question" "$line"
+      else
+        proposal_refuse "$n" 'the Proposed call section ends before its `Recommendation: `<key>`` line' "$line"
+      fi
+      return 2
+    fi
+    count=${#PROPOSAL_OPTIONS[@]}
+    if [ "$phase" = question ]; then
+      if [[ $line =~ $option_re ]]; then
+        proposal_refuse "$n" "an option comes before the question; the section opens with the question on one line" "$line"
+        return 2
+      fi
+      text=$(trim_space "$line")
+      case "$text" in Question:*) text=$(trim_space "${text#Question:}") ;; esac
+      [ -n "$text" ] || { proposal_refuse "$n" "the question is empty" "$line"; return 2; }
+      if [ "$(text_length "$text")" -gt 400 ]; then
+        proposal_refuse "$n" "the question is longer than 400 characters, the most a call's question holds" "$line"
+        return 2
+      fi
+      PROPOSAL_QUESTION=$text
+      phase=options
+      continue
+    fi
+    if [[ $line =~ $recommend_re ]]; then
+      key=${BASH_REMATCH[1]}
+      if [ "$count" -lt 2 ]; then
+        proposal_refuse "$n" "a call needs at least two options before its recommendation, and this one has $count" "$line"
+        return 2
+      fi
+      case "$seen" in
+        *" $key "*) ;;
+        *) proposal_refuse "$n" "the recommendation names \`$key\`, which is not one of the options" "$line"; return 2 ;;
+      esac
+      PROPOSAL_RECOMMEND=$key
+      phase=why
+      continue
+    fi
+    if [[ $line =~ $option_re ]]; then
+      key=${BASH_REMATCH[1]}
+      text=$(trim_space "${BASH_REMATCH[3]}")
+      if ! option_key_valid "$key"; then
+        proposal_refuse "$n" "\`$key\` is not an option key: one short lowercase word, [a-z0-9][a-z0-9-] up to 32 characters" "$line"
+        return 2
+      fi
+      case "$seen" in
+        *" $key "*) proposal_refuse "$n" "the option key \`$key\` appears twice" "$line"; return 2 ;;
+      esac
+      [ -n "$text" ] || { proposal_refuse "$n" "option \`$key\` has no label" "$line"; return 2; }
+      if [ "$count" -ge "$CALL_MAX_OPTIONS" ]; then
+        proposal_refuse "$n" "a call takes at most $CALL_MAX_OPTIONS options, and this is one more" "$line"
+        return 2
+      fi
+      count=$(text_length "$text")
+      if [ "$count" -gt 200 ]; then
+        proposal_refuse "$n" "option \`$key\` is $count characters after its key, over the 200 a call's option holds on a card; shorten that label in the report, moving its cost into the report's body" "$line"
+        return 2
+      fi
+      PROPOSAL_OPTIONS+=("$key=$text")
+      seen="$seen$key "
+      continue
+    fi
+    case "$line" in
+      [[:space:]]*)
+        if [ "$count" -gt 0 ]; then
+          proposal_refuse "$n" "an option continues onto this line; each option, with its label and its cost, is one line" "$line"
+        else
+          proposal_refuse "$n" "the question continues onto this line; the question is one line" "$line"
+        fi
+        ;;
+      *)
+        if [ "$count" -gt 0 ]; then
+          proposal_refuse "$n" 'expected an option (`- `<key>` - <label and cost>`) or the recommendation (`Recommendation: `<key>``)' "$line"
+        else
+          proposal_refuse "$n" 'the question is one line, and this line is not an option (`- `<key>` - <label and cost>`)' "$line"
+        fi
+        ;;
+    esac
+    return 2
+  done < "$PROPOSAL_PATH"
+  case "$phase" in
+    before) return 1 ;;
+    question) proposal_refuse "$PROPOSAL_LINE" "the Proposed call section has no question"; return 2 ;;
+    options) proposal_refuse "$n" 'the Proposed call section ends without a `Recommendation: `<key>`` line'; return 2 ;;
+  esac
+  return 0
+}
+
+# The section's raw text, heading to the next `#` or `##` heading outside fenced
+# code, which identifies a proposal that does not parse.
+proposal_section_text() {
+  awk -v start="$PROPOSAL_LINE" '
+    NR < start { next }
+    NR == start { print; next }
+    /^ *(```|~~~)/ { fence = !fence; print; next }
+    !fence && /^##?[ \t]/ { exit }
+    { print }
+  ' "$PROPOSAL_PATH"
+}
+
+# Read <task-id>'s proposal as proposal_read does, setting PROPOSAL_RC to what
+# it returned and PROPOSAL_DIGEST to this proposal's identity (see the header):
+# the digest of its raw section, parsed or not, and empty when there is none.
+PROPOSAL_RC=1
+PROPOSAL_DIGEST=''
+proposal_identify() {  # <task-id>
+  PROPOSAL_RC=0
+  PROPOSAL_DIGEST=''
+  proposal_read "$1" || PROPOSAL_RC=$?
+  [ "$PROPOSAL_RC" = 1 ] || PROPOSAL_DIGEST=$(sha256_text "$(proposal_section_text)")
+}
+
+# What every call record says about proposals, one line each: `handled\t<task>\t
+# <digest>` for each proposal it records (`raise`, `decline`, `hold
+# --proposal-of`, and `stamp` add one, never replacing another; a single
+# `proposal` object reads as one), and `origin\t<task>\t<call>` for the task it
+# names as origin, a call `stamp` may record a proposal on.
+proposal_index() {
+  [ -d "$CALLS_DIR" ] || return 0
+  require_jq
+  call_records_read | jq -r 'select(.ok) | .task as $call | .record
+    | ((.proposals // (if .proposal then [.proposal] else [] end))[] | "handled\t\(.task)\t\(.digest)"),
+      (.origin // empty | "origin\t\(.)\t\($call)")'
+}
+
+# Is <task-id>'s current proposal, as proposal_identify last read it, handled?
+proposal_handled() {  # <task-id> <proposal-index>
+  list_has_line "$2" "handled"$'\t'"$1"$'\t'"$PROPOSAL_DIGEST"
+}
+
+# The calls naming <task-id> as origin, one per line.
+proposal_origin_calls() {  # <task-id> <proposal-index>
+  printf '%s\n' "$2" | awk -F '\t' -v id="$1" '$1 == "origin" && $2 == id { print $3 }'
+}
+
+# A worker's answered question is recorded once a decided call names its key on
+# that task, or once its key is a call itself (the identities bin/fm-send.sh
+# --resolve-key answers through), whoever answered it.
+settled_unrecorded() {  # <task-id>; prints "<key>\t<answer excerpt>" lines
+  local id=$1 settled recorded='' key note
+  settled=$(status_settled_decisions "$STATE/$id.status")
+  [ -n "$settled" ] || return 0
+  if [ -d "$CALLS_DIR" ]; then
+    require_jq
+    recorded=$(call_records_read | jq -r --arg id "$id" \
+      'select(.ok and .record.about == $id and .record.decided != null) | .record.decided.key // empty')
+  fi
+  while IFS=$'\t' read -r key note; do
+    [ -n "$key" ] || continue
+    list_has_line "$recorded" "$key" && continue
+    key_names_a_call "$id" "$key" && continue
+    printf '%s\t%s\n' "$key" "$note"
+  done <<EOF
+$settled
+EOF
+}
+
+# Is <key> on <task-id> the identity of a call: a backlog row held for the
+# captain now or ever, as the key itself or as the legacy derived id? A call
+# that carries the answer is its record, and RECORD DIVERGENCE already names
+# one the status side closed while it stayed open.
+key_names_a_call() {  # <task-id> <key>
+  local candidate
+  command -v tasks-axi >/dev/null 2>&1 || return 1
+  for candidate in "$2" "$1-decision-$2"; do
+    validate_slug_ok "$candidate" || continue
+    task_show "$candidate" || continue
+    shown_row_is_call "$TASK_SHOW_OUTPUT" && return 0
+  done
+  return 1
+}
+
+validate_slug_ok() {  # <value>
+  case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+}
+
+# What stands between a finished task and the deletion of its records, one line
+# per problem naming what would satisfy it. <check-open> = 0 leaves open status
+# keys to the caller (`complete` transfers them, `verify` names them itself).
+gate_problems() {  # <task-id> <check-open-0-or-1>
+  local id=$1 check_open=$2 rc=0 key verb note index call
+  if [ "$check_open" = 1 ]; then
+    while IFS=$'\t' read -r key verb note; do
+      [ -n "$key" ] || continue
+      printf 'open %s [key=%s] on %s: %s; answer it with bin/fm-send.sh %s --resolve-key %s '"'"'<answer>'"'"', or hold it as a call and transfer it with bin/fm-captain-hold.sh complete %s <call-task-id>\n' \
+        "$verb" "$key" "$id" "$(sanitize_field "$note")" "$id" "$key" "$id"
+    done <<EOF
+$(origin_open_decisions "$id")
+EOF
+  fi
+  proposal_identify "$id"
+  rc=$PROPOSAL_RC
+  index=''
+  [ "$rc" = 1 ] || index=$(proposal_index)
+  if [ "$rc" != 1 ] && ! proposal_handled "$id" "$index"; then
+    while IFS= read -r call; do
+      [ -n "$call" ] || continue
+      printf "unstamped call: %s names %s as its origin but does not record this proposal; if it raised or settled it, record that with bin/fm-captain-hold.sh stamp %s --proposal-of %s\n" \
+        "$call" "$id" "$call" "$id"
+    done <<EOF
+$(proposal_origin_calls "$id" "$index")
+EOF
+    if [ "$rc" = 0 ]; then
+      printf "unraised proposal: %s's report proposes a call at %s:%s that nobody raised or declined (a revised proposal is a new one); raise it with bin/fm-captain-hold.sh raise %s [--onto <task-id>], or record that you settled it yourself with bin/fm-captain-hold.sh decline %s --what <what you decided> --why <why>\n" \
+        "$id" "$PROPOSAL_PATH" "$PROPOSAL_LINE" "$id" "$id"
+    else
+      printf "unraised proposal: %s's report proposes a call that nobody raised or declined, and its section does not parse (%s); raise it by hand with bin/fm-captain-hold.sh hold <task-id> --proposal-of %s and its content, or record that you settled it yourself with bin/fm-captain-hold.sh decline %s --what <what you decided> --why <why>\n" \
+        "$id" "$PROPOSAL_ERROR" "$id" "$id"
+    fi
+  fi
+  while IFS=$'\t' read -r key note; do
+    [ -n "$key" ] || continue
+    printf 'unrecorded decision: you answered %s [key=%s] yourself (%s) and nothing records it for the captain; record it with bin/fm-captain-hold.sh decide --about %s --key %s --title <the question> --what <what you decided> --why <why>; relaying the answer of a call the captain answered is bin/fm-send.sh %s --resolve-key <key> --for-call <call>, which that call records\n' \
+      "$id" "$key" "$(sanitize_field "$note")" "$id" "$key" "$id"
+  done <<EOF
+$(settled_unrecorded "$id")
+EOF
+}
+
+# Refuse with every problem on its own line.
+fail_gate() {  # <intro> <problems>
+  {
+    printf 'fm-captain-hold: %s\n' "$1"
+    printf '%s\n' "$2" | sed 's/^/  - /'
+  } >&2
+  exit 1
+}
+
+command_gate() {
+  local id=${1:-} problems
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  validate_slug task-id "$id"
+  problems=$(gate_problems "$id" 1) || exit 1
+  [ -z "$problems" ] || fail_gate "task $id has not passed the captain-call gate:" "$problems"
+  printf 'gate: %s clear\n' "$id"
+}
+
+command_proposal() {
+  local id=${1:-} rc=0 pair
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  validate_slug task-id "$id"
+  require_jq
+  proposal_read "$id" || rc=$?
+  case "$rc" in
+    1) fail "$PROPOSAL_PATH has no Proposed call section" ;;
+    2) fail "$PROPOSAL_ERROR" ;;
+  esac
+  printf 'question: %s\n' "$PROPOSAL_QUESTION"
+  for pair in "${PROPOSAL_OPTIONS[@]}"; do
+    printf 'option: %s\t%s\n' "${pair%%=*}" "${pair#*=}"
+  done
+  printf 'recommend: %s\n' "$PROPOSAL_RECOMMEND"
+}
+
+command_raise() {
+  local id=${1:-} onto='' title='' reason='' on_answer='' rc=0 pair
+  local -a hold_args=()
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+    case "$1" in
+      --onto) onto=$2 ;;
+      --title) title=$2 ;;
+      --reason) reason=$2 ;;
+      --on-answer) on_answer=$2 ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift 2
+  done
+  validate_slug task-id "$id"
+  [ -n "$onto" ] || onto=$id
+  validate_slug task-id "$onto"
+  [ -n "$reason" ] || reason="proposed by $id"
+  require_jq
+  proposal_read "$id" || rc=$?
+  case "$rc" in
+    1) fail "$PROPOSAL_PATH has no Proposed call section to raise" ;;
+    2) fail "$PROPOSAL_ERROR; nothing was raised" ;;
+  esac
+  hold_args=(--reason "$reason" --proposal-of "$id" --question "$PROPOSAL_QUESTION" --recommend "$PROPOSAL_RECOMMEND")
+  for pair in "${PROPOSAL_OPTIONS[@]}"; do
+    hold_args+=(--option "$pair")
+  done
+  [ -z "$title" ] || hold_args+=(--title "$title")
+  [ -z "$on_answer" ] || hold_args+=(--on-answer "$on_answer")
+  "$0" hold "$onto" "${hold_args[@]}" >/dev/null || fail "could not raise $id's proposed call on $onto"
+  printf 'raised: %s from %s\n' "$onto" "$PROPOSAL_PATH"
+}
+
+command_decline() {
+  local id=${1:-} what='' why='' what_set=0 why_set=0 rc=0 title pair out
+  local -a decide_args=()
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+    case "$1" in
+      --what) what=$2; what_set=1 ;;
+      --why) why=$2; why_set=1 ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift 2
+  done
+  validate_slug task-id "$id"
+  [ "$what_set" = 1 ] || fail "decline needs --what <what you decided instead of asking the captain>"
+  [ "$why_set" = 1 ] || fail "decline needs --why <why it was not the captain's to answer>"
+  require_jq
+  proposal_read "$id" || rc=$?
+  [ "$rc" != 1 ] || fail "$PROPOSAL_PATH has no Proposed call section to decline"
+  title="$id's proposed call"
+  decide_args=(--about "$id" --origin "$id" --proposal-of "$id" --kind scope --what "$what" --why "$why")
+  if [ "$rc" = 0 ]; then
+    title=$PROPOSAL_QUESTION
+    for pair in "${PROPOSAL_OPTIONS[@]}"; do
+      decide_args+=(--option "$pair")
+    done
+  fi
+  out=$("$0" decide --title "$title" "${decide_args[@]}") || fail "could not record the declined proposal of $id"
+  printf 'declined: %s (%s)\n' "$id" "${out#decided: }"
+}
+
+command_proposals() {
+  local index meta id rc call
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  command -v jq >/dev/null 2>&1 || return 0
+  index=$(proposal_index) || exit 1
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    id=${meta##*/}; id=${id%.meta}
+    task_id_path_safe "$id" || continue
+    proposal_identify "$id"
+    rc=$PROPOSAL_RC
+    [ "$rc" != 1 ] || continue
+    proposal_handled "$id" "$index" && continue
+    if [ "$rc" = 0 ]; then
+      printf '%s\tparses\t%s\n' "$id" "$(sanitize_field "$PROPOSAL_QUESTION")"
+    else
+      printf '%s\tmalformed\t%s\n' "$id" "$(sanitize_field "$PROPOSAL_ERROR")"
+    fi
+    while IFS= read -r call; do
+      [ -n "$call" ] || continue
+      printf '%s\tstamp\tcall %s names it as origin; if that call raised or settled it: bin/fm-captain-hold.sh stamp %s --proposal-of %s\n' \
+        "$id" "$call" "$call" "$id"
+    done <<EOF
+$(proposal_origin_calls "$id" "$index")
+EOF
+  done
+}
+
+# Record on an existing call that it handles <task-id>'s current proposal,
+# changing nothing else about the call: no hold, no timestamp, no reply, no
+# answer. It needs only the section, never a parse, so a section too long to
+# raise can still be stamped.
+command_stamp() {
+  local call=${1:-} proposal_of='' record
+  [ "$#" -eq 3 ] && [ "${2:-}" = --proposal-of ] || { usage >&2; exit 2; }
+  proposal_of=$3
+  validate_slug call-id "$call"
+  validate_slug proposal-of "$proposal_of"
+  require_jq
+  proposal_identify "$proposal_of"
+  [ "$PROPOSAL_RC" != 1 ] || fail "$PROPOSAL_PATH has no Proposed call section"
+  acquire_task_control_lock "$call"
+  call_record_load "$call"
+  [ -n "$CALL_RECORD" ] || fail "no call $call: it has no call record at $(call_record_path "$call")"
+  if printf '%s' "$CALL_RECORD" | jq -e --arg task "$proposal_of" --arg digest "$PROPOSAL_DIGEST" \
+    'any((.proposals // (if .proposal then [.proposal] else [] end))[]; . == {task:$task, digest:$digest})' >/dev/null; then
+    printf 'unchanged: %s already records the proposal of %s\n' "$call" "$proposal_of"
+    return 0
+  fi
+  record=$(printf '%s' "$CALL_RECORD" | jq -c --arg task "$proposal_of" --arg digest "$PROPOSAL_DIGEST" \
+    '.proposals = ((.proposals // (if .proposal then [.proposal] else [] end)) + [{task:$task, digest:$digest}])
+     | del(.proposal)') || fail "cannot compose the call content for $call"
+  call_record_store "$call" "$record"
+  release_task_control_lock
+  printf 'stamped: %s records the proposal of %s\n' "$call" "$proposal_of"
+}
+
+# Who recorded the newest answer on call <task-id>: `captain` or `firstmate`.
+# Refuses a row that is not a call or carries no recorded answer.
+command_answered() {
+  local id=${1:-} show by
+  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  validate_slug task-id "$id"
+  command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi is required to read call $id"
+  task_show_or_fail "$id" "no task $id in this home"
+  shown_row_is_call "$show" || fail "task $id is not a captain call"
+  by=$(newest_answered_by "$(show_field_value "$show" body)")
+  [ -n "$by" ] || fail "call $id carries no recorded answer"
+  printf '%s\n' "$by"
+}
+
+command_unrecorded() {
+  local meta id key note
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  command -v jq >/dev/null 2>&1 || return 0
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    id=${meta##*/}; id=${id%.meta}
+    task_id_path_safe "$id" || continue
+    while IFS=$'\t' read -r key note; do
+      [ -n "$key" ] || continue
+      printf '%s\t%s\t%s\n' "$id" "$key" "$(sanitize_field "$note")"
+    done <<EOF
+$(settled_unrecorded "$id")
+EOF
+  done
 }
 
 # --- record divergence ------------------------------------------------------
@@ -3300,6 +3947,14 @@ case "${1:-}" in
   verify) shift; command_verify "$@" ;;
   open) shift; command_open "$@" ;;
   diverged) shift; command_diverged "$@" ;;
+  proposal) shift; command_proposal "$@" ;;
+  proposals) shift; command_proposals "$@" ;;
+  raise) shift; command_raise "$@" ;;
+  decline) shift; command_decline "$@" ;;
+  unrecorded) shift; command_unrecorded "$@" ;;
+  answered) shift; command_answered "$@" ;;
+  stamp) shift; command_stamp "$@" ;;
+  gate) shift; command_gate "$@" ;;
   reconcile) shift; command_reconcile "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;

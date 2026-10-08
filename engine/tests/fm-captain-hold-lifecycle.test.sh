@@ -4152,6 +4152,222 @@ test_retained_body_keeps_its_utf8_bytes() {
   pass "cleanup preserves every byte of a retained body's non-ASCII characters"
 }
 
+# fm-send.sh against this suite's home, its typed doorbell going to a fake tmux.
+send_in() {  # <home> <fm-send args...>
+  local home=$1
+  shift
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SEND_SETTLE=0 "$ROOT/bin/fm-send.sh" "$@"
+}
+
+# A worker's question the first mate escalated reaches the captain as a call,
+# and once he answers it the first mate relays his words to the worker. That
+# close is his choice, recorded by his call, so neither the gate nor the drain
+# may ask the first mate to record it as a decision of its own; and a relay
+# naming a call he never answered is refused before anything is sent.
+test_a_relayed_captain_answer_needs_no_decision_of_its_own() {
+  local home id call out rc
+  home=$(make_home relayed-answer)
+  for id in sample-relay-ship sample-relay-new; do
+    tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+      || fail "could not create the ship $id"
+    write_origin_meta "$home" "$id" ship
+    printf 'working: building\nneeds-decision [key=scope]: narrow or wide?\n' > "$home/state/$id.status"
+  done
+
+  # On the ship's own row, the work item the question gates.
+  id=sample-relay-ship
+  run_captain "$home" hold "$id" --reason 'narrow or wide' --question 'Narrow or wide?' \
+    --option narrow=Narrow --option wide=Wide --recommend narrow >/dev/null || fail "could not hold the ship's row"
+  rc=0
+  out=$(send_in "$home" "$id" --resolve-key scope --for-call "$id" 'Captain says: narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "--for-call relayed a call the captain has not answered"
+  assert_contains "$out" "carries no recorded answer" "the refusal says the call has no answer"
+  assert_contains "$out" "nothing was sent" "the refusal says nothing was sent"
+  assert_absent "$home/state/$id.inbox/001.msg" "a refused relay reached the worker"
+  assert_grep 'needs-decision [key=scope]' "$home/state/$id.status" "setup: the question is open"
+  [ "$(grep -c 'key=scope' "$home/state/$id.status")" = 1 ] || fail "a refused relay closed the key"
+
+  printf '%s\tnarrow\tNarrow\trelease\n' "$id" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer was not recorded"
+  send_in "$home" "$id" --resolve-key scope --for-call "$id" 'Captain says: narrow' >/dev/null 2>&1 \
+    || fail "relaying the captain's answer was refused"
+  assert_grep "Captain says: narrow" "$home/state/$id.inbox/001.msg" "the relay never reached the worker"
+  assert_grep "resolved [key=scope]: relayed $id: Captain says: narrow" "$home/state/$id.status" \
+    "the close does not name the call it relays"
+
+  # On a new row the call was raised on.
+  id=sample-relay-new
+  call=sample-relay-scope
+  run_captain "$home" hold "$call" --title 'Narrow or wide?' --reason 'narrow or wide' --about "$id" \
+    --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null || fail "could not hold a new row"
+  printf '%s\twide\tWide\n' "$call" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer on the new row was not recorded"
+  send_in "$home" "$id" --resolve-key scope --for-call "$call" 'Captain says: wide' >/dev/null 2>&1 \
+    || fail "relaying the captain's answer on a new row was refused"
+
+  assert_equals "" "$(run_captain "$home" unrecorded)" "a relayed captain answer read as one the first mate gave itself"
+  for id in sample-relay-ship sample-relay-new; do
+    out=$(run_captain "$home" gate "$id") || fail "the gate asked to record a relayed captain answer on $id"
+    assert_equals "gate: $id clear" "$out" "the gate reads clear for $id"
+  done
+  assert_equals "" "$(jq -r 'select(.decided != null) | .task' "$home"/state/calls/*.json)" \
+    "a relay recorded a decision on the captain's behalf"
+
+  # A call the first mate decided itself is not the captain's answer to relay.
+  printf 'needs-decision [key=port]: which port?\n' >> "$home/state/sample-relay-new.status"
+  out=$(run_captain "$home" decide --about sample-relay-new --title 'Which port?' --what 9090 --why 'Free port') \
+    || fail "decide failed"
+  call=${out#decided: }
+  rc=0
+  out=$(send_in "$home" sample-relay-new --resolve-key port --for-call "$call" '9090' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "--for-call relayed a decision the first mate made as the captain's"
+  assert_contains "$out" "recorded by firstmate, not the captain" "the refusal says whose answer it is"
+  assert_no_grep 'key=port]: relayed' "$home/state/sample-relay-new.status" "a refused relay closed the key"
+  pass "a relayed captain answer is recorded by its call, and a relay of no captain's answer is refused"
+}
+
+# Before calls recorded the proposal they handle, a scout's proposal was raised
+# by hand on its own row, and the captain may already have answered it. After
+# the upgrade every completion path refuses it; `stamp` records that the call
+# was the proposal's without holding it again, asking the captain again, or
+# changing anything else about it.
+test_a_call_raised_before_proposals_were_recorded_is_stamped_not_reasked() {
+  local home id rc out record_before show_before
+  home=$(make_home stamp-upgrade)
+  id=qd-update-flow-1
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Scout signing" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the scout row"
+  write_origin_meta "$home" "$id"
+  printf 'done: report written\n' > "$home/state/$id.status"
+  cp "$ROOT/tests/fixtures/proposed-call/$id.md" "$home/data/$id/report.md"
+  run_captain "$home" hold "$id" --reason 'signing identity' --question 'How should Quarterdeck be signed?' \
+    --option both=Both --option devid='Developer ID' >/dev/null || fail "the hand-raised hold failed"
+  assert_equals "$id|null|null" "$(jq -r '[.origin, (.proposals|tostring), (.proposal|tostring)] | join("|")' "$home/state/calls/$id.json")" \
+    "setup: the hand-raised call names the scout as origin and records no proposal"
+  printf '%s\tboth\tBoth\n' "$id" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer was not recorded"
+  record_before=$(jq -S . "$home/state/calls/$id.json")
+  show_before=$(tasks_in "$home" show "$id" --full)
+
+  rc=0; out=$(run_captain "$home" complete "$id" "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "complete beside a proposal only a pre-upgrade call raised"
+  assert_contains "$out" "unstamped call: $id names $id as its origin" "complete names the call to stamp"
+  assert_contains "$out" "bin/fm-captain-hold.sh stamp $id --proposal-of $id" "complete prints the exact stamp command"
+  printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$id" >> "$home/state/$id.meta"
+  rc=0; out=$(run_captain "$home" verify "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "verify beside a proposal only a pre-upgrade call raised"
+  assert_contains "$out" "stamp $id --proposal-of $id" "verify prints the stamp command"
+  rc=0; run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "cleanup passed beside a proposal only a pre-upgrade call raised"
+  assert_present "$home/state/$id.meta" "a refused cleanup deleted the task record"
+  out=$(run_captain "$home" proposals)
+  assert_contains "$out" "$id	parses	" "PROPOSED CALLS lists the proposal"
+  assert_contains "$out" "$id	stamp	call $id names it as origin; if that call raised or settled it: bin/fm-captain-hold.sh stamp $id --proposal-of $id" \
+    "PROPOSED CALLS names the call and its stamp command"
+
+  out=$(run_captain "$home" stamp "$id" --proposal-of "$id") || fail "stamp failed"
+  assert_equals "stamped: $id records the proposal of $id" "$out" "stamp says what it recorded"
+  assert_equals "$record_before" "$(jq -S 'del(.proposals)' "$home/state/calls/$id.json")" \
+    "stamp changed the call's content, timestamps, reply, or answer"
+  assert_equals "$show_before" "$(tasks_in "$home" show "$id" --full)" \
+    "stamp changed the row: its hold, answer, or resolution block"
+  assert_equals "$id" "$(jq -r '.proposals[0].task' "$home/state/calls/$id.json")" "stamp recorded the proposal"
+  record_before=$(cat "$home/state/calls/$id.json")
+  out=$(run_captain "$home" stamp "$id" --proposal-of "$id") || fail "a second stamp failed"
+  assert_contains "$out" "unchanged: $id" "a second stamp says it changed nothing"
+  assert_equals "$record_before" "$(cat "$home/state/calls/$id.json")" "a second stamp wrote the record"
+  assert_equals "" "$(run_captain "$home" proposals)" "a stamped proposal left PROPOSED CALLS"
+  run_captain "$home" complete "$id" "$id" >/dev/null || fail "complete refused a stamped proposal"
+  run_captain "$home" verify "$id" >/dev/null || fail "verify refused a stamped proposal"
+  assert_equals "$show_before" "$(tasks_in "$home" show "$id" --full)" "completion re-asked or changed the answered call"
+
+  # A section too long to raise is still stamped, from its text alone.
+  id=qd-approve-flow-1
+  mkdir -p "$home/data/$id"
+  printf 'kind=scout\n' > "$home/state/$id.meta"
+  cp "$ROOT/tests/fixtures/proposed-call/$id.md" "$home/data/$id/report.md"
+  run_captain "$home" proposal "$id" >/dev/null 2>&1 && fail "setup: the long-option fixture parsed"
+  run_captain "$home" hold sample-approve-call --title 'Approve flow' --reason 'approve flow' --origin "$id" \
+    --question 'How far should the approve flow go?' --option full=Full --option lite=Lite >/dev/null \
+    || fail "the hand-raised hold of the long proposal failed"
+  run_captain "$home" stamp sample-approve-call --proposal-of "$id" >/dev/null || fail "a section too long to raise could not be stamped"
+  run_captain "$home" gate "$id" >/dev/null || fail "the gate refused a stamped long proposal"
+
+  rc=0; out=$(run_captain "$home" stamp sample-no-call --proposal-of "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "stamp of a call that does not exist"
+  assert_contains "$out" "no call sample-no-call" "the refusal names the missing call"
+  rc=0; out=$(run_captain "$home" stamp sample-approve-call --proposal-of sample-no-report 2>&1) || rc=$?
+  expect_code 1 "$rc" "stamp of a task with no proposal"
+  assert_contains "$out" "has no Proposed call section" "the refusal names the missing section"
+
+  id=qd-update-flow-1
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err" \
+    || fail "cleanup refused a stamped proposal: $(cat "$home/teardown.err")"
+  pass "a call raised by hand before proposals were recorded is stamped, not re-asked, and every gate then passes"
+}
+
+# A ship task, and a promoted scout that becomes one, used to pass no captain
+# call gate at all: cleanup deleted the status log, and with it any question
+# still open, any answer nobody recorded, and a report's proposed call. Cleanup
+# now refuses each, naming what satisfies it, and proceeds once it is settled.
+test_ship_teardown_passes_the_captain_call_gate() {
+  local home id repo wt rc
+  home=$(make_home ship-gate)
+  id=sample-gated-ship
+  repo="$home/projects/sample-gated"
+  wt="$home/projects/$id"
+  fm_git_worktree "$repo" "$wt" "fm/$id"
+  tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+    || fail "could not create the ship fixture"
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" "worktree=$wt" \
+    "project=$repo" "harness=codex" "kind=ship" "mode=local-only" "spawn_gen=fixture-$id"
+  cat > "$home/state/$id.status" <<'EOF'
+working: building
+needs-decision [key=scope]: narrow or wide?
+done: built
+EOF
+  # A promoted scout keeps its report, and with it the call it proposed.
+  mkdir -p "$home/data/$id"
+  cp "$ROOT/tests/fixtures/proposed-call/qd-update-flow-1.md" "$home/data/$id/report.md"
+
+  set +e
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "cleanup of a ship deleted an open question with its status log"
+  assert_grep "REFUSED: task $id has not passed the captain-call gate" "$home/teardown.err" "the refusal names the gate"
+  assert_grep "open needs-decision [key=scope] on $id" "$home/teardown.err" "the refusal names the open question"
+  assert_grep "fm-send.sh $id --resolve-key scope" "$home/teardown.err" "the refusal says how to answer it"
+  assert_grep "unraised proposal: $id's report proposes a call" "$home/teardown.err" "the refusal names the unraised proposal"
+  assert_present "$home/state/$id.status" "a refused cleanup deleted the status log"
+  assert_present "$home/state/$id.meta" "a refused cleanup deleted the task record"
+
+  printf 'resolved [key=scope]: answered: narrow\n' >> "$home/state/$id.status"
+  set +e
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "cleanup deleted an answer the first mate gave and never recorded"
+  assert_grep "unrecorded decision: you answered $id [key=scope] yourself (narrow)" "$home/teardown.err" \
+    "the refusal names the unrecorded answer"
+
+  run_captain "$home" decide --about "$id" --key scope --title 'Narrow or wide?' --what 'Kept it narrow' \
+    --why 'A narrow change is the one this ship can land and review today' >/dev/null || fail "could not record the answer"
+  run_captain "$home" decline "$id" --what 'Kept today ad-hoc signing' --why 'Out of scope for this ship' >/dev/null \
+    || fail "could not decline the proposal"
+  run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err" \
+    || fail "cleanup refused a ship whose calls were all settled: $(cat "$home/teardown.err")"
+  assert_absent "$home/state/$id.meta" "cleanup did not finish once the gate passed"
+  pass "ship cleanup refuses an open question, an unrecorded answer, and an unraised proposal, then proceeds once each is settled"
+}
+
+test_ship_teardown_passes_the_captain_call_gate
+test_a_relayed_captain_answer_needs_no_decision_of_its_own
+test_a_call_raised_before_proposals_were_recorded_is_stamped_not_reasked
 test_uninventoried_report_decision_refuses_completion
 test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
 test_retained_body_keeps_its_utf8_bytes
