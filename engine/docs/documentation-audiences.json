@@ -309,6 +309,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/quarterdeck-replies.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/cd-guard.md",
       "audience": "maintainer-architecture"
     },

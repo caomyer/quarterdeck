@@ -74,8 +74,11 @@ export type Compaction = { id: string; state: "waiting" | "running" | "done" | "
 /** The command Compact now sends: Claude Code's own, which the first mate's session runs. */
 export const COMPACT_COMMAND = "/compact";
 
-/** Why the snapshot on screen may be stale: which scripts failed, and when each projection was last read. */
-export type SnapshotHealth = { errors: SnapshotError[]; bearingsAt: number | null; fleetAt: number | null };
+/**
+ * Why the snapshot on screen may be stale: which scripts failed, when each projection was last read, and when the app
+ * learned of the failures it shows.
+ */
+export type SnapshotHealth = { errors: SnapshotError[]; bearingsAt: number | null; fleetAt: number | null; failedAt?: number | null };
 
 /** The host keeps the home of its last Start, so until the first mate starts in the chosen home, messages would go elsewhere. */
 export const NOT_STARTED_HERE = "The first mate hasn't started in this folder yet. Start it, then send this again.";
@@ -218,6 +221,7 @@ export function useHost(adapter: HostAdapter) {
     if (payload.projects) setProjects(payload.projects);
     setSnapshotHealth((current) => ({
       errors: payload.errors ?? [],
+      failedAt: payload.errors?.length ? Date.now() : null,
       bearingsAt: payload.bearings ? payload.bearings_at_ms ?? at : current.bearingsAt,
       fleetAt: payload.fleet ? payload.fleet_at_ms ?? at : current.fleetAt,
     }));
