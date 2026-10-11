@@ -3,42 +3,24 @@
 //
 //   pnpm test
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  cwd: dirname(fileURLToPath(import.meta.url)),
+  encoding: "utf8",
+}).trim();
+const CONFIG = join(ROOT, ".no-mistakes.yaml");
 
-// The top-level keys of a block-style YAML mapping, each with the meaningful lines nested under it. Enough for this
-// file's own shape; anything it cannot read as that shape fails rather than passing over it.
-function topLevel(text) {
-  const keys = [];
-  for (const line of text.split("\n")) {
-    const body = line.replace(/\s+#.*$/, "").trimEnd();
-    if (body === "" || body.trimStart().startsWith("#")) continue;
-    const key = /^([A-Za-z_][\w-]*):(.*)$/.exec(body);
-    if (key) {
-      keys.push({ key: key[1], value: key[2].trim(), nested: [] });
-      continue;
-    }
-    assert.ok(/^\s/.test(body) && keys.length > 0, `not a block mapping line: ${JSON.stringify(line)}`);
-    keys.at(-1).nested.push(body.trim());
-  }
-  return keys;
-}
-
-test("main integrates by merge, so a resubmitted branch keeps its earlier head as an ancestor", () => {
-  const keys = topLevel(readFileSync(join(ROOT, ".no-mistakes.yaml"), "utf8"));
-  const rebase = keys.filter((entry) => entry.key === "rebase");
-  assert.equal(rebase.length, 1, "exactly one rebase block");
-  assert.equal(rebase[0].value, "", "rebase is a block, not a scalar");
-  assert.deepEqual(rebase[0].nested, ["strategy: merge"], "rebase.strategy is merge, and nothing else is set beside it");
+test("the config sits at the repository root, the one place no-mistakes reads it from", () => {
+  assert.ok(existsSync(CONFIG), `no .no-mistakes.yaml at the repository root ${ROOT}`);
 });
 
-test("the reader refuses what it cannot read rather than passing over it", () => {
-  assert.deepEqual(topLevel("rebase:\n  strategy: merge # why\n"), [{ key: "rebase", value: "", nested: ["strategy: merge"] }]);
-  assert.deepEqual(topLevel("rebase:\n  strategy: rebase\n")[0].nested, ["strategy: rebase"]);
-  assert.throws(() => topLevel("  strategy: merge\n"), /not a block mapping line/);
-  assert.throws(() => topLevel("rebase: {strategy: merge}\n- item\n"), /not a block mapping line/);
+test("main integrates by merge, so a resubmitted branch keeps its earlier head as an ancestor", () => {
+  const config = parse(readFileSync(CONFIG, "utf8"));
+  assert.equal(config?.rebase?.strategy, "merge");
 });
