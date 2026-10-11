@@ -151,6 +151,48 @@ test_concurrent_runs_take_turns() {
   pass "concurrent runs on one home take turns and never write into the code"
 }
 
+# The race test_concurrent_runs_take_turns can only hope to hit, placed
+# deterministically: a concurrent run's `mkdir -p` of the home lands right after
+# the script's Nth test of the home or its missing parent, for every N the
+# script reaches. A BASH_ENV shim wraps the `[` and `test` builtins, counts the
+# tests naming either path, and creates both after the Nth. Every placement
+# must leave a run that succeeds and lays the home out.
+test_a_home_created_mid_check_is_taken() {
+  local shim="$TMP_ROOT/mid-check-shim.sh" n=0 dir home out
+  cat > "$shim" <<'EOF'
+fm_mid_check_observe() {
+  local arg count
+  for arg in "$@"; do
+    case "$arg" in
+      "$FM_MID_CHECK_HOME"|"${FM_MID_CHECK_HOME%/*}") ;;
+      *) continue ;;
+    esac
+    count=$(($(cat "$FM_MID_CHECK_COUNT" 2>/dev/null || echo 0) + 1))
+    echo "$count" > "$FM_MID_CHECK_COUNT"
+    builtin [ "$count" != "$FM_MID_CHECK_AT" ] || mkdir -p "$FM_MID_CHECK_HOME"
+    return 0
+  done
+}
+[() { local s=0; builtin [ "$@" || s=$?; fm_mid_check_observe "$@"; return "$s"; }
+test() { local s=0; builtin test "$@" || s=$?; fm_mid_check_observe "$@"; return "$s"; }
+EOF
+  while :; do
+    n=$((n + 1))
+    dir="$TMP_ROOT/mid-check-$n"
+    home="$dir/parent/home"
+    mkdir -p "$dir"
+    out=$(FM_MID_CHECK_HOME="$home" FM_MID_CHECK_AT="$n" FM_MID_CHECK_COUNT="$dir/count" \
+      BASH_ENV="$shim" init "$CODE" "$home" 2>&1) \
+      || fail "a home created after the script's test $n of it was refused: $out"
+    [ -L "$home/bin" ] || fail "a home created after the script's test $n of it was not laid out: $out"
+    # Past the last test of the home, nothing created it but the run itself.
+    [ "$(cat "$dir/count")" -ge "$n" ] || break
+    [ "$n" -lt 50 ] || fail "the script tests the home more than 50 times; raise this bound"
+  done
+  [ "$n" -gt 2 ] || fail "the shim saw the script test the home only $((n - 1)) times; it no longer observes the check"
+  pass "a home a concurrent run creates between any two tests of it is taken, never refused"
+}
+
 test_paths_are_resolved_safely() {
   local out work="$TMP_ROOT/cwd" elsewhere="$TMP_ROOT/elsewhere"
   mkdir -p "$work" "$elsewhere/rel-home"
@@ -210,9 +252,19 @@ test_refusals_create_nothing() {
   expect_code 1 "$status" "a file as home"
   status=0; out=$(init "$CODE" "$file/below" 2>&1) || status=$?
   expect_code 1 "$status" "a home below a file"
+  ln -s "$file" "$TMP_ROOT/link-to-file"
+  status=0; out=$(init "$CODE" "$TMP_ROOT/link-to-file" 2>&1) || status=$?
+  expect_code 1 "$status" "a link to a file as home"
+  ln -s "$TMP_ROOT/nowhere" "$TMP_ROOT/dangling-link"
+  status=0; out=$(init "$CODE" "$TMP_ROOT/dangling-link" 2>&1) || status=$?
+  expect_code 1 "$status" "a dangling link as home"
+  [ ! -e "$TMP_ROOT/nowhere" ] || fail "a refused dangling link must create nothing"
+  mkfifo "$TMP_ROOT/a-fifo"
+  status=0; out=$(init "$CODE" "$TMP_ROOT/a-fifo" 2>&1) || status=$?
+  expect_code 1 "$status" "a fifo as home"
   status=0; out=$(env -u FM_HOME "$CODE/bin/fm-home-init.sh" 2>&1) || status=$?
   expect_code 2 "$status" "no home named"
-  pass "a home that is, holds, or sits in the code, a non-empty folder, or a file is refused, creating nothing"
+  pass "a home that is, holds, or sits in the code, a non-empty folder, a file, a link to one, a dangling link, or a fifo is refused, creating nothing"
 }
 
 test_a_cut_short_run_is_finished() {
@@ -388,6 +440,7 @@ test_second_run_changes_nothing
 test_moved_and_updated_code_is_followed
 test_the_homes_own_files_and_links_are_never_changed
 test_concurrent_runs_take_turns
+test_a_home_created_mid_check_is_taken
 test_paths_are_resolved_safely
 test_refusals_create_nothing
 test_a_cut_short_run_is_finished
