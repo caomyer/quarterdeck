@@ -116,6 +116,10 @@ fm_tasks_axi_compatible() { return 1; }
 fm_backlog_backend_manual() { return 1; }
 SH
   ln -s "$ROOT/bin/fm-backlog-transition-lib.sh" "$fake/bin/fm-backlog-transition-lib.sh"
+  # fm-captain-hold.sh: teardown runs its captain-call gate for a ship, which
+  # reads the backlog through the parse library.
+  ln -s "$ROOT/bin/fm-captain-hold.sh" "$fake/bin/fm-captain-hold.sh"
+  ln -s "$ROOT/bin/fm-backlog-parse-lib.sh" "$fake/bin/fm-backlog-parse-lib.sh"
   # Meta with a nonexistent worktree so the dirty/treehouse blocks skip.
   cat > "$fake/state/$id.meta" <<META
 window=fakeses:fm-$id
@@ -209,6 +213,10 @@ fm_tasks_axi_compatible() { return 1; }
 fm_backlog_backend_manual() { return 1; }
 SH
   ln -s "$ROOT/bin/fm-backlog-transition-lib.sh" "$fake/bin/fm-backlog-transition-lib.sh"
+  # fm-captain-hold.sh: teardown runs its captain-call gate for a ship, which
+  # reads the backlog through the parse library.
+  ln -s "$ROOT/bin/fm-captain-hold.sh" "$fake/bin/fm-captain-hold.sh"
+  ln -s "$ROOT/bin/fm-backlog-parse-lib.sh" "$fake/bin/fm-backlog-parse-lib.sh"
   # No tasktmp= line at all.
   cat > "$fake/state/$id.meta" <<META
 window=fakeses:fm-$id

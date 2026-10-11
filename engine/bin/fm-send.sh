@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell line into its terminal, best-effort.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id>] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--for-call <call-task-id>] [--fire-and-forget <delivery-id>] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -157,7 +157,15 @@
 # appends the closing resolved line to that status file, so the captain-facing
 # OPEN DECISIONS record closes at answer time and never depends on the busy
 # worker writing a matching resolved line. Ordinary keys close with
-# "resolved [key=<key>]: answered: <capped excerpt>". A reserved key
+# "resolved [key=<key>]: answered: <capped excerpt>", which
+# bin/fm-captain-hold.sh reads as a question the first mate answered itself and
+# asks it to record with `decide`. A send that relays the captain's answer to a
+# call instead passes --for-call <call-task-id>: fm-send first checks, through
+# `fm-captain-hold.sh answered`, that the call's newest recorded answer is the
+# captain's, refuses and sends nothing otherwise, and closes each key with
+# "resolved [key=<key>]: relayed <call-task-id>: <capped excerpt>", which that
+# call records. It takes --resolve-key, and it changes only the note, never
+# who an answer to a captain-held key records as its decider. A reserved key
 # (pending-reply-* today; bin/fm-classify-lib.sh's reserved-key guard) is
 # closed with the owning library's vocabulary note
 # (fm_pending_reply_close_note_for_key / fm_pending_reply_resolved_note), so
@@ -461,6 +469,7 @@ fi
 # must precede --key or the message text; everything after the last flag is the
 # message exactly as before, so ordinary sends are byte-identical.
 RESOLVE_KEYS=
+FOR_CALL=
 FIRE_AND_FORGET_ID=
 fm_send_add_resolve_key() { # <key>
   local k=$1
@@ -491,6 +500,18 @@ while :; do
   --resolve-key=*)
     fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
     shift
+    ;;
+  --for-call)
+    [ $# -ge 2 ] || {
+      echo "error: --for-call requires a call task id" >&2
+      exit 1
+    }
+    [ -z "$FOR_CALL" ] || {
+      echo "error: duplicate --for-call" >&2
+      exit 1
+    }
+    FOR_CALL=$2
+    shift 2
     ;;
   --fire-and-forget)
     [ $# -ge 2 ] || {
@@ -588,6 +609,10 @@ fm_send_resolve_close_note() { # <key> <excerpt>
     printf '%s' "$owned"
     return 0
   fi
+  if [ -n "$FOR_CALL" ]; then
+    printf 'relayed %s: %s' "$FOR_CALL" "$excerpt"
+    return 0
+  fi
   printf 'answered: %s' "$excerpt"
 }
 
@@ -607,6 +632,27 @@ if [ -n "$FIRE_AND_FORGET_ID" ]; then
       echo "error: --fire-and-forget cannot accompany --resolve-key" >&2
       exit 1
     }
+fi
+
+if [ -n "$FOR_CALL" ]; then
+  [ -n "$RESOLVE_KEYS" ] || {
+    echo "error: --for-call names the captain's call a --resolve-key answer relays, so it needs --resolve-key" >&2
+    exit 1
+  }
+  case "$FOR_CALL" in
+  '' | *[!A-Za-z0-9._-]*)
+    echo "error: --for-call '$FOR_CALL' is not a task id (allowed: A-Z a-z 0-9 . _ -)" >&2
+    exit 1
+    ;;
+  esac
+  if ! for_call_by=$("$SCRIPT_DIR/fm-captain-hold.sh" answered "$FOR_CALL"); then
+    echo "error: --for-call $FOR_CALL: no captain's answer to relay (see above); nothing was sent." >&2
+    exit 1
+  fi
+  if [ "$for_call_by" != captain ]; then
+    echo "error: --for-call $FOR_CALL: its answer was recorded by $for_call_by, not the captain, so this is not a captain's answer to relay; resend without --for-call and record your decision with fm-captain-hold.sh decide. Nothing was sent." >&2
+    exit 1
+  fi
 fi
 
 if [ -n "$RESOLVE_KEYS" ]; then

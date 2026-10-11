@@ -518,6 +518,43 @@ status_open_decisions() {  # <status-file>
   printf '%s' "$open"
 }
 
+# The keyed questions in a status stream that the first mate answered itself.
+# Prints one TAB-separated "<key>\t<answer excerpt>" line per needs-decision
+# whose key the fold now reads as closed by the resolve verb carrying the
+# `answered:` note, which only bin/fm-send.sh --resolve-key writes: the first
+# mate sent the worker an answer to an open question. A question the captain
+# answers reaches him as a call, and `fm-captain-hold.sh complete` closes its
+# key with the captain-held verb instead, or fm-send.sh --for-call relays his
+# answer with a `relayed <call>:` note, which the call it names records; so the
+# shape read here is the first mate settling the question itself, and a
+# relayed close is never listed. A key re-opened later is no longer
+# settled; a blocker is not a question and is never listed. Same per-line fold
+# as status_open_decisions, so the two can never disagree about a key.
+status_settled_decisions() {  # <status-file>
+  local f=$1 line resolve held open='' prior settled='' verb key note
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  while IFS= read -r line || [ -n "$line" ]; do
+    prior=$open
+    open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+    [ "$open" != "$prior" ] || continue
+    key=$(_fm_decision_key "$line") || continue
+    verb=$(status_line_verb "$line")
+    settled=$(_fm_decision_drop "$settled" "$key")
+    [ "$verb" = "$resolve" ] || continue
+    [ "$(_fm_open_set_verb "$prior" "$key")" = needs-decision ] || continue
+    note=$(status_line_note "$line")
+    case "$note" in
+      answered:*) note=${note#answered:}; note=${note#"${note%%[![:space:]]*}"} ;;
+      *) continue ;;
+    esac
+    [ -n "$settled" ] && settled="${settled}"$'\n'
+    settled="${settled}${key}"$'\t'"${note}"$'\n'
+  done < "$f"
+  printf '%s' "$settled"
+}
+
 # 0 when <key> has a record in a folded "<key>\t<verb>\t<note>" open set.
 _fm_open_set_has() {  # <open-set> <key>
   case "$1" in

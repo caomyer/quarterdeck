@@ -73,6 +73,10 @@
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
 # unresolved-decision completion gate verifies its captain-held inventory.
+# Every other task except a secondmate passes bin/fm-captain-hold.sh `gate`
+# instead, the same checks without the inventory attestation, so cleanup never
+# deletes an open question, an unraised proposed call, or an unrecorded answer
+# with the status log; --force after explicit discard approval overrides both.
 # Before destructive cleanup, teardown validates task check artifacts as
 # ordinary single-link files on the state device. It refuses and preserves
 # task state when that proof fails; otherwise it removes the task's check,
@@ -3222,6 +3226,18 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
       FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-captain-hold.sh" verify "$ID" >/dev/null; then
     echo "REFUSED: scout task $ID has not passed the captain-call completion gate." >&2
     echo "Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown." >&2
+    exit 1
+  fi
+elif [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
+  # Every other task passes the same captain-call gate without the scout's
+  # inventory attestation: cleanup deletes the status log and the report stays,
+  # so an open question, an unraised proposal, or an answer nobody recorded
+  # would otherwise vanish here without a word. The gate names each one and
+  # what satisfies it.
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-captain-hold.sh" gate "$ID" >/dev/null; then
+    echo "REFUSED: task $ID has not passed the captain-call gate." >&2
+    echo "Settle what the gate names above through bin/fm-captain-hold.sh before teardown, or use --force after explicit discard approval." >&2
     exit 1
   fi
 fi
