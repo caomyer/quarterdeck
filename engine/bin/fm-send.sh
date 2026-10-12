@@ -195,6 +195,14 @@
 # itself), passed to the intake as its --by, so the call's record names the
 # real decider; a send without it is refused before anything is sent. --by
 # firstmate cannot accompany --for-call, which relays a captain's answer.
+# --by names who decided a captain-held call and nothing else, so a send whose
+# keys are all status-log keys is refused with --by before anything is sent,
+# never accepted and discarded: a relayed captain answer to a worker's question
+# is sent with --for-call <call>, and an answer the first mate made itself
+# needs no --by, being recorded with `fm-captain-hold.sh decide`. When the
+# answer is delivered but the intake cannot close the call, the send exits
+# nonzero with the exact `fm-captain-hold.sh answer` command that records it,
+# naming the same decider.
 # This is what lets an answer reach a decision that has already been
 # transferred from the live status log to its durable captain-held task, which
 # the status ledger alone can no longer close.
@@ -723,6 +731,10 @@ if [ -n "$RESOLVE_KEYS" ]; then
   done
   # An answer that closes a captain-held call records who decided it, and that
   # is never assumed: the captain, or the first mate deciding on his behalf.
+  if [ -z "$RESOLVE_HOLD_KEYS" ] && [ -n "$RESOLVE_BY" ]; then
+    echo "error: --by names who decided a captain-held call, and none of --resolve-key ${RESOLVE_STATUS_KEYS} is one: each is a worker's question in its status log. To relay the captain's answer to it, send with --for-call <call> instead; an answer you made yourself needs no --by, and you record it with fm-captain-hold.sh decide. Nothing was sent." >&2
+    exit 1
+  fi
   if [ -n "$RESOLVE_HOLD_KEYS" ] && [ -z "$RESOLVE_BY" ]; then
     echo "error: --resolve-key closes the captain-held call ${RESOLVE_HOLD_KEYS}, so say who decided it: --by captain when this relays the captain's answer, or --by firstmate when you decided it yourself. Nothing was sent." >&2
     exit 1
@@ -783,15 +795,16 @@ fm_send_close_resolved_keys() { # <answer-text>
 # it does not build a decision record or choose a close path; the keys were
 # already resolved to task ids above, so the intake needs no legacy origin.
 fm_send_feed_resolved_holds() { # <answer-text>
-  local note=$1 k lines=''
+  local note=$1 k lines='' recover=''
   [ -n "$RESOLVE_HOLD_KEYS" ] || return 0
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_HOLD_KEYS; do
     lines="${lines}${k}"$'\t'"${note}"$'\t'$'\n'
+    recover="${recover}${recover:+; }bin/fm-captain-hold.sh answer $k --decision-file <file holding the answer> --by $RESOLVE_BY --via chat"
   done
   if ! printf '%s' "$lines" | "$SCRIPT_DIR/fm-captain-hold.sh" answers \
     --source "a firstmate answer sent to $RESOLVE_TASK_ID" --via chat --by "$RESOLVE_BY" >/dev/null 2>&1; then
-    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it with fm-captain-hold.sh answer - do not resend the answer." >&2
+    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it with: ${recover} - do not resend the answer." >&2
     return 1
   fi
 }

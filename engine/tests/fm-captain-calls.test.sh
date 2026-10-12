@@ -995,6 +995,36 @@ test_defer_holds_the_call_until_the_captains_day() {
   pass "defer holds a call until the captain's day, records it, keeps his words as a reply, and yields to another hold"
 }
 
+# Words the captain added to a dated "not now" wait on the first mate as his
+# reply, so they are listed as unhandled until it acts. Once it has read them
+# and the deferral stands, holding again to the same day is how it settles them:
+# the reply is gone and the call stays deferred to that day, off the captain's list.
+test_holding_to_the_same_day_settles_a_deferrals_words() {
+  local home record out
+  home=$(make_home defer-words)
+  run_captain "$home" hold sample-words --title 'Words sample' --reason 'route pending' \
+    --question 'Which route?' --option fast='Fast' --option safe='Safe' >/dev/null || fail "hold failed"
+  record="$home/state/calls/sample-words.json"
+  printf 'Unless the battery numbers land first.\n' > "$home/words.txt"
+  TZ=America/Los_Angeles CALL_NOW=2026-09-18T12:05:00Z run_captain "$home" defer sample-words \
+    --until 2026-10-03 --via quarterdeck --words-file "$home/words.txt" >/dev/null || fail "defer failed"
+  out=$(CALL_NOW=2026-09-18T12:40:00Z run_captain "$home" replies --older-than 5)
+  assert_equals "$(printf 'sample-words\t2026-09-18T12:05:00Z\tquarterdeck\tUnless the battery numbers land first.')" "$out" \
+    "words added to a deferral wait on the first mate as an unhandled reply"
+
+  TZ=America/Los_Angeles CALL_NOW=2026-09-18T12:41:00Z run_captain "$home" hold sample-words \
+    --reason 'route pending' --until 2026-10-03 >/dev/null || fail "the same-day hold failed"
+  assert_equals "" "$(CALL_NOW=2026-09-18T13:20:00Z run_captain "$home" replies --older-than 5)" \
+    "the same-day hold did not settle the words"
+  assert_equals 'open|false|dated|2026-10-03|2026-10-03|null' \
+    "$(CALL_NOW=2026-09-18T13:20:00Z call_json "$home" sample-words | jq -r '[.state, (.captain_actionable|tostring),
+      .bucket, .hold_until, .deferred.until, (.reply|tostring)] | join("|")')" \
+    "the call is no longer deferred to the captain's day"
+  assert_equals '2026-10-03|quarterdeck' "$(jq -r '[.deferred.until, .deferred.via] | join("|")' "$record")" \
+    "the same-day hold rewrote the captain's deferral"
+  pass "holding to the same day settles a deferral's words and keeps the call deferred"
+}
+
 PROPOSALS="$ROOT/tests/fixtures/proposed-call"
 
 # A finished scout still in this home: its row, its record, and a real report
@@ -1387,6 +1417,7 @@ test_replies_lists_what_waits_on_the_first_mate
 test_the_wake_drain_prints_unhandled_replies
 test_a_refused_deferral_keeps_the_reply_and_a_valid_one_clears_it
 test_defer_holds_the_call_until_the_captains_day
+test_holding_to_the_same_day_settles_a_deferrals_words
 test_a_proposed_call_is_raised_exactly_as_written
 test_a_proposal_that_does_not_parse_is_refused_at_its_line
 test_a_variant_heading_is_still_a_proposal

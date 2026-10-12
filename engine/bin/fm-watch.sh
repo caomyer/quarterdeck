@@ -78,8 +78,9 @@
 #   check: pr-check armed: <task> <url>  (or `not armed: <task> <url>: <why>`)
 #                          a queued row, not a printed reason: a ship task's
 #                          `done: PR <url>` line made the watcher run
-#                          bin/fm-pr-check.sh itself (signal_arm_pr_checks), and
-#                          the row rides the same wake as that task's signal
+#                          bin/fm-pr-check.sh itself (signal_arm_pr_checks),
+#                          detached after that task's signal wake, so the row
+#                          arrives after the wake and the next drain presents it
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
@@ -1685,7 +1686,7 @@ run_check_capture() {
 # proof or the eligible opt-in bare turn-end pane-churn proof before it is benign.
 # Also populates FM_SIGNAL_EVENTS (one `<status-file>\t<events>` line per file
 # whose span carries captain-relevant events, joined ` ; ` as the status-span
-# contract reports them) for signal_arm_pr_checks, and
+# contract reports them) for signal_pr_arm_targets, and
 # FM_SIGNAL_NEEDS_DECISION_FILES (space-separated status-file
 # paths) with exactly the files whose newly classified span carries one of the
 # decision-owned classes defined by the status-span contract, so the caller can
@@ -1733,18 +1734,24 @@ signal_files_actionable() {  # <status-file> ...
 # already writes down for arming the merge poll, so the watcher runs
 # bin/fm-pr-check.sh <task> <url> itself instead of leaving it to be copied by
 # hand: a missed run left a merged PR's task In flight with nothing watching
-# it. The check is idempotent and only records pr= and arms the poll; telling
-# the captain and judging the PR stay with firstmate. Each act, or the reason it
-# did not happen, is its own `check` row beside the signal row in the same
-# durable wake (`check: pr-check armed: <task> <url>` or `check: pr-check not
-# armed: <task> <url>: <reason>`), so firstmate is told of it in the wake it
-# already receives, and the signal row's payload stays the file list its
+# it. Only that line form arms; a ready line naming its PR any other way arms
+# nothing and stays the first mate's to run by hand. The check is idempotent
+# and only records pr= and arms the poll; telling the captain and judging the
+# PR stay with firstmate. Each run talks to the forge, so it never delays the
+# batch's wake: the caller queues the signal rows and commits their markers,
+# starts the runs detached, each bounded by FM_PR_ARM_TIMEOUT, and wakes at
+# once. Each act, or the reason it did not happen, is then its own `check` row
+# in the durable wake queue (`check: pr-check armed: <task> <url>` or `check:
+# pr-check not armed: <task> <url>: <reason>`), arriving after the wake so the
+# next drain presents it, and the signal row's payload stays the file list its
 # readers parse. Running bin/fm-pr-check.sh again with another URL overrides it.
-# FM_PR_CHECK_BIN lets tests observe the call; FM_PR_ARM_TIMEOUT bounds it.
+# FM_PR_CHECK_BIN lets tests observe the call.
 PR_CHECK_BIN=${FM_PR_CHECK_BIN:-$SCRIPT_DIR/fm-pr-check.sh}
 PR_ARM_TIMEOUT=${FM_PR_ARM_TIMEOUT:-60}
-signal_arm_pr_checks() {
-  local f events task meta line url out rc why
+# Prints one `<task>\t<url>` line per ship task in FM_SIGNAL_EVENTS whose span
+# carries a `done: PR <http(s) url>` line.
+signal_pr_arm_targets() {
+  local f events task meta line url
   while IFS=$'\t' read -r f events; do
     [ -n "$f" ] || continue
     task=$(basename "$f"); task=${task%.status}
@@ -1763,26 +1770,42 @@ signal_arm_pr_checks() {
     done <<EOF
 ${events// ; /$'\n'}
 EOF
-    [ -n "$url" ] || continue
+    [ -z "$url" ] || printf '%s\t%s\n' "$task" "$url"
+  done <<EOF
+$FM_SIGNAL_EVENTS
+EOF
+}
+
+signal_arm_pr_checks() {  # <targets>
+  local task url out rc why
+  while IFS=$'\t' read -r task url; do
+    [ -n "$task" ] || continue
     out=$(mktemp "${TMPDIR:-/tmp}/fm-watch-pr-arm.XXXXXX") || out=/dev/null
     rc=0
     fm_run_timed "$PR_ARM_TIMEOUT" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
       "$PR_CHECK_BIN" "$task" "$url" > "$out" 2>&1 < /dev/null || rc=$?
     if [ "$rc" -eq 0 ]; then
-      fm_wake_append check "pr-check-$task" "check: pr-check armed: $task $url" || exit 1
+      fm_wake_append check "pr-check-$task" "check: pr-check armed: $task $url" || return 1
       triage_log "pr-check armed: $task $url"
     else
       why=$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -n 1 | tr -d '\r')
       [ "$rc" -ne 124 ] || why="bin/fm-pr-check.sh did not finish within ${PR_ARM_TIMEOUT}s"
       fm_wake_append check "pr-check-$task" \
         "check: pr-check not armed: $task $url: ${why:-bin/fm-pr-check.sh exited $rc}; run bin/fm-pr-check.sh $task <PR url>" \
-        || exit 1
+        || return 1
       triage_log "pr-check not armed: $task $url (rc=$rc)"
     fi
     [ "$out" = /dev/null ] || rm -f "$out"
   done <<EOF
-$FM_SIGNAL_EVENTS
+$1
 EOF
+}
+
+signal_arm_pr_checks_detached() {
+  local targets
+  targets=$(signal_pr_arm_targets)
+  [ -n "$targets" ] || return 0
+  signal_arm_pr_checks "$targets" </dev/null >/dev/null 2>&1 &
 }
 
 # Surfaced-marker bookkeeping for the heartbeat backstop is owned by
@@ -2431,7 +2454,6 @@ EOF
     # shellcheck disable=SC2086  # same space-separated status-path list
     if afk_present || [ "$signal_actionable" -eq 0 ] \
       || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
-      signal_arm_pr_checks
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         file_reason="$reason"
@@ -2464,6 +2486,7 @@ EOF
       done <<EOF
 $FM_SIGNAL_SURFACE_ENDPOINTS
 EOF
+      signal_arm_pr_checks_detached
       wake "$reason"
     else
       while IFS=$(printf '\t') read -r sf sig f; do

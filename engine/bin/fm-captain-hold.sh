@@ -47,7 +47,8 @@
 #   fm-captain-hold.sh gate <task-id>
 #   fm-captain-hold.sh list [--json] [--since <days>]
 #   fm-captain-hold.sh migrate
-#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--key <option-key>] [--via <channel>]
+#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--key <option-key>] [--via <channel>] \
+#     [--by captain|firstmate]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance> [--via <channel>] \
 #     [--by captain|firstmate]   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
@@ -152,6 +153,10 @@
 # match; anything else prints `unchanged:` and writes nothing. Output:
 # `deferred: <task-id> until <day>`. The first mate overrides it as it does
 # any hold: `offer` asks again, and another `hold` moves or lifts the date.
+# Once the first mate has read words that leave the deferral standing, it
+# settles them with `hold <task-id> --reason <its reason> --until <the same
+# day>`, which clears the reply as every `hold` does and keeps the call
+# deferred to that day.
 # `replies` is the read-only report of replies still waiting on the first mate:
 # one `<task-id>\t<at>\t<via>\t<first line of the words>` line per open call
 # whose reply is at least --older-than minutes old (default 0), silent when
@@ -465,7 +470,10 @@
 # exact retries arriving later or through `answer` instead of `answers`, keep
 # matching; a retry never rewrites an existing block. `answer --key` must name
 # one of the call's recorded options (or, with none recorded, be a well-formed
-# key); --by and --label are internal to `answers` and `decide`.
+# key); --label is internal to `answers` and `decide`. `answer --by` names who
+# decided, `captain` (the default) or `firstmate`, exactly as `answers --by`
+# does, so recording by hand an answer the first mate gave itself, such as one
+# fm-send.sh delivered but could not close, never names the captain.
 # CHANNEL VOCABULARY. `Answered via:` is always one of a closed set of tokens,
 # never provenance prose, so a surface can say where the captain answered:
 #   quarterdeck  the Quarterdeck app

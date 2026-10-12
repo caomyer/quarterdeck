@@ -33,13 +33,13 @@
       "call": "foreman-auto-merge",
       "until": "2026-10-03",
       "words": null,
-      "text": "The captain deferred call foreman-auto-merge from Bearings until 2026-10-03; bin/fm-captain-hold.sh defer has already held it with --until 2026-10-03, so it asks the captain again that day. Do not hold it again.\nTo ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date."
+      "text": "The captain deferred call foreman-auto-merge from Bearings until 2026-10-03; bin/fm-captain-hold.sh defer has already held it with --until 2026-10-03, so it asks the captain again that day.\nTo ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date."
     },
     {
       "call": "res-wifi-drop",
       "until": "2027-01-04",
       "words": "Unless the battery numbers land first.",
-      "text": "The captain deferred call res-wifi-drop from Bearings until 2027-01-04; bin/fm-captain-hold.sh defer has already held it with --until 2027-01-04, so it asks the captain again that day. Do not hold it again.\nTo ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date.\nThe captain added words, kept on the call as the captain's reply; nothing has recorded them. Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone.\nThe captain said: Unless the battery numbers land first."
+      "text": "The captain deferred call res-wifi-drop from Bearings until 2027-01-04; bin/fm-captain-hold.sh defer has already held it with --until 2027-01-04, so it asks the captain again that day.\nTo ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date.\nThe captain added words, kept on the call as the captain's reply; nothing has recorded them. Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone. Once you have read them and the deferral stands, settle them with bin/fm-captain-hold.sh hold res-wifi-drop --reason <its reason> --until 2027-01-04, which keeps it deferred to that day.\nThe captain said: Unless the battery numbers land first."
     }
   ]
 }
