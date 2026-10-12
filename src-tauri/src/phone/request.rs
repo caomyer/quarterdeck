@@ -131,9 +131,16 @@ const SAY_LIMIT: usize = 20_000;
 const CHAT_DEFAULT: usize = 40;
 const CHAT_MAX: usize = 200;
 
-/// Refuses a write once the phone has been revoked. Each write checks it just
-/// before it starts, and once past it runs to completion: a revoke stops what has
-/// not begun and never leaves a write half done.
+/// Where a revoke stops a request: just before its first write, and nowhere else.
+/// Everything a handler does before this check only reads (the snapshot, the
+/// call's options, where the page lives), so a request refused here leaves
+/// nothing behind. A review write makes the check only once it holds
+/// [`Writes`](crate::review::Writes), so no other write to the review is part way
+/// when it is refused. A request past it runs every write it makes to the end, in
+/// order: firstmate's intake, the review log, the author's inbox, the message to
+/// the first mate and the note that it went. Stopping between those would leave
+/// a call closed and the first mate never told, or a review delivered and not on
+/// record, so a revoke never does.
 fn unrevoked(paired: &Paired) -> Result<(), String> {
     if !paired() {
         return Err("this phone has been revoked".to_string());
