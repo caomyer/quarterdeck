@@ -31,8 +31,15 @@ test("the host's diagnostics, and events with no error, stay undrawn", () => {
 });
 
 test("a permission the host answered without asking is a line in the chat", () => {
-  assert.equal(permissionLine({ title: "Run git push", chose: "allow" }), "Allowed without asking you, as this home's permission mode says: Run git push");
-  assert.equal(permissionLine({ title: "Delete the build folder", chose: "reject_once" }), "Refused without asking you, as this home's permission mode says: Delete the build folder");
-  assert.equal(permissionLine({ title: "", chose: "allow" }), "Allowed without asking you, as this home's permission mode says: an action the first mate asked for");
+  assert.equal(permissionLine({ title: "Run git push", chose: "opt-1", kind: "allow_once" }), "Allowed without asking you, as this home's permission mode says: Run git push");
+  assert.equal(permissionLine({ title: "Delete the build folder", chose: "deny", kind: "reject_once" }), "Refused without asking you, as this home's permission mode says: Delete the build folder");
+  assert.equal(permissionLine({ title: "", chose: "allow", kind: "allow_always" }), "Allowed without asking you, as this home's permission mode says: an action the first mate asked for");
   assert.equal(permissionLine({}), null);
+});
+
+test("a permission answered with an option of no known kind claims neither allowed nor refused", () => {
+  for (const payload of [{ title: "Run git push", chose: "reject_once" }, { title: "Run git push", chose: "allow", kind: null }, { title: "Run git push", chose: "allow", kind: "custom" }]) {
+    const line = permissionLine(payload);
+    assert.equal(line, `Answered without asking you with option ${payload.chose}, as this home's permission mode says: Run git push`);
+  }
 });

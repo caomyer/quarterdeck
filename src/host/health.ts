@@ -38,10 +38,13 @@ export function errorWarning(payload: HealthPayload): string | null {
  * The chat's line for a permission the host answered without asking the captain, in a home whose permission mode
  * skips prompts, so what the first mate was let do is never invisible. Null for an event naming nothing.
  */
-export function permissionLine(payload: { title?: unknown; chose?: unknown }): string | null {
+export function permissionLine(payload: { title?: unknown; chose?: unknown; kind?: unknown }): string | null {
   const title = typeof payload.title === "string" ? payload.title.trim() : "";
   const chose = typeof payload.chose === "string" ? payload.chose : "";
+  const kind = typeof payload.kind === "string" ? payload.kind : "";
   if (!title && !chose) return null;
-  const verb = chose.startsWith("reject") ? "Refused" : "Allowed";
-  return `${verb} without asking you, as this home's permission mode says: ${title || "an action the first mate asked for"}`;
+  const what = `as this home's permission mode says: ${title || "an action the first mate asked for"}`;
+  if (kind.startsWith("reject")) return `Refused without asking you, ${what}`;
+  if (kind.startsWith("allow")) return `Allowed without asking you, ${what}`;
+  return `Answered without asking you with option ${chose || "(none)"}, ${what}`;
 }

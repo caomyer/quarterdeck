@@ -497,7 +497,7 @@ export type HostEvent =
   | { type: "prompt_result"; payload: { id: string; stop_reason?: string; error?: string | null; usage?: Record<string, number> } }
   | { type: "usage"; payload: UsageEvent }
   | { type: "compact"; payload: CompactEvent }
-  | { type: "permission"; payload: Record<string, unknown> }
+  | { type: "permission"; payload: { title?: string; chose?: string; /** The kind of the option the host answered with, as the adapter offered it. */ kind?: string | null } }
   | { type: "permission_request"; payload: PermissionRequest }
   | { type: "permission_resolved"; payload: { id: string; option_id: string } }
   | { type: "host_health"; payload: { warning?: string; rewake_storm?: boolean; [key: string]: unknown } }
