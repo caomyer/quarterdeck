@@ -779,7 +779,7 @@ await resumed.close();
   const opened = await offers(cellularCard);
   check(JSON.stringify(opened) === JSON.stringify({ choices: ["Pause, and carry on when Wi-Fi is back\nRECOMMENDED", "Finish on cellular if under 20 MB are left", "Not now"], words: ["Or answer in words"] }), `an argued call opens to its options, Not now and words (${JSON.stringify(opened)})`);
 
-  // Not now waits for its day, then is kept on the call as the captain's reply, with anything added.
+  // Not now waits for its day, then is carried out by firstmate's `defer`, with anything added kept as his reply.
   await cellularCard.locator(".suggestion-chips button", { hasText: "Not now" }).click();
   check(await cellularCard.locator(".decision-actions button", { hasText: "Send" }).isDisabled(), "Not now sends nothing until it has a day");
   check((await cellularCard.locator(".decision-actions > span").innerText()) === "Pick the day to be asked again", "and says what it is waiting for");
@@ -790,11 +790,11 @@ await resumed.close();
   await cellularCard.locator(".date-field input").fill("2026-10-03");
   await cellularCard.locator(".reply-field textarea").fill("After the launch, once we see real traffic.");
   check((await cellularCard.locator(".reply-field span").innerText()) === "Anything to add for the first mate?", "words go with Not now rather than instead of it");
-  check((await cellularCard.locator(".decision-actions > span").innerText()) === "→ keeps your words on the call for the first mate: Not now. Ask me again on Oct 3. After the launch, once we see real traffic.", "the dated Not now says what it keeps, words and all");
+  check((await cellularCard.locator(".decision-actions > span").innerText()) === "→ holds it until Oct 3, and keeps your words on the call for the first mate", "the dated Not now says it holds the call, and keeps the words");
   await shot(argued, "25-argued-not-now");
   await cellularCard.locator(".decision-actions button", { hasText: "Send" }).click();
-  await cellularCard.locator("[data-testid='call-replied']").waitFor();
-  check((await cellularCard.locator("[data-testid='call-said']").innerText()).includes("Not now. Ask me again on Oct 3."), "the card shows the Not now kept on the call");
+  await cellularCard.waitFor({ state: "detached" });
+  check(true, "held until its day, the argued call leaves Captain's call at once");
 
   // Words alone, on a call argued by a scout's report.
   const transcripts = argued.locator(".decision-card[data-call-id='res-transcripts-source']");
@@ -805,7 +805,7 @@ await resumed.close();
   await transcripts.locator("[data-testid='call-replied']").waitFor();
   await argued.locator(".nav-item", { hasText: "Chat" }).click();
   const told = await sentTexts(argued);
-  check(told.some((text) => text.includes("The captain replied to call res-model-cellular from Bearings") && text.includes("Not now. Ask me again on Oct 3. After the launch")), "the dated Not now reaches the first mate, naming the call");
+  check(told.some((text) => text.includes("The captain deferred call res-model-cellular from Bearings until 2026-10-03;") && text.includes("The captain said: After the launch, once we see real traffic.")), "the first mate is told the call was deferred, with the words he added");
   check(told.some((text) => text.includes("The captain replied to call res-transcripts-source from Bearings") && text.includes("Publisher first, but log every episode")), "an argued call answered in words reaches the first mate, naming the call");
   await argued.close();
 }
@@ -833,8 +833,8 @@ await resumed.close();
   check((await download.locator(".decision-staged").innerText()) === "Pick the day to be asked again", "Not now in the page waits for its day");
   check((await rail.locator(".send-review").innerText()) === "Send review", "and stages nothing until it has one");
   await download.locator(".date-field input").fill("2026-10-03");
-  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
-  check((await rail.locator(".send-review").innerText()) === "Send review · 1", "a dated Not now goes with the review");
+  await download.locator(".decision-staged", { hasText: "which holds the call until Oct 3" }).waitFor();
+  check((await rail.locator(".send-review").innerText()) === "Send review · 1", "a dated Not now goes with the review, which holds the call");
   // Choosing an option instead takes the day back.
   await download.locator(".decision-choices button", { hasText: "Wi-Fi only" }).click();
   await download.locator(".decision-staged", { hasText: "recorded as it is sent" }).waitFor();
@@ -864,7 +864,7 @@ await resumed.close();
   check((await download.locator(".decision-choices button.selected").innerText()).includes("Wi-Fi only") && (await download.locator(".reply-field textarea").inputValue()) === "Say so in Settings too.", "a staged option keeps what was added to it after another page");
   await download.locator(".decision-choices button", { hasText: "Not now" }).click();
   await download.locator(".date-field input").fill("2026-10-03");
-  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  await download.locator(".decision-staged", { hasText: "which holds the call until Oct 3" }).waitFor();
   await visitElsewhere();
   check((await download.locator(".decision-choices button", { hasText: "Not now" }).getAttribute("aria-pressed")) === "true" && (await download.locator(".date-field input").inputValue()) === "2026-10-03", "a staged Not now keeps its day after another page");
   await download.locator(".decision-choices button", { hasText: "Wi-Fi only" }).click();
@@ -912,8 +912,8 @@ await resumed.close();
   await rail.close();
 }
 
-// `?day-comes`: a dated Not now went with a review, so the first mate held the call until that day and it left
-// Captain's call; then the day came and firstmate asked again, its content and `updated_at` untouched. It is
+// `?day-comes`: a dated Not now went with a review, so firstmate's `defer` held the call until that day as the review
+// went and it left Captain's call; then the day came and firstmate asked again, its content and `updated_at` untouched. It is
 // answerable again in Bearings and in the page, which keeps what was said then, and takes a new answer.
 {
   const again = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -929,10 +929,15 @@ await resumed.close();
   const download = again.locator("[data-testid='decision-answer'][data-call-id='res-model-download']");
   await download.locator(".decision-choices button", { hasText: "Not now" }).click();
   await download.locator(".date-field input").fill("2026-10-03");
-  await download.locator(".decision-staged", { hasText: "for the first mate to record" }).waitFor();
+  await download.locator(".decision-staged", { hasText: "which holds the call until Oct 3" }).waitFor();
   await again.locator(".send-review").click();
-  await download.locator(".decision-sent").waitFor();
-  check((await download.locator(".decision-sent").innerText()).startsWith("Sent to the first mate ") && (await download.locator(".decision-sent").innerText()).endsWith("for it to record") && await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "held until its day, the page shows the Not now that went and asks nothing");
+  await download.locator("[data-testid='call-held']").waitFor();
+  check((await download.locator("[data-testid='call-held']").innerText()).startsWith("Held until Oct 3 · went with your review ") && await download.locator("textarea, .decision-choices button:not(:disabled)").count() === 0, "held until its day, the page says so and asks nothing");
+  await download.scrollIntoViewIfNeeded();
+  await shot(again, "28-rail-held");
+  await again.locator(".nav-item", { hasText: "Chat" }).click();
+  const heldReview = await sentText(again.locator("[data-testid='review-card']").last());
+  check(heldReview.includes("\nDeferred: res-model-download until 2026-10-03") && !heldReview.includes("res-model-download: Not now"), "the review tells the first mate the call is held, not that it should hold it");
 
   await again.locator(".nav-item", { hasText: "Bearings" }).click();
   const card = again.locator(".decision-card[data-call-id='res-model-download']");
@@ -959,7 +964,7 @@ await resumed.close();
   await again.locator(".nav-item", { hasText: "Chat" }).click();
   const texts = await Promise.all((await again.locator("[data-testid='review-card']").all()).map((item) => sentText(item)));
   check(texts.at(-1).includes("Recorded: res-model-download = wifi-only"), "the next review carries the new answer");
-  check(texts.at(-2).includes("\nres-model-download: Not now. Ask me again on 2026-10-03."), "the review that carried the Not now still says what it was");
+  check(texts.at(-2).includes("\nDeferred: res-model-download until 2026-10-03"), "the review that carried the Not now still says what it was");
   await again.close();
 }
 

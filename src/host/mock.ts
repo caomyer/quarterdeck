@@ -505,7 +505,38 @@ const REPLY_ACTION = "Record one with bin/fm-captain-hold.sh answer only if the 
 
 /** An answer in words as a review carries it, the way `answer_words` in `src-tauri/src/review.rs` says it. */
 function reviewWords(answer: ReviewView["answers"][number]) {
-  return [answer.defer ? `Not now. Ask me again on ${answer.defer}.` : "", answer.note?.trim() ?? ""].filter(Boolean).join(" ");
+  if (answer.defer) return [`Not now. Ask me again on ${answer.defer}.`, answer.note?.trim() ?? ""].filter(Boolean).join(" ");
+  return [answer.option ? (answer.label?.trim() || answer.option) : "", answer.note?.trim() ?? ""].filter(Boolean).join(". ");
+}
+
+/** An option the intake takes, as `is_keyed` in `src-tauri/src/review.rs` judges it: on a call that says how it closes. */
+function keyed(answer: ReviewView["answers"][number]) {
+  return answer.option !== null && (recorded(answer) || answer.on_answer === "done" || answer.on_answer === "release");
+}
+
+/** How the first mate undoes a deferral, and what it does with words added to one, as `src-tauri/src/review.rs` says them. */
+const DEFER_OVERRIDE = "To ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date.";
+const DEFER_WORDS_ACTION = "Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone.";
+
+/** The lines the app's composer writes for the calls a review put off to a day, as `deferred_lines` does. */
+function deferredLines(answers: ReviewView["answers"]) {
+  if (!answers.length) return [];
+  return [
+    `Not now, already held until the captain's day with bin/fm-captain-hold.sh defer; do not hold them again. ${DEFER_OVERRIDE}`,
+    ...answers.flatMap((answer) => [
+      `Deferred: ${answer.decision} until ${answer.defer}`,
+      ...(answer.note?.trim() ? [`  The captain added, kept on the call as his reply: ${answer.note.trim()}`, `  ${DEFER_WORDS_ACTION}`] : []),
+    ]),
+  ];
+}
+
+/** What the first mate is told when the captain puts a call off from Bearings, as `defer_message` words it. */
+function deferMessage(call: string, until: string, words: string | null) {
+  return [
+    `The captain deferred call ${call} from Bearings until ${until}; bin/fm-captain-hold.sh defer has already held it with --until ${until}, so it asks the captain again that day. Do not hold it again.`,
+    DEFER_OVERRIDE,
+    ...(words ? [`The captain added words, kept on the call as the captain's reply; nothing has recorded them. ${DEFER_WORDS_ACTION}`, `The captain said: ${words}`] : []),
+  ].join("\n");
 }
 
 /** The lines the app's composer writes for answers in words, each kept on its call as the captain's reply. */
@@ -885,19 +916,36 @@ export class MockHostAdapter implements HostAdapter {
   }
 
   /**
-   * What the first mate does with a dated Not now a review carried: holds the call until that day, so firstmate stops
-   * asking the captain and the call leaves Captain's call. A hold writes no content, so `updated_at` stays as it was,
-   * and like every hold it clears the captain's reply, since the first mate has acted on it.
-   * `?day-comes`: the day comes a few seconds later, and the call asks the captain again.
+   * firstmate's `defer`, exactly as `bin/fm-captain-hold.sh` does it: it holds an open call until the captain's day,
+   * so it leaves Captain's call at once, records `deferred` on the call, and keeps any words he added as his reply,
+   * the hold having cleared the one before. It refuses what `reply` refuses, with its one-line reason; an exact retry
+   * changes nothing, and a message only fills itself in on the deferral and its reply. A hold writes no content, so
+   * `updated_at` stays as it was. `?day-comes`: the day comes a few seconds later, and the call asks the captain again.
    */
-  private holdUntilTheDay(decisions: string[]) {
-    if (!decisions.length || !this.snapshot.fleet.calls) return;
-    const asking = (actionable: boolean) => {
-      this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((call) => decisions.includes(call.id) ? { ...call, captain_actionable: actionable, reply: null } : call) };
-      this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
-    };
-    this.later(1200, () => asking(false));
-    if (reviewFlag("day-comes")) this.later(5000, () => asking(true));
+  private deferCall(id: string, until: string, words: string | null, via: string, message: string | null = null): string | null {
+    const calls = this.snapshot.fleet.calls;
+    if (!calls) return "this home's firstmate is older than replies on a call; update firstmate, or answer in chat";
+    const call = calls.find((item) => item.id === id);
+    if (!call) return `call ${id} is not in this home's backlog`;
+    if (call.state === "closed" || (reviewValue("reply-refused") ?? "").split(",").includes(id)) return `call ${id} is already closed`;
+    if (call.state === "answered") return `call ${id} already has a recorded answer`;
+    const current = call.deferred ?? null;
+    if (message) {
+      if (!current || current.until !== until || current.via !== via || current.message !== null) return null;
+      const reply = call.reply && words && call.reply.words === words && call.reply.via === via && call.reply.message === null ? { ...call.reply, message } : call.reply;
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, deferred: { ...current, message }, reply } : item) };
+    } else {
+      const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      const previous = call.reply ? { words: call.reply.words, via: call.reply.via, at: call.reply.at, message: call.reply.message } : null;
+      const reply = words ? { words, via, at, message: null, previous } : null;
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, captain_actionable: false, bucket: "dated", deferred: { until, via, at, message: null }, reply } : item) };
+      if (reviewFlag("day-comes")) this.later(5000, () => {
+        this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((item) => item.id === id ? { ...item, captain_actionable: true, bucket: "live" } : item) };
+        this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+      });
+    }
+    this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
+    return null;
   }
 
   /** The dev server serves the review pages at the same paths the app's `artifact` scheme does. */
@@ -1004,7 +1052,7 @@ export class MockHostAdapter implements HostAdapter {
   private recordStaged(ref: ArtifactRef, only?: string) {
     const current = this.review(ref);
     // As in the app: the intake takes only an option's key, so an answer in words never goes to it.
-    const staged = current.answers.filter((answer) => answer.option !== null && answer.sent_at === null && !answer.recorded && (!only || answer.decision === only));
+    const staged = current.answers.filter((answer) => keyed(answer) && answer.sent_at === null && !answer.recorded && (!only || answer.decision === only));
     const outcomes = this.intake(staged.map((answer) => ({ call: answer.decision, key: answer.option!, label: answer.label ?? answer.option! })));
     const at = Date.now();
     const answers = current.answers.map((answer) => {
@@ -1076,6 +1124,19 @@ export class MockHostAdapter implements HostAdapter {
     const message = await this.send(text);
     this.keepReply(call, said, "quarterdeck", message);
     return { kept: true, message, text };
+  }
+
+  async callDefer(call: string, until: string, words: string | null) {
+    const said = words?.trim() || null;
+    const problem = this.deferCall(call, until, said, "quarterdeck");
+    if (problem) return { kept: false, problem, message: null, text: null };
+    const text = deferMessage(call, until, said);
+    if (reviewFlag("reply-not-told")) {
+      return { kept: true, deferred: true, message: null, text, warning: `Held until ${until}, but the first mate was not told: no firstmate home has been started. It sees the call held when it next looks.` };
+    }
+    const message = await this.send(text);
+    this.deferCall(call, until, said, "quarterdeck", message);
+    return { kept: true, deferred: true, message, text };
   }
 
   async reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
@@ -1153,17 +1214,25 @@ export class MockHostAdapter implements HostAdapter {
     const current = this.review(ref);
     const draft = current.threads.filter((thread) => thread.sent_at === null);
     const told = current.answers.filter((answer) => answer.sent_at === null && answer.recorded?.result === "closed");
-    // Answers in words go with every review until one carries them, each kept on its call as the captain's reply first.
-    const worded = current.answers.filter((answer) => answer.option === null && answer.sent_at === null && !answer.recorded).map((answer) => {
+    // Answers in words go with every review until one carries them, each kept on its call as the captain's reply first;
+    // a dated not now is carried out by `defer`, and an option the intake cannot take goes as words in its own label.
+    const unkeyed = current.answers.filter((answer) => !keyed(answer) && answer.sent_at === null && !answer.recorded).map((answer) => {
+      if (answer.defer) {
+        const problem = this.deferCall(answer.decision, answer.defer, answer.note?.trim() || null, "review");
+        return { ...answer, reply: problem ? { result: "not_kept" as const, detail: problem } : { result: "deferred" as const, detail: answer.defer } };
+      }
       const problem = this.keepReply(answer.decision, reviewWords(answer), "review");
       return { ...answer, reply: problem ? { result: "not_kept" as const, detail: problem } : { result: "kept" as const, detail: "" } };
     });
+    const deferred = unkeyed.filter((answer) => answer.reply.result === "deferred");
+    const worded = unkeyed.filter((answer) => answer.reply.result !== "deferred");
     const said = { approve: "Approved.", changes: "Requests changes.", comment: "Comments only, nothing is blocked." }[verdict];
     const relay = this.deliverReview(ref, rev, current.sent.length + 1);
     const text = [
       `Captain's review of "${ref.name}" (rev ${rev}): ${said}`,
       ...(relay ? [relay.line] : []),
       ...recordedLines(told),
+      ...deferredLines(deferred),
       ...wordedLines(worded),
       // The same shape the app's own composer writes, so the browser review sees what a first mate would.
       ...draft.flatMap((thread) => {
@@ -1178,11 +1247,11 @@ export class MockHostAdapter implements HostAdapter {
     ].join("\n");
     const message = await this.send(text);
     for (const answer of worded) if (answer.reply.result === "kept") this.keepReply(answer.decision, reviewWords(answer), "review", message);
+    for (const answer of deferred) this.deferCall(answer.decision, answer.defer!, answer.note?.trim() || null, "review", message);
     const at = Date.now();
-    const carried = [...told, ...worded];
+    const carried = [...told, ...unkeyed];
     const went = (answer: ReviewView["answers"][number]) => carried.some((item) => item.decision === answer.decision && item.at === answer.at);
-    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => went(answer) ? { ...answer, sent_at: at, told: true, reply: worded.find((item) => item.decision === answer.decision)?.reply ?? answer.reply } : answer) });
-    this.holdUntilTheDay(worded.filter((answer) => answer.defer).map((answer) => answer.decision));
+    this.reviews.set(`${ref.scope}/${ref.task}/${ref.name}`, { ...current, answers: current.answers.map((answer) => went(answer) ? { ...answer, sent_at: at, told: true, reply: unkeyed.find((item) => item.decision === answer.decision)?.reply ?? answer.reply } : answer) });
     const review = this.settle(
       ref,
       current.threads.map((thread) => thread.sent_at === null ? { ...thread, sent_at: at, told: true, state: "open" as const } : thread),
@@ -1394,7 +1463,6 @@ export class MockHostAdapter implements HostAdapter {
       return id;
     }
     if (reviewFlag("records-reply") || reviewFlag("reasks")) this.actOnReplies(id);
-    if (reviewFlag("chat-calls") && reviewFlag("holds-reply")) this.holdReplies(id);
     const turn = reviewFlag("chat-calls") ? CHAT_CALL_TURNS.find((item) => item.asks === text.trim()) : undefined;
     const run = () => turn ? this.chatCallsTurn(id, text, turn) : text.startsWith("Start work on ") ? this.startTurn(id, text) : text.startsWith("Take on ") ? this.takeOnTurn(id, text) : this.deliver(id, text);
     if (this.state === "starting") this.deferred.push(run);
@@ -1420,21 +1488,6 @@ export class MockHostAdapter implements HostAdapter {
           ? { ...call, state: "closed" as const, captain_actionable: false, reply: null, answer: { key: null, label: call.reply!.words.split("\n")[0].slice(0, 200), by: "captain" as const, via: "quarterdeck", at } }
           : { ...call, reply: null, updated_at: at, question: `${call.question ?? call.title} (asked again after your reply)` };
       }) };
-      this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
-    });
-  }
-
-  /**
-   * `?chat-calls` with `?holds-reply`: the first mate acts on a dated Not now a message carried as the captain's reply
-   * the way firstmate lets it, with `hold --until`, which clears the reply and stops asking him until that day. A hold
-   * writes no content, so neither `raised_at` nor `updated_at` moves. "The day has come" asks him again.
-   */
-  private holdReplies(message: string) {
-    this.later(2500, () => {
-      const calls = this.snapshot.fleet.calls;
-      const held = calls?.filter((call) => call.state === "open" && call.reply?.message === message && /^Not now\. Ask me again on /.test(call.reply.words)) ?? [];
-      if (!held.length) return;
-      this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls!.map((call) => held.includes(call) ? { ...call, reply: null, captain_actionable: false, bucket: "deferred" } : call) };
       this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
     });
   }
@@ -2200,7 +2253,7 @@ export class MockHostAdapter implements HostAdapter {
       if (item.type === "tool_call" || (item.type === "update" && raw.kind === "tool_call_update")) {
         const update = (raw.update ?? {}) as Record<string, unknown>;
         this.emit({ type: item.type === "tool_call" ? "tool_call" : "tool_update", payload: { id: String(update.toolCallId), title: (update.title ?? raw.title) as string | undefined, kind: update.kind as string | undefined, status: update.status as string | undefined } });
-      } else if (["session", "history", "state", "text", "outbox", "prompt_result", "usage", "compact", "host_health", "permission_request", "permission_resolved"].includes(item.type)) {
+      } else if (["session", "history", "state", "text", "outbox", "prompt_result", "usage", "compact", "host_health", "permission", "permission_request", "permission_resolved"].includes(item.type)) {
         this.emit(this.normalize(item.type as HostEvent["type"], raw));
       }
     }

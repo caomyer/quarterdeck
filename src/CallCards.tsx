@@ -145,7 +145,8 @@ export function AnswerCard({ callId, messageId, view, time, sent }: {
       <CircleCheck size={15} className="tone-green" /><span className="grow">Your call · <strong>{view.title}</strong> · {view.said}</span><span className="call-pill">closed</span>
     </article>;
   }
-  const recorded = view.kind === "recorded";
+  // A recorded option and a deferral carried out are done; words wait on the first mate.
+  const recorded = view.kind === "recorded" || view.kind === "deferred";
   return <article className={`answer-chat-card tone-${view.tone}`} data-testid="answer-card" data-kind={view.kind} data-call-id={callId} data-message-id={messageId} data-tone={view.tone}>
     <span className="answer-chat-kicker">{view.kicker}</span>
     <strong className="answer-chat-title">{view.title}</strong>

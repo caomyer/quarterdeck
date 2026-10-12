@@ -12,7 +12,7 @@
  * Pure functions only: no React, no host.
  */
 import type { Call } from "./host/types";
-import type { CallStanding, MessageAnswer } from "./calls";
+import { askAgainDay, type CallStanding, type MessageAnswer } from "./calls.ts";
 
 /** The captain's words kept on a call that nothing has recorded yet: what he said, and when. */
 export type ReplyWords = { words: string; at: string };
@@ -47,8 +47,8 @@ export function callLine(call: Call, standing: CallStanding, earlier: EarlierWor
     case "in-review":
       return { kind: "in-review", tone: "green", detail: "answered in your review of", pill: null, page: standing.page, pick: null };
     case "held": {
-      // The day comes from what he said; after a relaunch with that out of reach, the line does not guess one.
-      const day = earlier ? notNowDay(earlier.words) : null;
+      // The day is the one firstmate's `defer` recorded, or else what he said; with neither in reach, it is not guessed.
+      const day = call.deferred?.until ? askAgainDay(call.deferred.until) : earlier ? notNowDay(earlier.words) : null;
       return { kind: "held", tone: "amber", detail: day ? `not now, ask again ${day}` : "not now, held", pill: "held", page: null, pick: null };
     }
     case "closed":
@@ -146,6 +146,21 @@ export function answerCardView(answer: MessageAnswer, call: Call | undefined, { 
     const kicker = `Your answer${from === "chat" ? " · in chat" : from === "bearings" ? " · from Bearings" : ""}`;
     const status = askedAgain || !delivery ? "Recorded" : `Recorded · ${delivery}`;
     return { kind: "recorded", line: call === undefined, kicker, title, said: answer.label, note: answer.note, tone: "green", status, askedAgain };
+  }
+  if (answer.kind === "deferred") {
+    // Held until the day by firstmate's `defer`, so the date is done, not waiting on anyone; words he added stay amber
+    // while the call carries them as his reply, since only the first mate can say what they mean.
+    const day = askAgainDay(answer.until);
+    const heldNow = call !== undefined && call.state === "open" && call.captain_actionable === false && call.deferred?.until === answer.until;
+    const wordsWaiting = answer.words !== null && reply !== null && sameWords(reply.words, answer.words);
+    const [tone, status]: [Tone, string] = !call
+      ? ["muted", "The call has closed"]
+      : call.state !== "open"
+        ? call.answer?.by === "captain" ? ["green", `Recorded: ${call.answer.label}`] : ["muted", "The call has closed"]
+        : heldNow
+          ? wordsWaiting ? ["amber", `Held until ${day} · your words are with the first mate`] : ["green", `Held until ${day}${delivery && !askedAgain ? ` · ${delivery}` : ""}`]
+          : ["muted", "Not held now · the first mate asked again, or the day came"];
+    return { kind: "deferred", line: false, kicker: "Your answer · not now", title, said: `Not now. Ask me again on ${day}.`, note: answer.words, tone, status, askedAgain };
   }
   const [tone, status]: [Tone, string] = !call
     ? ["muted", "The call has closed"]

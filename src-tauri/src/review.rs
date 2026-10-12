@@ -81,7 +81,7 @@
 //!
 //! Commands: `review_get`, `review_comment`, `review_discard`, `review_submit`,
 //! `review_settle`, `review_seen`, `review_summary`, `review_answer`,
-//! `review_scene`, `call_answer`, `call_reply`.
+//! `review_scene`, `call_answer`, `call_reply`, `call_defer`.
 
 use crate::artifact;
 use crate::calls::{self, Keyed, Outcome};
@@ -369,9 +369,12 @@ fn is_staged(answer: &Value) -> bool {
     answer["recorded"].is_null() && answer["sent_at"].is_null()
 }
 
-/// One of the call's options, which is what the intake takes; an answer in words has none.
+/// One of the call's options on a call that says how an answer closes it,
+/// which is what the intake takes. An answer in words has no option, and an
+/// option on a call with no close mode is one the intake refuses, so it goes
+/// as words in its own label (`answer_words`), never dropped.
 fn is_keyed(answer: &Value) -> bool {
-    answer["option"].is_string()
+    answer["option"].is_string() && (is_recorded(answer) || answer["on_answer"].as_str().is_some_and(|mode| calls::MODES.contains(&mode)))
 }
 
 /// Staged, and one the intake can take.
@@ -578,8 +581,10 @@ pub fn compose(revision: &Value, verdict: &str, threads: &[Value], answers: &[Va
     let block = review_block(revision, verdict, threads, log)?;
     let (header, rest) = block.split_once('\n').unwrap_or((block.as_str(), ""));
     let mut lines = vec![header.to_string(), author_line(revision, relay)];
-    let (keyed, worded): (Vec<Value>, Vec<Value>) = answers.iter().cloned().partition(is_keyed);
+    let (keyed, unkeyed): (Vec<Value>, Vec<Value>) = answers.iter().cloned().partition(is_keyed);
+    let (deferred, worded): (Vec<Value>, Vec<Value>) = unkeyed.into_iter().partition(is_deferred);
     lines.extend(recorded_lines(&keyed));
+    lines.extend(deferred_lines(&deferred));
     lines.extend(worded_lines(&worded));
     lines.push(rest.to_string());
     Ok(lines.join("\n"))
@@ -625,6 +630,47 @@ fn worded_lines(answers: &[Value]) -> Vec<String> {
     lines
 }
 
+/// The calls the captain put off to a day in this review, already held until
+/// then by firstmate's `defer`, so the first mate is told what was done rather
+/// than asked to do it. Words he added stay his reply, for the first mate to read.
+fn deferred_lines(answers: &[Value]) -> Vec<String> {
+    if answers.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!("Not now, already held until the captain's day with bin/fm-captain-hold.sh defer; do not hold them again. {DEFER_OVERRIDE}")];
+    for answer in answers {
+        let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
+        let until = answer.get("defer").and_then(Value::as_str).unwrap_or("?");
+        lines.push(format!("Deferred: {decision} until {until}"));
+        if let Some(note) = answer["note"].as_str().map(str::trim).filter(|note| !note.is_empty()) {
+            lines.push(format!("  The captain added, kept on the call as his reply: {}", shorten(note, 1200)));
+            lines.push(format!("  {DEFER_WORDS_ACTION}"));
+        }
+    }
+    lines
+}
+
+/// How the first mate undoes a deferral it should not stand by.
+const DEFER_OVERRIDE: &str = "To ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date.";
+
+/// What the first mate does with words the captain added to a deferral.
+const DEFER_WORDS_ACTION: &str = "Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone.";
+
+/// What the first mate is told when the captain puts a call off to a day from
+/// Bearings: that firstmate's `defer` has already held it until then, with the
+/// year, and any words he added, kept on the call as his reply.
+pub fn defer_message(call: &str, until: &str, words: Option<&str>) -> String {
+    let mut lines = vec![
+        format!("The captain deferred call {call} from Bearings until {until}; bin/fm-captain-hold.sh defer has already held it with --until {until}, so it asks the captain again that day. Do not hold it again."),
+        DEFER_OVERRIDE.to_string(),
+    ];
+    if let Some(words) = words.map(str::trim).filter(|words| !words.is_empty()) {
+        lines.push(format!("The captain added words, kept on the call as the captain's reply; nothing has recorded them. {DEFER_WORDS_ACTION}"));
+        lines.push(format!("The captain said: {}", shorten(words, 1200)));
+    }
+    lines.join("\n")
+}
+
 /// What the first mate does with a reply, said the same way wherever one comes from.
 const REPLY_ACTION: &str = "Record one with bin/fm-captain-hold.sh answer only if the captain's words decide the call (with --key when they name one of its options, and --via quarterdeck); otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with --until when the words put it off to a date. Never infer an answer from the words alone.";
 
@@ -639,14 +685,22 @@ pub fn reply_message(call: &str, words: &str) -> String {
     .join("\n")
 }
 
-/// An answer in words as the captain gave it: not now, until a date, and whatever they wrote.
+/// An answer in words as the captain gave it: not now, until a date, and
+/// whatever they wrote, or an option the intake cannot take by key, in its own
+/// label with anything added after it, as Bearings says one.
 fn answer_words(answer: &Value) -> String {
     let note = answer["note"].as_str().map(str::trim).unwrap_or_default();
-    match answer["defer"].as_str() {
-        Some(date) if note.is_empty() => format!("Not now. Ask me again on {date}."),
-        Some(date) => format!("Not now. Ask me again on {date}. {note}"),
-        None => note.to_string(),
+    if let Some(date) = answer["defer"].as_str() {
+        return if note.is_empty() { format!("Not now. Ask me again on {date}.") } else { format!("Not now. Ask me again on {date}. {note}") };
     }
+    let label = answer["option"].as_str().map(|key| answer["label"].as_str().map(str::trim).filter(|label| !label.is_empty()).unwrap_or(key)).unwrap_or_default();
+    [label, note].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(". ")
+}
+
+/// Whether the review deferred this answer's call through firstmate's `defer`,
+/// rather than keeping its date on the call as words.
+fn is_deferred(answer: &Value) -> bool {
+    answer["reply"]["result"] == "deferred"
 }
 
 /// The revision a review is about, read from its own record.
@@ -1259,7 +1313,7 @@ async fn retell(home: &Path, host: &HostHandle, dir: &Path) -> Result<(Vec<(Stri
 /// went, the message it becomes, and the words it carries that firstmate kept
 /// on their calls, so the message can be named on them once it has gone.
 #[allow(clippy::type_complexity)]
-fn untold_reviews(dir: &Path) -> Result<Vec<(Value, String, Vec<(String, String)>)>, String> {
+fn untold_reviews(dir: &Path) -> Result<Vec<(Value, String, Vec<Kept>)>, String> {
     let log = dir.join("review.jsonl");
     let current = view(&log);
     let events = read_events(&log);
@@ -1280,8 +1334,19 @@ fn untold_reviews(dir: &Path) -> Result<Vec<(Value, String, Vec<(String, String)
         let text = compose(&revision, review["verdict"].as_str().unwrap_or_default(), &carried, &said, &log, relay.as_deref().zip(delivery))?;
         let replied = said
             .iter()
-            .filter(|answer| !is_keyed(answer) && answer["reply"]["result"] == "kept")
-            .map(|answer| (answer["decision"].as_str().unwrap_or_default().to_string(), answer_words(answer)))
+            .filter(|answer| !is_keyed(answer))
+            .filter_map(|answer| {
+                let call = answer["decision"].as_str().unwrap_or_default().to_string();
+                match answer["reply"]["result"].as_str() {
+                    Some("kept") => Some(Kept::Words { call, words: answer_words(answer) }),
+                    Some("deferred") => Some(Kept::Deferred {
+                        call,
+                        until: answer["defer"].as_str().unwrap_or_default().to_string(),
+                        words: answer["note"].as_str().map(str::trim).filter(|note| !note.is_empty()).map(str::to_string),
+                    }),
+                    _ => None,
+                }
+            })
             .collect();
         untold.push((at, text, replied));
     }
@@ -1292,7 +1357,7 @@ fn untold_reviews(dir: &Path) -> Result<Vec<(Value, String, Vec<(String, String)
 /// the captain's reply, and notes in the review whether firstmate kept each.
 /// Returns the calls it kept, with the words, so the message can be named on
 /// them once it has gone.
-pub(crate) async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String, String)>, String> {
+pub(crate) async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<Kept>, String> {
     let worded: Vec<Value> = {
         let log = log.to_path_buf();
         blocking(move || Ok(answers_where(&log, |answer| is_staged(answer) && !is_keyed(answer)))).await?
@@ -1300,6 +1365,26 @@ pub(crate) async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String,
     let mut kept = Vec::new();
     for answer in worded {
         let call = answer["decision"].as_str().unwrap_or_default().to_string();
+        // A dated not now is carried out by firstmate's `defer`; only a firstmate older than it keeps the date as words.
+        if let Some(until) = answer["defer"].as_str() {
+            let note = answer["note"].as_str().map(str::trim).filter(|note| !note.is_empty()).map(str::to_string);
+            match calls::defer(home, &call, until, note.as_deref(), "review", None).await {
+                Ok(()) => {
+                    let event = json!({"at": now_ms(), "kind": "replied", "decision": call, "result": "deferred", "detail": until});
+                    let at = log.to_path_buf();
+                    blocking(move || append(&at, &event)).await?;
+                    kept.push(Kept::Deferred { call, until: until.to_string(), words: note });
+                    continue;
+                }
+                Err(calls::Refused::Said(problem)) => {
+                    let event = json!({"at": now_ms(), "kind": "replied", "decision": call, "result": "not_kept", "detail": problem});
+                    let at = log.to_path_buf();
+                    blocking(move || append(&at, &event)).await?;
+                    continue;
+                }
+                Err(calls::Refused::Older) => {}
+            }
+        }
         let words = answer_words(&answer);
         let result = calls::reply(home, &call, &words, "review", None).await;
         let event = match &result {
@@ -1309,16 +1394,30 @@ pub(crate) async fn reply_worded(home: &Path, log: &Path) -> Result<Vec<(String,
         let at = log.to_path_buf();
         blocking(move || append(&at, &event)).await?;
         if result.is_ok() {
-            kept.push((call, words));
+            kept.push(Kept::Words { call, words });
         }
     }
     Ok(kept)
 }
 
-/// The review's message has gone, so each reply it carries now names it.
-pub(crate) async fn name_replies(home: &Path, replied: &[(String, String)], message: String) {
-    for (call, words) in replied {
-        if let Err(problem) = calls::reply(home, call, words, "review", Some(&message)).await {
+/// What sending a review kept on a call before its message went: words as the
+/// captain's reply, or a deferral `defer` carried out, with any words he added.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Kept {
+    Words { call: String, words: String },
+    Deferred { call: String, until: String, words: Option<String> },
+}
+
+/// The review's message has gone, so each reply and deferral it carries now names it.
+pub(crate) async fn name_replies(home: &Path, replied: &[Kept], message: String) {
+    for kept in replied {
+        let named = match kept {
+            Kept::Words { call, words } => calls::reply(home, call, words, "review", Some(&message)).await.map_err(|problem| (call, problem)),
+            Kept::Deferred { call, until, words } => calls::defer(home, call, until, words.as_deref(), "review", Some(&message))
+                .await
+                .map_err(|problem| (call, format!("{problem:?}"))),
+        };
+        if let Err((call, problem)) = named {
             log::warn!("the reply on {call} could not name review {message}: {problem}");
         }
     }
@@ -1355,6 +1454,44 @@ pub(crate) async fn reply_and_tell(home: &Path, host: &HostHandle, call: &str, w
         log::warn!("the reply on {call} could not name message {message}: {problem}");
     }
     Ok(json!({"kept": true, "message": message, "text": text}))
+}
+
+/// Puts a call off to the day the captain named from Bearings through
+/// firstmate's `defer`, and only then tells the first mate what was done. A
+/// deferral firstmate refuses sends nothing: the card says why and keeps what he
+/// chose. A firstmate older than `defer` keeps the date on the call as words
+/// instead, as Bearings did before, so the captain is never left unable to say it.
+#[tauri::command]
+pub async fn call_defer(app: AppHandle, host: TauriState<'_, HostHandle>, call: String, until: String, words: Option<String>) -> Result<Value, String> {
+    let home = home_for(&app)?;
+    defer_and_tell(&home, &host, &call, &until, words.as_deref()).await
+}
+
+/// What `call_defer` does, for the command and for the tests that drive it.
+pub(crate) async fn defer_and_tell(home: &Path, host: &HostHandle, call: &str, until: &str, words: Option<&str>) -> Result<Value, String> {
+    let words = words.map(str::trim).filter(|words| !words.is_empty());
+    match calls::defer(home, call, until, words, "quarterdeck", None).await {
+        Ok(()) => {}
+        Err(calls::Refused::Said(problem)) => return Ok(json!({"kept": false, "problem": problem, "message": Value::Null, "text": Value::Null})),
+        Err(calls::Refused::Older) => {
+            let said = answer_words(&json!({"defer": until, "note": words}));
+            return reply_and_tell(home, host, call, &said).await;
+        }
+    }
+    let text = defer_message(call, until, words);
+    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
+        Ok(message) => message,
+        Err(problem) => {
+            return Ok(json!({
+                "kept": true, "deferred": true, "message": Value::Null, "text": text,
+                "warning": format!("Held until {until}, but the first mate was not told: {problem}. It sees the call held when it next looks."),
+            }));
+        }
+    };
+    if let Err(problem) = calls::defer(home, call, until, words, "quarterdeck", Some(&message)).await {
+        log::warn!("the deferral of {call} could not name message {message}: {problem:?}");
+    }
+    Ok(json!({"kept": true, "deferred": true, "message": message, "text": text}))
 }
 
 /// What the first mate is told when the captain answers a call from Bearings:
@@ -1975,7 +2112,7 @@ mod tests {
         assert!(compose(&chat, "merge", &[], &[], Path::new("/x"), None).is_err());
 
         // An answer the intake recorded is stated as done, so the first mate follows up instead of recording it.
-        let answers = vec![json!({"decision": "res-model-download", "option": "wifi-only", "label": "Wi-Fi only, with visible progress"})];
+        let answers = vec![json!({"decision": "res-model-download", "option": "wifi-only", "label": "Wi-Fi only, with visible progress", "on_answer": "done"})];
         let text = compose(&chat, "approve", &[], &answers, Path::new("/home/data/.artifacts/a/review.jsonl"), None).unwrap();
         assert!(text.contains("Answers already recorded with bin/fm-captain-hold.sh; do the follow-up"), "{text}");
         assert!(text.contains("\nRecorded: res-model-download = wifi-only (\"Wi-Fi only, with visible progress\")"), "{text}");
@@ -2002,6 +2139,9 @@ mod tests {
         for case in fixture["replied"].as_array().unwrap() {
             assert_eq!(reply_message(case["call"].as_str().unwrap(), case["words"].as_str().unwrap()), case["text"].as_str().unwrap());
         }
+        for case in fixture["deferred"].as_array().unwrap() {
+            assert_eq!(defer_message(case["call"].as_str().unwrap(), case["until"].as_str().unwrap(), case["words"].as_str()), case["text"].as_str().unwrap());
+        }
     }
 
     /// A home with a pretend `fm-captain-hold.sh answers` that keeps what it was fed and prints `says`.
@@ -2011,10 +2151,12 @@ mod tests {
         std::fs::create_dir_all(home.join("bin")).unwrap();
         let script = home.join("bin/fm-captain-hold.sh");
         // `reply` keeps each call's words in `replied`, and refuses `res-refused` the way firstmate refuses a closed call.
+        // `defer` keeps each call, its day, how it came and any message in `deferred`, with the words after a bar;
+        // `res-old-firstmate` answers it with usage, as a firstmate older than `defer` does.
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = reply ]; then\n  [ \"$2\" = res-refused ] && {{ echo 'fm-captain-hold: call res-refused is already closed' >&2; exit 1; }}\n  printf '%s %s %s|%s\\n' \"$2\" \"$6\" \"${{8:-}}\" \"$(cat \"$4\")\" >> \"$FM_HOME/replied\"\n  echo \"replied: $2\"\n  exit 0\nfi\ncat >> \"$FM_HOME/fed\"\ncat <<'EOF'\n{says}\nEOF\n"
+                "#!/bin/sh\nif [ \"$1\" = defer ]; then\n  [ \"$2\" = res-old-firstmate ] && {{ echo 'Usage:' >&2; exit 2; }}\n  call=$2; until=$4; via=$6; shift 6; words=''; message=''\n  while [ $# -gt 0 ]; do case \"$1\" in --words-file) words=$(cat \"$2\") ;; --message) message=$2 ;; esac; shift 2; done\n  printf '%s %s %s %s|%s\\n' \"$call\" \"$until\" \"$via\" \"$message\" \"$words\" >> \"$FM_HOME/deferred\"\n  echo \"deferred: $call until $until\"\n  exit 0\nfi\nif [ \"$1\" = reply ]; then\n  [ \"$2\" = res-refused ] && {{ echo 'fm-captain-hold: call res-refused is already closed' >&2; exit 1; }}\n  printf '%s %s %s|%s\\n' \"$2\" \"$6\" \"${{8:-}}\" \"$(cat \"$4\")\" >> \"$FM_HOME/replied\"\n  echo \"replied: $2\"\n  exit 0\nfi\ncat >> \"$FM_HOME/fed\"\ncat <<'EOF'\n{says}\nEOF\n"
             ),
         )
         .unwrap();
@@ -2057,6 +2199,92 @@ mod tests {
             std::fs::read_to_string(home.join("replied")).unwrap(),
             "res-model-download quarterdeck |Not now. Ask me again on Oct 3.\n"
         );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A dated not now from Bearings is carried out, not transcribed: firstmate's `defer` holds the call until the
+    /// day, and only then is the first mate told what was done, with the year, naming the message on the deferral.
+    #[tokio::test]
+    async fn a_dated_not_now_from_bearings_is_deferred_and_the_first_mate_told_it_was() {
+        let home = home_with_intake("defer-bearings", "");
+        let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let answer = defer_and_tell(&home, &HostHandle::taking(told.clone()), "res-model-download", "2026-10-03", Some(" unless the battery numbers land first ")).await.unwrap();
+        assert_eq!(answer["kept"], true, "{answer}");
+        assert_eq!(answer["deferred"], true, "{answer}");
+        assert_eq!(answer["message"], "told-1");
+        let text = defer_message("res-model-download", "2026-10-03", Some("unless the battery numbers land first"));
+        assert_eq!(answer["text"], text.as_str());
+        assert_eq!(told.lock().unwrap().as_slice(), std::slice::from_ref(&text));
+        assert!(text.starts_with("The captain deferred call res-model-download from Bearings until 2026-10-03; bin/fm-captain-hold.sh defer has already held it"), "{text}");
+        assert!(text.contains("offer the call again"), "the message names the first mate's override: {text}");
+        assert!(text.ends_with("The captain said: unless the battery numbers land first"), "{text}");
+        assert!(!text.contains("hold it with --until"), "the first mate is asked to do what is done: {text}");
+        assert_eq!(
+            std::fs::read_to_string(home.join("deferred")).unwrap(),
+            "res-model-download 2026-10-03 quarterdeck |unless the battery numbers land first\nres-model-download 2026-10-03 quarterdeck told-1|unless the battery numbers land first\n",
+            "deferred first, then the message that told the first mate named on it"
+        );
+        assert!(!home.join("replied").exists(), "a deferral went as a reply in words");
+
+        // A firstmate refusing the day sends nothing; one older than `defer` keeps the date on the call as words.
+        let refused = defer_and_tell(&home, &HostHandle::taking(told.clone()), "../x", "2026-10-03", None).await.unwrap();
+        assert_eq!(refused["kept"], false, "{refused}");
+        assert_eq!(told.lock().unwrap().len(), 1, "a refused deferral told the first mate");
+        let older = defer_and_tell(&home, &HostHandle::taking(told.clone()), "res-old-firstmate", "2026-10-03", None).await.unwrap();
+        assert_eq!(older["kept"], true, "{older}");
+        assert_eq!(older["text"], reply_message("res-old-firstmate", "Not now. Ask me again on 2026-10-03."));
+        assert_eq!(std::fs::read_to_string(home.join("replied")).unwrap().lines().next().unwrap(), "res-old-firstmate quarterdeck |Not now. Ask me again on 2026-10-03.");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// In a page's review, a dated not now is deferred as the review goes, with the captain's words kept as his reply,
+    /// and the review tells the first mate what was done; a firstmate older than `defer` gets the date as words.
+    #[tokio::test]
+    async fn a_dated_not_now_in_a_review_is_deferred_before_the_review_goes() {
+        let home = home_with_intake("defer-review", "");
+        let dir = home.join("data/.artifacts/board");
+        revision_on_disk(&dir);
+        let log = dir.join("review.jsonl");
+        let later = |note: Option<&str>| Words { note: note.map(str::to_string), defer: Some("2026-10-03".into()) };
+        stage_answer(&log, "res-transcripts-source", None, None, Some("release"), &later(Some("Unless the export lands first."))).unwrap();
+        stage_answer(&log, "res-old-firstmate", None, None, Some("done"), &later(None)).unwrap();
+        let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sent = submit(&home, &HostHandle::taking(told.clone()), &dir, 1, "comment".into()).await.unwrap();
+        let text = sent["text"].as_str().unwrap();
+        assert!(text.contains("\nDeferred: res-transcripts-source until 2026-10-03\n  The captain added, kept on the call as his reply: Unless the export lands first.\n  Read them"), "{text}");
+        assert!(text.contains("\nres-old-firstmate: Not now. Ask me again on 2026-10-03."), "an older firstmate's call lost its date: {text}");
+        let deferred = std::fs::read_to_string(home.join("deferred")).unwrap();
+        assert_eq!(deferred, "res-transcripts-source 2026-10-03 review |Unless the export lands first.\nres-transcripts-source 2026-10-03 review told-1|Unless the export lands first.\n");
+        let answers = sent["review"]["answers"].as_array().unwrap();
+        assert_eq!(answers[0]["reply"], json!({"result": "deferred", "detail": "2026-10-03"}));
+        assert_eq!(answers[1]["reply"], json!({"result": "kept", "detail": ""}));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// An option picked in the rail on a call that does not say how an answer closes it is one the intake refuses, so
+    /// it goes as words in the option's own label, kept on the call and carried in the review, never dropped.
+    #[tokio::test]
+    async fn an_option_on_a_call_with_no_close_mode_goes_as_words_in_its_label() {
+        let home = home_with_intake("no-close-mode", "");
+        let dir = home.join("data/.artifacts/board");
+        revision_on_disk(&dir);
+        let log = dir.join("review.jsonl");
+        stage_answer(&log, "res-legacy-call", Some("wifi-only"), Some("Wi-Fi only"), None, &Words { note: Some("Say so in Settings.".into()), defer: None }).unwrap();
+        stage_answer(&log, "res-legacy-bare", Some("later"), Some("Ask me next week"), Some(""), &Words::default()).unwrap();
+        assert!(staged(&log).is_empty(), "an option the intake would refuse was staged for it");
+        let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sent = submit(&home, &HostHandle::taking(told.clone()), &dir, 1, "comment".into()).await.unwrap();
+        assert!(!home.join("fed").exists(), "the intake was fed an option on a call with no close mode");
+        assert_eq!(
+            std::fs::read_to_string(home.join("replied")).unwrap(),
+            "res-legacy-call review |Wi-Fi only. Say so in Settings.\nres-legacy-bare review |Ask me next week\nres-legacy-call review told-1|Wi-Fi only. Say so in Settings.\nres-legacy-bare review told-1|Ask me next week\n"
+        );
+        let text = sent["text"].as_str().unwrap();
+        assert!(text.contains("\nres-legacy-call: Wi-Fi only. Say so in Settings.\n"), "{text}");
+        assert!(text.contains("\nres-legacy-bare: Ask me next week"), "{text}");
+        assert!(!text.contains("Recorded: res-legacy"), "{text}");
+        let answers = sent["review"]["answers"].as_array().unwrap();
+        assert!(answers.iter().all(|answer| answer["sent_at"].is_u64() && answer["reply"]["result"] == "kept"), "{answers:?}");
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -2150,13 +2378,15 @@ mod tests {
         assert_eq!(std::fs::read_to_string(home.join("fed")).unwrap(), "res-model-download\twifi-only\tWi-Fi only\tdone\n");
 
         // Every answer in words is kept on its call as the captain's reply before anything goes, and one firstmate
-        // would not keep is noted with its reason; the option went to the intake and is not a reply.
+        // would not keep is noted with its reason; the option went to the intake and is not a reply. A dated not now
+        // is not words for the first mate to transcribe: firstmate's `defer` holds the call until that day.
         let kept = reply_worded(&home, &log).await.unwrap();
-        assert_eq!(kept.iter().map(|(call, _)| call.as_str()).collect::<Vec<_>>(), ["res-model-cellular", "res-transcripts-source"]);
-        assert_eq!(
-            std::fs::read_to_string(home.join("replied")).unwrap(),
-            "res-model-cellular review |Pause, but tell the user why.\nres-transcripts-source review |Not now. Ask me again on 2026-10-03.\n"
-        );
+        assert_eq!(kept, [
+            Kept::Words { call: "res-model-cellular".into(), words: "Pause, but tell the user why.".into() },
+            Kept::Deferred { call: "res-transcripts-source".into(), until: "2026-10-03".into(), words: None },
+        ]);
+        assert_eq!(std::fs::read_to_string(home.join("replied")).unwrap(), "res-model-cellular review |Pause, but tell the user why.\n");
+        assert_eq!(std::fs::read_to_string(home.join("deferred")).unwrap(), "res-transcripts-source 2026-10-03 review |\n");
         let refused = view(&log)["answers"].as_array().unwrap().iter().find(|a| a["decision"] == "res-refused").unwrap()["reply"].clone();
         assert_eq!(refused, json!({"result": "not_kept", "detail": "call res-refused is already closed"}));
 
@@ -2165,7 +2395,9 @@ mod tests {
         assert!(text.contains("\nAnswered in words, kept on each call as the captain's reply; nothing has recorded them. Record one with bin/fm-captain-hold.sh answer only if"), "{text}");
         assert!(text.contains("Never infer an answer from the words alone."), "{text}");
         assert!(text.contains("\nres-model-cellular: Pause, but tell the user why.\n"), "{text}");
-        assert!(text.contains("\nres-transcripts-source: Not now. Ask me again on 2026-10-03.\n"), "{text}");
+        assert!(text.contains("\nNot now, already held until the captain's day with bin/fm-captain-hold.sh defer; do not hold them again."), "{text}");
+        assert!(text.contains("\nDeferred: res-transcripts-source until 2026-10-03\n"), "{text}");
+        assert!(!text.contains("res-transcripts-source: Not now"), "a deferral carried out went as words to transcribe: {text}");
         assert!(text.contains("\nres-refused: Too late for this one. (not kept on the call: call res-refused is already closed)"), "{text}");
         assert_eq!(carried.len(), 4);
         record_sent(&log, "approve", 1, &threads, &carried, Some("out-1"), &text, None).unwrap();

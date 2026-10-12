@@ -75,6 +75,11 @@
 #                          successful attempts never wake firstmate
 #                          (bin/fm-task-inbox-lib.sh owns the ladder policy)
 #   check: <script>: <out> authenticated check output, always actionable
+#   check: pr-check armed: <task> <url>  (or `not armed: <task> <url>: <why>`)
+#                          a queued row, not a printed reason: a ship task's
+#                          `done: PR <url>` line made the watcher run
+#                          bin/fm-pr-check.sh itself (signal_arm_pr_checks), and
+#                          the row rides the same wake as that task's signal
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
@@ -1678,7 +1683,10 @@ run_check_capture() {
 # no verb) are skipped. A 1 here is NOT "benign" on its own: a no-verb signal,
 # including a newly declared captain hold, still needs the authoritative working
 # proof or the eligible opt-in bare turn-end pane-churn proof before it is benign.
-# Also populates FM_SIGNAL_NEEDS_DECISION_FILES (space-separated status-file
+# Also populates FM_SIGNAL_EVENTS (one `<status-file>\t<events>` line per file
+# whose span carries captain-relevant events, joined ` ; ` as the status-span
+# contract reports them) for signal_arm_pr_checks, and
+# FM_SIGNAL_NEEDS_DECISION_FILES (space-separated status-file
 # paths) with exactly the files whose newly classified span carries one of the
 # decision-owned classes defined by the status-span contract, so the caller can
 # route those - and only those - signal rows as main-only
@@ -1688,6 +1696,7 @@ signal_files_actionable() {  # <status-file> ...
   local f task record rest endpoint ident needs_decision rc found=1
   FM_SIGNAL_SURFACE_ENDPOINTS=''
   FM_SIGNAL_NEEDS_DECISION_FILES=''
+  FM_SIGNAL_EVENTS=''
   for f in "$@"; do
     case "$f" in *.status) ;; *) continue ;; esac
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -1707,6 +1716,9 @@ signal_files_actionable() {  # <status-file> ...
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
     FM_SIGNAL_SURFACE_ENDPOINTS="${FM_SIGNAL_SURFACE_ENDPOINTS}${f}"$'\t'"${endpoint}"$'\t'"${ident}"$'\n'
+    case "$rest" in
+      *$'\t'*) FM_SIGNAL_EVENTS="${FM_SIGNAL_EVENTS}${f}"$'\t'"${rest#*$'\t'}"$'\n' ;;
+    esac
     if [ "$needs_decision" -eq 1 ]; then
       FM_SIGNAL_NEEDS_DECISION_FILES="${FM_SIGNAL_NEEDS_DECISION_FILES} ${f}"
     fi
@@ -1715,6 +1727,62 @@ signal_files_actionable() {  # <status-file> ...
     fi
   done
   return "$found"
+}
+
+# A ship task's `done: PR <url>` ready line is the rule AGENTS.md section 7
+# already writes down for arming the merge poll, so the watcher runs
+# bin/fm-pr-check.sh <task> <url> itself instead of leaving it to be copied by
+# hand: a missed run left a merged PR's task In flight with nothing watching
+# it. The check is idempotent and only records pr= and arms the poll; telling
+# the captain and judging the PR stay with firstmate. Each act, or the reason it
+# did not happen, is its own `check` row beside the signal row in the same
+# durable wake (`check: pr-check armed: <task> <url>` or `check: pr-check not
+# armed: <task> <url>: <reason>`), so firstmate is told of it in the wake it
+# already receives, and the signal row's payload stays the file list its
+# readers parse. Running bin/fm-pr-check.sh again with another URL overrides it.
+# FM_PR_CHECK_BIN lets tests observe the call; FM_PR_ARM_TIMEOUT bounds it.
+PR_CHECK_BIN=${FM_PR_CHECK_BIN:-$SCRIPT_DIR/fm-pr-check.sh}
+PR_ARM_TIMEOUT=${FM_PR_ARM_TIMEOUT:-60}
+signal_arm_pr_checks() {
+  local f events task meta line url out rc why
+  while IFS=$'\t' read -r f events; do
+    [ -n "$f" ] || continue
+    task=$(basename "$f"); task=${task%.status}
+    meta="$STATE/$task.meta"
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    [ "$(fm_meta_get "$meta" kind)" = ship ] || continue
+    # The newest ready line in the span names the PR.
+    url=''
+    while IFS= read -r line; do
+      case "$line" in
+        'done: PR http://'* | 'done: PR https://'*)
+          line=${line#done: PR }
+          url=${line%%[[:space:]]*}
+          ;;
+      esac
+    done <<EOF
+${events// ; /$'\n'}
+EOF
+    [ -n "$url" ] || continue
+    out=$(mktemp "${TMPDIR:-/tmp}/fm-watch-pr-arm.XXXXXX") || out=/dev/null
+    rc=0
+    fm_run_timed "$PR_ARM_TIMEOUT" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$PR_CHECK_BIN" "$task" "$url" > "$out" 2>&1 < /dev/null || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      fm_wake_append check "pr-check-$task" "check: pr-check armed: $task $url" || exit 1
+      triage_log "pr-check armed: $task $url"
+    else
+      why=$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -n 1 | tr -d '\r')
+      [ "$rc" -ne 124 ] || why="bin/fm-pr-check.sh did not finish within ${PR_ARM_TIMEOUT}s"
+      fm_wake_append check "pr-check-$task" \
+        "check: pr-check not armed: $task $url: ${why:-bin/fm-pr-check.sh exited $rc}; run bin/fm-pr-check.sh $task <PR url>" \
+        || exit 1
+      triage_log "pr-check not armed: $task $url (rc=$rc)"
+    fi
+    [ "$out" = /dev/null ] || rm -f "$out"
+  done <<EOF
+$FM_SIGNAL_EVENTS
+EOF
 }
 
 # Surfaced-marker bookkeeping for the heartbeat backstop is owned by
@@ -2346,6 +2414,7 @@ EOF
     # status span, and the capture only once the authoritative verdict comes up short.
     FM_SIGNAL_SURFACE_ENDPOINTS=''
     FM_SIGNAL_NEEDS_DECISION_FILES=''
+    FM_SIGNAL_EVENTS=''
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
     signal_files_actionable $files
     signal_actionable=$?
@@ -2362,6 +2431,7 @@ EOF
     # shellcheck disable=SC2086  # same space-separated status-path list
     if afk_present || [ "$signal_actionable" -eq 0 ] \
       || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
+      signal_arm_pr_checks
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         file_reason="$reason"

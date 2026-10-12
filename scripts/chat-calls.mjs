@@ -197,19 +197,16 @@ async function order(page) {
   await page.close();
 }
 
-// B and E: words, and a dated Not now, go through the reply path Bearings uses. The call stays open, the reply amber on
-// both cards until something records it, and the form folds under Answer differently.
+// B and E: words go through the reply path Bearings uses. The call stays open, the reply amber on both cards until
+// something records it, and the form folds under Answer differently.
 {
-  const page = await open("&holds-reply");
+  const page = await open();
   await toChat(page);
   await ask(page, "What needs me?");
   const card = callCard(page);
-  await card.locator(".suggestion-chips button", { hasText: "Not now" }).click();
-  check(await card.locator(".call-chat-actions button", { hasText: "Send" }).isDisabled(), "B: Not now cannot go without a day");
-  await card.locator(".date-field input").fill("2026-10-03");
   await card.locator(".reply-field textarea").fill("I want to see the battery numbers first.");
-  check((await card.locator("[data-testid='call-hint']").innerText()) === "→ keeps your words on the call for the first mate: Not now. Ask me again on Oct 3. I want to see the battery numbers first.", "B: a dated Not now is kept on the call as words");
-  await inBothThemes(page, "b-not-now", async () => {});
+  check((await card.locator("[data-testid='call-hint']").innerText()) === "→ keeps your words on the call for the first mate: I want to see the battery numbers first.", "B: words are kept on the call");
+  await inBothThemes(page, "b-words", async () => {});
   await card.locator(".call-chat-actions button", { hasText: "Send" }).click();
   await card.locator("[data-testid='call-replied']").waitFor();
   check(await card.getAttribute("data-standing") === "replied", "E: the call card reads the reply from the call");
@@ -221,7 +218,7 @@ async function order(page) {
     check(await paintedWith(card.locator("[data-testid='call-replied']"), "--amber"), `${theme}: the reply is --amber on the call card`);
     check(await paintedWith(answer.locator("[data-testid='answer-status']"), "--amber"), `${theme}: and on the answer card`);
   });
-  // The mock's first mate reads the message within seconds, then holds the call until the day, as `hold --until` does.
+  // The mock's first mate reads the message within seconds; reading the words is not recording them.
   const deadline = Date.now() + 2300;
   let green = false;
   while (Date.now() < deadline) {
@@ -229,12 +226,31 @@ async function order(page) {
     await page.waitForTimeout(200);
   }
   check(!green, "E: reading the reply is not recording it: the answer card never goes green");
-  // G: held until the day. One line, with the day he named, and the answer card says it is held.
+  await page.close();
+}
+
+// B and G: a dated Not now is carried out by firstmate's `defer`, never kept as words to transcribe. The call is held
+// until the day at once: one line with the day, and an answer card that says it is held. When the day comes, the card
+// opens where it was raised.
+{
+  const page = await open();
+  await toChat(page);
+  await ask(page, "What needs me?");
+  const card = callCard(page);
+  await card.locator(".suggestion-chips button", { hasText: "Not now" }).click();
+  check(await card.locator(".call-chat-actions button", { hasText: "Send" }).isDisabled(), "B: Not now cannot go without a day");
+  await card.locator(".date-field input").fill("2026-10-03");
+  check((await card.locator("[data-testid='call-hint']").innerText()) === "→ holds it until Oct 3", "B: a dated Not now says it holds the call until the day");
+  await inBothThemes(page, "b-not-now", async () => {});
+  await card.locator(".call-chat-actions button", { hasText: "Send" }).click();
   await card.locator(".call-chat-line").waitFor({ timeout: 6000 });
-  check(await card.getAttribute("data-standing") === "held" && (await card.locator(".call-chat-line").innerText()).includes("not now, ask again Oct 3"), "G: held, the card says the day he named");
-  check((await answer.locator("[data-testid='answer-status']").innerText()) === "Held: not now", "G: the answer card says it is held, not recorded");
+  check(await card.getAttribute("data-standing") === "held" && (await card.locator(".call-chat-line").innerText()).includes("not now, ask again Oct 3"), "G: held at once, the card says the day firstmate recorded");
+  const answer = answerCards(page);
+  await answer.waitFor();
+  check(await answer.getAttribute("data-kind") === "deferred" && (await answer.locator("[data-testid='answer-status']").innerText()).startsWith("Held until Oct 3"), "G: the answer card says it is held until the day");
   await inBothThemes(page, "g-held", async (theme) => {
     check(await paintedWith(card.locator(".call-pill"), "--amber"), `${theme}: held is --amber`);
+    check(await paintedWith(answer.locator("[data-testid='answer-status']"), "--green"), `${theme}: the deferral carried out is --green on the answer card`);
   });
   // The day comes: the record asks again with the same raised_at, so the card opens where it is.
   const place = (await order(page)).indexOf(`call:${RAISED}`);

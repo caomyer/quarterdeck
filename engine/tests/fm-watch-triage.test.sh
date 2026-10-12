@@ -1560,6 +1560,74 @@ test_actionable_signal_surfaced() {
   pass "captain-relevant signal is surfaced (queue + exit) and marked surfaced"
 }
 
+# A ship task's `done: PR <url>` ready line arms the merge poll from the watcher
+# itself: it runs bin/fm-pr-check.sh <task> <url> (here a recording stand-in via
+# FM_PR_CHECK_BIN, so the assertion is on the watcher's own call) and notes the
+# act as a check row in the same wake, leaving the signal row's payload alone.
+pr_check_recorder() {  # <fakebin> <exit-code>
+  cat > "$1/fm-pr-check.sh" <<SH
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "\$1" "\$2" "\${FM_STATE_OVERRIDE:-}" >> "\$(dirname "\$0")/pr-check.calls"
+[ "$2" = 0 ] || echo "error: task metadata is unavailable" >&2
+exit $2
+SH
+  chmod +x "$1/fm-pr-check.sh"
+}
+
+test_ship_pr_ready_line_arms_the_pr_check() {
+  local dir state fakebin out pid url
+  dir=$(make_case pr-ready-arms); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url=https://github.com/sample/proj/pull/42
+  pr_check_recorder "$fakebin" 0
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipt.meta"
+  printf 'working: validating\ndone: PR %s checks green\n' "$url" > "$state/shipt.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for a ship's PR-ready line"
+  assert_equals "shipt|$url|$state" "$(cat "$fakebin/pr-check.calls" 2>/dev/null)" \
+    "the watcher did not run the PR check for the ship's ready line exactly once"
+  grep -F "$(printf 'check\tpr-check-shipt\tcheck: pr-check armed: shipt %s' "$url")" "$state/.wake-queue" >/dev/null \
+    || fail "the armed PR check was not noted on the wake: $(cat "$state/.wake-queue")"
+  grep -F "$(printf 'signal\tshipt.status\tsignal: %s' "$state/shipt.status")" "$state/.wake-queue" >/dev/null \
+    || fail "the signal row's payload changed: $(cat "$state/.wake-queue")"
+  pass "a ship's done: PR line makes the watcher arm its PR check and say so on the wake"
+}
+
+test_pr_check_arming_is_only_for_a_ship_pr_line() {
+  local dir state fakebin out pid
+  dir=$(make_case pr-ready-not-ship); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  pr_check_recorder "$fakebin" 0
+  printf 'kind=scout\n' > "$state/scoutt.meta"
+  printf 'done: PR https://github.com/sample/proj/pull/7\n' > "$state/scoutt.status"
+  printf 'kind=ship\n' > "$state/localt.meta"
+  printf 'done: ready in branch fm/localt\n' > "$state/localt.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for the done lines"
+  assert_absent "$fakebin/pr-check.calls" "the watcher armed a PR check for a scout or a line naming no PR"
+  assert_no_grep 'pr-check' "$state/.wake-queue" "a wake noted a PR check that never ran"
+  pass "only a ship task's done: PR <url> line arms a PR check"
+}
+
+test_a_pr_check_that_fails_to_arm_is_reported() {
+  local dir state fakebin out pid url
+  dir=$(make_case pr-ready-fails); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url=https://github.com/sample/proj/pull/9
+  pr_check_recorder "$fakebin" 1
+  printf 'kind=ship\n' > "$state/shipf.meta"
+  printf 'done: PR %s\n' "$url" > "$state/shipf.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for a ship's PR-ready line"
+  assert_equals "shipf|$url|$state" "$(cat "$fakebin/pr-check.calls" 2>/dev/null)" "the watcher did not try the PR check"
+  grep -F "check: pr-check not armed: shipf $url: error: task metadata is unavailable; run bin/fm-pr-check.sh shipf <PR url>" \
+    "$state/.wake-queue" >/dev/null || fail "a PR check that failed to arm was not reported: $(cat "$state/.wake-queue")"
+  pass "a PR check the watcher could not arm is reported on the wake with its reason"
+}
+
 # A needs-decision status append surfaced through this actionable signal path
 # must skip the Pi supervision branch and reach main directly
 # (docs/pi-supervision-branch.md "Autonomy"). The row still
@@ -5141,6 +5209,9 @@ test_working_note_not_working_surfaced
 test_secondmate_status_note_surfaced_despite_busy_agent
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced
+test_ship_pr_ready_line_arms_the_pr_check
+test_pr_check_arming_is_only_for_a_ship_pr_line
+test_a_pr_check_that_fails_to_arm_is_reported
 test_needs_decision_signal_payload_marked_for_branch_exclusion
 test_needs_decision_reconciliation_required_still_marked
 test_captain_held_signal_payload_marked_for_branch_exclusion
