@@ -201,8 +201,9 @@
 # is sent with --for-call <call>, and an answer the first mate made itself
 # needs no --by, being recorded with `fm-captain-hold.sh decide`. When the
 # answer is delivered but the intake cannot close the call, the send exits
-# nonzero with the exact `fm-captain-hold.sh answer` command that records it,
-# naming the same decider.
+# nonzero with the exact `fm-captain-hold.sh answers` command it ran, keyed
+# lines and decider included, so running it again closes the call the way the
+# intake would have: with the call's declared close mode and the option key.
 # This is what lets an answer reach a decision that has already been
 # transferred from the live status log to its durable captain-held task, which
 # the status ledger alone can no longer close.
@@ -795,16 +796,18 @@ fm_send_close_resolved_keys() { # <answer-text>
 # it does not build a decision record or choose a close path; the keys were
 # already resolved to task ids above, so the intake needs no legacy origin.
 fm_send_feed_resolved_holds() { # <answer-text>
-  local note=$1 k lines='' recover=''
+  local note=$1 k lines='' intake_source recover
   [ -n "$RESOLVE_HOLD_KEYS" ] || return 0
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_HOLD_KEYS; do
     lines="${lines}${k}"$'\t'"${note}"$'\t'$'\n'
-    recover="${recover}${recover:+; }bin/fm-captain-hold.sh answer $k --decision-file <file holding the answer> --by $RESOLVE_BY --via chat"
   done
+  intake_source="a firstmate answer sent to $RESOLVE_TASK_ID"
   if ! printf '%s' "$lines" | "$SCRIPT_DIR/fm-captain-hold.sh" answers \
-    --source "a firstmate answer sent to $RESOLVE_TASK_ID" --via chat --by "$RESOLVE_BY" >/dev/null 2>&1; then
-    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it with: ${recover} - do not resend the answer." >&2
+    --source "$intake_source" --via chat --by "$RESOLVE_BY" >/dev/null 2>&1; then
+    printf -v recover "printf '%%s' %q | FM_HOME=%q bin/fm-captain-hold.sh answers --source %q --via chat --by %s" \
+      "$lines" "$FM_HOME" "$intake_source" "$RESOLVE_BY"
+    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it by running the same intake again: ${recover} - do not resend the answer." >&2
     return 1
   fi
 }

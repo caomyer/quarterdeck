@@ -1668,7 +1668,8 @@ test_a_ready_line_naming_no_pr_url_arms_nothing() {
 
 # Arming talks to the forge, so it never holds the wake back: the signal row is
 # queued and the watcher has woken while the check is still running, and the
-# check's row arrives in the durable queue once it finishes.
+# check's row arrives in the durable queue once it finishes, after the watcher's
+# own exit cleanup has run without stopping it.
 test_a_slow_pr_check_never_delays_the_wake() {
   local dir state fakebin out pid url release i
   dir=$(make_case pr-ready-slow); state="$dir/state"; fakebin="$dir/fakebin"
@@ -1697,6 +1698,32 @@ test_a_slow_pr_check_never_delays_the_wake() {
   assert_equals "ships|$url|$state" "$(cat "$fakebin/pr-check.calls" 2>/dev/null)" \
     "the detached PR check did not run exactly once"
   pass "a blocked PR check leaves the wake on time and queues its armed row when it finishes"
+}
+
+# A forge that never answers is cut off at FM_PR_ARM_TIMEOUT, and the first mate
+# is told why on a row of its own after the wake, so a merge nobody watches
+# never goes quiet.
+test_a_hung_pr_check_is_reported_after_the_wake() {
+  local dir state fakebin out pid url signal_seq check_seq
+  dir=$(make_case pr-ready-hung); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url=https://github.com/sample/proj/pull/78
+  pr_check_recorder "$fakebin" 0 "$dir/never-released"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shiph.meta"
+  printf 'done: PR %s checks green\n' "$url" > "$state/shiph.status"
+  FM_PR_ARM_TIMEOUT=2 FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher waited on a hung PR check instead of waking"
+  grep -F "signal: $state/shiph.status" "$out" >/dev/null || fail "the watcher did not print its wake reason"
+  wait_for_text "$state/.wake-queue" \
+    "check: pr-check not armed: shiph $url: bin/fm-pr-check.sh did not finish within 2s; run bin/fm-pr-check.sh shiph <PR url>" \
+    || fail "a hung PR check was not reported with why: $(cat "$state/.wake-queue")"
+  signal_seq=$(awk -F'\t' '$3 == "signal" && $4 == "shiph.status" { print $2; exit }' "$state/.wake-queue")
+  check_seq=$(awk -F'\t' '$3 == "check" && $4 == "pr-check-shiph" { print $2 }' "$state/.wake-queue")
+  [ -n "$signal_seq" ] && [ -n "$check_seq" ] && [ "$signal_seq" -lt "$check_seq" ] \
+    || fail "the PR-check row was not queued after the signal row: $(cat "$state/.wake-queue")"
+  assert_absent "$fakebin/pr-check.calls" "the hung PR check was not cut off at its bound"
+  pass "a PR check that hangs past its bound is reported after the wake, naming why"
 }
 
 # A needs-decision status append surfaced through this actionable signal path
@@ -5285,6 +5312,7 @@ test_pr_check_arming_is_only_for_a_ship_pr_line
 test_a_pr_check_that_fails_to_arm_is_reported
 test_a_ready_line_naming_no_pr_url_arms_nothing
 test_a_slow_pr_check_never_delays_the_wake
+test_a_hung_pr_check_is_reported_after_the_wake
 test_needs_decision_signal_payload_marked_for_branch_exclusion
 test_needs_decision_reconciliation_required_still_marked
 test_captain_held_signal_payload_marked_for_branch_exclusion
