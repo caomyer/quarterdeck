@@ -11,6 +11,7 @@ use super::seal::{self, Channel, Hello, Purpose, Secret};
 use super::{now_ms, Inner};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::future::Future;
 use std::time::Duration;
@@ -30,8 +31,6 @@ const FIRST_FRAME_WAIT: Duration = Duration::from_secs(30);
 const INBOUND_LIMIT: usize = 1024 * 1024;
 /// Requests one connection may have in hand at once.
 const IN_HAND: usize = 4;
-/// Connections at once, across every phone; anything past it is dropped unread.
-pub(super) const CONNECTIONS: usize = 16;
 /// How often the Mac pings a phone in session.
 pub(super) const KEEPALIVE: Duration = Duration::from_secs(30);
 /// A session from which nothing at all has arrived for this many pings is ended.
@@ -40,9 +39,8 @@ const SILENT_PINGS: u32 = 3;
 type Socket = WebSocketStream<TcpStream>;
 
 pub async fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {
-    let open = Arc::new(Semaphore::new(CONNECTIONS));
     loop {
-        let (stream, _) = match listener.accept().await {
+        let (stream, from) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(error) => {
                 log::warn!("the phone link could not accept a connection: {error}");
@@ -50,12 +48,7 @@ pub async fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {
                 continue;
             }
         };
-        let Ok(permit) = open.clone().try_acquire_owned() else { continue };
-        let inner = inner.clone();
-        tokio::spawn(async move {
-            connection(stream, inner).await;
-            drop(permit);
-        });
+        tokio::spawn(connection(stream, from.ip(), inner.clone()));
     }
 }
 
@@ -70,10 +63,28 @@ fn only_our_path(request: &Request, response: Response) -> Result<Response, Erro
     Err(refused)
 }
 
-async fn connection(stream: TcpStream, inner: Arc<Inner>) {
+/// A connection holds a place at the gate until its frame 0 opens, and gives
+/// it up at once if a newer one takes it.
+async fn connection(stream: TcpStream, from: IpAddr, inner: Arc<Inner>) {
+    let mut place = inner.gate.admit(from);
+    let greeted = tokio::select! {
+        _ = &mut place.displaced => return,
+        greeted = greet(stream, &inner) => greeted,
+    };
+    let Some((socket, channel, hello, first)) = greeted else { return };
+    drop(place);
+    match hello.purpose {
+        Purpose::Pair => pair(socket, channel, hello, first, inner).await,
+        Purpose::Session => session(socket, channel, hello.phone, first, inner).await,
+    }
+}
+
+/// The greeting, through the phone's frame 0, opened: what proves the phone
+/// holds its key, and while pairing the invite's secret too.
+async fn greet(stream: TcpStream, inner: &Inner) -> Option<(Socket, Channel, Hello, Vec<u8>)> {
     let config = WebSocketConfig::default().max_message_size(Some(INBOUND_LIMIT)).max_frame_size(Some(INBOUND_LIMIT));
     let opened = tokio::time::timeout(GREETING_WAIT, tokio_tungstenite::accept_hdr_async_with_config(stream, only_our_path, Some(config))).await;
-    let Ok(Ok(mut socket)) = opened else { return };
+    let Ok(Ok(mut socket)) = opened else { return None };
     let hello = match tokio::time::timeout(GREETING_WAIT, socket.next()).await {
         Ok(Some(Ok(Message::Text(text)))) => serde_json::from_str::<Value>(&text).ok().map(|value| Hello::from_json(&value)),
         _ => None,
@@ -102,22 +113,22 @@ async fn connection(stream: TcpStream, inner: Arc<Inner>) {
     let (Ok(eph), Ok(nonce)) = (Secret::generate(), seal::random::<32>()) else {
         return refuse(socket, "the Mac could not draw random bytes").await;
     };
-    let (ready, channel) = match seal::respond(&mac, &hello, &psk, &eph, nonce) {
+    let (ready, mut channel) = match seal::respond(&mac, &hello, &psk, &eph, nonce) {
         Ok(answered) => answered,
         Err(problem) => return refuse(socket, &problem.to_string()).await,
     };
     if socket.send(Message::Text(ready.to_json().to_string().into())).await.is_err() {
-        return;
+        return None;
     }
-    match hello.purpose {
-        Purpose::Pair => pair(socket, channel, hello, inner).await,
-        Purpose::Session => session(socket, channel, hello.phone, inner).await,
-    }
+    let first = first_frame(&mut socket, &mut channel).await?;
+    Some((socket, channel, hello, first))
 }
 
-async fn refuse(mut socket: Socket, reason: &str) {
+/// Tells the phone why it was turned away, and closes.
+async fn refuse<T>(mut socket: Socket, reason: &str) -> Option<T> {
     let _ = socket.send(Message::Text(seal::refused(reason).to_string().into())).await;
     let _ = socket.close(None).await;
+    None
 }
 
 async fn send_sealed(socket: &mut (impl SinkExt<Message> + Unpin), channel: &mut Channel, value: &Value) -> bool {
@@ -125,10 +136,9 @@ async fn send_sealed(socket: &mut (impl SinkExt<Message> + Unpin), channel: &mut
     socket.send(Message::Binary(frame.into())).await.is_ok()
 }
 
-/// The phone's first frame names it; the invite is spent only once that frame
-/// opens, which proves the phone holds both its key and the invite's secret.
-async fn pair(mut socket: Socket, mut channel: Channel, hello: Hello, inner: Arc<Inner>) {
-    let Some(claim) = first_frame(&mut socket, &mut channel).await else { return };
+/// The phone's first frame, `claim`, names it; the invite is spent only once
+/// that frame opens, which proves the phone holds both its key and the invite's secret.
+async fn pair(mut socket: Socket, mut channel: Channel, hello: Hello, claim: Vec<u8>, inner: Arc<Inner>) {
     let name = serde_json::from_slice::<Value>(&claim).ok().and_then(|claim| claim["name"].as_str().map(str::to_string)).unwrap_or_default();
     let invite = hello.invite.unwrap_or_default();
     let claimed = inner.registry().claim(&invite, hello.phone, &name, now_ms());
@@ -159,12 +169,11 @@ async fn within(quiet: Duration, sending: impl Future<Output = bool>) -> bool {
 
 /// A paired phone's session: every frame is one request, answered in its own
 /// time; events the Mac raises go out between answers. It begins only once the
-/// phone's frame 0 opens, which proves it holds the paired key: until then the
-/// phone is neither connected nor seen. A revoke ends it at once, and no request
+/// phone's frame 0, `first`, opens, which proves it holds the paired key: until
+/// then the phone is neither connected nor seen. A revoke ends it at once, and no request
 /// still in hand starts a write after it; so does a phone from which nothing, not even
 /// a pong, has arrived for [`SILENT_PINGS`] pings.
-async fn session(mut socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc<Inner>) {
-    let Some(first) = first_frame(&mut socket, &mut channel).await else { return };
+async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], first: Vec<u8>, inner: Arc<Inner>) {
     let (events_tx, mut events) = mpsc::unbounded_channel::<Value>();
     let (closed_tx, mut closed) = watch::channel(false);
     let Some(conn) = inner.attach(&key, events_tx, closed_tx) else { return };
