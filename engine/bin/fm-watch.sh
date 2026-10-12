@@ -1783,19 +1783,24 @@ signal_arm_pr_checks() {  # <targets>
     [ -n "$task" ] || continue
     out=$(mktemp "${TMPDIR:-/tmp}/fm-watch-pr-arm.XXXXXX") || out=/dev/null
     rc=0
+    why=''
     limit=$(( deadline - $(date +%s) ))
     if [ "$limit" -le 0 ]; then
-      rc=124
+      rc=1
+      why="not started: the batch's ${PR_ARM_TIMEOUT}s arming budget was spent on earlier PR checks"
     else
       fm_run_timed "$limit" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
         "$PR_CHECK_BIN" "$task" "$url" > "$out" 2>&1 < /dev/null || rc=$?
+      if [ "$rc" -eq 124 ]; then
+        why="bin/fm-pr-check.sh did not finish within ${PR_ARM_TIMEOUT}s"
+      elif [ "$rc" -ne 0 ]; then
+        why=$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -n 1 | tr -d '\r')
+      fi
     fi
     if [ "$rc" -eq 0 ]; then
       fm_wake_append check "pr-check-$task" "check: pr-check armed: $task $url" || return 1
       triage_log "pr-check armed: $task $url"
     else
-      why=$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -n 1 | tr -d '\r')
-      [ "$rc" -ne 124 ] || why="bin/fm-pr-check.sh did not finish within ${PR_ARM_TIMEOUT}s"
       fm_wake_append check "pr-check-$task" \
         "check: pr-check not armed: $task $url: ${why:-bin/fm-pr-check.sh exited $rc}; run bin/fm-pr-check.sh $task <PR url>" \
         || return 1
