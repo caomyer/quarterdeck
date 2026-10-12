@@ -52,7 +52,7 @@ import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, askAgainDay, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, askAgainDay, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, heldByDeferral, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import { answerCardView, callCardView, callLine, type EarlierWords } from "./callviews";
 import { AnswerCard, CallLineCard, CallOpenCard, EvidenceLine } from "./CallCards";
@@ -3689,7 +3689,8 @@ function RailCall({ call, revision, beside, chosen, before, onAnswer, onOpenEvid
   // What the first mate is left to record: words, and an option on a call that does not say how an answer closes it,
   // which goes as words in its own label. A dated not now is carried out as the review goes.
   const forFirstMate = chosen !== undefined && !chosen.defer && (worded || !(chosen.on_answer === "done" || chosen.on_answer === "release"));
-  const heldUntil = call.state === "open" && call.captain_actionable === false && call.deferred ? askAgainDay(call.deferred.until) : null;
+  const deferredTo = heldByDeferral(call);
+  const heldUntil = deferredTo ? askAgainDay(deferredTo) : null;
   const said = chosen && (chosen.note || chosen.defer) ? answerInWords(chosen.defer, chosen.note ?? "") : "";
   const saidThen = then ? [then.label, answerInWords(then.defer, then.note ?? "")].filter(Boolean).join(". ") : "";
   // What the captain said that nothing has recorded: the reply firstmate keeps on the call, the same one Bearings shows.

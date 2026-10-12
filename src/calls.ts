@@ -205,6 +205,16 @@ export function askAgainDay(date: string) {
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${date}T12:00:00`));
 }
 
+/**
+ * The day a call is held to by its last dated not now, or null when that deferral is not what holds it now: the record
+ * outlives its day, so it counts only while the snapshot's own bucket says the call is held to a date still to come.
+ */
+export function heldByDeferral(call: Call) {
+  const until = call.deferred?.until;
+  if (call.state !== "open" || call.bucket !== "dated" || !until) return null;
+  return call.ask_again_from && until < call.ask_again_from ? null : until;
+}
+
 /** An answer in words, as every surface says it: not now until a day, what the captain wrote, or both. */
 export function answerInWords(defer: string | null | undefined, note: string) {
   const words = note.trim();

@@ -2338,9 +2338,9 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
   fm_write_meta "$child/state/promote-conflict.meta" \
     "window=firstmate:fm-promote-conflict" "kind=scout"
   write_promotion_brief "$child" promote-conflict
-  out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
+  out=$(PATH="$child/fakebin:$PATH" FM_SEND_SETTLE=0 FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
-    "$PROMOTE" promote-conflict --mode local-only --yolo off --no-deliver 2>&1) \
+    "$PROMOTE" promote-conflict --mode local-only --yolo off 2>&1) \
     || fail "promotion must not block on conflicting parent bindings: $out"
   assert_contains "$out" "promoted promote-conflict to ship" \
     "parent-resolution trouble must never refuse the kind flip"
@@ -2353,9 +2353,9 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
   fm_write_meta "$child/state/promote-legacy.meta" \
     "window=firstmate:fm-promote-legacy" "kind=scout"
   write_promotion_brief "$child" promote-legacy
-  out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
+  out=$(PATH="$child/fakebin:$PATH" FM_SEND_SETTLE=0 FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
-    "$PROMOTE" promote-legacy --mode local-only --yolo off --no-deliver 2>&1) \
+    "$PROMOTE" promote-legacy --mode local-only --yolo off 2>&1) \
     || fail "legacy parent recovery must not block promotion: $out"
   assert_contains "$out" "next: FM_HOME=" \
     "a recovered legacy parent must identify the consent-holding home"
@@ -2370,9 +2370,9 @@ test_secondmate_promotion_uses_teardown_parent_resolution() {
   fm_write_meta "$remote_child/state/promote-remote.meta" \
     "window=firstmate:fm-promote-remote" "kind=scout"
   write_promotion_brief "$remote_child" promote-remote
-  out=$(PATH="$remote_child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$remote_child" \
+  out=$(PATH="$remote_child/fakebin:$PATH" FM_SEND_SETTLE=0 FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$remote_child" \
     FM_STATE_OVERRIDE="$remote_child/state" \
-    "$PROMOTE" promote-remote --mode local-only --yolo off --no-deliver 2>&1) \
+    "$PROMOTE" promote-remote --mode local-only --yolo off 2>&1) \
     || fail "a remote parent route must not block promotion: $out"
   assert_contains "$out" "promoted promote-remote to ship" \
     "an unresolved remote parent must never refuse the kind flip"

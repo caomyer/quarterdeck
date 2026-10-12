@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answerOfMessage, callStanding } from "../src/calls.ts";
+import { answerOfMessage, callStanding, heldByDeferral } from "../src/calls.ts";
 import { answerCardView, callCardView, callLine, notNowDay } from "../src/callviews.ts";
 
 const NOW = Date.parse("2026-09-25T13:00:00Z");
@@ -119,24 +119,42 @@ test("E: a dated not now is held by firstmate, so its date is done and only word
   const bare = answerOfMessage(fixture.deferred[0].text);
   const worded = answerOfMessage(fixture.deferred[1].text);
   const deferred = { until: bare.until, via: "quarterdeck", at: ago(10), message: "m1" };
-  const held = call({ captain_actionable: false, deferred });
+  const held = call({ captain_actionable: false, bucket: "dated", deferred });
   const shown = answerView(bare, held, { delivery: "read by the first mate 12:59 PM" });
   assert.deepEqual([shown.kind, shown.kicker, shown.said, shown.note, shown.tone, shown.status],
     ["deferred", "Your answer · not now", "Not now. Ask me again on Oct 3.", null, "green", "Held until Oct 3 · read by the first mate 12:59 PM"]);
   // Words he added stay amber while the call carries them as his reply.
-  const heldWorded = call({ captain_actionable: false, deferred: { ...deferred, until: worded.until }, reply: { words: worded.words, via: "quarterdeck", at: ago(10), message: "m2" } });
+  const heldWorded = call({ captain_actionable: false, bucket: "dated", deferred: { ...deferred, until: worded.until }, reply: { words: worded.words, via: "quarterdeck", at: ago(10), message: "m2" } });
   const amber = answerView(worded, heldWorded, { reply: { words: worded.words, at: ago(10) } });
   assert.deepEqual([amber.tone, amber.status, amber.note], ["amber", "Held until Jan 4 · your words are with the first mate", "Unless the battery numbers land first."]);
   // Asked again before the day, or the day came: no longer held, and never shown green.
   assert.deepEqual([answerView(bare, call({ deferred })).tone, answerView(bare, call({ deferred })).status], ["muted", "Not held now · the first mate asked again, or the day came"]);
   // A call the first mate held to another day is not this deferral.
-  assert.equal(answerView(bare, call({ captain_actionable: false, deferred: { ...deferred, until: "2026-11-01" } })).tone, "muted");
+  assert.equal(answerView(bare, call({ captain_actionable: false, bucket: "dated", deferred: { ...deferred, until: "2026-11-01" } })).tone, "muted");
   assert.equal(answerView(bare, undefined).status, "The call has closed");
 });
 
 test("the held line names the day firstmate's defer recorded, without needing the words that said it", () => {
-  const held = call({ captain_actionable: false, deferred: { until: "2026-10-03", via: "review", at: ago(10), message: null } });
+  const held = call({ captain_actionable: false, bucket: "dated", deferred: { until: "2026-10-03", via: "review", at: ago(10), message: null } });
   assert.equal(callLine(held, callStanding(held)).detail, "not now, ask again Oct 3");
+});
+
+test("an old deferral never labels a call held for another reason, or one whose day has come", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../src/fixtures/call-messages.json", import.meta.url), "utf8"));
+  const bare = answerOfMessage(fixture.deferred[0].text);
+  const deferred = { until: bare.until, via: "quarterdeck", at: ago(10), message: "m1" };
+  const stale = [
+    call({ captain_actionable: false, bucket: "aged", deferred }),
+    call({ captain_actionable: false, bucket: "blocked", deferred }),
+    call({ captain_actionable: false, bucket: "dated", ask_again_from: "2026-10-04", deferred }),
+  ];
+  for (const held of stale) {
+    assert.equal(heldByDeferral(held), null, `bucket ${held.bucket}`);
+    assert.equal(callLine(held, callStanding(held)).detail, "not now, held", `bucket ${held.bucket}`);
+    assert.deepEqual([answerView(bare, held).tone, answerView(bare, held).status], ["muted", "Not held now · the first mate asked again, or the day came"], `bucket ${held.bucket}`);
+  }
+  const inForce = call({ captain_actionable: false, bucket: "dated", ask_again_from: "2026-10-03", deferred });
+  assert.equal(heldByDeferral(inForce), bare.until);
 });
 
 test("E: words kept with a line break or past the message's limit are still the call's reply", () => {
