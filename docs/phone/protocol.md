@@ -101,6 +101,9 @@ The phone then opens a session.
 
 ## Session
 
+A session begins when the phone's frame 0, its first request, opens: until then the Mac neither counts the phone as connected nor notes it as seen, and sends it no events.
+A phone that sends no frame within 30 seconds of `ready` is closed.
+
 A request is `{"id": <number the phone picks>, "ask": "<kind>", ...fields}`.
 Its answer is `{"id": n, "ok": true, "result": ...}` or `{"id": n, "ok": false, "problem": "<words for the captain>"}`.
 Answers may arrive in any order.
@@ -117,7 +120,7 @@ A request with a field its kind does not have, or a kind not listed here, is ref
 | `discard` | `page`, `thread` | Takes back a draft comment. |
 | `send_review` | `page`, `rev`, `verdict` (`approve`, `changes`, `comment`) | The desktop's Send review. |
 | `chat` | `limit`? (1 to 200, 40 by default) | The recent conversation: the captain's words and the first mate's. |
-| `say` | `text` | A message to the first mate. A reply to a place in the chat carries the block `src/replyto.ts` writes, before the captain's words. |
+| `say` | `text` | A message to the first mate. A reply to a place in the chat carries the block `src/replyto.ts` writes, before the captain's words. Words starting with `/` are a command for the first mate's session and are refused: those come only from the Mac. |
 
 `page` is `{"scope": "task", "task": "<task id>", "name": "<page>"}` or `{"scope": "chat", "name": "<page>"}`.
 
@@ -136,4 +139,5 @@ A phone that slept or lost its network simply opens a new session.
 
 Revoking a phone in Settings forgets its key and closes its connections before Settings answers.
 Its next greeting is refused, and no event reaches it again.
+A request it sent that the Mac has not finished is dropped where it stands and not answered.
 Pairing it again needs a new invite.

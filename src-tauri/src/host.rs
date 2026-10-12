@@ -282,6 +282,8 @@ impl Tell for HostHandle {
 /// it can be told something the captain said, and its conversation and state
 /// read. It holds no way to start, stop, restart or reconfigure the first mate,
 /// or to answer for it, so nothing holding only this can become a second host.
+/// Words starting with `/` are a command for the session, not words for the
+/// first mate, so it refuses them: commands come only from the captain's window.
 /// The phone link (`phone/`) is given this and never the [`HostHandle`].
 #[derive(Clone)]
 pub struct Messenger {
@@ -299,6 +301,9 @@ impl Messenger {
 
 impl Tell for Messenger {
     async fn tell(&self, text: String) -> Result<String, String> {
+        if text.trim_start().starts_with('/') {
+            return Err("a command for the first mate's session is given only from the Mac".to_string());
+        }
         let (reply, rx) = oneshot::channel();
         self.tx.send(Cmd::Send { text, reply }).map_err(|_| "the first mate host is not running".to_string())?;
         rx.await.map_err(|_| "the first mate host stopped before answering".to_string())?

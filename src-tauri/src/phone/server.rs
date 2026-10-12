@@ -24,8 +24,8 @@ use tokio_tungstenite::WebSocketStream;
 pub const PATH: &str = "/qd-phone/1";
 /// A phone has this long to open the socket and greet.
 const GREETING_WAIT: Duration = Duration::from_secs(10);
-/// And this long, once answered, to claim the invite.
-const CLAIM_WAIT: Duration = Duration::from_secs(30);
+/// And this long, once answered, to send its frame 0: the claim, or a session's first request.
+const FIRST_FRAME_WAIT: Duration = Duration::from_secs(30);
 /// Nothing the phone sends is large: an answer, a comment, a message.
 const INBOUND_LIMIT: usize = 1024 * 1024;
 /// Requests one connection may have in hand at once.
@@ -128,11 +128,7 @@ async fn send_sealed(socket: &mut (impl SinkExt<Message> + Unpin), channel: &mut
 /// The phone's first frame names it; the invite is spent only once that frame
 /// opens, which proves the phone holds both its key and the invite's secret.
 async fn pair(mut socket: Socket, mut channel: Channel, hello: Hello, inner: Arc<Inner>) {
-    let frame = match tokio::time::timeout(CLAIM_WAIT, socket.next()).await {
-        Ok(Some(Ok(Message::Binary(frame)))) => frame,
-        _ => return,
-    };
-    let Ok(claim) = channel.open(&frame) else { return };
+    let Some(claim) = first_frame(&mut socket, &mut channel).await else { return };
     let name = serde_json::from_slice::<Value>(&claim).ok().and_then(|claim| claim["name"].as_str().map(str::to_string)).unwrap_or_default();
     let invite = hello.invite.unwrap_or_default();
     let claimed = inner.registry().claim(&invite, hello.phone, &name, now_ms());
@@ -147,16 +143,28 @@ async fn pair(mut socket: Socket, mut channel: Channel, hello: Hello, inner: Arc
     let _ = socket.close(None).await;
 }
 
+/// The phone's frame 0, opened, or `None` when it does not come in time or does not open.
+async fn first_frame(socket: &mut Socket, channel: &mut Channel) -> Option<Vec<u8>> {
+    let frame = match tokio::time::timeout(FIRST_FRAME_WAIT, socket.next()).await {
+        Ok(Some(Ok(Message::Binary(frame)))) => frame,
+        _ => return None,
+    };
+    channel.open(&frame).ok()
+}
+
 /// Whether `sending` went out before a phone that has stopped listening could hold it up for longer than `quiet`.
 async fn within(quiet: Duration, sending: impl Future<Output = bool>) -> bool {
     tokio::time::timeout(quiet, sending).await.unwrap_or(false)
 }
 
 /// A paired phone's session: every frame is one request, answered in its own
-/// time; events the Mac raises go out between answers. A revoke ends it at once,
-/// and so does a phone from which nothing, not even a pong, has arrived for
-/// [`SILENT_PINGS`] pings.
-async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc<Inner>) {
+/// time; events the Mac raises go out between answers. It begins only once the
+/// phone's frame 0 opens, which proves it holds the paired key: until then the
+/// phone is neither connected nor seen. A revoke ends it at once, along with
+/// every request still in hand, and so does a phone from which nothing, not even
+/// a pong, has arrived for [`SILENT_PINGS`] pings.
+async fn session(mut socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc<Inner>) {
+    let Some(first) = first_frame(&mut socket, &mut channel).await else { return };
     let (events_tx, mut events) = mpsc::unbounded_channel::<Value>();
     let (closed_tx, mut closed) = watch::channel(false);
     let Some(conn) = inner.attach(&key, events_tx, closed_tx) else { return };
@@ -168,6 +176,7 @@ async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc
     pings.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut heard = tokio::time::Instant::now();
     let mut heard_at = now_ms();
+    take(&first, &inner, &in_hand, &answers_tx, &closed);
     loop {
         tokio::select! {
             biased;
@@ -187,25 +196,7 @@ async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc
                 if !paired {
                     break;
                 }
-                let answer = answers_tx.clone();
-                match request::parse(&payload) {
-                    Ok((id, asked)) => match in_hand.clone().try_acquire_owned() {
-                        Ok(permit) => {
-                            let desk = inner.desk.clone();
-                            tokio::spawn(async move {
-                                let result = request::handle(&desk, asked).await;
-                                let _ = answer.send(request::answered(id, result));
-                                drop(permit);
-                            });
-                        }
-                        Err(_) => {
-                            let _ = answer.send(request::answered(id, Err("the Mac is still working on this phone's other requests".to_string())));
-                        }
-                    },
-                    Err((id, problem)) => {
-                        let _ = answer.send(json!({"id": id, "ok": false, "problem": problem}));
-                    }
-                }
+                take(&payload, &inner, &in_hand, &answers_tx, &closed);
             },
             Some(answer) = answers.recv() => {
                 if *closed.borrow() || !within(quiet, send_sealed(&mut sink, &mut channel, &answer)).await {
@@ -226,4 +217,35 @@ async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc
     }
     inner.detach(conn, &key, heard_at);
     within(quiet, async { sink.send(Message::Close(None)).await.is_ok() && sink.close().await.is_ok() }).await;
+}
+
+/// Takes one opened request in hand, answering on `answers`. A revoke, which
+/// sets `closed`, drops it wherever it stands, so nothing it has not yet done
+/// is done for a phone that is no longer paired.
+fn take(payload: &[u8], inner: &Inner, in_hand: &Arc<Semaphore>, answers: &mpsc::UnboundedSender<Value>, closed: &watch::Receiver<bool>) {
+    let answer = answers.clone();
+    match request::parse(payload) {
+        Ok((id, asked)) => match in_hand.clone().try_acquire_owned() {
+            Ok(permit) => {
+                let desk = inner.desk.clone();
+                let mut revoked = closed.clone();
+                tokio::spawn(async move {
+                    tokio::select! {
+                        biased;
+                        Ok(_) = revoked.wait_for(|closed| *closed) => {}
+                        result = request::handle(&desk, asked) => {
+                            let _ = answer.send(request::answered(id, result));
+                        }
+                    }
+                    drop(permit);
+                });
+            }
+            Err(_) => {
+                let _ = answer.send(request::answered(id, Err("the Mac is still working on this phone's other requests".to_string())));
+            }
+        },
+        Err((id, problem)) => {
+            let _ = answer.send(json!({"id": id, "ok": false, "problem": problem}));
+        }
+    }
 }

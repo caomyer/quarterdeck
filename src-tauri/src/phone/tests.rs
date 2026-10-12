@@ -51,9 +51,10 @@ const APPROVED: [&str; 10] = ["board", "answer_call", "reply_to_call", "page", "
 /// review runs on the desktop too. Nothing else, ever.
 const MAY_RUN: [&str; 3] = ["fm-captain-hold.sh answers", "fm-captain-hold.sh reply", "fm-artifact.sh deliver-review"];
 
-/// What a phone may ask of the host: tell the first mate something, read its conversation.
+/// What a phone may ask of the host: tell the first mate something, never a
+/// command for its session, and read its conversation.
 fn may_reach_host(command: &str) -> bool {
-    command == "get_state" || command.starts_with("send ")
+    command == "get_state" || command.strip_prefix("send ").is_some_and(|text| !text.trim_start().starts_with('/'))
 }
 
 /// One of each request, valid against the fixture home.
@@ -74,6 +75,9 @@ fn samples() -> Vec<Value> {
         json!({"ask": "say", "text": "How is the scout doing?"}),
     ]
 }
+
+/// What a phone may not say: a command for the first mate's session.
+const COMMANDS: [&str; 4] = ["/compact", "  /clear", "\n/model opus", "/compact keep the numbers"];
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("qd-phone-{name}-{}", std::process::id()));
@@ -284,7 +288,8 @@ async fn paired_phone(world: &World, name: &str) -> (Secret, Phone) {
     let key = Secret::generate().unwrap();
     let answer = pair(&offer, &key, name).await.expect("paired");
     assert_eq!(answer["paired"], true, "{answer}");
-    let phone = connect(&offer, &key, Purpose::Session, None).await.expect("a session");
+    let mut phone = connect(&offer, &key, Purpose::Session, None).await.expect("a session");
+    assert_eq!(phone.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true, "the session begins with its first request");
     (key, phone)
 }
 
@@ -427,6 +432,89 @@ async fn every_request_stays_on_the_captains_desk() {
     assert!(!world.home.join("state").exists(), "nothing touched the home's state, where its lock lives");
 }
 
+/// A command for the first mate's session, such as `/compact` or `/model`,
+/// reconfigures it; the phone may only have a word with the first mate.
+#[tokio::test]
+async fn a_phone_cannot_give_the_first_mate_a_command() {
+    let world = World::new("commands");
+    let (_, mut phone) = paired_phone(&world, "Captain's iPhone").await;
+    for text in COMMANDS {
+        let answer = phone.ask(&json!({"ask": "say", "text": text})).await.unwrap();
+        assert_eq!(answer["ok"], false, "{text:?} -> {answer}");
+        assert_eq!(answer["problem"], "a command for the first mate's session is given only from the Mac");
+    }
+    let commands = world.commands.lock().unwrap().clone();
+    assert!(commands.iter().all(|command| !command.starts_with("send ")), "a command reached the host: {commands:?}");
+}
+
+/// A greeting naming a paired phone's key is answered, but only the phone
+/// holding that key can open a session: one that cannot does not show as
+/// connected, is not noted as seen, and hears no event.
+#[tokio::test]
+async fn a_phone_is_connected_only_once_its_first_frame_opens() {
+    let world = World::new("first-frame");
+    let (key, phone) = paired_phone(&world, "Captain's iPhone").await;
+    drop(phone);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !world.inner().live.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let seen = world.inner().registry().paired(&key.public()).unwrap().last_seen;
+    let offer = world.invite().await;
+
+    // A stranger greets as the paired phone: the Mac answers, as it cannot yet tell.
+    let address = offer["addresses"][0].as_str().unwrap();
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/qd-phone/1")).await.unwrap();
+    let stranger = Initiator::new(Secret::generate().unwrap(), Secret::generate().unwrap(), super::seal::random().unwrap(), world.mac(), Purpose::Session, None);
+    let mut hello = stranger.hello().to_json();
+    hello["phone"] = json!(super::seal::encode(&key.public()));
+    socket.send(Message::Text(hello.to_string().into())).await.unwrap();
+    let answer = match tokio::time::timeout(WAIT, socket.next()).await {
+        Ok(Some(Ok(Message::Text(text)))) => serde_json::from_str::<Value>(&text).unwrap(),
+        other => panic!("no answer: {other:?}"),
+    };
+    assert_eq!(answer["type"], "ready", "{answer}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(world.inner().live.lock().unwrap().is_empty(), "the stranger is not a session");
+    assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], false);
+
+    // Its frame does not open, and the Mac closes without noting the phone was there.
+    socket.send(Message::Binary(vec![0u8; 40].into())).await.unwrap();
+    let closed = async {
+        loop {
+            match socket.next().await {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => continue,
+            }
+        }
+    };
+    assert!(tokio::time::timeout(WAIT, closed).await.is_ok(), "the stranger was closed");
+    assert!(world.inner().live.lock().unwrap().is_empty());
+    assert_eq!(world.inner().registry().paired(&key.public()).unwrap().last_seen, seen, "the stranger did not move last seen");
+}
+
+/// A revoke drops every request the phone still has in hand: an answer waiting
+/// its turn behind another write is not recorded, and the first mate is not told.
+#[tokio::test]
+async fn a_revoke_drops_the_requests_still_in_hand() {
+    let world = World::new("revoke-in-hand");
+    let (key, mut phone) = paired_phone(&world, "Lost phone").await;
+    let id = world.inner().registry().paired(&key.public()).unwrap().id.clone();
+    let told_before = world.commands.lock().unwrap().len();
+
+    let busy = world.inner().desk.writes.lock().await;
+    let page = json!({"scope": "task", "task": TASK, "name": PAGE});
+    phone.send(&json!({"id": 7, "ask": "answer_call", "call": CALL, "option": "wait", "page": page})).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(world.inner().revoke(&id).unwrap());
+    drop(busy);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(world.ran().is_empty(), "the intake ran for a revoked phone: {:?}", world.ran());
+    let commands = world.commands.lock().unwrap()[told_before..].to_vec();
+    assert!(commands.iter().all(|command| !command.starts_with("send ")), "the first mate was told for a revoked phone: {commands:?}");
+}
+
 /// A phone that vanishes without closing, as a sleeping or unplugged one does,
 /// is let go once nothing has come from it for three pings: its place among the
 /// Mac's connections is free again and Settings no longer shows it connected.
@@ -439,7 +527,9 @@ async fn a_silent_phone_is_let_go_and_its_place_freed() {
     let offer = world.invite().await;
     let mut silent = Vec::new();
     for _ in 1..super::server::CONNECTIONS {
-        silent.push(connect(&offer, &key, Purpose::Session, None).await.expect("a session while there is room"));
+        let mut phone = connect(&offer, &key, Purpose::Session, None).await.expect("a session while there is room");
+        assert_eq!(phone.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true);
+        silent.push(phone);
     }
     assert_eq!(world.inner().live.lock().unwrap().len(), super::server::CONNECTIONS, "every place is taken");
 
