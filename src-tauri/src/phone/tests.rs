@@ -225,7 +225,11 @@ fn decode<const N: usize>(text: &Value) -> [u8; N] {
 
 /// Greets the Mac at `offer`'s address. `Err` carries the Mac's refusal, or why the phone gave up.
 async fn connect(offer: &Value, phone: &Secret, purpose: Purpose, secret: Option<[u8; 32]>) -> Result<Phone, String> {
-    let address = offer["addresses"][0].as_str().unwrap();
+    connect_at(offer["addresses"][0].as_str().unwrap(), offer, phone, purpose, secret).await
+}
+
+/// Greets the Mac at one `address` of the several `offer` names.
+async fn connect_at(address: &str, offer: &Value, phone: &Secret, purpose: Purpose, secret: Option<[u8; 32]>) -> Result<Phone, String> {
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/qd-phone/1")).await.map_err(|e| e.to_string())?;
     let invite = (purpose == Purpose::Pair).then(|| decode::<16>(&offer["invite"]));
     let initiator = Initiator::new(phone.clone(), Secret::generate().unwrap(), super::seal::random().unwrap(), decode(&offer["mac"]), purpose, invite);
@@ -649,8 +653,8 @@ async fn a_revoke_lets_words_already_kept_finish_whole() {
 }
 
 /// A phone that vanishes without closing, as a sleeping or unplugged one does,
-/// is let go once nothing has come from it for three pings: its place among the
-/// Mac's connections is free again and Settings no longer shows it connected.
+/// is let go once nothing has come from it for three pings: its place among its
+/// phone's sessions is free again and Settings no longer shows it connected.
 /// A phone that is only listening answers the pings, as any WebSocket does, and stays.
 #[tokio::test]
 async fn a_silent_phone_is_let_go_and_its_place_freed() {
@@ -659,12 +663,12 @@ async fn a_silent_phone_is_let_go_and_its_place_freed() {
     let (key, mut listening) = paired_phone(&world, "Captain's iPhone").await;
     let offer = world.invite().await;
     let mut silent = Vec::new();
-    for _ in 1..super::server::CONNECTIONS {
+    for _ in 1..super::SESSIONS_PER_PHONE {
         let mut phone = connect(&offer, &key, Purpose::Session, None).await.expect("a session while there is room");
         assert_eq!(phone.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true);
         silent.push(phone);
     }
-    assert_eq!(world.inner().live.lock().unwrap().len(), super::server::CONNECTIONS, "every place is taken");
+    assert_eq!(world.inner().live.lock().unwrap().len(), super::SESSIONS_PER_PHONE, "every place is taken");
 
     // Only reading, the listening phone hears nothing but pings, which it answers.
     assert!(tokio::time::timeout(beat * 10, listening.receive()).await.is_err(), "the listening phone was not let go");
@@ -674,7 +678,7 @@ async fn a_silent_phone_is_let_go_and_its_place_freed() {
         assert!(closed_by_the_mac(&mut phone).await, "a silent phone's connection was closed");
     }
 
-    // Their places are free again: a new session gets in, where it would have been dropped unread.
+    // Their places are free again: a new session gets in without ending the listening phone's, the oldest, as it would have.
     let mut back = connect(&offer, &key, Purpose::Session, None).await.expect("a place for a new session");
     assert_eq!(back.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true);
     assert_eq!(listening.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true, "the listening phone carries on");
@@ -685,6 +689,117 @@ async fn a_silent_phone_is_let_go_and_its_place_freed() {
         tokio::time::sleep(beat).await;
     }
     assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], false, "a phone that left shows as not connected");
+}
+
+/// Someone who can reach the port and holds a paired phone's public key, which
+/// is no secret since every greeting carries it in clear: it greets as that
+/// phone, is answered `ready`, and then sends nothing, holding on as long as the
+/// Mac lets it. `None` when the Mac did not let it that far.
+async fn impostor(address: &str, mac: [u8; 32], phone: [u8; 32]) -> Option<Socket> {
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/qd-phone/1")).await.ok()?;
+    let stranger = Initiator::new(Secret::generate().unwrap(), Secret::generate().unwrap(), super::seal::random().unwrap(), mac, Purpose::Session, None);
+    let mut hello = stranger.hello().to_json();
+    hello["phone"] = json!(super::seal::encode(&phone));
+    socket.send(Message::Text(hello.to_string().into())).await.ok()?;
+    match tokio::time::timeout(WAIT, socket.next()).await {
+        Ok(Some(Ok(Message::Text(text)))) if serde_json::from_str::<Value>(&text).ok()?["type"] == "ready" => Some(socket),
+        _ => None,
+    }
+}
+
+/// The paired phone opens a session and is answered, as it would be on any day.
+async fn gets_through(address: &str, offer: &Value, key: &Secret) -> Result<(), String> {
+    let mut phone = connect_at(address, offer, key, Purpose::Session, None).await?;
+    match phone.ask(&json!({"ask": "board"})).await {
+        Some(answer) if answer["ok"] == true => Ok(()),
+        other => Err(format!("the session was not answered: {other:?}")),
+    }
+}
+
+/// Connections that never finish greeting, and impostors holding a paired
+/// phone's key, cannot keep that phone out however many there are: it gets
+/// through with every one of them still open.
+#[tokio::test]
+async fn connections_held_open_do_not_keep_the_phone_out() {
+    let world = World::new("held-open");
+    let (key, phone) = paired_phone(&world, "Captain's iPhone").await;
+    drop(phone);
+    let offer = world.invite().await;
+    let address = offer["addresses"][0].as_str().unwrap();
+    let mut impostors = Vec::new();
+    for _ in 0..40 {
+        impostors.push(impostor(address, world.mac(), key.public()).await);
+    }
+    let mut idle = Vec::new();
+    for _ in 0..40 {
+        idle.push(TcpStream::connect(address).await.expect("an idle connection"));
+    }
+    gets_through(address, &offer, &key).await.expect("the paired phone got through");
+    assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], true);
+    drop((idle, impostors));
+}
+
+/// Someone elsewhere on the network who opens connection after connection,
+/// each held open without greeting or as an impostor, cannot keep the paired
+/// phone out: the Mac makes room for the phone at the cost of the address
+/// holding the most, never the phone's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flood_from_elsewhere_does_not_keep_the_phone_out() {
+    let world = World::on("flood", super::server::KEEPALIVE, Box::new(|| vec![IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)]), 0);
+    let (key, phone) = paired_phone(&world, "Captain's iPhone").await;
+    drop(phone);
+    let offer = world.invite().await;
+    let (flooded, phone_side) = (offer["addresses"][0].as_str().unwrap().to_string(), offer["addresses"][1].as_str().unwrap().to_string());
+    assert!(flooded.starts_with("127.0.0.1:") && phone_side.starts_with("[::1]:"), "{offer}");
+    let (mac, phone_key) = (world.mac(), key.public());
+    let flooders: Vec<_> = (0..8)
+        .map(|_| {
+            let flooded = flooded.clone();
+            tokio::spawn(async move {
+                let mut held = std::collections::VecDeque::new();
+                for round in 0u64.. {
+                    if round % 8 == 0 {
+                        held.push_back(impostor(&flooded, mac, phone_key).await.map(Ok));
+                    } else {
+                        held.push_back(TcpStream::connect(&flooded).await.ok().map(Err));
+                    }
+                    if held.len() > 32 {
+                        held.pop_front();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for attempt in 0..10 {
+        gets_through(&phone_side, &offer, &key).await.unwrap_or_else(|problem| panic!("attempt {attempt}: {problem}"));
+    }
+    assert!(flooders.iter().all(|flooder| !flooder.is_finished()), "the flood ran throughout");
+    for flooder in flooders {
+        flooder.abort();
+    }
+}
+
+/// A phone that reconnects again and again, as one moving between networks
+/// does, keeps only its newest sessions: the oldest, most likely dead, are
+/// closed, and the newest is always let in.
+#[tokio::test]
+async fn a_phone_keeps_only_its_newest_sessions() {
+    let world = World::new("newest");
+    let (key, first) = paired_phone(&world, "Captain's iPhone").await;
+    let offer = world.invite().await;
+    let mut sessions = vec![first];
+    for _ in 0..super::SESSIONS_PER_PHONE {
+        let mut phone = connect(&offer, &key, Purpose::Session, None).await.expect("a newer session");
+        assert_eq!(phone.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true);
+        sessions.push(phone);
+    }
+    assert!(closed_by_the_mac(&mut sessions[0]).await, "the oldest session was closed");
+    assert_eq!(world.inner().live.lock().unwrap().len(), super::SESSIONS_PER_PHONE);
+    for phone in sessions.iter_mut().skip(1) {
+        assert_eq!(phone.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true, "a newer session carries on");
+    }
 }
 
 /// Two sessions of one phone can end out of order; the one that ends last but
@@ -902,6 +1017,53 @@ fn nothing_listens_on_an_address_the_link_was_not_given() {
         let IpAddr::V4(ip) = ip else { panic!("{ip} is not IPv4") };
         assert!(ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]), "{ip}");
     }
+}
+
+/// Only Tailscale's own interface is the tailnet: a VPN that also puts a
+/// 100.64.0.0/10 address on a `utun` interface, as Cloudflare WARP does, is
+/// never listened on or offered in an invite, nor does Settings call it a
+/// tailnet, even beside a Tailscale that is up.
+#[test]
+fn only_tailscale_is_the_tailnet() {
+    let at = |name: &str, ip: &str| (name.to_string(), ip.parse::<IpAddr>().unwrap());
+    let warp = [at("utun3", "100.96.0.12"), at("utun3", "2606:4700:110:8a1b::1"), at("utun3", "fe80::1")];
+    let tailscale = [at("utun5", "100.101.102.103"), at("utun5", "fd7a:115c:a1e0::6a01:6667"), at("utun5", "fe80::2")];
+    let lan = [at("lo0", "127.0.0.1"), at("en0", "192.168.1.120"), at("en0", "fd00::12")];
+
+    assert!(super::tailnet_among(&warp).is_empty(), "WARP is not the tailnet");
+    assert!(super::tailnet_among(&[&lan[..], &warp[..]].concat()).is_empty(), "nor is it with a LAN beside it");
+    assert_eq!(super::tailnet_among(&[&lan[..], &tailscale[..]].concat()), vec![tailscale[0].1]);
+    assert_eq!(super::tailnet_among(&[&warp[..], &tailscale[..], &lan[..]].concat()), vec![tailscale[0].1], "beside WARP, only Tailscale");
+
+    // Tailscale's prefix on another interface does not lend it to a CGNAT address there.
+    assert!(super::tailnet_among(&[at("utun3", "100.96.0.12"), at("utun5", "fd7a:115c:a1e0::6a01:6667")]).is_empty());
+    // Nor is anything not a tunnel the tailnet, whatever it carries.
+    assert!(super::tailnet_among(&[at("en5", "100.101.102.103"), at("en5", "fd7a:115c:a1e0::6a01:6667")]).is_empty());
+    // And only the shared range is listened on: never the IPv6, nor another IPv4 on the interface.
+    assert_eq!(super::tailnet_among(&[at("utun5", "10.0.0.2"), at("utun5", "100.64.0.1"), at("utun5", "100.128.0.1"), at("utun5", "fd7a:115c:a1e0::1")]), vec![at("", "100.64.0.1").1]);
+}
+
+/// When every place at the gate is held, the address holding the most gives
+/// way to a newcomer, oldest first, and its own place when it holds as many.
+#[test]
+fn the_address_holding_the_most_gives_way() {
+    let gate = Arc::new(super::gate::Gate::default());
+    let (flood, phone, other): (IpAddr, IpAddr, IpAddr) = ("100.70.0.9".parse().unwrap(), "100.80.0.2".parse().unwrap(), "100.90.0.3".parse().unwrap());
+    let mut held: Vec<_> = (0..super::gate::PLACES - 1).map(|_| gate.admit(flood)).collect();
+    let mut first = gate.admit(other);
+    assert!(held[0].displaced.try_recv().is_err(), "a free place displaces nobody");
+
+    let mut coming = gate.admit(phone);
+    assert!(held[0].displaced.try_recv().is_ok(), "the flood's oldest gave way to the phone");
+    assert!(first.displaced.try_recv().is_err() && coming.displaced.try_recv().is_err());
+    for _ in 0..100 {
+        held.push(gate.admit(flood));
+    }
+    assert!(first.displaced.try_recv().is_err() && coming.displaced.try_recv().is_err(), "the flood displaces only its own");
+    assert_eq!(gate.held().iter().filter(|from| **from == flood).count(), super::gate::PLACES - 2);
+
+    drop(coming);
+    assert_eq!(gate.held().len(), super::gate::PLACES - 1, "a connection that leaves frees its place");
 }
 
 /// A port nothing holds, for a test that must know where a link would listen.

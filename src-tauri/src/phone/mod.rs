@@ -26,6 +26,7 @@
 //! Event: `phones`, with what `phone_status` returns, when the list changes.
 
 mod desk;
+mod gate;
 mod pairing;
 pub mod request;
 pub mod seal;
@@ -37,7 +38,7 @@ pub use desk::Desk;
 use pairing::Registry;
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -47,6 +48,10 @@ use tokio::sync::{mpsc, watch};
 
 /// How often the Mac checks its tailnet address has not changed under it.
 const RECHECK: Duration = Duration::from_secs(30);
+/// Sessions one phone may have at once. A phone that moves between networks
+/// leaves sessions behind that are only found dead after [`server::KEEPALIVE`]
+/// pings, so a new session closes its phone's oldest rather than being turned away.
+pub(super) const SESSIONS_PER_PHONE: usize = 4;
 
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -62,9 +67,36 @@ pub(crate) fn mac_name() -> String {
     if name.is_empty() { "This Mac".to_string() } else { name }
 }
 
-/// The Mac's addresses on a Tailscale network: IPv4 in 100.64.0.0/10 on a
-/// tunnel interface. Nothing else is ever listened on.
+/// The Mac's addresses on a Tailscale network, and nothing else is ever listened on.
+///
+/// Tailscale on a Mac is a `utun` interface carrying an IPv4 address in
+/// 100.64.0.0/10 and an IPv6 address in fd7a:115c:a1e0::/48. The IPv4 range is
+/// shared address space that other VPNs use too (Cloudflare WARP's is
+/// 100.96.0.0/12), so on its own it says only "some tunnel". The IPv6 prefix is
+/// Tailscale's own unique local prefix, which no other VPN picks by chance, so
+/// an interface counts as the tailnet only when it carries both, and the link
+/// listens on its IPv4 addresses.
 pub(crate) fn tailnet_addresses() -> Vec<IpAddr> {
+    tailnet_among(&interface_addresses())
+}
+
+/// Tailscale's unique local IPv6 prefix, fd7a:115c:a1e0::/48.
+const TAILSCALE_ULA: [u16; 3] = [0xfd7a, 0x115c, 0xa1e0];
+
+/// The tailnet's IPv4 addresses among every interface's `(name, address)`, as [`tailnet_addresses`] says.
+fn tailnet_among(interfaces: &[(String, IpAddr)]) -> Vec<IpAddr> {
+    let tailscale = |name: &str| {
+        name.starts_with("utun") && interfaces.iter().any(|(on, ip)| on == name && matches!(ip, IpAddr::V6(ip) if ip.segments()[..3] == TAILSCALE_ULA))
+    };
+    interfaces
+        .iter()
+        .filter(|(name, ip)| matches!(ip, IpAddr::V4(ip) if ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1])) && tailscale(name))
+        .map(|(_, ip)| *ip)
+        .collect()
+}
+
+/// Every address on every interface, with the interface's name.
+fn interface_addresses() -> Vec<(String, IpAddr)> {
     let mut found = Vec::new();
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs fills `list` with a linked list freed below with freeifaddrs.
@@ -79,17 +111,15 @@ pub(crate) fn tailnet_addresses() -> Vec<IpAddr> {
         if entry.ifa_addr.is_null() || entry.ifa_name.is_null() {
             continue;
         }
-        // SAFETY: a non-null ifa_addr points at a sockaddr; its family says what it is.
-        if i32::from(unsafe { (*entry.ifa_addr).sa_family }) != libc::AF_INET {
-            continue;
-        }
-        // SAFETY: an AF_INET address is a sockaddr_in, and ifa_name is a C string.
-        let (address, name) = unsafe { (*(entry.ifa_addr as *const libc::sockaddr_in), std::ffi::CStr::from_ptr(entry.ifa_name)) };
-        let ip = Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr));
-        let [first, second, ..] = ip.octets();
-        if first == 100 && (64..128).contains(&second) && name.to_string_lossy().starts_with("utun") {
-            found.push(IpAddr::V4(ip));
-        }
+        // SAFETY: ifa_name is a C string.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.ifa_name) }.to_string_lossy().to_string();
+        // SAFETY: a non-null ifa_addr points at a sockaddr; its family says which kind, and so how to read it.
+        let ip = match i32::from(unsafe { (*entry.ifa_addr).sa_family }) {
+            libc::AF_INET => IpAddr::V4(Ipv4Addr::from(u32::from_be(unsafe { *(entry.ifa_addr as *const libc::sockaddr_in) }.sin_addr.s_addr))),
+            libc::AF_INET6 => IpAddr::V6(Ipv6Addr::from(unsafe { *(entry.ifa_addr as *const libc::sockaddr_in6) }.sin6_addr.s6_addr)),
+            _ => continue,
+        };
+        found.push((name, ip));
     }
     // SAFETY: `list` came from getifaddrs and is freed once.
     unsafe { libc::freeifaddrs(list) };
@@ -129,6 +159,8 @@ struct Listening {
 pub(crate) struct Inner {
     registry: Mutex<Registry>,
     live: Mutex<Vec<Live>>,
+    /// Connections that have not yet proven who they are, on every address the Mac listens on.
+    gate: Arc<gate::Gate>,
     listening: tokio::sync::Mutex<Vec<Listening>>,
     pub(crate) desk: Desk,
     /// How often a phone in session is pinged; [`server::KEEPALIVE`] but in tests.
@@ -153,12 +185,19 @@ impl Inner {
 
     /// A session for a paired phone: its events start flowing to `events`, and
     /// `closed` ends it. Checked again here, so a revoke that lands between the
-    /// greeting and this cannot leave a session open.
+    /// greeting and this cannot leave a session open. Past
+    /// [`SESSIONS_PER_PHONE`], the phone's oldest session is ended.
     fn attach(&self, key: &[u8; 32], events: mpsc::UnboundedSender<Value>, closed: watch::Sender<bool>) -> Option<u64> {
         let registry = self.registry();
         let phone = registry.paired(key)?.id.clone();
         let conn = self.next_conn.fetch_add(1, Ordering::Relaxed);
-        held(&self.live).push(Live { conn, phone, events, closed });
+        let mut live = held(&self.live);
+        live.push(Live { conn, phone: phone.clone(), events, closed });
+        while live.iter().filter(|live| live.phone == phone).count() > SESSIONS_PER_PHONE {
+            let Some(oldest) = live.iter().position(|live| live.phone == phone) else { break };
+            let _ = live.remove(oldest).closed.send(true);
+        }
+        drop(live);
         drop(registry);
         self.seen_if_paired(key);
         self.changed();
@@ -322,6 +361,7 @@ impl Link {
             Arc::new(Inner {
                 registry: Mutex::new(registry),
                 live: Mutex::new(Vec::new()),
+                gate: Arc::default(),
                 listening: tokio::sync::Mutex::new(Vec::new()),
                 desk,
                 keepalive,
