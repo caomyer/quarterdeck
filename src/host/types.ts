@@ -690,6 +690,21 @@ export type HarnessChoice = {
 /** Where a newly turned-on routing's rules come from: the shipped example, none yet, or the rules set aside when it was turned off. */
 export type RoutingStart = "template" | "empty" | "restore";
 
+/** A phone paired with this Mac, as `src-tauri/src/phone/` keeps it. Times are unix milliseconds. */
+export type PairedPhone = { id: string; name: string; paired_at: number; last_seen: number | null; connected: boolean };
+
+/** The phone link: the paired phones, whether an invite is showing, and whether this Mac is on a Tailscale network. */
+export type PhoneStatus = { phones: PairedPhone[]; invite_expires_at: number | null; listening: string[]; tailnet: boolean };
+
+/** What the phone link says each time a phone pairs, connects, leaves or is revoked, or an invite shows or goes. */
+export type PhoneChange = Pick<PhoneStatus, "phones" | "invite_expires_at">;
+
+/**
+ * A one-time invite, shown as a QR the phone scans: what it carries (`docs/phone/protocol.md`) and the QR's modules,
+ * a row at a time, `1` for dark.
+ */
+export type PhoneInvite = { expires_at: number; offer: Record<string, unknown>; qr: { width: number; rows: string[] } };
+
 export type PaneCapture = { text: string; observed_at?: string };
 export type HostEventListener = (event: HostEvent) => void;
 
@@ -741,6 +756,15 @@ export interface HostAdapter {
   /** Stores the optional typed dispatch key in the home. Write-only: the reply says only that a key is set. */
   routingSetKey(key: string): Promise<Routing>;
   routingClearKey(): Promise<Routing>;
+  /** The paired phones and any invite showing. Reads only. */
+  phoneStatus(): Promise<PhoneStatus>;
+  /** Shows a new invite, replacing any other. Refused, with why, when this Mac is not on a Tailscale network. */
+  phoneInvite(): Promise<PhoneInvite>;
+  phoneInviteCancel(): Promise<PhoneStatus>;
+  /** Forgets a phone and cuts it off at once. */
+  phoneRevoke(id: string): Promise<PhoneStatus>;
+  /** Every change to the paired phones or the invite. Returns what stops listening. */
+  onPhones(listener: (change: PhoneChange) => void): () => void;
   /** Every provider's plan limits, from quota-axi. Reads only. */
   readQuota(): Promise<QuotaRead>;
   /** Reads plan limits once with quota-axi allowed to ask macOS for Claude's Keychain item. Only when the captain asks. */

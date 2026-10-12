@@ -1,0 +1,491 @@
+{
+  "about": "Each request a phone may make, and what the Mac answered, inside the sealed channel, against the fixture home in src-tauri/src/phone/tests.rs. Times are replaced by <time> and the home by <home>. Regenerate with QD_PHONE_RECORD=1 cargo test phone::tests::the_wire_matches_the_recording.",
+  "exchanges": [
+    {
+      "answer": {
+        "id": 2,
+        "ok": true,
+        "result": {
+          "calls": [
+            {
+              "answer": null,
+              "captain_actionable": true,
+              "decided": null,
+              "evidence": [
+                "page:task/qd-phone-scout-1/ship-or-wait"
+              ],
+              "id": "qd-phone-call-1",
+              "on_answer": "release",
+              "options": [
+                {
+                  "key": "ship",
+                  "label": "Ship it now"
+                },
+                {
+                  "key": "wait",
+                  "label": "Wait for the numbers"
+                }
+              ],
+              "origin": "qd-phone-scout-1",
+              "question": "Ship it? Now, or after the numbers?",
+              "reply": null,
+              "state": "open",
+              "title": "Ship it?"
+            }
+          ],
+          "captain_day": "2026-10-11",
+          "crew": [
+            {
+              "id": "qd-phone-scout-1",
+              "kind": "scout",
+              "project": "quarterdeck",
+              "state": "working"
+            }
+          ],
+          "pages": [
+            {
+              "latest": {
+                "entry": "index.html",
+                "note": null,
+                "presented_at": "2026-10-11T09:00:00Z",
+                "presented_by": {
+                  "role": "crew",
+                  "task": "qd-phone-scout-1"
+                },
+                "rev": 1,
+                "title": "Ship it, or wait?"
+              },
+              "name": "ship-or-wait",
+              "scope": "task",
+              "task": "qd-phone-scout-1",
+              "title": "Ship it, or wait?"
+            }
+          ]
+        }
+      },
+      "request": {
+        "ask": "board"
+      }
+    },
+    {
+      "answer": {
+        "id": 3,
+        "ok": true,
+        "result": {
+          "body": "PGh0bWw+PGhlYWQ+PGxpbmsgcmVsPXN0eWxlc2hlZXQgaHJlZj1zdHlsZS5jc3M+PC9oZWFkPjxib2R5PjxoMT5TaGlwIGl0LCBvciB3YWl0PzwvaDE+PC9ib2R5PjwvaHRtbD4=",
+          "content_type": "text/html; charset=utf-8",
+          "file": "index.html",
+          "rev": 1
+        }
+      },
+      "request": {
+        "ask": "page",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        },
+        "rev": 1
+      }
+    },
+    {
+      "answer": {
+        "id": 4,
+        "ok": true,
+        "result": {
+          "body": "aDEgeyBmb250LXdlaWdodDogNjAwIH0=",
+          "content_type": "text/css; charset=utf-8",
+          "file": "style.css",
+          "rev": 1
+        }
+      },
+      "request": {
+        "ask": "page",
+        "file": "style.css",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        },
+        "rev": 1
+      }
+    },
+    {
+      "answer": {
+        "id": 5,
+        "ok": true,
+        "result": {
+          "answers": [],
+          "draft_count": 0,
+          "earlier": [],
+          "log": "<home>/data/qd-phone-scout-1/artifacts/ship-or-wait/review.jsonl",
+          "open_count": 0,
+          "seen_rev": null,
+          "sent": [],
+          "staged_answers": 0,
+          "threads": [],
+          "untold_count": 0
+        }
+      },
+      "request": {
+        "ask": "review",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        }
+      }
+    },
+    {
+      "answer": {
+        "id": 6,
+        "ok": true,
+        "result": {
+          "answers": [],
+          "draft_count": 1,
+          "earlier": [],
+          "log": "<home>/data/qd-phone-scout-1/artifacts/ship-or-wait/review.jsonl",
+          "open_count": 0,
+          "seen_rev": null,
+          "sent": [],
+          "staged_answers": 0,
+          "threads": [
+            {
+              "anchor": {
+                "path": "",
+                "prefix": "",
+                "quote": "Ship it",
+                "suffix": ""
+              },
+              "at": "<time>",
+              "comments": [
+                {
+                  "at": "<time>",
+                  "body": "Wait for the numbers."
+                }
+              ],
+              "id": "t1",
+              "picture": null,
+              "picture_skipped": null,
+              "resolved_at": null,
+              "rev": 1,
+              "sent_at": null,
+              "state": "draft",
+              "told": false
+            }
+          ],
+          "untold_count": 0
+        }
+      },
+      "request": {
+        "anchor": {
+          "quote": "Ship it"
+        },
+        "ask": "comment",
+        "body": "Wait for the numbers.",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        },
+        "rev": 1
+      }
+    },
+    {
+      "answer": {
+        "id": 7,
+        "ok": true,
+        "result": {
+          "answers": [],
+          "draft_count": 2,
+          "earlier": [],
+          "log": "<home>/data/qd-phone-scout-1/artifacts/ship-or-wait/review.jsonl",
+          "open_count": 0,
+          "seen_rev": null,
+          "sent": [],
+          "staged_answers": 0,
+          "threads": [
+            {
+              "anchor": {
+                "path": "",
+                "prefix": "",
+                "quote": "Ship it",
+                "suffix": ""
+              },
+              "at": "<time>",
+              "comments": [
+                {
+                  "at": "<time>",
+                  "body": "Wait for the numbers."
+                }
+              ],
+              "id": "t1",
+              "picture": null,
+              "picture_skipped": null,
+              "resolved_at": null,
+              "rev": 1,
+              "sent_at": null,
+              "state": "draft",
+              "told": false
+            },
+            {
+              "anchor": null,
+              "at": "<time>",
+              "comments": [
+                {
+                  "at": "<time>",
+                  "body": "Never mind this one."
+                }
+              ],
+              "id": "t2",
+              "picture": null,
+              "picture_skipped": null,
+              "resolved_at": null,
+              "rev": 1,
+              "sent_at": null,
+              "state": "draft",
+              "told": false
+            }
+          ],
+          "untold_count": 0
+        }
+      },
+      "request": {
+        "ask": "comment",
+        "body": "Never mind this one.",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        },
+        "rev": 1
+      }
+    },
+    {
+      "answer": {
+        "id": 8,
+        "ok": true,
+        "result": {
+          "answers": [],
+          "draft_count": 1,
+          "earlier": [],
+          "log": "<home>/data/qd-phone-scout-1/artifacts/ship-or-wait/review.jsonl",
+          "open_count": 0,
+          "seen_rev": null,
+          "sent": [],
+          "staged_answers": 0,
+          "threads": [
+            {
+              "anchor": {
+                "path": "",
+                "prefix": "",
+                "quote": "Ship it",
+                "suffix": ""
+              },
+              "at": "<time>",
+              "comments": [
+                {
+                  "at": "<time>",
+                  "body": "Wait for the numbers."
+                }
+              ],
+              "id": "t1",
+              "picture": null,
+              "picture_skipped": null,
+              "resolved_at": null,
+              "rev": 1,
+              "sent_at": null,
+              "state": "draft",
+              "told": false
+            }
+          ],
+          "untold_count": 0
+        }
+      },
+      "request": {
+        "ask": "discard",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        },
+        "thread": "t2"
+      }
+    },
+    {
+      "answer": {
+        "id": 9,
+        "ok": true,
+        "result": {
+          "outcome": {
+            "call": "qd-phone-call-1",
+            "detail": "recorded; released",
+            "result": "closed"
+          },
+          "recorded": true,
+          "told": true,
+          "warning": null
+        }
+      },
+      "request": {
+        "ask": "answer_call",
+        "call": "qd-phone-call-1",
+        "note": "after the numbers",
+        "option": "wait",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        }
+      }
+    },
+    {
+      "answer": {
+        "id": 10,
+        "ok": true,
+        "result": {
+          "message": "told-2",
+          "outcomes": [],
+          "retold": [],
+          "review": {
+            "answers": [
+              {
+                "at": "<time>",
+                "decision": "qd-phone-call-1",
+                "defer": null,
+                "label": "Wait for the numbers",
+                "note": null,
+                "on_answer": "release",
+                "option": "wait",
+                "recorded": {
+                  "at": "<time>",
+                  "detail": "recorded; released",
+                  "result": "closed"
+                },
+                "reply": null,
+                "sent_at": "<time>",
+                "told": true
+              }
+            ],
+            "draft_count": 0,
+            "earlier": [],
+            "log": "<home>/data/qd-phone-scout-1/artifacts/ship-or-wait/review.jsonl",
+            "open_count": 1,
+            "seen_rev": null,
+            "sent": [
+              {
+                "answers": [],
+                "at": "<time>",
+                "delivery": {
+                  "inbox_msg": "m-7",
+                  "reason": null,
+                  "result": "delivered",
+                  "to": "qd-phone-scout-1"
+                },
+                "header": "Captain's review of \"Ship it, or wait?\" (task qd-phone-scout-1, rev 1): Requests changes.",
+                "message": "told-2",
+                "rev": 1,
+                "threads": [
+                  "t1"
+                ],
+                "told": true,
+                "verdict": "changes"
+              }
+            ],
+            "staged_answers": 0,
+            "threads": [
+              {
+                "anchor": {
+                  "path": "",
+                  "prefix": "",
+                  "quote": "Ship it",
+                  "suffix": ""
+                },
+                "at": "<time>",
+                "comments": [
+                  {
+                    "at": "<time>",
+                    "body": "Wait for the numbers."
+                  }
+                ],
+                "id": "t1",
+                "picture": null,
+                "picture_skipped": null,
+                "resolved_at": null,
+                "rev": 1,
+                "sent_at": "<time>",
+                "state": "open",
+                "told": true
+              }
+            ],
+            "untold_count": 0
+          },
+          "text": "Captain's review of \"Ship it, or wait?\" (task qd-phone-scout-1, rev 1): Requests changes.\nWritten by qd-phone-scout-1. Delivered to qd-phone-scout-1 as inbox message m-7, exactly as written in <home>/data/qd-phone-scout-1/artifacts/ship-or-wait/review-files/review-1.md. Send any framing of your own as a separate message.\nThe page: <home>/data/qd-phone-scout-1/artifacts/ship-or-wait/rev-1/files/index.html\nThe whole review, including anything cut short below: <home>/data/qd-phone-scout-1/artifacts/ship-or-wait/review.jsonl\nt1 on \"Ship it\": Wait for the numbers."
+        }
+      },
+      "request": {
+        "ask": "send_review",
+        "page": {
+          "name": "ship-or-wait",
+          "scope": "task",
+          "task": "qd-phone-scout-1"
+        },
+        "rev": 1,
+        "verdict": "changes"
+      }
+    },
+    {
+      "answer": {
+        "id": 11,
+        "ok": true,
+        "result": {
+          "kept": true,
+          "message": "told-3",
+          "text": "The captain replied to call qd-phone-call-1 from Bearings, in words; it is kept on the call as the captain's reply, and nothing has recorded it.\nRecord one with bin/fm-captain-hold.sh answer only if the captain's words decide the call (with --key when they name one of its options, and --via quarterdeck); otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with --until when the words put it off to a date. Never infer an answer from the words alone.\nThe captain said: Not before Friday."
+        }
+      },
+      "request": {
+        "ask": "reply_to_call",
+        "call": "qd-phone-call-1",
+        "words": "Not before Friday."
+      }
+    },
+    {
+      "answer": {
+        "id": 12,
+        "ok": true,
+        "result": {
+          "items": [
+            {
+              "text": "The scout is reading the reference.",
+              "who": "mate"
+            },
+            {
+              "text": "It has a page for you.",
+              "who": "mate"
+            }
+          ],
+          "queued": [],
+          "state": "ready"
+        }
+      },
+      "request": {
+        "ask": "chat",
+        "limit": 2
+      }
+    },
+    {
+      "answer": {
+        "id": 13,
+        "ok": true,
+        "result": {
+          "message": "told-4"
+        }
+      },
+      "request": {
+        "ask": "say",
+        "text": "How is the scout doing?"
+      }
+    }
+  ]
+}
