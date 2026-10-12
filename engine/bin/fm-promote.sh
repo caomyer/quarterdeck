@@ -138,7 +138,6 @@ META=
 SCOUT_BRIEF=
 BRIEF_ORIGINAL=
 BRIEF_REPLACEMENT=
-# shellcheck disable=SC2329 # Registered by the EXIT trap below.
 promote_cleanup() {
   local status=$?
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
@@ -491,4 +490,6 @@ elif fm_pf_relay_active "$FM_HOME"; then
 fi
 
 # A failed delivery leaves the promotion standing and says so in the exit status.
-exit "$DELIVER_RC"
+# The exit is conditional so the successful path falls off the end normally:
+# an unconditional exit here would make anything added after it unreachable.
+[ "$DELIVER_RC" -eq 0 ] || exit "$DELIVER_RC"
