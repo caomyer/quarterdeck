@@ -1777,21 +1777,24 @@ EOF
 }
 
 signal_arm_pr_checks() {  # <targets>
-  local task url out rc why limit deadline
-  deadline=$(( $(date +%s) + PR_ARM_TIMEOUT ))
+  local task url out rc why limit deadline='' now
   while IFS=$'\t' read -r task url; do
     [ -n "$task" ] || continue
     out=$(mktemp "${TMPDIR:-/tmp}/fm-watch-pr-arm.XXXXXX") || out=/dev/null
     rc=0
     why=''
-    limit=$(( deadline - $(date +%s) ))
+    now=$(date +%s)
+    [ -n "$deadline" ] || deadline=$(( now + PR_ARM_TIMEOUT ))
+    limit=$(( deadline - now ))
     if [ "$limit" -le 0 ]; then
       rc=1
       why="not started: the batch's ${PR_ARM_TIMEOUT}s arming budget was spent on earlier PR checks"
     else
       fm_run_timed "$limit" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
         "$PR_CHECK_BIN" "$task" "$url" > "$out" 2>&1 < /dev/null || rc=$?
-      if [ "$rc" -eq 124 ]; then
+      if [ "$rc" -eq 124 ] && [ "$limit" -lt "$PR_ARM_TIMEOUT" ]; then
+        why="bin/fm-pr-check.sh did not finish within the ${limit}s left of the batch's ${PR_ARM_TIMEOUT}s arming budget"
+      elif [ "$rc" -eq 124 ]; then
         why="bin/fm-pr-check.sh did not finish within ${PR_ARM_TIMEOUT}s"
       elif [ "$rc" -ne 0 ]; then
         why=$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -n 1 | tr -d '\r')

@@ -1750,6 +1750,36 @@ test_a_pr_check_left_without_budget_says_it_never_started() {
   pass "a PR check the batch had no budget left for says it was never started, and the hung one says it timed out"
 }
 
+# A check started with only part of the batch's budget left, and cut off by it,
+# names the limit it actually had, not the whole budget.
+test_a_pr_check_cut_off_by_the_remaining_budget_names_it() {
+  local dir state fakebin out pid url1 url2
+  dir=$(make_case pr-ready-remaining); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url1=https://github.com/sample/proj/pull/91
+  url2=https://github.com/sample/proj/pull/92
+  cat > "$fakebin/fm-pr-check.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = shipa ]; then sleep 3; exit 0; fi
+sleep 30
+SH
+  chmod +x "$fakebin/fm-pr-check.sh"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipa.meta"
+  printf 'done: PR %s checks green\n' "$url1" > "$state/shipa.status"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipb.meta"
+  printf 'done: PR %s checks green\n' "$url2" > "$state/shipb.status"
+  FM_PR_ARM_TIMEOUT=5 FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher waited on the PR checks instead of waking"
+  wait_for_text "$state/.wake-queue" "check: pr-check not armed: shipb $url2:" \
+    || fail "the second check was not reported: $(cat "$state/.wake-queue")"
+  grep -F "check: pr-check armed: shipa $url1" "$state/.wake-queue" >/dev/null \
+    || fail "setup: the first check did not arm: $(cat "$state/.wake-queue")"
+  grep -E "check: pr-check not armed: shipb $url2: bin/fm-pr-check.sh did not finish within the [12]s left of the batch's 5s arming budget; run bin/fm-pr-check.sh shipb <PR url>" \
+    "$state/.wake-queue" >/dev/null || fail "the cut-off check did not name the limit it had: $(cat "$state/.wake-queue")"
+  pass "a PR check cut off by the batch's remaining budget names that shorter limit"
+}
+
 # A needs-decision status append surfaced through this actionable signal path
 # must skip the Pi supervision branch and reach main directly
 # (docs/pi-supervision-branch.md "Autonomy"). The row still
@@ -5338,6 +5368,7 @@ test_a_ready_line_naming_no_pr_url_arms_nothing
 test_a_slow_pr_check_never_delays_the_wake
 test_a_hung_pr_check_is_reported_after_the_wake
 test_a_pr_check_left_without_budget_says_it_never_started
+test_a_pr_check_cut_off_by_the_remaining_budget_names_it
 test_needs_decision_signal_payload_marked_for_branch_exclusion
 test_needs_decision_reconciliation_required_still_marked
 test_captain_held_signal_payload_marked_for_branch_exclusion

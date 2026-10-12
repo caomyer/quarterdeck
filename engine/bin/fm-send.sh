@@ -193,13 +193,14 @@
 # Who decided is never assumed for such a key: the send must say --by captain
 # (it relays the captain's answer) or --by firstmate (the first mate decided it
 # itself), passed to the intake as its --by, so the call's record names the
-# real decider; a send without it is refused before anything is sent. --by
-# firstmate cannot accompany --for-call, which relays a captain's answer.
-# --by names who decided a captain-held call and nothing else, so a send whose
-# keys are all status-log keys is refused with --by before anything is sent,
-# never accepted and discarded: a relayed captain answer to a worker's question
-# is sent with --for-call <call>, and an answer the first mate made itself
-# needs no --by, being recorded with `fm-captain-hold.sh decide`. When the
+# real decider; a send without it is refused before anything is sent. On a
+# worker's question, a key open only in its status log, three rules hold, each
+# checked before anything is sent: --for-call relays the captain's answer, so
+# it takes --by captain or no --by, and --by firstmate with it is refused;
+# without --for-call, --by is refused rather than accepted and discarded, since
+# it names who decided a captain-held call and there is none; and an answer the
+# first mate made itself takes no --by and is recorded with
+# `fm-captain-hold.sh decide`. When the
 # answer is delivered but the intake cannot close the call, the send exits
 # nonzero with the exact `fm-captain-hold.sh answers` command it ran, keyed
 # lines and decider included, so running it again closes the call the way the
@@ -732,8 +733,8 @@ if [ -n "$RESOLVE_KEYS" ]; then
   done
   # An answer that closes a captain-held call records who decided it, and that
   # is never assumed: the captain, or the first mate deciding on his behalf.
-  if [ -z "$RESOLVE_HOLD_KEYS" ] && [ -n "$RESOLVE_BY" ]; then
-    echo "error: --by names who decided a captain-held call, and none of --resolve-key ${RESOLVE_STATUS_KEYS} is one: each is a worker's question in its status log. To relay the captain's answer to it, send with --for-call <call> instead; an answer you made yourself needs no --by, and you record it with fm-captain-hold.sh decide. Nothing was sent." >&2
+  if [ -z "$RESOLVE_HOLD_KEYS" ] && [ -n "$RESOLVE_BY" ] && [ -z "$FOR_CALL" ]; then
+    echo "error: --by names who decided a captain-held call, and none of --resolve-key ${RESOLVE_STATUS_KEYS} is one: each is a worker's question in its status log. To relay the captain's answer to it, add --for-call <call> (with or without --by captain); an answer you made yourself takes no --by, and you record it with fm-captain-hold.sh decide. Nothing was sent." >&2
     exit 1
   fi
   if [ -n "$RESOLVE_HOLD_KEYS" ] && [ -z "$RESOLVE_BY" ]; then

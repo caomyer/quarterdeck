@@ -4287,7 +4287,7 @@ test_a_chat_answer_to_a_call_names_who_decided_it() {
 # open only in its status log, there is no call for it to name, so the send is
 # refused before anything goes rather than taking the flag and dropping it.
 test_by_on_a_status_only_key_is_refused() {
-  local home id by out rc
+  local home id by out rc call
   home=$(make_home by-status-key)
   id=sample-by-status
   tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
@@ -4305,7 +4305,24 @@ test_by_on_a_status_only_key_is_refused() {
   done
   assert_absent "$home/state/$id.inbox/001.msg" "a refused --by answer reached the worker"
   [ "$(grep -c 'key=scope' "$home/state/$id.status")" = 1 ] || fail "a refused --by answer closed the key"
-  pass "--by on a key open only in a worker's status log is refused and leaves the key open"
+
+  # Relaying the captain's answer with --for-call takes --by captain, never --by firstmate.
+  call=sample-by-status-scope
+  run_captain "$home" hold "$call" --title 'Narrow or wide?' --reason 'narrow or wide' --about "$id" \
+    --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null || fail "could not hold the call"
+  printf '%s\tnarrow\tNarrow\n' "$call" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer was not recorded"
+  rc=0
+  out=$(send_in "$home" "$id" --resolve-key scope --for-call "$call" --by firstmate 'Captain says: narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "--for-call with --by firstmate was accepted"
+  assert_contains "$out" "cannot be recorded --by firstmate" "the refusal does not say why"
+  assert_absent "$home/state/$id.inbox/001.msg" "a refused relay reached the worker"
+  send_in "$home" "$id" --resolve-key scope --for-call "$call" --by captain 'Captain says: narrow' >/dev/null 2>&1 \
+    || fail "--for-call with --by captain was refused"
+  assert_grep 'Captain says: narrow' "$home/state/$id.inbox/001.msg" "the relay never reached the worker"
+  assert_grep "resolved [key=scope]: relayed $call: Captain says: narrow" "$home/state/$id.status" \
+    "the relay did not close the key as the captain's answer"
+  pass "--by on a worker's question is refused without --for-call, and --for-call takes --by captain but not --by firstmate"
 }
 
 # When the answer reaches the worker but the intake cannot close the call, the
