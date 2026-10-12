@@ -180,8 +180,13 @@
 # options and evidence. `--json` prints {schema:"fm-call-list.v1", calls:[...],
 # damaged:[{task,file}]}, each call being {id, title, question, options,
 # on_answer, state ("open"|"answered"|"closed"), bucket, captain_actionable,
-# origin, about, evidence, raised_by, raised_at, updated_at, answer, decided,
-# reply}, where `reply` is the record's reply while the call is open, else null.
+# hold_until, origin, about, evidence, raised_by, raised_at, updated_at, answer,
+# decided, reply, deferred}, where `reply` is the record's reply while the call
+# is open, else null. `hold_until` is the row's hold-until day (YYYY-MM-DD) in
+# force now, or null: it is the day the call is held to, whoever set it, and
+# moves or clears with every `hold`. `deferred` is the record's last `defer`,
+# the history of what the captain chose, which no later hold rewrites, so a
+# deferral holds the call only while its until equals `hold_until`.
 # `bucket` and `captain_actionable` are the fleet snapshot's hold projection,
 # unchanged: `list` reads the snapshot's own backlog parser
 # (`fm-fleet-snapshot.sh --backlog-json`), and the snapshot hands its already
@@ -2455,6 +2460,7 @@ EOF_ORIGINS
            state:$state,
            bucket:($row.hold_bucket // null),
            captain_actionable:($row.captain_actionable // false),
+           hold_until:($row.hold_until // null),
            origin:$origin,
            about:($rec.about // null),
            evidence:((($rec.evidence // [])

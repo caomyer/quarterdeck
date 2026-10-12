@@ -225,6 +225,8 @@ export type Call = {
   state: "open" | "answered" | "closed";
   bucket?: string | null;
   captain_actionable?: boolean;
+  /** The day the hold in force lifts, `yyyy-mm-dd`, whoever set it; another `hold` moves or clears it. */
+  hold_until?: string | null;
   /**
    * The earliest day Not now can name, `yyyy-mm-dd`: the day after the captain's day. Set by `homeCalls` from the
    * snapshot, never by firstmate; absent when the snapshot carries no captain's day.
@@ -244,7 +246,7 @@ export type Call = {
   decided: CallDecided | null;
   /** The captain's reply while the call is open and nothing has recorded it; absent from a firstmate that predates replies. */
   reply?: CallReply | null;
-  /** The last dated not now `defer` carried out on it; absent from a firstmate that predates `defer`. */
+  /** The last dated not now `defer` carried out on it, kept as history: it holds the call only while `hold_until` is its day. */
   deferred?: CallDeferred | null;
 };
 

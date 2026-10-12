@@ -52,7 +52,7 @@ import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, askAgainDay, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, heldByDeferral, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, askAgainDay, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, heldUntil, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import { answerCardView, callCardView, callLine, type EarlierWords } from "./callviews";
 import { AnswerCard, CallLineCard, CallOpenCard, EvidenceLine } from "./CallCards";
@@ -3688,8 +3688,8 @@ function RailCall({ call, revision, beside, chosen, before, onAnswer, onOpenEvid
   // What the first mate is left to record: words, and an option on a call that does not say how an answer closes it,
   // which goes as words in its own label. A dated not now is carried out as the review goes.
   const forFirstMate = chosen !== undefined && !chosen.defer && (worded || !(chosen.on_answer === "done" || chosen.on_answer === "release"));
-  const deferredTo = heldByDeferral(call);
-  const heldUntil = deferredTo ? askAgainDay(deferredTo) : null;
+  const heldTo = heldUntil(call);
+  const heldDay = heldTo ? askAgainDay(heldTo) : null;
   const said = chosen && (chosen.note || chosen.defer) ? answerInWords(chosen.defer, chosen.note ?? "") : "";
   const saidThen = then ? [then.label, answerInWords(then.defer, then.note ?? "")].filter(Boolean).join(". ") : "";
   // What the captain said that nothing has recorded: the reply firstmate keeps on the call, the same one Bearings shows.
@@ -3734,13 +3734,13 @@ function RailCall({ call, revision, beside, chosen, before, onAnswer, onOpenEvid
         : handedOver
           ? chosen!.told === false
             ? <small className="decision-sent untold">Not yet told to the first mate</small>
-            : chosen!.defer && heldUntil
-              ? <small className="decision-sent" data-testid="call-held">Held until {heldUntil} · went with your review {when(chosen!.sent_at!)}</small>
+            : chosen!.defer && heldDay
+              ? <small className="decision-sent" data-testid="call-held">Held until {heldDay} · went with your review {when(chosen!.sent_at!)}</small>
               : <small className="decision-sent">Sent to the first mate {when(chosen!.sent_at!)}{forFirstMate ? ", for it to record" : ""}</small>
           : current
             ? <small className="decision-staged">{current.defer ? `Goes with your review, which holds the call until ${askAgainDay(current.defer)}` : forFirstMate ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
-            : heldUntil
-              ? <small className="decision-sent" data-testid="call-held">Held until {heldUntil}{reply ? " · your words are with the first mate" : ""}</small>
+            : heldDay
+              ? <small className="decision-sent" data-testid="call-held">Held until {heldDay}{reply ? " · your words are with the first mate" : ""}</small>
             : reply
               ? <small className="decision-replied" data-testid="call-replied">With the first mate · not recorded yet</small>
             : deferring && !deferDate

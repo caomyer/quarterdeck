@@ -945,10 +945,10 @@ test_defer_holds_the_call_until_the_captains_day() {
   assert_equals 'Unless the battery numbers land first.|quarterdeck|Why is this a question at all?' \
     "$(jq -r '[.reply.words, .reply.via, .reply.previous.words] | join("|")' "$record")" \
     "his added words stay his reply, with the reply the hold cleared as what he said before"
-  assert_equals 'open|false|2026-10-03|Unless the battery numbers land first.' \
+  assert_equals 'open|false|dated|2026-10-03|2026-10-03|Unless the battery numbers land first.' \
     "$(CALL_NOW=2026-09-18T12:06:00Z call_json "$home" sample-later | jq -r '[.state, (.captain_actionable|tostring),
-      .deferred.until, .reply.words] | join("|")')" \
-    "list carries the deferral, and the call no longer waits on the captain"
+      .bucket, .hold_until, .deferred.until, .reply.words] | join("|")')" \
+    "list carries the deferral and the day it holds the call to, and the call no longer waits on the captain"
   assert_contains "$(CALL_NOW=2026-09-18T12:06:00Z run_captain "$home" list)" \
     "deferred: until 2026-10-03 at 2026-09-18T12:05:00Z via quarterdeck" "the text listing shows the deferral"
 
@@ -972,9 +972,17 @@ test_defer_holds_the_call_until_the_captains_day() {
     || fail "a bare deferral failed"
   assert_equals '2026-11-01|review|null' "$(jq -r '[.deferred.until, .deferred.via, (.reply|tostring)] | join("|")' "$record")" \
     "a date alone moves the deferral and leaves no reply"
+  assert_equals '2026-11-01|2026-11-01' "$(CALL_NOW=2026-09-18T12:10:00Z call_json "$home" sample-later | jq -r '[.hold_until, .deferred.until] | join("|")')" \
+    "a later deferral moves the day the call is held to"
+  CALL_NOW=2026-09-18T12:10:00Z run_captain "$home" hold sample-later --reason 'held to another day' --until 2026-10-20 >/dev/null \
+    || fail "the hold moving the day failed"
+  assert_equals 'dated|2026-10-20|2026-11-01' \
+    "$(CALL_NOW=2026-09-18T12:10:00Z call_json "$home" sample-later | jq -r '[.bucket, .hold_until, .deferred.until] | join("|")')" \
+    "another hold moves the day in force and keeps the deferral as what the captain chose"
   run_captain "$home" hold sample-later --reason 'asking again now' >/dev/null || fail "the overriding hold failed"
-  assert_equals 'true' "$(call_json "$home" sample-later | jq -r '.captain_actionable|tostring')" \
-    "another hold puts the call back in front of the captain"
+  assert_equals 'true|null|2026-11-01' \
+    "$(call_json "$home" sample-later | jq -r '[(.captain_actionable|tostring), (.hold_until|tostring), .deferred.until] | join("|")')" \
+    "a plain hold lifts the day and puts the call back in front of the captain"
 
   out=$(run_captain "$home" defer sample-later --until 'Oct 3' --via quarterdeck 2>&1); rc=$?
   expect_code 1 "$rc" "a day that is not YYYY-MM-DD"
