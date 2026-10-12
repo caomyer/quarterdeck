@@ -734,7 +734,8 @@ const CHAT_CALL_TURNS: ChatCallTurn[] = [
     asks: "The day has come.", call: CHAT_CALL.id,
     step: "bin/fm-backlog-parse-lib.sh (the held day is today)",
     says: "Your day has come: the uploads call is back.",
-    change: (call) => ({ ...call!, captain_actionable: true, bucket: "live" }),
+    // firstmate lists `hold_until` only while its day is still to come, so the day come, the row lists none.
+    change: (call) => ({ ...call!, captain_actionable: true, bucket: "live", hold_until: null }),
   },
 ];
 
@@ -944,7 +945,7 @@ export class MockHostAdapter implements HostAdapter {
       const reply = words ? { words, via, at, message: null, previous } : null;
       this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, captain_actionable: false, bucket: "dated", hold_until: until, deferred: { until, via, at, message: null }, reply } : item) };
       if (reviewFlag("day-comes")) this.later(5000, () => {
-        this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((item) => item.id === id ? { ...item, captain_actionable: true, bucket: "live" } : item) };
+        this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((item) => item.id === id ? { ...item, captain_actionable: true, bucket: "live", hold_until: null } : item) };
         this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
       });
     }
