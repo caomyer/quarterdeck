@@ -427,7 +427,7 @@ async fn a_silent_phone_is_let_go_and_its_place_freed() {
     assert_eq!(world.inner().live.lock().unwrap().len(), 1, "every silent phone was let go");
     assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], true, "the listening phone still shows connected");
     for mut phone in silent {
-        assert_eq!(phone.receive().await, None, "a silent phone's connection was closed");
+        assert!(closed_by_the_mac(&mut phone).await, "a silent phone's connection was closed");
     }
 
     // Their places are free again: a new session gets in, where it would have been dropped unread.
@@ -441,6 +441,44 @@ async fn a_silent_phone_is_let_go_and_its_place_freed() {
         tokio::time::sleep(beat).await;
     }
     assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], false, "a phone that left shows as not connected");
+}
+
+/// Whether the Mac ends `phone`'s connection within [`WAIT`], reading past anything it sends first.
+async fn closed_by_the_mac(phone: &mut Phone) -> bool {
+    let ended = async {
+        loop {
+            match phone.socket.next().await {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => continue,
+            }
+        }
+    };
+    tokio::time::timeout(WAIT, ended).await.is_ok()
+}
+
+/// "Last seen" is when the phone was last there: a phone that only listens is
+/// seen by the pongs it answers, and once it leaves, at the moment it left.
+#[tokio::test]
+async fn a_listening_phone_is_last_seen_when_it_left() {
+    let beat = Duration::from_millis(100);
+    let world = World::pinging("last-seen", beat);
+    let (key, mut phone) = paired_phone(&world, "Captain's iPhone").await;
+    let last_seen = || world.inner().registry().paired(&key.public()).and_then(|phone| phone.last_seen).unwrap();
+    let attached = last_seen();
+
+    assert!(tokio::time::timeout(beat * 10, phone.receive()).await.is_err(), "the listening phone was not let go");
+    assert!(last_seen() >= attached + 5 * beat.as_millis() as u64, "its pongs say it is there");
+
+    let left = super::now_ms();
+    phone.socket.close(None).await.unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !world.inner().live.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(beat).await;
+    }
+    assert!(world.inner().live.lock().unwrap().is_empty(), "its session ended");
+    let seen = last_seen();
+    assert!(seen >= left && seen <= super::now_ms(), "last seen when it left ({seen}), not when it came ({attached})");
+    assert_eq!(world.inner().status_without_listening()["phones"][0]["last_seen"], seen, "and Settings says so");
 }
 
 /// Every kind `PhoneRequest` has, as serde names them when refusing one it does not.

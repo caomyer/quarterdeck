@@ -167,20 +167,24 @@ async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc
     let mut pings = tokio::time::interval_at(tokio::time::Instant::now() + inner.keepalive, inner.keepalive);
     pings.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut heard = tokio::time::Instant::now();
+    let mut heard_at = now_ms();
     loop {
         tokio::select! {
             biased;
             _ = closed.changed() => break,
             message = stream.next() => {
+                let Some(Ok(message)) = message else { break };
                 heard = tokio::time::Instant::now();
+                heard_at = now_ms();
+                let paired = inner.seen_if_paired(&key);
                 let frame = match message {
-                    Some(Ok(Message::Binary(frame))) => frame,
-                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                    Message::Binary(frame) => frame,
+                    Message::Ping(_) | Message::Pong(_) => continue,
                     _ => break,
                 };
                 // A frame that does not open ends the connection: there is no telling what else is wrong with it.
                 let Ok(payload) = channel.open(&frame) else { break };
-                if !inner.seen_if_paired(&key) {
+                if !paired {
                     break;
                 }
                 let answer = answers_tx.clone();
@@ -220,6 +224,6 @@ async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc
             },
         }
     }
-    inner.detach(conn);
+    inner.detach(conn, &key, heard_at);
     within(quiet, async { sink.send(Message::Close(None)).await.is_ok() && sink.close().await.is_ok() }).await;
 }

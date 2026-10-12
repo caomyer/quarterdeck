@@ -148,8 +148,10 @@ impl Inner {
         Some(conn)
     }
 
-    fn detach(&self, conn: u64) {
+    /// Ends a session, noting the phone was last there at `heard_at`, when anything last arrived from it.
+    fn detach(&self, conn: u64, key: &[u8; 32], heard_at: u64) {
         held(&self.live).retain(|live| live.conn != conn);
+        self.registry().seen(key, heard_at);
         self.changed();
     }
 
