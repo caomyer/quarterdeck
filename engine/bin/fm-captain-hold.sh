@@ -472,8 +472,8 @@
 # one of the call's recorded options (or, with none recorded, be a well-formed
 # key); --label is internal to `answers` and `decide`. `answer --by` names who
 # decided, `captain` (the default) or `firstmate`, exactly as `answers --by`
-# does, so recording by hand an answer the first mate gave itself, such as one
-# fm-send.sh delivered but could not close, never names the captain.
+# does, so recording by hand an answer the first mate gave itself never names
+# the captain.
 # CHANNEL VOCABULARY. `Answered via:` is always one of a closed set of tokens,
 # never provenance prose, so a surface can say where the captain answered:
 #   quarterdeck  the Quarterdeck app

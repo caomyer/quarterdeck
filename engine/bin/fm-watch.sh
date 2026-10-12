@@ -1739,12 +1739,12 @@ signal_files_actionable() {  # <status-file> ...
 # and only records pr= and arms the poll; telling the captain and judging the
 # PR stay with firstmate. Each run talks to the forge, so it never delays the
 # batch's wake: the caller queues the signal rows and commits their markers,
-# starts the runs detached, each bounded by FM_PR_ARM_TIMEOUT, and wakes at
-# once. Each act, or the reason it did not happen, is then its own `check` row
-# in the durable wake queue (`check: pr-check armed: <task> <url>` or `check:
-# pr-check not armed: <task> <url>: <reason>`), arriving after the wake so the
-# next drain presents it, and the signal row's payload stays the file list its
-# readers parse. Running bin/fm-pr-check.sh again with another URL overrides it.
+# starts the runs as one detached job whose every run, and the job as a whole,
+# is bounded by FM_PR_ARM_TIMEOUT, and wakes at once. Each act, or the reason
+# it did not happen, is then its own `check` row in the durable wake queue
+# (`check: pr-check armed: <task> <url>` or `check: pr-check not armed: <task>
+# <url>: <reason>`), arriving after the wake so the next drain presents it, and
+# the signal row's payload stays the file list its readers parse. Running bin/fm-pr-check.sh again with another URL overrides it.
 # FM_PR_CHECK_BIN lets tests observe the call.
 PR_CHECK_BIN=${FM_PR_CHECK_BIN:-$SCRIPT_DIR/fm-pr-check.sh}
 PR_ARM_TIMEOUT=${FM_PR_ARM_TIMEOUT:-60}
@@ -1777,13 +1777,19 @@ EOF
 }
 
 signal_arm_pr_checks() {  # <targets>
-  local task url out rc why
+  local task url out rc why limit deadline
+  deadline=$(( $(date +%s) + PR_ARM_TIMEOUT ))
   while IFS=$'\t' read -r task url; do
     [ -n "$task" ] || continue
     out=$(mktemp "${TMPDIR:-/tmp}/fm-watch-pr-arm.XXXXXX") || out=/dev/null
     rc=0
-    fm_run_timed "$PR_ARM_TIMEOUT" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-      "$PR_CHECK_BIN" "$task" "$url" > "$out" 2>&1 < /dev/null || rc=$?
+    limit=$(( deadline - $(date +%s) ))
+    if [ "$limit" -le 0 ]; then
+      rc=124
+    else
+      fm_run_timed "$limit" env FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+        "$PR_CHECK_BIN" "$task" "$url" > "$out" 2>&1 < /dev/null || rc=$?
+    fi
     if [ "$rc" -eq 0 ]; then
       fm_wake_append check "pr-check-$task" "check: pr-check armed: $task $url" || return 1
       triage_log "pr-check armed: $task $url"
@@ -1801,11 +1807,24 @@ $1
 EOF
 }
 
+# A detached arm may overlap the next watcher cycle, which can start another
+# for the same task and URL. That is safe because bin/fm-pr-check.sh is
+# idempotent: arming the same task and URL again records the same pr= and the
+# same poll.
+PR_ARM_PID=
 signal_arm_pr_checks_detached() {
   local targets
+  if [ -n "$PR_ARM_PID" ]; then
+    if kill -0 "$PR_ARM_PID" 2>/dev/null; then
+      return 0
+    fi
+    wait "$PR_ARM_PID" 2>/dev/null || true
+    PR_ARM_PID=
+  fi
   targets=$(signal_pr_arm_targets)
   [ -n "$targets" ] || return 0
   signal_arm_pr_checks "$targets" </dev/null >/dev/null 2>&1 &
+  PR_ARM_PID=$!
 }
 
 # Surfaced-marker bookkeeping for the heartbeat backstop is owned by

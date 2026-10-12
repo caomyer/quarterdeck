@@ -4309,20 +4309,23 @@ test_by_on_a_status_only_key_is_refused() {
 }
 
 # When the answer reaches the worker but the intake cannot close the call, the
-# send prints the one command that records it, naming the same decider, so the
-# first mate's own answer is never recorded as the captain's on the way back.
+# send prints the intake it ran, keyed line and decider included. Running that
+# command closes the call exactly as the intake would have: a ship held on its
+# own row is released, never closed as done, and an answer naming an option is
+# recorded by its key, with the first mate as the decider.
 test_a_failed_intake_names_the_decider_in_its_recovery() {
-  local home id call ro out rc
+  local home id ro out rc cmd show
   home=$(make_home by-intake-fails)
   id=sample-intake-ship
-  call=sample-intake-call
   tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
     || fail "could not create the ship"
   write_origin_meta "$home" "$id" ship
   printf 'working: building\n' > "$home/state/$id.status"
-  run_captain "$home" hold "$call" --title 'Narrow or wide?' --reason 'narrow or wide' --about "$id" \
+  run_captain "$home" hold "$id" --reason 'narrow or wide' \
     --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null \
-    || fail "could not hold the call"
+    || fail "could not hold the ship's row"
+  assert_equals release "$(run_captain "$home" list --json | jq -r --arg id "$id" '.calls[] | select(.id == $id) | .on_answer')" \
+    "setup: the ship's own row does not close by release"
   ro="$home/readonly-backlog"
   mkdir -p "$ro"
   cat > "$ro/tasks-axi" <<SH
@@ -4332,13 +4335,26 @@ exec "$TASKS_AXI_BIN" "\$@"
 SH
   chmod +x "$ro/tasks-axi"
   rc=0
-  out=$(PATH="$ro:$PATH" send_in "$home" "$id" --resolve-key "$call" --by firstmate 'go narrow' 2>&1) || rc=$?
+  out=$(PATH="$ro:$PATH" send_in "$home" "$id" --resolve-key "$id" --by firstmate 'narrow' 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "a send whose intake failed exited 0"
-  assert_grep 'go narrow' "$home/state/$id.inbox/001.msg" "setup: the answer did not reach the worker"
-  assert_contains "$out" "bin/fm-captain-hold.sh answer $call --decision-file <file holding the answer> --by firstmate --via chat" \
-    "the recovery command does not name the first mate as the decider"
-  assert_contains "$(tasks_in "$home" show "$call" --full)" "state: queued" "setup: the intake closed the call"
-  pass "a delivered answer whose intake failed prints the recovery command with its decider"
+  assert_grep 'narrow' "$home/state/$id.inbox/001.msg" "setup: the answer did not reach the worker"
+  assert_contains "$(tasks_in "$home" show "$id" --full)" "hold_kind: captain" "setup: the failed intake closed the call"
+  cmd=${out#*Close it by running the same intake again: }
+  cmd=${cmd%% - do not resend the answer.*}
+  [ "$cmd" != "$out" ] || fail "the refusal names no recovery command: $out"
+  assert_equals "printf '%s' \$'$id\\tnarrow\\t\\n' | FM_HOME=$(printf '%q' "$home") bin/fm-captain-hold.sh answers --source a\\ firstmate\\ answer\\ sent\\ to\\ $id --via chat --by firstmate" \
+    "$cmd" "the recovery is not the intake the send ran"
+
+  (cd "$ROOT" && PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" bash -c "$cmd" >/dev/null) \
+    || fail "the printed recovery command failed"
+  show=$(tasks_in "$home" show "$id" --full)
+  assert_not_contains "$show" "state: done" "the recovery closed the ship as done instead of releasing it"
+  assert_not_contains "$show" "hold_kind: captain" "the recovery left the ship held for the captain"
+  assert_equals 'narrow|firstmate|chat' \
+    "$(run_captain "$home" list --json | jq -r --arg id "$id" '.calls[] | select(.id == $id) | [.answer.key, .answer.by, .answer.via] | join("|")')" \
+    "the recovery did not record the option key with the first mate as the decider"
+  pass "a failed intake prints the intake it ran, which releases the call and records the key when run"
 }
 
 # Before calls recorded the proposal they handle, a scout's proposal was raised
