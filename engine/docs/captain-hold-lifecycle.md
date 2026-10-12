@@ -88,6 +88,7 @@ The Quarterdeck app calls this intake directly and reads its `closed:` and `skip
 
 Two channels feed that one intake today, and both are ordinary callers rather than special cases.
 `bin/fm-send.sh --resolve-key` is the chat channel: its status-log close for a key the status log still owns is owned by that script's header, and a key the status log no longer owns is resolved to a still-open captain-held task - the key as a task id, then the legacy derived identity - and fed as one keyed line.
+Such a send must say who decided with `--by captain` or `--by firstmate`, which reaches the intake as its `--by`, so a call the first mate answered itself records `Answered by: firstmate` and never reads as the captain's answer.
 `bin/fm-procevent.sh` is the captured-result channel: after capture, a bound built-in source has its result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>` and whatever that prints is piped into the intake, so any built-in adapter with an `answers` command works and the runner parses no result and carries no decision rule; its only mapping is the channel token it passes as `--via`.
 Trusted external process-event adapters intentionally expose no answer operation and cannot feed this authority-bearing intake; [`extension-bindings.md`](extension-bindings.md#trust-boundary) owns that boundary.
 `bin/fm-procevent-lavish.sh answers` is one such adapter command; it reads only rows tagged `choice`, relays a card's declared close mode, and can never let freeform captain prose forge a task id or a mode.
@@ -214,8 +215,10 @@ If tasks-axi is unavailable or its listing cannot be parsed, the guard cannot re
 
 ## Replies waiting on the first mate
 
-The captain can speak on a call without deciding it: words that dispute its premise, a dated "not now", or an option on a call that cannot record it by key.
+The captain can speak on a call without deciding it: words that dispute its premise, or an option on a call that cannot record it by key.
 `bin/fm-captain-hold.sh reply` keeps those words beside the open call as its record's `reply`, under the call's control lock, and records nothing about what they mean.
+A dated "not now" is a complete choice rather than words, so a surface carries it out with `bin/fm-captain-hold.sh defer <call> --until <day>`: it re-holds the call until that day through `hold`, records `deferred` on the call's record, and keeps any words the captain added as his `reply`, since they can change what the deferral means.
+The first mate is told it was deferred, and overrides it as it would any hold, with `offer` or another `hold`.
 A surface that carries the captain's words to a call writes them there first, so Bearings, a page's review rail, and the first mate all read one state from `calls[]`: not answered (`reply` and `answer` null), replied and not yet recorded (`reply` set), and answered (`answer` set).
 It never moves `updated_at`, so a page revision's standing against the choice it argues is unchanged, and it leaves the hold projection (`bucket`, `captain_actionable`) as it was, so a replied call stays answerable on every surface.
 Only the first mate acting clears it: `answer` once the answer is recorded, `offer`, and every `hold`, each of which records, re-asks, or defers the call.

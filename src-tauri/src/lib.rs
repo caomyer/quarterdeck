@@ -106,6 +106,7 @@ pub fn run() {
       review::review_scene,
       review::call_answer,
       review::call_reply,
+      review::call_defer,
       start::start_work,
       start::start_asks,
       start::take_on,

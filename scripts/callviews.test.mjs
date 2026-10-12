@@ -5,6 +5,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build. Each fixture is a call as
 // `bin/fm-captain-hold.sh list --json` reports it, in a state the mocked design (qd-chat-calls-1, states A to K) draws.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { answerOfMessage, callStanding } from "../src/calls.ts";
 import { answerCardView, callCardView, callLine, notNowDay } from "../src/callviews.ts";
@@ -111,6 +112,31 @@ test("E: words the call still carries are amber, never green, however far the me
   assert.equal(answerView(replied, call(), { reply: { words: "Hold them.", at: ago(1) } }).status, "Not recorded · the first mate asked again");
   // Held until a day, the first mate acted on them without recording an answer.
   assert.deepEqual([answerView(replied, call({ captain_actionable: false })).tone, answerView(replied, call({ captain_actionable: false })).status], ["amber", "Held: not now"]);
+});
+
+test("E: a dated not now is held by firstmate, so its date is done and only words he added wait on the first mate", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../src/fixtures/call-messages.json", import.meta.url), "utf8"));
+  const bare = answerOfMessage(fixture.deferred[0].text);
+  const worded = answerOfMessage(fixture.deferred[1].text);
+  const deferred = { until: bare.until, via: "quarterdeck", at: ago(10), message: "m1" };
+  const held = call({ captain_actionable: false, deferred });
+  const shown = answerView(bare, held, { delivery: "read by the first mate 12:59 PM" });
+  assert.deepEqual([shown.kind, shown.kicker, shown.said, shown.note, shown.tone, shown.status],
+    ["deferred", "Your answer · not now", "Not now. Ask me again on Oct 3.", null, "green", "Held until Oct 3 · read by the first mate 12:59 PM"]);
+  // Words he added stay amber while the call carries them as his reply.
+  const heldWorded = call({ captain_actionable: false, deferred: { ...deferred, until: worded.until }, reply: { words: worded.words, via: "quarterdeck", at: ago(10), message: "m2" } });
+  const amber = answerView(worded, heldWorded, { reply: { words: worded.words, at: ago(10) } });
+  assert.deepEqual([amber.tone, amber.status, amber.note], ["amber", "Held until Jan 4 · your words are with the first mate", "Unless the battery numbers land first."]);
+  // Asked again before the day, or the day came: no longer held, and never shown green.
+  assert.deepEqual([answerView(bare, call({ deferred })).tone, answerView(bare, call({ deferred })).status], ["muted", "Not held now · the first mate asked again, or the day came"]);
+  // A call the first mate held to another day is not this deferral.
+  assert.equal(answerView(bare, call({ captain_actionable: false, deferred: { ...deferred, until: "2026-11-01" } })).tone, "muted");
+  assert.equal(answerView(bare, undefined).status, "The call has closed");
+});
+
+test("the held line names the day firstmate's defer recorded, without needing the words that said it", () => {
+  const held = call({ captain_actionable: false, deferred: { until: "2026-10-03", via: "review", at: ago(10), message: null } });
+  assert.equal(callLine(held, callStanding(held)).detail, "not now, ask again Oct 3");
 });
 
 test("E: words kept with a line break or past the message's limit are still the call's reply", () => {

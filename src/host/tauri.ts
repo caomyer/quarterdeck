@@ -85,6 +85,10 @@ export class TauriHostAdapter implements HostAdapter {
     return invoke<CallReplied>("call_reply", { call, words });
   }
 
+  callDefer(call: string, until: string, words: string | null) {
+    return invoke<CallReplied>("call_defer", { call, until, words });
+  }
+
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
     return invoke<ReviewView>("review_settle", { page: ref, thread, resolved });
   }
