@@ -1,5 +1,6 @@
-//! Recording the captain's answers through firstmate's own intake, and
-//! keeping his words on a call through its `reply` when they record nothing.
+//! Recording the captain's answers through firstmate's own intake, keeping
+//! his words on a call through its `reply` when they record nothing, and
+//! carrying out his dated "not now" through its `defer`.
 //!
 //! firstmate owns every call: `bin/fm-captain-hold.sh` is the only writer of
 //! anything about one, and `answers` is its one way in for an answer. The app
@@ -37,7 +38,7 @@ use tokio::io::AsyncWriteExt;
 const INTAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How an answer closes its call, as the call declares it. Channels never choose.
-const MODES: [&str; 2] = ["done", "release"];
+pub const MODES: [&str; 2] = ["done", "release"];
 
 /// One answer to record: the call, the option's key and label, and how the call
 /// says an answer closes it.
@@ -265,17 +266,82 @@ pub async fn reply(home: &Path, call: &str, words: &str, via: &str, message: Opt
     if !REPLY_VIA.contains(&via) {
         return Err(format!("'{via}' is not a way a reply reaches a call"));
     }
+    let file = WordsFile::write(words)?;
+    let mut args: Vec<std::ffi::OsString> = vec!["reply".into(), call.into(), "--words-file".into(), file.0.clone().into(), "--via".into(), via.into()];
+    if let Some(message) = message {
+        args.extend(["--message".into(), message.into()]);
+    }
+    let kept = [format!("replied: {call}"), format!("unchanged: {call}")];
+    let result = run_kept(home, &args, |line| kept.iter().any(|said| line == said)).await;
+    drop(file);
+    result.map_err(|problem| match problem {
+        Refused::Older => "this home's firstmate is older than replies on a call; update firstmate, or answer in chat".to_string(),
+        Refused::Said(reason) => reason,
+    })
+}
+
+/// Why firstmate did not carry out a command on a call: it is older than the
+/// command, or it said why in its own one line.
+#[derive(Debug, PartialEq)]
+pub enum Refused {
+    Older,
+    Said(String),
+}
+
+/// The captain's dated "not now" carried out through firstmate's own `defer`,
+/// which re-holds the call until that day and records the deferral on it, and
+/// keeps any words he added as his reply:
+///
+/// ```text
+/// bin/fm-captain-hold.sh defer <call> --until <yyyy-mm-dd> --via quarterdeck|review \
+///   [--words-file <path>] [--message <id>]
+/// ```
+///
+/// Done only when it says `deferred: <call> ...` or `unchanged: <call>`. A
+/// firstmate older than `defer` is `Refused::Older`, so the caller can keep the
+/// date on the call as words instead, as it did before. Naming the message
+/// later, with the same day and words, fills it in on the deferral.
+pub async fn defer(home: &Path, call: &str, until: &str, words: Option<&str>, via: &str, message: Option<&str>) -> Result<(), Refused> {
+    if !crate::artifact::valid_task_id(call) {
+        return Err(Refused::Said("that is not a call".to_string()));
+    }
+    let plain = until.len() == 10 && until.chars().enumerate().all(|(at, c)| if at == 4 || at == 7 { c == '-' } else { c.is_ascii_digit() });
+    if !plain {
+        return Err(Refused::Said(format!("'{until}' is not a day to be asked again on")));
+    }
+    let words = words.map(str::trim).filter(|words| !words.is_empty());
+    if words.is_some_and(|words| words.len() > REPLY_LIMIT) {
+        return Err(Refused::Said(format!("your words are longer than the {REPLY_LIMIT} bytes firstmate keeps on a call")));
+    }
+    if !REPLY_VIA.contains(&via) {
+        return Err(Refused::Said(format!("'{via}' is not a way a reply reaches a call")));
+    }
+    let file = words.map(WordsFile::write).transpose().map_err(Refused::Said)?;
+    let mut args: Vec<std::ffi::OsString> = vec!["defer".into(), call.into(), "--until".into(), until.into(), "--via".into(), via.into()];
+    if let Some(file) = &file {
+        args.extend(["--words-file".into(), file.0.clone().into()]);
+    }
+    if let Some(message) = message {
+        args.extend(["--message".into(), message.into()]);
+    }
+    let deferred = format!("deferred: {call}");
+    let unchanged = format!("unchanged: {call}");
+    let result = run_kept(home, &args, |line| line == deferred || line.starts_with(&format!("{deferred} ")) || line == unchanged).await;
+    drop(file);
+    result
+}
+
+/// Runs `bin/fm-captain-hold.sh` with `args` from the home, and judges it done
+/// only when it exits zero and prints a line `done` accepts. Anything else is
+/// firstmate refusing or failing, and the reason is its own last line, without
+/// its name; usage (exit 2) means a firstmate older than the command.
+async fn run_kept(home: &Path, args: &[std::ffi::OsString], done: impl Fn(&str) -> bool) -> Result<(), Refused> {
     let script = home.join("bin").join("fm-captain-hold.sh");
     if !script.is_file() {
-        return Err("this home's firstmate has no bin/fm-captain-hold.sh".to_string());
+        return Err(Refused::Said("this home's firstmate has no bin/fm-captain-hold.sh".to_string()));
     }
-    let file = WordsFile::write(words)?;
-    let mut command = envpath::command(&script);
-    command.arg("reply").arg(call).arg("--words-file").arg(&file.0).args(["--via", via]);
-    if let Some(message) = message {
-        command.args(["--message", message]);
-    }
-    let child = command
+    let child = envpath::command(&script)
+        .args(args)
         .env("FM_HOME", home)
         .current_dir(home)
         .stdin(Stdio::null())
@@ -283,29 +349,24 @@ pub async fn reply(home: &Path, call: &str, words: &str, via: &str, message: Opt
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("could not run bin/fm-captain-hold.sh: {e}"))?;
+        .map_err(|e| Refused::Said(format!("could not run bin/fm-captain-hold.sh: {e}")))?;
     let output = match tokio::time::timeout(INTAKE_TIMEOUT, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("bin/fm-captain-hold.sh could not be read: {e}")),
-        Err(_) => return Err(format!("bin/fm-captain-hold.sh did not finish within {}s", INTAKE_TIMEOUT.as_secs())),
+        Ok(Err(e)) => return Err(Refused::Said(format!("bin/fm-captain-hold.sh could not be read: {e}"))),
+        Err(_) => return Err(Refused::Said(format!("bin/fm-captain-hold.sh did not finish within {}s", INTAKE_TIMEOUT.as_secs()))),
     };
-    drop(file);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let kept = stdout.lines().any(|line| {
-        let line = line.trim();
-        [format!("replied: {call}"), format!("unchanged: {call}")].iter().any(|said| line == said)
-    });
-    if output.status.success() && kept {
+    if output.status.success() && stdout.lines().any(|line| done(line.trim())) {
         return Ok(());
     }
     // An older firstmate prints its usage for a command it does not have.
     if output.status.code() == Some(2) {
-        return Err("this home's firstmate is older than replies on a call; update firstmate, or answer in chat".to_string());
+        return Err(Refused::Older);
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let reason = stderr.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or_default();
     let reason = reason.strip_prefix("fm-captain-hold: ").unwrap_or(reason);
-    Err(if reason.is_empty() { format!("firstmate did not keep it ({})", output.status) } else { reason.to_string() })
+    Err(Refused::Said(if reason.is_empty() { format!("firstmate did not keep it ({})", output.status) } else { reason.to_string() }))
 }
 
 #[cfg(test)]
@@ -461,6 +522,61 @@ mod tests {
             let home = home_with_reply("never", "replied: qd-a", "", 0);
             assert!(reply(&home, call, words, via, None).await.is_err(), "{call} {words:?} {via}");
             assert!(!home.join("args").exists(), "firstmate was run for {call} {words:?} {via}");
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A home whose `defer` records how it was run and the words file it was given, prints `says` and exits `exit`.
+    fn home_with_defer(name: &str, says: &str, stderr: &str, exit: i32) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("fm-calls-defer-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        let script = home.join("bin/fm-captain-hold.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FM_HOME/args\"\nwhile [ $# -gt 0 ]; do [ \"$1\" = --words-file ] && cp \"$2\" \"$FM_HOME/words\"; shift; done\ncat <<'EOF'\n{says}\nEOF\nprintf '%s\\n' '{stderr}' >&2\nexit {exit}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        home
+    }
+
+    #[tokio::test]
+    async fn a_dated_not_now_is_carried_out_through_firstmates_own_defer() {
+        let home = home_with_defer("words", "deferred: res-wifi-drop until 2026-10-03", "", 0);
+        defer(&home, "res-wifi-drop", "2026-10-03", Some("  unless the battery numbers land first \n"), "quarterdeck", None).await.expect("deferred");
+        let read = |name: &str| std::fs::read_to_string(home.join(name)).unwrap();
+        let args: Vec<String> = read("args").lines().map(str::to_string).collect();
+        assert_eq!(&args[..6], ["defer", "res-wifi-drop", "--until", "2026-10-03", "--via", "quarterdeck"]);
+        assert_eq!(args[6], "--words-file");
+        assert_eq!(read("words"), "unless the battery numbers land first", "his words go as he wrote them, trimmed");
+        assert!(!Path::new(&args[7]).exists(), "the staged words are gone once firstmate has them");
+
+        // A date alone goes with no words file, and naming the message later goes as --message.
+        let home = home_with_defer("bare", "unchanged: res-wifi-drop", "", 0);
+        defer(&home, "res-wifi-drop", "2026-10-03", Some("   "), "review", Some("m42")).await.expect("named");
+        let args = std::fs::read_to_string(home.join("args")).unwrap();
+        assert_eq!(args, "defer\nres-wifi-drop\n--until\n2026-10-03\n--via\nreview\n--message\nm42\n");
+        assert!(!home.join("words").exists(), "a date alone sent words");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn a_deferral_firstmate_refuses_or_does_not_know_is_not_done() {
+        let home = home_with_defer("refused", "", "fm-captain-hold: --until 2026-09-18 is not after the captain day (2026-09-18)", 1);
+        let refused = defer(&home, "res-a", "2026-09-18", None, "quarterdeck", None).await.unwrap_err();
+        assert_eq!(refused, Refused::Said("--until 2026-09-18 is not after the captain day (2026-09-18)".to_string()));
+        let home = home_with_defer("older", "", "Usage:", 2);
+        assert_eq!(defer(&home, "res-a", "2026-10-03", None, "quarterdeck", None).await.unwrap_err(), Refused::Older);
+        // Another call's line is not this one deferred.
+        let home = home_with_defer("other", "deferred: res-ab until 2026-10-03", "", 0);
+        assert!(defer(&home, "res-a", "2026-10-03", None, "quarterdeck", None).await.is_err());
+        for (call, until, via) in [("../x", "2026-10-03", "quarterdeck"), ("res-a", "Oct 3", "quarterdeck"), ("res-a", "2026-10-03", "chat")] {
+            let home = home_with_defer("never", "deferred: res-a until 2026-10-03", "", 0);
+            assert!(defer(&home, call, until, None, via, None).await.is_err(), "{call} {until} {via}");
+            assert!(!home.join("args").exists(), "firstmate was run for {call} {until} {via}");
         }
         let _ = std::fs::remove_dir_all(home);
     }

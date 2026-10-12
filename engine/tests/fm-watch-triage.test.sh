@@ -1560,6 +1560,226 @@ test_actionable_signal_surfaced() {
   pass "captain-relevant signal is surfaced (queue + exit) and marked surfaced"
 }
 
+# A ship task's `done: PR <url>` ready line arms the merge poll from the watcher
+# itself: it runs bin/fm-pr-check.sh <task> <url> (here a recording stand-in via
+# FM_PR_CHECK_BIN, so the assertion is on the watcher's own call) detached after
+# the wake, and notes the act as its own check row in the durable queue, leaving
+# the signal row's payload alone. With a <release-file>, the stand-in blocks until
+# that file exists, as a hung forge would.
+pr_check_recorder() {  # <fakebin> <exit-code> [<release-file>]
+  cat > "$1/fm-pr-check.sh" <<SH
+#!/usr/bin/env bash
+: > "\$(dirname "\$0")/pr-check.started"
+if [ -n "${3:-}" ]; then
+  i=0
+  while [ ! -e "${3:-}" ] && [ "\$i" -lt 300 ]; do sleep 0.1; i=\$((i + 1)); done
+fi
+printf '%s|%s|%s\n' "\$1" "\$2" "\${FM_STATE_OVERRIDE:-}" >> "\$(dirname "\$0")/pr-check.calls"
+[ "$2" = 0 ] || echo "error: task metadata is unavailable" >&2
+exit $2
+SH
+  chmod +x "$1/fm-pr-check.sh"
+}
+
+# Wait up to <limit> 0.1s ticks for <needle> to appear in <file>.
+wait_for_text() {  # <file> <needle> [limit]
+  local file=$1 needle=$2 limit=${3:-100} i=0
+  while [ "$i" -lt "$limit" ]; do
+    grep -F -- "$needle" "$file" >/dev/null 2>&1 && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+test_ship_pr_ready_line_arms_the_pr_check() {
+  local dir state fakebin out pid url
+  dir=$(make_case pr-ready-arms); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url=https://github.com/sample/proj/pull/42
+  pr_check_recorder "$fakebin" 0
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipt.meta"
+  printf 'working: validating\ndone: PR %s checks green\n' "$url" > "$state/shipt.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for a ship's PR-ready line"
+  wait_for_text "$state/.wake-queue" "$(printf 'check\tpr-check-shipt\tcheck: pr-check armed: shipt %s' "$url")" \
+    || fail "the armed PR check was not noted in the wake queue: $(cat "$state/.wake-queue")"
+  assert_equals "shipt|$url|$state" "$(cat "$fakebin/pr-check.calls" 2>/dev/null)" \
+    "the watcher did not run the PR check for the ship's ready line exactly once"
+  grep -F "$(printf 'signal\tshipt.status\tsignal: %s' "$state/shipt.status")" "$state/.wake-queue" >/dev/null \
+    || fail "the signal row's payload changed: $(cat "$state/.wake-queue")"
+  pass "a ship's done: PR line makes the watcher arm its PR check and say so on the wake"
+}
+
+test_pr_check_arming_is_only_for_a_ship_pr_line() {
+  local dir state fakebin out pid
+  dir=$(make_case pr-ready-not-ship); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  pr_check_recorder "$fakebin" 0
+  printf 'kind=scout\n' > "$state/scoutt.meta"
+  printf 'done: PR https://github.com/sample/proj/pull/7\n' > "$state/scoutt.status"
+  printf 'kind=ship\n' > "$state/localt.meta"
+  printf 'done: ready in branch fm/localt\n' > "$state/localt.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for the done lines"
+  assert_absent "$fakebin/pr-check.calls" "the watcher armed a PR check for a scout or a line naming no PR"
+  assert_no_grep 'pr-check' "$state/.wake-queue" "a wake noted a PR check that never ran"
+  pass "only a ship task's done: PR <url> line arms a PR check"
+}
+
+test_a_pr_check_that_fails_to_arm_is_reported() {
+  local dir state fakebin out pid url
+  dir=$(make_case pr-ready-fails); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url=https://github.com/sample/proj/pull/9
+  pr_check_recorder "$fakebin" 1
+  printf 'kind=ship\n' > "$state/shipf.meta"
+  printf 'done: PR %s\n' "$url" > "$state/shipf.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for a ship's PR-ready line"
+  wait_for_text "$state/.wake-queue" \
+    "check: pr-check not armed: shipf $url: error: task metadata is unavailable; run bin/fm-pr-check.sh shipf <PR url>" \
+    || fail "a PR check that failed to arm was not reported: $(cat "$state/.wake-queue")"
+  assert_equals "shipf|$url|$state" "$(cat "$fakebin/pr-check.calls" 2>/dev/null)" "the watcher did not try the PR check"
+  pass "a PR check the watcher could not arm is reported on the wake with its reason"
+}
+
+# A ready line that names its PR in any other form than `done: PR <http(s) url>`
+# arms nothing: running bin/fm-pr-check.sh by hand stays the first mate's job
+# there, as AGENTS.md and the branch prompt say.
+test_a_ready_line_naming_no_pr_url_arms_nothing() {
+  local dir state fakebin out pid
+  dir=$(make_case pr-ready-no-url); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  pr_check_recorder "$fakebin" 0
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipn.meta"
+  printf 'working: validating\ndone: PR #42 checks green\n' > "$state/shipn.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for the ship's ready line"
+  grep -F "signal: $state/shipn.status" "$out" >/dev/null || fail "the ready line did not wake the first mate"
+  assert_absent "$fakebin/pr-check.started" "the watcher ran a PR check for a ready line naming no PR URL"
+  assert_no_grep 'pr-check' "$state/.wake-queue" "a wake noted a PR check for a ready line naming no PR URL"
+  pass "a ship ready line naming its PR without a URL arms nothing and writes no PR-check row"
+}
+
+# Arming talks to the forge, so it never holds the wake back: the signal row is
+# queued and the watcher has woken while the check is still running, and the
+# check's row arrives in the durable queue once it finishes, after the watcher's
+# own exit cleanup has run without stopping it.
+test_a_slow_pr_check_never_delays_the_wake() {
+  local dir state fakebin out pid url release i
+  dir=$(make_case pr-ready-slow); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; release="$dir/release-pr-check"
+  url=https://github.com/sample/proj/pull/77
+  pr_check_recorder "$fakebin" 0 "$release"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/ships.meta"
+  printf 'done: PR %s checks green\n' "$url" > "$state/ships.status"
+  FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || { touch "$release"; fail "watcher waited on a blocked PR check instead of waking"; }
+  i=0
+  while [ ! -e "$fakebin/pr-check.started" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -e "$fakebin/pr-check.started" ] || { touch "$release"; fail "the watcher never started the PR check"; }
+  if [ -e "$fakebin/pr-check.calls" ]; then
+    touch "$release"; fail "the PR check finished before the test released it"
+  fi
+  grep -F "signal: $state/ships.status" "$out" >/dev/null \
+    || { touch "$release"; fail "the watcher did not print its wake reason before the PR check returned"; }
+  grep -F "$(printf 'signal\tships.status\tsignal: %s' "$state/ships.status")" "$state/.wake-queue" >/dev/null \
+    || { touch "$release"; fail "the signal row was not queued before the PR check returned: $(cat "$state/.wake-queue")"; }
+  assert_no_grep 'pr-check' "$state/.wake-queue" "a PR-check row was queued before the check returned"
+  touch "$release"
+  wait_for_text "$state/.wake-queue" "$(printf 'check\tpr-check-ships\tcheck: pr-check armed: ships %s' "$url")" \
+    || fail "the armed row never reached the wake queue once the check finished: $(cat "$state/.wake-queue")"
+  assert_equals "ships|$url|$state" "$(cat "$fakebin/pr-check.calls" 2>/dev/null)" \
+    "the detached PR check did not run exactly once"
+  pass "a blocked PR check leaves the wake on time and queues its armed row when it finishes"
+}
+
+# A forge that never answers is cut off at FM_PR_ARM_TIMEOUT, and the first mate
+# is told why on a row of its own after the wake, so a merge nobody watches
+# never goes quiet.
+test_a_hung_pr_check_is_reported_after_the_wake() {
+  local dir state fakebin out pid url signal_seq check_seq
+  dir=$(make_case pr-ready-hung); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url=https://github.com/sample/proj/pull/78
+  pr_check_recorder "$fakebin" 0 "$dir/never-released"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shiph.meta"
+  printf 'done: PR %s checks green\n' "$url" > "$state/shiph.status"
+  FM_PR_ARM_TIMEOUT=2 FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher waited on a hung PR check instead of waking"
+  grep -F "signal: $state/shiph.status" "$out" >/dev/null || fail "the watcher did not print its wake reason"
+  wait_for_text "$state/.wake-queue" \
+    "check: pr-check not armed: shiph $url: bin/fm-pr-check.sh did not finish within 2s; run bin/fm-pr-check.sh shiph <PR url>" \
+    || fail "a hung PR check was not reported with why: $(cat "$state/.wake-queue")"
+  signal_seq=$(awk -F'\t' '$3 == "signal" && $4 == "shiph.status" { print $2; exit }' "$state/.wake-queue")
+  check_seq=$(awk -F'\t' '$3 == "check" && $4 == "pr-check-shiph" { print $2 }' "$state/.wake-queue")
+  [ -n "$signal_seq" ] && [ -n "$check_seq" ] && [ "$signal_seq" -lt "$check_seq" ] \
+    || fail "the PR-check row was not queued after the signal row: $(cat "$state/.wake-queue")"
+  assert_absent "$fakebin/pr-check.calls" "the hung PR check was not cut off at its bound"
+  pass "a PR check that hangs past its bound is reported after the wake, naming why"
+}
+
+# The whole batch shares one arming budget. A check left with none is never
+# started, and its row says so rather than claiming it ran and timed out.
+test_a_pr_check_left_without_budget_says_it_never_started() {
+  local dir state fakebin out pid url1 url2
+  dir=$(make_case pr-ready-budget); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url1=https://github.com/sample/proj/pull/81
+  url2=https://github.com/sample/proj/pull/82
+  pr_check_recorder "$fakebin" 0 "$dir/never-released"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipa.meta"
+  printf 'done: PR %s checks green\n' "$url1" > "$state/shipa.status"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipb.meta"
+  printf 'done: PR %s checks green\n' "$url2" > "$state/shipb.status"
+  FM_PR_ARM_TIMEOUT=2 FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher waited on a hung PR check instead of waking"
+  wait_for_text "$state/.wake-queue" \
+    "check: pr-check not armed: shipb $url2: not started: the batch's 2s arming budget was spent on earlier PR checks; run bin/fm-pr-check.sh shipb <PR url>" \
+    || fail "the check left without budget did not say it never started: $(cat "$state/.wake-queue")"
+  grep -F "check: pr-check not armed: shipa $url1: bin/fm-pr-check.sh did not finish within 2s; run bin/fm-pr-check.sh shipa <PR url>" \
+    "$state/.wake-queue" >/dev/null || fail "the hung check did not say it ran past its bound: $(cat "$state/.wake-queue")"
+  pass "a PR check the batch had no budget left for says it was never started, and the hung one says it timed out"
+}
+
+# A check started with only part of the batch's budget left, and cut off by it,
+# names the limit it actually had, not the whole budget.
+test_a_pr_check_cut_off_by_the_remaining_budget_names_it() {
+  local dir state fakebin out pid url1 url2
+  dir=$(make_case pr-ready-remaining); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url1=https://github.com/sample/proj/pull/91
+  url2=https://github.com/sample/proj/pull/92
+  cat > "$fakebin/fm-pr-check.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = shipa ]; then sleep 3; exit 0; fi
+sleep 30
+SH
+  chmod +x "$fakebin/fm-pr-check.sh"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipa.meta"
+  printf 'done: PR %s checks green\n' "$url1" > "$state/shipa.status"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipb.meta"
+  printf 'done: PR %s checks green\n' "$url2" > "$state/shipb.status"
+  FM_PR_ARM_TIMEOUT=5 FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher waited on the PR checks instead of waking"
+  wait_for_text "$state/.wake-queue" "check: pr-check not armed: shipb $url2:" \
+    || fail "the second check was not reported: $(cat "$state/.wake-queue")"
+  grep -F "check: pr-check armed: shipa $url1" "$state/.wake-queue" >/dev/null \
+    || fail "setup: the first check did not arm: $(cat "$state/.wake-queue")"
+  grep -E "check: pr-check not armed: shipb $url2: bin/fm-pr-check.sh did not finish within the [12]s left of the batch's 5s arming budget; run bin/fm-pr-check.sh shipb <PR url>" \
+    "$state/.wake-queue" >/dev/null || fail "the cut-off check did not name the limit it had: $(cat "$state/.wake-queue")"
+  pass "a PR check cut off by the batch's remaining budget names that shorter limit"
+}
+
 # A needs-decision status append surfaced through this actionable signal path
 # must skip the Pi supervision branch and reach main directly
 # (docs/pi-supervision-branch.md "Autonomy"). The row still
@@ -5141,6 +5361,14 @@ test_working_note_not_working_surfaced
 test_secondmate_status_note_surfaced_despite_busy_agent
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced
+test_ship_pr_ready_line_arms_the_pr_check
+test_pr_check_arming_is_only_for_a_ship_pr_line
+test_a_pr_check_that_fails_to_arm_is_reported
+test_a_ready_line_naming_no_pr_url_arms_nothing
+test_a_slow_pr_check_never_delays_the_wake
+test_a_hung_pr_check_is_reported_after_the_wake
+test_a_pr_check_left_without_budget_says_it_never_started
+test_a_pr_check_cut_off_by_the_remaining_budget_names_it
 test_needs_decision_signal_payload_marked_for_branch_exclusion
 test_needs_decision_reconciliation_required_still_marked
 test_captain_held_signal_payload_marked_for_branch_exclusion

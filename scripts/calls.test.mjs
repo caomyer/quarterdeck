@@ -215,6 +215,10 @@ test("the app's own answer messages read back as the answers they are", () => {
   for (const sent of fixture.replied) {
     assert.deepEqual(answerOfMessage(sent.text), { kind: "replied", call: sent.call, words: sent.words });
   }
+  assert.ok(fixture.deferred.length >= 2, "the fixture pins a deferral with and without words");
+  for (const sent of fixture.deferred) {
+    assert.deepEqual(answerOfMessage(sent.text), { kind: "deferred", call: sent.call, until: sent.until, words: sent.words });
+  }
 });
 
 test("only the app's own lines are answers", () => {

@@ -2466,7 +2466,7 @@ SH
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
-    "$ROOT/bin/fm-send.sh" "$id" --resolve-key chat-choice "go with option A" >/dev/null 2>&1 \
+    "$ROOT/bin/fm-send.sh" "$id" --resolve-key chat-choice --by captain "go with option A" >/dev/null 2>&1 \
     || fail "an answer to a transferred legacy decision was refused by the chat channel"
   # The answer rides fm-send's durable inbox plane: the record carries the
   # text while the typed channel carries only the doorbell.
@@ -2480,7 +2480,7 @@ SH
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
-    "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-followup "take the second option" >/dev/null 2>&1 \
+    "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-followup --by captain "take the second option" >/dev/null 2>&1 \
     || fail "an answer keyed by a task id was refused by the chat channel"
   show=$(tasks_in "$home" show sample-chat-followup --full)
   assert_contains "$show" "state: done" "a chat answer left the task-id call open"
@@ -2494,7 +2494,7 @@ SH
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
-    "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-reconcile reconcile >/dev/null 2>&1
+    "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-reconcile --by captain reconcile >/dev/null 2>&1
   set -e
   show=$(tasks_in "$home" show sample-chat-reconcile --full)
   assert_contains "$show" "state: queued" "a chat reconcile answer closed the call"
@@ -2511,7 +2511,7 @@ SH
   if env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
-    "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-followup "again" \
+    "$ROOT/bin/fm-send.sh" "$id" --resolve-key sample-chat-followup --by captain "again" \
     > "$home/closed-key.out" 2> "$home/closed-key.err"; then
     fail "a key already closed in both ledgers was accepted"
   fi
@@ -4228,6 +4228,152 @@ test_a_relayed_captain_answer_needs_no_decision_of_its_own() {
   pass "a relayed captain answer is recorded by its call, and a relay of no captain's answer is refused"
 }
 
+# An answer sent with --resolve-key that closes a captain-held call names who
+# decided it. Nothing assumes the captain: a send that does not say is refused
+# before anything goes, and the first mate's own answer reads as its own on
+# every surface that prints a decision, never as the captain's.
+test_a_chat_answer_to_a_call_names_who_decided_it() {
+  local home id out rc show answered
+  home=$(make_home resolve-by)
+  id=sample-by-ship
+  tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+    || fail "could not create the ship"
+  write_origin_meta "$home" "$id" ship
+  printf 'working: building\n' > "$home/state/$id.status"
+  for call in sample-by-mate sample-by-captain; do
+    run_captain "$home" hold "$call" --title 'Narrow or wide?' --reason 'narrow or wide' --about "$id" \
+      --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null \
+      || fail "could not hold $call"
+  done
+
+  rc=0
+  out=$(send_in "$home" "$id" --resolve-key sample-by-mate 'go narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an answer to a captain-held call went without saying who decided it"
+  assert_contains "$out" "--by captain" "the refusal names the captain's choice"
+  assert_contains "$out" "--by firstmate" "the refusal names the first mate's choice"
+  assert_absent "$home/state/$id.inbox/001.msg" "a refused answer reached the worker"
+  assert_contains "$(tasks_in "$home" show sample-by-mate --full)" "state: queued" "a refused answer closed the call"
+  rc=0
+  out=$(send_in "$home" "$id" --resolve-key sample-by-mate --by someone 'go narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "--by took a decider that is neither captain nor first mate"
+
+  send_in "$home" "$id" --resolve-key sample-by-mate --by firstmate 'go narrow' >/dev/null 2>&1 \
+    || fail "the first mate's own answer was refused"
+  show=$(tasks_in "$home" show sample-by-mate --full)
+  assert_contains "$show" "state: done" "the first mate's answer left the call open"
+  assert_contains "$show" "Firstmate answered this call on the captain's behalf through a firstmate answer sent to $id." \
+    "the record does not say the first mate decided"
+  assert_not_contains "$show" "Captain answered" "the first mate's answer is recorded as the captain's"
+  assert_contains "$show" "Answered by: firstmate" "the machine line names the captain as the decider"
+  answered=$(run_captain "$home" answered sample-by-mate)
+  assert_equals firstmate "$answered" "answered reads the first mate as the decider"
+  assert_equals 'firstmate|chat' \
+    "$(run_captain "$home" list --json | jq -r '.calls[] | select(.id == "sample-by-mate") | [.answer.by, .answer.via] | join("|")')" \
+    "the call list reads the first mate as the decider"
+  assert_contains "$(run_captain "$home" list)" "(by firstmate via chat)" "the text listing reads the first mate as the decider"
+
+  send_in "$home" "$id" --resolve-key sample-by-captain --by captain 'Captain says: wide' >/dev/null 2>&1 \
+    || fail "relaying the captain's answer was refused"
+  show=$(tasks_in "$home" show sample-by-captain --full)
+  assert_contains "$show" "Captain answered this call through a firstmate answer sent to $id." \
+    "the captain's answer does not say the captain decided"
+  assert_contains "$show" "Answered by: captain" "the machine line does not name the captain"
+  assert_equals captain "$(run_captain "$home" answered sample-by-captain)" "answered reads the captain as the decider"
+  assert_contains "$(run_captain "$home" list)" "(by captain via chat)" "the text listing reads the captain as the decider"
+  pass "an answer that closes a captain-held call says who decided it, and is refused when it does not"
+}
+
+# --by names who decided a captain-held call. On a worker's own question, a key
+# open only in its status log, there is no call for it to name, so the send is
+# refused before anything goes rather than taking the flag and dropping it.
+test_by_on_a_status_only_key_is_refused() {
+  local home id by out rc call
+  home=$(make_home by-status-key)
+  id=sample-by-status
+  tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+    || fail "could not create the ship"
+  write_origin_meta "$home" "$id" ship
+  printf 'working: building\nneeds-decision [key=scope]: narrow or wide?\n' > "$home/state/$id.status"
+  for by in captain firstmate; do
+    rc=0
+    out=$(send_in "$home" "$id" --resolve-key scope --by "$by" 'go narrow' 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "--by $by on a status-log key was accepted"
+    assert_contains "$out" "--by names who decided a captain-held call" "the refusal does not say what --by is for"
+    assert_contains "$out" "--for-call <call>" "the refusal does not point a relayed captain answer at --for-call"
+    assert_contains "$out" "fm-captain-hold.sh decide" "the refusal does not point the first mate's own answer at decide"
+    assert_contains "$out" "Nothing was sent" "the refusal does not say nothing was sent"
+  done
+  assert_absent "$home/state/$id.inbox/001.msg" "a refused --by answer reached the worker"
+  [ "$(grep -c 'key=scope' "$home/state/$id.status")" = 1 ] || fail "a refused --by answer closed the key"
+
+  # Relaying the captain's answer with --for-call takes --by captain, never --by firstmate.
+  call=sample-by-status-scope
+  run_captain "$home" hold "$call" --title 'Narrow or wide?' --reason 'narrow or wide' --about "$id" \
+    --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null || fail "could not hold the call"
+  printf '%s\tnarrow\tNarrow\n' "$call" | run_captain "$home" answers --source quarterdeck >/dev/null \
+    || fail "the captain's answer was not recorded"
+  rc=0
+  out=$(send_in "$home" "$id" --resolve-key scope --for-call "$call" --by firstmate 'Captain says: narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "--for-call with --by firstmate was accepted"
+  assert_contains "$out" "cannot be recorded --by firstmate" "the refusal does not say why"
+  assert_absent "$home/state/$id.inbox/001.msg" "a refused relay reached the worker"
+  send_in "$home" "$id" --resolve-key scope --for-call "$call" --by captain 'Captain says: narrow' >/dev/null 2>&1 \
+    || fail "--for-call with --by captain was refused"
+  assert_grep 'Captain says: narrow' "$home/state/$id.inbox/001.msg" "the relay never reached the worker"
+  assert_grep "resolved [key=scope]: relayed $call: Captain says: narrow" "$home/state/$id.status" \
+    "the relay did not close the key as the captain's answer"
+  pass "--by on a worker's question is refused without --for-call, and --for-call takes --by captain but not --by firstmate"
+}
+
+# When the answer reaches the worker but the intake cannot close the call, the
+# send prints the intake it ran, keyed line and decider included. Running that
+# command closes the call exactly as the intake would have: a ship held on its
+# own row is released, never closed as done, and an answer naming an option is
+# recorded by its key, with the first mate as the decider.
+test_a_failed_intake_names_the_decider_in_its_recovery() {
+  local home id ro out rc cmd show
+  home=$(make_home by-intake-fails)
+  id=sample-intake-ship
+  tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+    || fail "could not create the ship"
+  write_origin_meta "$home" "$id" ship
+  printf 'working: building\n' > "$home/state/$id.status"
+  run_captain "$home" hold "$id" --reason 'narrow or wide' \
+    --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null \
+    || fail "could not hold the ship's row"
+  assert_equals release "$(run_captain "$home" list --json | jq -r --arg id "$id" '.calls[] | select(.id == $id) | .on_answer')" \
+    "setup: the ship's own row does not close by release"
+  ro="$home/readonly-backlog"
+  mkdir -p "$ro"
+  cat > "$ro/tasks-axi" <<SH
+#!/usr/bin/env bash
+[ "\$1" != update ] || { echo "error: the backlog is read-only" >&2; exit 1; }
+exec "$TASKS_AXI_BIN" "\$@"
+SH
+  chmod +x "$ro/tasks-axi"
+  rc=0
+  out=$(PATH="$ro:$PATH" send_in "$home" "$id" --resolve-key "$id" --by firstmate 'narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a send whose intake failed exited 0"
+  assert_grep 'narrow' "$home/state/$id.inbox/001.msg" "setup: the answer did not reach the worker"
+  assert_contains "$(tasks_in "$home" show "$id" --full)" "hold_kind: captain" "setup: the failed intake closed the call"
+  cmd=${out#*Close it by running the same intake again: }
+  cmd=${cmd%% - do not resend the answer.*}
+  [ "$cmd" != "$out" ] || fail "the refusal names no recovery command: $out"
+  assert_equals "printf '%s' \$'$id\\tnarrow\\t\\n' | FM_HOME=$(printf '%q' "$home") bin/fm-captain-hold.sh answers --source a\\ firstmate\\ answer\\ sent\\ to\\ $id --via chat --by firstmate" \
+    "$cmd" "the recovery is not the intake the send ran"
+
+  (cd "$ROOT" && PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" bash -c "$cmd" >/dev/null) \
+    || fail "the printed recovery command failed"
+  show=$(tasks_in "$home" show "$id" --full)
+  assert_not_contains "$show" "state: done" "the recovery closed the ship as done instead of releasing it"
+  assert_not_contains "$show" "hold_kind: captain" "the recovery left the ship held for the captain"
+  assert_equals 'narrow|firstmate|chat' \
+    "$(run_captain "$home" list --json | jq -r --arg id "$id" '.calls[] | select(.id == $id) | [.answer.key, .answer.by, .answer.via] | join("|")')" \
+    "the recovery did not record the option key with the first mate as the decider"
+  pass "a failed intake prints the intake it ran, which releases the call and records the key when run"
+}
+
 # Before calls recorded the proposal they handle, a scout's proposal was raised
 # by hand on its own row, and the captain may already have answered it. After
 # the upgrade every completion path refuses it; `stamp` records that the call
@@ -4367,6 +4513,9 @@ EOF
 
 test_ship_teardown_passes_the_captain_call_gate
 test_a_relayed_captain_answer_needs_no_decision_of_its_own
+test_a_chat_answer_to_a_call_names_who_decided_it
+test_by_on_a_status_only_key_is_refused
+test_a_failed_intake_names_the_decider_in_its_recovery
 test_a_call_raised_before_proposals_were_recorded_is_stamped_not_reasked
 test_uninventoried_report_decision_refuses_completion
 test_hold_decodes_a_bare_scalar_body_without_the_nonref_default

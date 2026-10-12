@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell line into its terminal, best-effort.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--for-call <call-task-id>] [--fire-and-forget <delivery-id>] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--by captain|firstmate] [--for-call <call-task-id>] [--fire-and-forget <delivery-id>] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -190,6 +190,21 @@
 # the legacy `<task>-decision-<key>` identity for pre-collapse rows. fm-send
 # closes nothing itself; it hands the intake `<task-id>\t<answer>\t<label>`
 # exactly as every other channel does, and the intake owns what that means.
+# Who decided is never assumed for such a key: the send must say --by captain
+# (it relays the captain's answer) or --by firstmate (the first mate decided it
+# itself), passed to the intake as its --by, so the call's record names the
+# real decider; a send without it is refused before anything is sent. On a
+# worker's question, a key open only in its status log, three rules hold, each
+# checked before anything is sent: --for-call relays the captain's answer, so
+# it takes --by captain or no --by, and --by firstmate with it is refused;
+# without --for-call, --by is refused rather than accepted and discarded, since
+# it names who decided a captain-held call and there is none; and an answer the
+# first mate made itself takes no --by and is recorded with
+# `fm-captain-hold.sh decide`. When the
+# answer is delivered but the intake cannot close the call, the send exits
+# nonzero with the exact `fm-captain-hold.sh answers` command it ran, keyed
+# lines and decider included, so running it again closes the call the way the
+# intake would have: with the call's declared close mode and the option key.
 # This is what lets an answer reach a decision that has already been
 # transferred from the live status log to its durable captain-held task, which
 # the status ledger alone can no longer close.
@@ -470,6 +485,7 @@ fi
 # message exactly as before, so ordinary sends are byte-identical.
 RESOLVE_KEYS=
 FOR_CALL=
+RESOLVE_BY=
 FIRE_AND_FORGET_ID=
 fm_send_add_resolve_key() { # <key>
   local k=$1
@@ -500,6 +516,24 @@ while :; do
   --resolve-key=*)
     fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
     shift
+    ;;
+  --by)
+    [ $# -ge 2 ] || {
+      echo "error: --by requires captain or firstmate" >&2
+      exit 1
+    }
+    [ -z "$RESOLVE_BY" ] || {
+      echo "error: duplicate --by" >&2
+      exit 1
+    }
+    case "$2" in
+    captain | firstmate) RESOLVE_BY=$2 ;;
+    *)
+      echo "error: --by must be captain or firstmate, got '$2'" >&2
+      exit 1
+      ;;
+    esac
+    shift 2
     ;;
   --for-call)
     [ $# -ge 2 ] || {
@@ -634,6 +668,15 @@ if [ -n "$FIRE_AND_FORGET_ID" ]; then
     }
 fi
 
+if [ -n "$RESOLVE_BY" ] && [ -z "$RESOLVE_KEYS" ]; then
+  echo "error: --by names who decided a --resolve-key answer, so it needs --resolve-key" >&2
+  exit 1
+fi
+if [ -n "$FOR_CALL" ] && [ "$RESOLVE_BY" = firstmate ]; then
+  echo "error: --for-call relays the captain's answer, so it cannot be recorded --by firstmate" >&2
+  exit 1
+fi
+
 if [ -n "$FOR_CALL" ]; then
   [ -n "$RESOLVE_KEYS" ] || {
     echo "error: --for-call names the captain's call a --resolve-key answer relays, so it needs --resolve-key" >&2
@@ -688,6 +731,16 @@ if [ -n "$RESOLVE_KEYS" ]; then
     echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE, and no captain-held task '$k' or '$RESOLVE_TASK_ID-decision-$k' still open (already closed or mistyped). Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent." >&2
     exit 1
   done
+  # An answer that closes a captain-held call records who decided it, and that
+  # is never assumed: the captain, or the first mate deciding on his behalf.
+  if [ -z "$RESOLVE_HOLD_KEYS" ] && [ -n "$RESOLVE_BY" ] && [ -z "$FOR_CALL" ]; then
+    echo "error: --by names who decided a captain-held call, and none of --resolve-key ${RESOLVE_STATUS_KEYS} is one: each is a worker's question in its status log. To relay the captain's answer to it, add --for-call <call> (with or without --by captain); an answer you made yourself takes no --by, and you record it with fm-captain-hold.sh decide. Nothing was sent." >&2
+    exit 1
+  fi
+  if [ -n "$RESOLVE_HOLD_KEYS" ] && [ -z "$RESOLVE_BY" ]; then
+    echo "error: --resolve-key closes the captain-held call ${RESOLVE_HOLD_KEYS}, so say who decided it: --by captain when this relays the captain's answer, or --by firstmate when you decided it yourself. Nothing was sent." >&2
+    exit 1
+  fi
   # Refuse before send when a named status-log key cannot actually close: a
   # reserved key with an answered: note is a silent no-op in the fold.
   resolve_excerpt=$(printf '%s' "$*" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
@@ -744,15 +797,18 @@ fm_send_close_resolved_keys() { # <answer-text>
 # it does not build a decision record or choose a close path; the keys were
 # already resolved to task ids above, so the intake needs no legacy origin.
 fm_send_feed_resolved_holds() { # <answer-text>
-  local note=$1 k lines=''
+  local note=$1 k lines='' intake_source recover
   [ -n "$RESOLVE_HOLD_KEYS" ] || return 0
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_HOLD_KEYS; do
     lines="${lines}${k}"$'\t'"${note}"$'\t'$'\n'
   done
+  intake_source="a firstmate answer sent to $RESOLVE_TASK_ID"
   if ! printf '%s' "$lines" | "$SCRIPT_DIR/fm-captain-hold.sh" answers \
-    --source "a firstmate answer sent to $RESOLVE_TASK_ID" --via chat >/dev/null 2>&1; then
-    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it with fm-captain-hold.sh answer - do not resend the answer." >&2
+    --source "$intake_source" --via chat --by "$RESOLVE_BY" >/dev/null 2>&1; then
+    printf -v recover "printf '%%s' %q | FM_HOME=%q bin/fm-captain-hold.sh answers --source %q --via chat --by %s" \
+      "$lines" "$FM_HOME" "$intake_source" "$RESOLVE_BY"
+    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it by running the same intake again: ${recover} - do not resend the answer." >&2
     return 1
   fi
 }

@@ -4,8 +4,8 @@
 # state/<task-id>.meta so fm-teardown.sh applies the full ship-task teardown protection
 # again. Promotion also writes the crewmate's ship instructions to
 # data/<task-id>/ship-instructions.md, appends that same superseding contract to
-# data/<task-id>/brief.md for future relaunches, and prints the fm-send.sh command
-# that delivers it to the current worker. Those instructions carry the
+# data/<task-id>/brief.md for future relaunches, and delivers it to the current
+# worker (see Delivery below). Those instructions carry the
 # scratch-state inventory, the clean
 # default-branch base, the fm/<task-id> branch, and - rendered from
 # bin/fm-dod-lib.sh, the single owner an ordinary ship brief also uses - the
@@ -32,6 +32,12 @@
 # row a merge later closes describes the work that shipped rather than the audit
 # it started as. The row is read before anything changes, so an unreadable row
 # refuses promotion; a manual-backend home is told to make the same edit by hand.
+# Delivery is promotion's own last step: it sends the
+# ship instructions to the current worker through bin/fm-send.sh, the same
+# durable inbox every steer uses, idempotently so a retried promotion names the
+# message already sent, and prints `delivered: <task-id> inbox <NNN>`. A send
+# that fails leaves the promotion standing, prints the reason and the exact
+# fm-send.sh command to deliver it by hand, and exits 3.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--title <new objective>]
 set -eu
 
@@ -355,7 +361,31 @@ case "$BACKLOG_NOTE" in
   warning:*) printf '%s\n' "$BACKLOG_NOTE" >&2 ;;
   ?*) printf '%s\n' "$BACKLOG_NOTE" ;;
 esac
-echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID \"\$(cat $INSTRUCTIONS_Q)\""
+DELIVER_HINT="FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID \"\$(cat $INSTRUCTIONS_Q)\""
+DELIVER_RC=0
+# Read the file whole: a command substitution would drop its last newline.
+DELIVER_BODY=$(cat "$INSTRUCTIONS" && printf .) || DELIVER_BODY=
+DELIVER_BODY=${DELIVER_BODY%.}
+DELIVER_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-promote-deliver.XXXXXX") || DELIVER_ERR=/dev/null
+DELIVER_OUT=
+if [ -n "$DELIVER_BODY" ]; then
+  DELIVER_OUT=$(FM_HOME="$FM_HOME" FM_SEND_IDEMPOTENT=1 FM_SEND_PRINT_RECORD=1 \
+    "$SCRIPT_DIR/fm-send.sh" "fm-$ID" "$DELIVER_BODY" 2>"$DELIVER_ERR") || DELIVER_RC=$?
+else
+  DELIVER_RC=1
+  printf 'could not read %s\n' "$INSTRUCTIONS" > "$DELIVER_ERR"
+fi
+DELIVER_RECORD=$(printf '%s\n' "$DELIVER_OUT" | sed -n 's/^record: //p' | tail -n 1)
+if [ "$DELIVER_RC" -eq 0 ] && [ -n "$DELIVER_RECORD" ]; then
+  echo "delivered: $ID inbox $(basename "$DELIVER_RECORD" .msg)"
+else
+  DELIVER_WHY=$(grep -v '^[[:space:]]*$' "$DELIVER_ERR" 2>/dev/null | tail -n 1 | tr -d '\r')
+  [ "$DELIVER_RC" -ne 0 ] || DELIVER_WHY="bin/fm-send.sh did not name the inbox message it wrote"
+  DELIVER_RC=3
+  echo "warning: promoted, but the ship instructions were not delivered: ${DELIVER_WHY:-bin/fm-send.sh failed}" >&2
+  echo "next: $DELIVER_HINT"
+fi
+[ "$DELIVER_ERR" = /dev/null ] || rm -f "$DELIVER_ERR"
 
 promote_print_rechain_hint() {
   local consent_home=$1 work_home=$2 task_id=$3 id prefix
@@ -458,3 +488,8 @@ if [ -f "$FM_HOME/.fm-secondmate-home" ]; then
 elif fm_pf_relay_active "$FM_HOME"; then
   promote_print_rechain_hint "$FM_HOME" main "$ID"
 fi
+
+# A failed delivery leaves the promotion standing and says so in the exit status.
+# The exit is conditional so the successful path falls off the end normally:
+# an unconditional exit here would make anything added after it unreachable.
+[ "$DELIVER_RC" -eq 0 ] || exit "$DELIVER_RC"

@@ -52,7 +52,7 @@ import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
 import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
 import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
+import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, askAgainDay, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, heldUntil, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
 import { latestTime, pagePlaces } from "./chatorder";
 import { answerCardView, callCardView, callLine, type EarlierWords } from "./callviews";
 import { AnswerCard, CallLineCard, CallOpenCard, EvidenceLine } from "./CallCards";
@@ -628,6 +628,24 @@ export function App() {
   }
 
   /**
+   * Puts a call off to the day the captain picked, from Bearings or the chat: firstmate's `defer` holds it until then
+   * and keeps his words on it as his reply, and only then is the first mate told what was done. The card draws what
+   * happened from the snapshot, read again at once, as a reply does.
+   */
+  async function deferCall(call: Call, until: string, words: string, from: AnsweredFrom = "bearings"): Promise<CallReplied> {
+    let result: CallReplied;
+    try {
+      result = await host.callDefer(call.id, until, words.trim() || null);
+    } catch (error) {
+      result = { kept: false, problem: String(error), message: null, text: null };
+    }
+    if (result.message && result.text) bridge.noteSent(result.message, result.text);
+    if (result.message) setAnsweredFrom((current) => ({ ...current, [result.message!]: from }));
+    if (result.kept) void bridge.refreshSnapshot();
+    return result;
+  }
+
+  /**
    * Answers a call from Bearings with one of its options: firstmate's intake records it, noted in the review of
    * the page that argues it, and the card says what the intake did. Only a recorded answer reaches the first mate.
    */
@@ -687,7 +705,11 @@ export function App() {
       const answer = message.who === "captain" ? answerOfMessage(message.text, calls) : null;
       return answer?.call === call.id ? [{ message, answer, at: latestTime(message) }] : [];
     });
-    const words = said.filter(({ answer, at }) => answer.kind === "replied" && at >= raised).at(-1);
+    // What he last said on it in words, a dated not now said the way the card says one.
+    const words = said.flatMap(({ message, answer, at }) => at < raised ? []
+      : answer.kind === "replied" ? [{ message, words: answer.words }]
+      : answer.kind === "deferred" ? [{ message, words: answerInWords(answer.until, answer.words ?? "") }]
+      : []).at(-1);
     return <ChatCall
       call={call}
       project={context.project}
@@ -695,10 +717,11 @@ export function App() {
       evidence={context.evidence}
       argument={context.argument}
       seenArgument={context.seen}
-      earlier={words && words.answer.kind === "replied" ? { words: words.answer.words, at: words.message.past ? null : words.message.createdAt } : null}
+      earlier={words ? { words: words.words, at: words.message.past ? null : words.message.createdAt } : null}
       askedBefore={said.some(({ at }) => at < raised)}
       onAnswer={(option, note) => answerNow(call, option, note, "chat")}
       onReply={(words) => replyToCall(call, words, "chat")}
+      onDefer={(until, words) => deferCall(call, until, words, "chat")}
       onReadArgument={context.argument ? () => openEvidence(context.argument!) : undefined}
       onOpenEvidence={openEvidence}
       onOpenPage={context.onOpenPage}
@@ -811,6 +834,7 @@ export function App() {
                   argument={context.argument}
                   seenArgument={context.seen}
                   onReply={(words) => replyToCall(call, words)}
+                  onDefer={(until, words) => deferCall(call, until, words)}
                   onAnswer={(option, note) => answerNow(call, option, note)}
                   onReadArgument={context.argument ? () => openEvidence(context.argument!) : undefined}
                   onOpenEvidence={openEvidence}
@@ -1436,7 +1460,7 @@ function ReplyState({ reply, page }: { reply: CallReply; page?: string }) {
  * A pick the call no longer offers as he saw it is dropped and named, never recorded: the call's options are read
  * afresh on every render, never copied.
  */
-function useCallAnswer(call: Call, onAnswer: (option: OptionChoice, note?: string) => Promise<boolean>, onReply: (words: string) => Promise<CallReplied>, onSent?: () => void) {
+function useCallAnswer(call: Call, onAnswer: (option: OptionChoice, note?: string) => Promise<boolean>, onReply: (words: string) => Promise<CallReplied>, onDefer: (until: string, words: string) => Promise<CallReplied>, onSent?: () => void) {
   const [selection, setSelection] = useState<OptionChoice | null>(null);
   const [note, setNote] = useState("");
   const [dateOpen, setDateOpen] = useState(false);
@@ -1484,7 +1508,8 @@ function useCallAnswer(call: Call, onAnswer: (option: OptionChoice, note?: strin
     if (!said) return;
     setReplying(true);
     try {
-      const result = await onReply(said);
+      // A dated not now is carried out by firstmate's `defer`; only anything else is a reply in words.
+      const result = dateOpen && deferDate ? await onDefer(deferDate, note.trim()) : await onReply(said);
       if (!result.kept) return setRefused(result.problem ?? "firstmate gave no reason");
       // Kept: the snapshot shows it now, so the fields start empty for whatever comes next.
       clear();
@@ -1496,7 +1521,9 @@ function useCallAnswer(call: Call, onAnswer: (option: OptionChoice, note?: strin
 
   const hint = recordPick
     ? `→ records: ${recordPick.label}${note.trim() ? ", and tells the first mate what you added" : ""}`
-    : said ? `→ keeps your words on the call for the first mate: ${said}` : dateOpen ? "Pick the day to be asked again" : "";
+    : dateOpen && deferDate
+      ? `→ holds it until ${askAgainDay(deferDate)}${note.trim() ? ", and keeps your words on the call for the first mate" : ""}`
+      : said ? `→ keeps your words on the call for the first mate: ${said}` : dateOpen ? "Pick the day to be asked again" : "";
   const button = <button disabled={busy || (!recordPick && !said)} onClick={() => void submit()}>{recordPick ? (recording ? "Recording…" : "Record answer") : replying ? "Sending…" : "Send"}</button>;
   const fields = (layout: "chips" | "list") => <CallAnswerFields
     call={call}
@@ -1529,7 +1556,7 @@ function ReplyRefused({ problem }: { problem: string }) {
  * first mate records it or asks again. A replied card still takes an answer, so nothing he said locks the call.
  * Where it stands is `callStanding`'s, and its form is `useCallAnswer`, both shared with the call's card in the chat.
  */
-function DecisionCard({ call, project, now, standing, answered, evidence, argument, seenArgument, onReply, onAnswer, onReadArgument, onOpenEvidence, onOpenPage }: {
+function DecisionCard({ call, project, now, standing, answered, evidence, argument, seenArgument, onReply, onDefer, onAnswer, onReadArgument, onOpenEvidence, onOpenPage }: {
   call: Call;
   project: string | null;
   now: number;
@@ -1542,6 +1569,7 @@ function DecisionCard({ call, project, now, standing, answered, evidence, argume
   /** Whether the captain has opened the page that argues it; null when the argument opens no page. */
   seenArgument: boolean | null;
   onReply: (words: string) => Promise<CallReplied>;
+  onDefer: (until: string, words: string) => Promise<CallReplied>;
   onAnswer: (option: OptionChoice, note?: string) => Promise<boolean>;
   onReadArgument?: () => void;
   onOpenEvidence: (item: Evidence) => void;
@@ -1549,7 +1577,7 @@ function DecisionCard({ call, project, now, standing, answered, evidence, argume
 }) {
   // Only an argued call folds its answer away, so the argument is read first.
   const [answering, setAnswering] = useState(false);
-  const form = useCallAnswer(call, onAnswer, onReply, () => setAnswering(false));
+  const form = useCallAnswer(call, onAnswer, onReply, onDefer, () => setAnswering(false));
   const reply = replyOf(call);
   const meta = <CallMeta call={call} project={project} now={now} />;
   // The meta line already names the project, so the title does not say it again.
@@ -1602,7 +1630,7 @@ function DecisionCard({ call, project, now, standing, answered, evidence, argume
  * `callStanding`, so the two change together. The form lives here, above both of its looks, so something written in
  * it outlives the call being answered somewhere else, to be offered to the composer rather than lost or sent.
  */
-function ChatCall({ call, project, standing, evidence, argument, seenArgument, earlier, askedBefore, onAnswer, onReply, onReadArgument, onOpenEvidence, onOpenPage, onDraft }: {
+function ChatCall({ call, project, standing, evidence, argument, seenArgument, earlier, askedBefore, onAnswer, onReply, onDefer, onReadArgument, onOpenEvidence, onOpenPage, onDraft }: {
   call: Call;
   project: string | null;
   standing: CallStanding;
@@ -1613,12 +1641,13 @@ function ChatCall({ call, project, standing, evidence, argument, seenArgument, e
   askedBefore: boolean;
   onAnswer: (option: OptionChoice, note?: string) => Promise<boolean>;
   onReply: (words: string) => Promise<CallReplied>;
+  onDefer: (until: string, words: string) => Promise<CallReplied>;
   onReadArgument?: () => void;
   onOpenEvidence: (item: Evidence) => void;
   onOpenPage?: () => void;
   onDraft: (text: string) => void;
 }) {
-  const form = useCallAnswer(call, onAnswer, onReply);
+  const form = useCallAnswer(call, onAnswer, onReply, onDefer);
   const heading = project ? withinProject(call.title, project) : call.title;
   const line = callLine(call, standing, earlier);
   if (line) return <CallLineCard call={call} heading={heading} line={line} form={form} evidence={evidence} onOpenEvidence={onOpenEvidence} onOpenPage={onOpenPage} onDraft={onDraft} />;
@@ -2379,7 +2408,7 @@ function ChatView({ messages, artifacts, reviews, calls, renderCall, callTitle, 
       const from = itemKey(item);
       if (item.type === "call") return { from, place: { ...base, owner: { kind: "call", id: item.call.id }, said: item.call.raised_at ? { at: item.call.raised_at } : null, quote: collapse(item.call.question ?? item.call.title) } };
       if (item.type === "artifact") return { from, place: { ...base, owner: { kind: "page", id: pageId(item.artifact), rev: item.revision.rev }, said: { at: item.revision.presented_at }, quote: collapse(item.revision.title) } };
-      if (item.type === "answer") return { from, place: { ...base, owner: { kind: "answer", call: item.answer.call }, said: saidOf(item.message), quote: collapse(item.answer.kind === "recorded" ? [item.answer.label, item.answer.note].filter(Boolean).join(". ") : item.answer.words) } };
+      if (item.type === "answer") return { from, place: { ...base, owner: { kind: "answer", call: item.answer.call }, said: saidOf(item.message), quote: collapse(item.answer.kind === "recorded" ? [item.answer.label, item.answer.note].filter(Boolean).join(". ") : item.answer.kind === "deferred" ? answerInWords(item.answer.until, item.answer.words ?? "") : item.answer.words) } };
       if (item.type === "review") return { from, place: { ...base, owner: { kind: "review", page: pageId(item.sent.ref) }, said: saidOf(item.message), quote: collapse(item.message.text.split("\n")[0]) } };
       return null;
     }
@@ -3657,6 +3686,11 @@ function RailCall({ call, revision, beside, chosen, before, onAnswer, onOpenEvid
   useEffect(() => () => { if (typing.current) clearTimeout(typing.current); }, []);
 
   const worded = chosen !== undefined && chosen.option === null;
+  // What the first mate is left to record: words, and an option on a call that does not say how an answer closes it,
+  // which goes as words in its own label. A dated not now is carried out as the review goes.
+  const forFirstMate = chosen !== undefined && !chosen.defer && (worded || !(chosen.on_answer === "done" || chosen.on_answer === "release"));
+  const heldTo = heldUntil(call);
+  const heldDay = heldTo ? askAgainDay(heldTo) : null;
   const said = chosen && (chosen.note || chosen.defer) ? answerInWords(chosen.defer, chosen.note ?? "") : "";
   const saidThen = then ? [then.label, answerInWords(then.defer, then.note ?? "")].filter(Boolean).join(". ") : "";
   // What the captain said that nothing has recorded: the reply firstmate keeps on the call, the same one Bearings shows.
@@ -3701,9 +3735,13 @@ function RailCall({ call, revision, beside, chosen, before, onAnswer, onOpenEvid
         : handedOver
           ? chosen!.told === false
             ? <small className="decision-sent untold">Not yet told to the first mate</small>
-            : <small className="decision-sent">Sent to the first mate {when(chosen!.sent_at!)}{worded ? ", for it to record" : ""}</small>
+            : chosen!.defer && heldDay
+              ? <small className="decision-sent" data-testid="call-held">Held until {heldDay} · went with your review {when(chosen!.sent_at!)}</small>
+              : <small className="decision-sent">Sent to the first mate {when(chosen!.sent_at!)}{forFirstMate ? ", for it to record" : ""}</small>
           : current
-            ? <small className="decision-staged">{worded ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
+            ? <small className="decision-staged">{current.defer ? `Goes with your review, which holds the call until ${askAgainDay(current.defer)}` : forFirstMate ? "Goes with your review, for the first mate to record" : "Goes with your review, and is recorded as it is sent"}</small>
+            : heldDay
+              ? <small className="decision-sent" data-testid="call-held">Held until {heldDay}{reply ? " · your words are with the first mate" : ""}</small>
             : reply
               ? <small className="decision-replied" data-testid="call-replied">With the first mate · not recorded yet</small>
             : deferring && !deferDate

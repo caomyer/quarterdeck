@@ -30,6 +30,8 @@
 #     [--recommend <key>] [--on-answer done|release]
 #   fm-captain-hold.sh evidence <task-id> (add | remove) <ref>
 #   fm-captain-hold.sh reply <task-id> --words-file <path> --via quarterdeck|review|chat [--message <id>]
+#   fm-captain-hold.sh defer <task-id> --until YYYY-MM-DD --via quarterdeck|review|chat \
+#     [--words-file <path>] [--message <id>]
 #   fm-captain-hold.sh replies [--older-than <minutes>]
 #   fm-captain-hold.sh decide --about <task-id> --title <title> --what <one line> --why <one line> \
 #     [--kind review-finding|merge|new-task|scope|other] [--link <url>] [--option <key>=<label>]... \
@@ -45,8 +47,10 @@
 #   fm-captain-hold.sh gate <task-id>
 #   fm-captain-hold.sh list [--json] [--since <days>]
 #   fm-captain-hold.sh migrate
-#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--key <option-key>] [--via <channel>]
-#   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance> [--via <channel>]   (keyed answers on stdin)
+#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--key <option-key>] [--via <channel>] \
+#     [--by captain|firstmate]
+#   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance> [--via <channel>] \
+#     [--by captain|firstmate]   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
 #   fm-captain-hold.sh unbind <source-id>
@@ -132,6 +136,27 @@
 # Only the first mate acting clears it: `answer` (and so `answers` and
 # `decide`) once the answer is recorded, `offer`, and every `hold` once the
 # hold is applied, because each records, re-asks, or defers the call.
+# `defer` carries out the captain's own dated "not now" on an open call, so it
+# never waits on the first mate to transcribe it: it re-holds the call through
+# `hold <task-id> --reason <its current hold reason> --until <day>`, with every
+# guard `hold` applies (a day on or before the captain's own today is refused,
+# and the reply the first mate no longer owes is cleared), then records
+# `deferred` = {until, via, at, message} on the call's record, the one place a
+# deferral is read back from. Words the captain added (--words-file) stay his
+# reply, written as `reply` writes one with the cleared reply as `previous`,
+# because they can change what the deferral means and only the first mate may
+# read them. It refuses what `reply` refuses: an absent, closed, or answered
+# call, or one not held for the captain. An exact retry (same day, via, and
+# words, with the row already held until that day) prints `unchanged:`.
+# --message only names the message that told the first mate, on a deferral
+# with the same day and via that names none, and on its reply when the words
+# match; anything else prints `unchanged:` and writes nothing. Output:
+# `deferred: <task-id> until <day>`. The first mate overrides it as it does
+# any hold: `offer` asks again, and another `hold` moves or lifts the date.
+# Once the first mate has read words that leave the deferral standing, it
+# settles them with `hold <task-id> --reason <its reason> --until <the same
+# day>`, which clears the reply as every `hold` does and keeps the call
+# deferred to that day.
 # `replies` is the read-only report of replies still waiting on the first mate:
 # one `<task-id>\t<at>\t<via>\t<first line of the words>` line per open call
 # whose reply is at least --older-than minutes old (default 0), silent when
@@ -160,8 +185,14 @@
 # options and evidence. `--json` prints {schema:"fm-call-list.v1", calls:[...],
 # damaged:[{task,file}]}, each call being {id, title, question, options,
 # on_answer, state ("open"|"answered"|"closed"), bucket, captain_actionable,
-# origin, about, evidence, raised_by, raised_at, updated_at, answer, decided,
-# reply}, where `reply` is the record's reply while the call is open, else null.
+# hold_until, origin, about, evidence, raised_by, raised_at, updated_at, answer,
+# decided, reply, deferred}, where `reply` is the record's reply while the call
+# is open, else null. `hold_until` is the row's hold-until day (YYYY-MM-DD) in
+# force now, or null once that day has come: it is the day the call is held
+# to, whoever set it, even while a blocker holds it too, and moves or clears
+# with every `hold`. `deferred` is the record's last `defer`,
+# the history of what the captain chose, which no later hold rewrites, so a
+# deferral holds the call only while its until equals `hold_until`.
 # `bucket` and `captain_actionable` are the fleet snapshot's hold projection,
 # unchanged: `list` reads the snapshot's own backlog parser
 # (`fm-fleet-snapshot.sh --backlog-json`), and the snapshot hands its already
@@ -234,7 +265,11 @@
 # nonzero when any key was skipped. `--source` is provenance text recorded in
 # the durable decision, never a behavior switch (`--via` names the channel for
 # the `Answered via:` line; see the channel vocabulary below): this command has no per-channel
-# branch and no knowledge of chat, review decks, or any transport. An answer
+# branch and no knowledge of chat, review decks, or any transport. `--by`
+# names who decided: `captain` (the default, the answer every channel carries)
+# or `firstmate`, for an answer the first mate gave itself, which records
+# `Answered by: firstmate` under a decision that says the first mate answered
+# on the captain's behalf, never that the captain did. An answer
 # that names one of the call's recorded options is recorded with its
 # `Answer key:`. Output, one line per input row: `closed: <task-id>`,
 # `skipped: <task-id-or-key> (<reason>)`, or `refused: <key> (<reason>)`, then
@@ -436,7 +471,10 @@
 # exact retries arriving later or through `answer` instead of `answers`, keep
 # matching; a retry never rewrites an existing block. `answer --key` must name
 # one of the call's recorded options (or, with none recorded, be a well-formed
-# key); --by and --label are internal to `answers` and `decide`.
+# key); --label is internal to `answers` and `decide`. `answer --by` names who
+# decided, `captain` (the default) or `firstmate`, exactly as `answers --by`
+# does, so recording by hand an answer the first mate gave itself never names
+# the captain.
 # CHANNEL VOCABULARY. `Answered via:` is always one of a closed set of tokens,
 # never provenance prose, so a surface can say where the captain answered:
 #   quarterdeck  the Quarterdeck app
@@ -1125,7 +1163,9 @@ CALL_VALID_JQ='
     and (.raised_at | type) == "string" and (.updated_at | type) == "string"
     and (.decided == null or (.decided | type) == "object")
     and (.reply == null or ((.reply | type) == "object"
-        and (.reply.words | type) == "string" and (.reply.at | type) == "string"));'
+        and (.reply.words | type) == "string" and (.reply.at | type) == "string"))
+    and (.deferred == null or ((.deferred | type) == "object"
+        and (.deferred.until | type) == "string" and (.deferred.at | type) == "string"));'
 
 require_jq() {
   command -v jq >/dev/null 2>&1 || fail "jq is required to read or record a call's content"
@@ -1981,6 +2021,110 @@ command_reply() {
   printf 'replied: %s\n' "$id"
 }
 
+# The captain's dated "not now" on an open call (see the header): re-hold it
+# until that day through `hold`, record the deferral on the call, and keep any
+# words he added as his reply.
+command_defer() {
+  local id=${1:-} until='' words_file='' via='' message='' words='' now show state body hold_set answered_at
+  local reason previous record raised_at
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+    case "$1" in
+      --until) until=$2 ;;
+      --words-file) words_file=$2 ;;
+      --via) via=$2 ;;
+      --message) message=$2 ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift 2
+  done
+  validate_slug task-id "$id"
+  case "$until" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
+    *) fail "defer needs --until <YYYY-MM-DD>: the day the captain asked to be asked again" ;;
+  esac
+  case "$via" in
+    quarterdeck|review|chat) : ;;
+    *) fail "--via must be one of $REPLY_VIA_TOKENS: $via" ;;
+  esac
+  if [ -n "$words_file" ]; then
+    [ -f "$words_file" ] || fail "words file does not exist: $words_file"
+    words=$(cat "$words_file")
+    [ -n "$(printf '%s' "$words" | tr -d '[:space:]')" ] || fail "the words file has no words"
+    [ "$(printf '%s' "$words" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
+      || fail "the words are longer than 8192 bytes"
+  fi
+  [ -z "$message" ] || validate_slug message "$message"
+  require_jq
+  now=$(call_now)
+  require_tasks_axi
+  if [ -n "$message" ]; then
+    # Naming the message that carried a deferral already recorded, as `reply`
+    # names one: it fills the message in and never defers anything.
+    acquire_task_control_lock "$id"
+    call_record_load "$id"
+    if [ -z "$CALL_RECORD" ] || ! printf '%s' "$CALL_RECORD" | jq -e --arg until "$until" --arg via "$via" '
+        .deferred != null and .deferred.until == $until and .deferred.via == $via
+        and .deferred.message == null' >/dev/null; then
+      printf 'unchanged: %s\n' "$id"
+      return 0
+    fi
+    record=$(printf '%s' "$CALL_RECORD" | jq -c --arg message "$message" --arg words "$words" --arg via "$via" '
+      .deferred.message = $message
+      | if $words != "" and .reply != null and .reply.words == $words and .reply.via == $via
+           and .reply.message == null
+        then .reply.message = $message else . end') \
+      || fail "cannot compose the call content for $id"
+    call_record_store "$id" "$record"
+    printf 'deferred: %s until %s\n' "$id" "$until"
+    return 0
+  fi
+  task_show_or_fail "$id" "call $id is not in this home's backlog"
+  state=$(show_field "$show" state)
+  [ "$state" != "done" ] || fail "call $id is already closed"
+  [ "$(show_field_value "$show" hold_kind)" = captain ] || fail "call $id is not waiting on the captain"
+  body=$(decode_shown_value "$(show_field "$show" body)") || fail "could not read call $id"
+  hold_set=$(body_hold_set_timestamp "$body")
+  answered_at=$(newest_answered_at "$body")
+  if [ -n "$answered_at" ] && { [ -z "$hold_set" ] || ! [[ "$answered_at" < "$hold_set" ]]; }; then
+    fail "call $id already has a recorded answer"
+  fi
+  call_record_load "$id"
+  if [ -n "$CALL_RECORD" ] && [ "$(show_field_value "$show" hold_until)" = "$until" ] \
+    && printf '%s' "$CALL_RECORD" | jq -e --arg until "$until" --arg via "$via" --arg words "$words" '
+      .deferred != null and .deferred.until == $until and .deferred.via == $via
+      and (if $words == "" then .reply == null
+           else .reply != null and .reply.words == $words and .reply.via == $via end)' >/dev/null; then
+    printf 'unchanged: %s\n' "$id"
+    return 0
+  fi
+  previous=$(printf '%s' "${CALL_RECORD:-null}" | jq -c 'if . == null or .reply == null then null else .reply | del(.previous) end')
+  reason=$(show_field_value "$show" hold_reason)
+  [ -n "$reason" ] && [ "$reason" != "-" ] || reason="deferred by the captain"
+  # `hold` owns the deferral itself: the captain's-day check, the row's
+  # --until, and clearing the reply the first mate no longer owes.
+  "$0" hold "$id" --reason "$reason" --until "$until" >/dev/null || exit 1
+  acquire_task_control_lock "$id"
+  call_record_load "$id"
+  if [ -z "$CALL_RECORD" ]; then
+    task_show_or_fail "$id" "call $id disappeared while deferring it"
+    raised_at=$(shown_call_raised_at "$show" "$now")
+    record=$(call_record_compose "$id" "$raised_at" "$raised_at" '' '') || exit 1
+  else
+    record=$CALL_RECORD
+  fi
+  record=$(printf '%s' "$record" | jq -c --arg until "$until" --arg via "$via" --arg at "$now" \
+      --arg words "$words" --argjson previous "$previous" '
+    .deferred = {until:$until, via:$via, at:$at, message:null}
+    | if $words == "" then .
+      else .reply = {words:$words, via:$via, at:$at, message:null, previous:$previous} end') \
+    || fail "cannot compose the call content for $id"
+  call_record_store "$id" "$record"
+  printf 'deferred: %s until %s\n' "$id" "$until"
+}
+
 # Replies still waiting on the first mate (see the header). Read-only and
 # silent when nothing waits, because the wake drain runs it on every turn.
 command_replies() {
@@ -2270,7 +2414,7 @@ EOF_ORIGINS
     --slurpfile backlog "$backlog_file" \
     --slurpfile records "$work/records.json" \
     --rawfile derived "$work/derived.tsv" \
-    --arg now "$now" --argjson days "$since" '
+    --arg now "$now" --argjson days "$since" "$FM_CAPTAIN_DAY_JQ"'
     def epoch($d):
       if ($d | type) != "string" then null
       elif ($d | test("T")) then try ($d | fromdateiso8601) catch null
@@ -2294,6 +2438,7 @@ EOF_ORIGINS
           else .[$row[0]].pages += [$row[2]] end)) as $made
     | ($records[0] | map(select(.ok)) | map({key:.task, value:.record}) | from_entries) as $by_task
     | ($now | epoch(.)) as $end
+    | captain_day($now) as $today
     | [ $backlog[0].records[]?
         | select(.structured == true and .id != null)
         | select(.hold_kind == "captain" or any(.body_lines[]?; resolution_line))
@@ -2325,6 +2470,7 @@ EOF_ORIGINS
            state:$state,
            bucket:($row.hold_bucket // null),
            captain_actionable:($row.captain_actionable // false),
+           hold_until:(if $row.hold_until != null and $row.hold_until > $today then $row.hold_until else null end),
            origin:$origin,
            about:($rec.about // null),
            evidence:((($rec.evidence // [])
@@ -2337,7 +2483,8 @@ EOF_ORIGINS
            updated_at:($rec.updated_at // null),
            answer:$answer,
            decided:($rec.decided // null),
-           reply:(if $state == "open" then ($rec.reply // null) else null end)}
+           reply:(if $state == "open" then ($rec.reply // null) else null end),
+           deferred:($rec.deferred // null)}
       ] as $calls
     | {schema:"fm-call-list.v1", calls:$calls,
        damaged:($records[0] | map(select(.ok | not) | {task, file}))}' > "$work/list.json" \
@@ -2352,7 +2499,8 @@ EOF_ORIGINS
       (.options[] | "  \(.key)  \(.label)\(if .recommended then "  (recommended)" else "" end)"),
       (.evidence[] | "  evidence: \(.)"),
       (if .answer then "  answer: \(.answer.key // "-")  \(.answer.label // "")  (by \(.answer.by) via \(.answer.via // "-"))" else empty end),
-      (if .reply then "  reply: \(.reply.at) via \(.reply.via)  \(.reply.words | split("\n") | .[0])" else empty end)),
+      (if .reply then "  reply: \(.reply.at) via \(.reply.via)  \(.reply.words | split("\n") | .[0])" else empty end),
+      (if .deferred then "  deferred: until \(.deferred.until) at \(.deferred.at) via \(.deferred.via)" else empty end)),
     (.damaged[] | "damaged: \(.task) \(.file)"),
     "calls: \(.calls | length)"' "$work/list.json"
 }
@@ -2660,7 +2808,14 @@ command_binding() {
 # The durable captain decision one keyed answer records. Pure function of its
 # inputs, so the same answer delivered twice is idempotent rather than a
 # conflicting decision.
-keyed_decision_text() {  # <source> <task-id> <answer> <label>
+keyed_decision_text() {  # <source> <task-id> <answer> <label> <by>
+  if [ "$5" = firstmate ]; then
+    printf 'Firstmate answered this call on the captain'"'"'s behalf through %s.\n' "$1"
+    printf 'Task: %s\n' "$2"
+    printf 'Answer: %s\n' "$3"
+    [ -z "$4" ] || [ "$4" = "$3" ] || printf 'Answer label: %s\n' "$4"
+    return 0
+  fi
   printf 'Captain answered this call through %s.\n' "$1"
   printf 'Task: %s\n' "$2"
   printf 'Answer: %s\n' "$3"
@@ -2685,11 +2840,12 @@ sanitize_reconcile_provenance() {
 command_answers() {
   local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
   local recorded_digest recorded_mode occurrence tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
-  local resolve_rc declared option_keys via=''
+  local resolve_rc declared option_keys via='' by=captain
   local -a answer_args
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --source) shift; source=${1:-} ;;
+      --by) shift; by=${1:-} ;;
       --via) shift; via=${1:-}; [ -n "$via" ] || fail "--via must be one of $VIA_TOKENS" ;;
       --any-origin) origin=$BINDING_ANY ;;
       --*) usage >&2; exit 2 ;;
@@ -2709,6 +2865,7 @@ command_answers() {
     if [ "$source" = quarterdeck ]; then via=quarterdeck; else via=other; fi
   fi
   via_token_valid "$via" || fail "--via must be one of $VIA_TOKENS: $via"
+  case "$by" in captain|firstmate) ;; *) fail "--by must be captain or firstmate: $by" ;; esac
   require_tasks_axi
   tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-keyed-decision.XXXXXX") || fail "cannot stage the captain decision"
   err=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-keyed-decision-err.XXXXXX") \
@@ -2781,14 +2938,14 @@ command_answers() {
         continue
       fi
     fi
-    answer_args=(--via "$via")
+    answer_args=(--via "$via" --by "$by")
     if [ -n "$option_keys" ] && list_has_line "$option_keys" "$answer"; then
       answer_args+=(--key "$answer")
       [ -z "$label" ] || answer_args+=(--label "$label")
     else
       answer_args+=(--label "${label:-$answer}")
     fi
-    keyed_decision_text "$source" "$id" "$answer" "$label" > "$tmp" \
+    keyed_decision_text "$source" "$id" "$answer" "$label" "$by" > "$tmp" \
       || fail "cannot stage the captain decision for $id"
     digest=$(sha256_text "$(cat "$tmp")")
     legacy_digest=''
@@ -3932,6 +4089,7 @@ case "${1:-}" in
   hold) shift; command_hold "$@" ;;
   offer) shift; command_offer "$@" ;;
   reply) shift; command_reply "$@" ;;
+  defer) shift; command_defer "$@" ;;
   replies) shift; command_replies "$@" ;;
   evidence) shift; command_evidence "$@" ;;
   decide) shift; command_decide "$@" ;;
