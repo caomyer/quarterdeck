@@ -517,6 +517,39 @@ async fn a_revoke_drops_the_requests_still_in_hand() {
     assert!(commands.iter().all(|command| !command.starts_with("send ")), "the first mate was told for a revoked phone: {commands:?}");
 }
 
+/// A lost phone has often gone quiet before the captain revokes it: a write it
+/// left queued behind another still never starts once it is revoked, though its
+/// session ended first.
+#[tokio::test]
+async fn a_revoke_stops_writes_queued_by_a_session_already_gone() {
+    let world = World::new("revoke-after-leaving");
+    let (key, mut phone) = paired_phone(&world, "Lost phone").await;
+    let id = world.inner().registry().paired(&key.public()).unwrap().id.clone();
+    let told_before = world.commands.lock().unwrap().len();
+
+    let busy = world.inner().desk.writes.lock().await;
+    let page = json!({"scope": "task", "task": TASK, "name": PAGE});
+    phone.send(&json!({"id": 7, "ask": "answer_call", "call": CALL, "option": "wait", "page": page})).await;
+    phone.send(&json!({"id": 8, "ask": "comment", "page": page, "rev": 1, "body": "Wait for the numbers."})).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    phone.socket.close(None).await.unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !world.inner().live.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(world.inner().live.lock().unwrap().is_empty(), "its session ended before the revoke");
+    assert!(world.inner().revoke(&id).unwrap());
+    drop(busy);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(world.ran().is_empty(), "the intake ran for a revoked phone: {:?}", world.ran());
+    assert!(!world.home.join("intake.stdin").exists(), "the intake was handed an answer from a revoked phone");
+    let log = world.home.join("data").join(TASK).join("artifacts").join(PAGE).join("review.jsonl");
+    assert!(!std::fs::read_to_string(&log).unwrap_or_default().contains("Wait for the numbers."), "a revoked phone's comment was kept");
+    let commands = world.commands.lock().unwrap()[told_before..].to_vec();
+    assert!(commands.iter().all(|command| !command.starts_with("send ")), "the first mate was told for a revoked phone: {commands:?}");
+}
+
 /// A revoke never leaves a write half done: an answer whose intake has already
 /// started when the phone is revoked is recorded, the first mate is told, and
 /// the page's review notes that it was.

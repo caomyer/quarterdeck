@@ -176,7 +176,7 @@ async fn session(mut socket: Socket, mut channel: Channel, key: [u8; 32], inner:
     pings.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut heard = tokio::time::Instant::now();
     let mut heard_at = now_ms();
-    take(&first, &inner, &in_hand, &answers_tx, &closed);
+    take(&first, &inner, key, &in_hand, &answers_tx);
     loop {
         tokio::select! {
             biased;
@@ -196,7 +196,7 @@ async fn session(mut socket: Socket, mut channel: Channel, key: [u8; 32], inner:
                 if !paired {
                     break;
                 }
-                take(&payload, &inner, &in_hand, &answers_tx, &closed);
+                take(&payload, &inner, key, &in_hand, &answers_tx);
             },
             Some(answer) = answers.recv() => {
                 if *closed.borrow() || !within(quiet, send_sealed(&mut sink, &mut channel, &answer)).await {
@@ -219,18 +219,19 @@ async fn session(mut socket: Socket, mut channel: Channel, key: [u8; 32], inner:
     within(quiet, async { sink.send(Message::Close(None)).await.is_ok() && sink.close().await.is_ok() }).await;
 }
 
-/// Takes one opened request in hand, answering on `answers`. A revoke, which
-/// sets `closed`, keeps it from starting its writes; one already writing
-/// finishes, so nothing is left half done.
-fn take(payload: &[u8], inner: &Inner, in_hand: &Arc<Semaphore>, answers: &mpsc::UnboundedSender<Value>, closed: &watch::Receiver<bool>) {
+/// Takes one opened request in hand, answering on `answers`. A revoke keeps it
+/// from starting its writes, even once its session has ended; one already
+/// writing finishes, so nothing is left half done.
+fn take(payload: &[u8], inner: &Arc<Inner>, key: [u8; 32], in_hand: &Arc<Semaphore>, answers: &mpsc::UnboundedSender<Value>) {
     let answer = answers.clone();
     match request::parse(payload) {
         Ok((id, asked)) => match in_hand.clone().try_acquire_owned() {
             Ok(permit) => {
                 let desk = inner.desk.clone();
-                let revoked = closed.clone();
+                let registry = inner.clone();
+                let paired = move || registry.registry().paired(&key).is_some();
                 tokio::spawn(async move {
-                    let result = request::handle(&desk, &revoked, asked).await;
+                    let result = request::handle(&desk, &paired, asked).await;
                     let _ = answer.send(request::answered(id, result));
                     drop(permit);
                 });
