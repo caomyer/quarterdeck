@@ -138,6 +138,7 @@ META=
 SCOUT_BRIEF=
 BRIEF_ORIGINAL=
 BRIEF_REPLACEMENT=
+# shellcheck disable=SC2329 # Registered by the EXIT trap below.
 promote_cleanup() {
   local status=$?
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
