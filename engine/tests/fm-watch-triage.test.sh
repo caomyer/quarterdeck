@@ -1726,6 +1726,30 @@ test_a_hung_pr_check_is_reported_after_the_wake() {
   pass "a PR check that hangs past its bound is reported after the wake, naming why"
 }
 
+# The whole batch shares one arming budget. A check left with none is never
+# started, and its row says so rather than claiming it ran and timed out.
+test_a_pr_check_left_without_budget_says_it_never_started() {
+  local dir state fakebin out pid url1 url2
+  dir=$(make_case pr-ready-budget); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  url1=https://github.com/sample/proj/pull/81
+  url2=https://github.com/sample/proj/pull/82
+  pr_check_recorder "$fakebin" 0 "$dir/never-released"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipa.meta"
+  printf 'done: PR %s checks green\n' "$url1" > "$state/shipa.status"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$state/shipb.meta"
+  printf 'done: PR %s checks green\n' "$url2" > "$state/shipb.status"
+  FM_PR_ARM_TIMEOUT=2 FM_PR_CHECK_BIN="$fakebin/fm-pr-check.sh" watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher waited on a hung PR check instead of waking"
+  wait_for_text "$state/.wake-queue" \
+    "check: pr-check not armed: shipb $url2: not started: the batch's 2s arming budget was spent on earlier PR checks; run bin/fm-pr-check.sh shipb <PR url>" \
+    || fail "the check left without budget did not say it never started: $(cat "$state/.wake-queue")"
+  grep -F "check: pr-check not armed: shipa $url1: bin/fm-pr-check.sh did not finish within 2s; run bin/fm-pr-check.sh shipa <PR url>" \
+    "$state/.wake-queue" >/dev/null || fail "the hung check did not say it ran past its bound: $(cat "$state/.wake-queue")"
+  pass "a PR check the batch had no budget left for says it was never started, and the hung one says it timed out"
+}
+
 # A needs-decision status append surfaced through this actionable signal path
 # must skip the Pi supervision branch and reach main directly
 # (docs/pi-supervision-branch.md "Autonomy"). The row still
@@ -5313,6 +5337,7 @@ test_a_pr_check_that_fails_to_arm_is_reported
 test_a_ready_line_naming_no_pr_url_arms_nothing
 test_a_slow_pr_check_never_delays_the_wake
 test_a_hung_pr_check_is_reported_after_the_wake
+test_a_pr_check_left_without_budget_says_it_never_started
 test_needs_decision_signal_payload_marked_for_branch_exclusion
 test_needs_decision_reconciliation_required_still_marked
 test_captain_held_signal_payload_marked_for_branch_exclusion
