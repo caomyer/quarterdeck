@@ -911,9 +911,6 @@ async fn open_session(
 
 // ---------------------------------------------------------------- policy ---
 
-/// firstmate's `config/claude-permission-mode`, applied exactly as `fm-spawn.sh`
-/// applies it to Claude workers: absent or `bypass` is bypass, `auto` is auto,
-/// anything else refuses with the same message.
 /// The option a home that skips prompts answers a permission request with: its
 /// allow_once option, else the first one offered, as its id and its kind.
 fn auto_answer(params: &Value) -> (String, Option<String>) {
@@ -926,6 +923,9 @@ fn auto_answer(params: &Value) -> (String, Option<String>) {
     (field("optionId").unwrap_or_default(), field("kind"))
 }
 
+/// firstmate's `config/claude-permission-mode`, applied exactly as `fm-spawn.sh`
+/// applies it to Claude workers: absent or `bypass` is bypass, `auto` is auto,
+/// anything else refuses with the same message.
 fn permission_mode(home: &Path) -> Result<(&'static str, &'static str), String> {
     let file = home.join("config").join("claude-permission-mode");
     match std::fs::metadata(&file) {
