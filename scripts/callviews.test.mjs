@@ -137,25 +137,35 @@ test("the held line names the day the hold in force lifts, without needing the w
   assert.equal(callLine(held, callStanding(held)).detail, "not now, ask again Oct 3");
 });
 
-test("an old deferral never labels a call the first mate held again, held for another reason, or let go", () => {
+test("a deferral's card says the hold in force: moved to another day, blocked as well, or lifted", () => {
   const fixture = JSON.parse(readFileSync(new URL("../src/fixtures/call-messages.json", import.meta.url), "utf8"));
   const bare = answerOfMessage(fixture.deferred[0].text);
   const deferred = { until: bare.until, via: "quarterdeck", at: ago(10), message: "m1" };
-  const notHeld = "Not held now · the first mate asked again, or the day came";
-  // Another hold moved the day: every surface names the day in force, and the deferral no longer holds it.
+  // Another hold moved the day: every surface names the day in force, and the card says the first mate moved it.
   for (const [day, said] of [["2026-09-28", "Sep 28"], ["2026-11-01", "Nov 1"]]) {
     const moved = call({ captain_actionable: false, bucket: "dated", hold_until: day, deferred });
     assert.equal(heldUntil(moved), day);
     assert.equal(callLine(moved, callStanding(moved)).detail, `not now, ask again ${said}`);
-    assert.deepEqual([answerView(bare, moved).tone, answerView(bare, moved).status], ["muted", notHeld], `held again to ${day}`);
+    assert.deepEqual([answerView(bare, moved).tone, answerView(bare, moved).status], ["amber", `Held until ${said} · the first mate moved it from Oct 3`], `held again to ${day}`);
   }
-  // A plain hold lifted the day, the day came, or the call is aged or blocked: nothing names a day.
-  const stale = [
+  // Still held to the day, with a blocker as well: firstmate lists the day in force whatever the bucket.
+  const blocked = call({ captain_actionable: false, bucket: "blocked", hold_until: bare.until, deferred });
+  assert.equal(heldUntil(blocked), bare.until);
+  assert.equal(callLine(blocked, callStanding(blocked)).detail, "not now, ask again Oct 3");
+  assert.deepEqual([answerView(bare, blocked).tone, answerView(bare, blocked).status], ["green", "Held until Oct 3 · and waiting on a blocker"]);
+  // Moved while blocked: the day in force, not the deferral's.
+  const movedBlocked = call({ captain_actionable: false, bucket: "blocked", hold_until: "2026-11-01", deferred });
+  assert.equal(answerView(bare, movedBlocked).status, "Held until Nov 1 · the first mate moved it from Oct 3");
+  // The day came with a blocker still open: held by the blocker, not to a day.
+  const dayCameBlocked = call({ captain_actionable: false, bucket: "blocked", hold_until: null, deferred });
+  assert.equal(heldUntil(dayCameBlocked), null);
+  assert.deepEqual([answerView(bare, dayCameBlocked).tone, answerView(bare, dayCameBlocked).status], ["muted", "Waiting on a blocker · no longer held to a day"]);
+  // A plain hold lifted the day, or the day came: firstmate lists no day, so nothing names one.
+  const notHeld = "Not held now · the first mate asked again, or the day came";
+  for (const held of [
     call({ captain_actionable: false, bucket: "aged", hold_until: null, deferred }),
-    call({ captain_actionable: false, bucket: "blocked", hold_until: bare.until, deferred }),
-    call({ captain_actionable: true, bucket: "live", hold_until: bare.until, deferred }),
-  ];
-  for (const held of stale) {
+    call({ captain_actionable: true, bucket: "live", hold_until: null, deferred }),
+  ]) {
     assert.equal(heldUntil(held), null, `bucket ${held.bucket}`);
     assert.deepEqual([answerView(bare, held).tone, answerView(bare, held).status], ["muted", notHeld], `bucket ${held.bucket}`);
     if (held.bucket !== "live") assert.equal(callLine(held, callStanding(held)).detail, "not now, held", `bucket ${held.bucket}`);

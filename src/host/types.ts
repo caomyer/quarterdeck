@@ -225,7 +225,7 @@ export type Call = {
   state: "open" | "answered" | "closed";
   bucket?: string | null;
   captain_actionable?: boolean;
-  /** The day the hold in force lifts, `yyyy-mm-dd`, whoever set it; another `hold` moves or clears it. */
+  /** The day the hold in force lifts, `yyyy-mm-dd`, whoever set it, null once it has come; another `hold` moves or clears it. */
   hold_until?: string | null;
   /**
    * The earliest day Not now can name, `yyyy-mm-dd`: the day after the captain's day. Set by `homeCalls` from the

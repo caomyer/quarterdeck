@@ -207,10 +207,11 @@ export function askAgainDay(date: string) {
 
 /**
  * The day an open call is held to by the hold in force, or null when nothing holds it to a day still to come. It reads
- * the row's own `hold_until`, never the deferral record, which no later hold rewrites.
+ * the row's own `hold_until`, which firstmate lists only while that day is still to come, blocked or not, and never
+ * the deferral record, which no later hold rewrites.
  */
 export function heldUntil(call: Call) {
-  return call.state === "open" && call.bucket === "dated" && call.hold_until ? call.hold_until : null;
+  return call.state === "open" && call.hold_until ? call.hold_until : null;
 }
 
 /** An answer in words, as every surface says it: not now until a day, what the captain wrote, or both. */

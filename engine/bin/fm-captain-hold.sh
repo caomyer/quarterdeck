@@ -188,8 +188,9 @@
 # hold_until, origin, about, evidence, raised_by, raised_at, updated_at, answer,
 # decided, reply, deferred}, where `reply` is the record's reply while the call
 # is open, else null. `hold_until` is the row's hold-until day (YYYY-MM-DD) in
-# force now, or null: it is the day the call is held to, whoever set it, and
-# moves or clears with every `hold`. `deferred` is the record's last `defer`,
+# force now, or null once that day has come: it is the day the call is held
+# to, whoever set it, even while a blocker holds it too, and moves or clears
+# with every `hold`. `deferred` is the record's last `defer`,
 # the history of what the captain chose, which no later hold rewrites, so a
 # deferral holds the call only while its until equals `hold_until`.
 # `bucket` and `captain_actionable` are the fleet snapshot's hold projection,
@@ -2413,7 +2414,7 @@ EOF_ORIGINS
     --slurpfile backlog "$backlog_file" \
     --slurpfile records "$work/records.json" \
     --rawfile derived "$work/derived.tsv" \
-    --arg now "$now" --argjson days "$since" '
+    --arg now "$now" --argjson days "$since" "$FM_CAPTAIN_DAY_JQ"'
     def epoch($d):
       if ($d | type) != "string" then null
       elif ($d | test("T")) then try ($d | fromdateiso8601) catch null
@@ -2437,6 +2438,7 @@ EOF_ORIGINS
           else .[$row[0]].pages += [$row[2]] end)) as $made
     | ($records[0] | map(select(.ok)) | map({key:.task, value:.record}) | from_entries) as $by_task
     | ($now | epoch(.)) as $end
+    | captain_day($now) as $today
     | [ $backlog[0].records[]?
         | select(.structured == true and .id != null)
         | select(.hold_kind == "captain" or any(.body_lines[]?; resolution_line))
@@ -2468,7 +2470,7 @@ EOF_ORIGINS
            state:$state,
            bucket:($row.hold_bucket // null),
            captain_actionable:($row.captain_actionable // false),
-           hold_until:($row.hold_until // null),
+           hold_until:(if $row.hold_until != null and $row.hold_until > $today then $row.hold_until else null end),
            origin:$origin,
            about:($rec.about // null),
            evidence:((($rec.evidence // [])

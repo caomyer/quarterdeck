@@ -979,6 +979,9 @@ test_defer_holds_the_call_until_the_captains_day() {
   assert_equals 'dated|2026-10-20|2026-11-01' \
     "$(CALL_NOW=2026-09-18T12:10:00Z call_json "$home" sample-later | jq -r '[.bucket, .hold_until, .deferred.until] | join("|")')" \
     "another hold moves the day in force and keeps the deferral as what the captain chose"
+  assert_equals 'live|null|2026-11-01' \
+    "$(CALL_NOW=2026-10-21T12:00:00Z call_json "$home" sample-later | jq -r '[.bucket, (.hold_until|tostring), .deferred.until] | join("|")')" \
+    "once the day comes the call lists no day in force, though the row still names it"
   run_captain "$home" hold sample-later --reason 'asking again now' >/dev/null || fail "the overriding hold failed"
   assert_equals 'true|null|2026-11-01' \
     "$(call_json "$home" sample-later | jq -r '[(.captain_actionable|tostring), (.hold_until|tostring), .deferred.until] | join("|")')" \

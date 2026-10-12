@@ -152,15 +152,22 @@ export function answerCardView(answer: MessageAnswer, call: Call | undefined, { 
     // Held until the day by firstmate's `defer`, so the date is done, not waiting on anyone; words he added stay amber
     // while the call carries them as his reply, since only the first mate can say what they mean.
     const day = askAgainDay(answer.until);
-    const heldNow = call !== undefined && heldUntil(call) === answer.until;
+    const heldTo = call ? heldUntil(call) : null;
+    const blocked = call?.bucket === "blocked";
     const wordsWaiting = answer.words !== null && reply !== null && sameWords(reply.words, answer.words);
     const [tone, status]: [Tone, string] = !call
       ? ["muted", "The call has closed"]
       : call.state !== "open"
         ? call.answer?.by === "captain" ? ["green", `Recorded: ${call.answer.label}`] : ["muted", "The call has closed"]
-        : heldNow
-          ? wordsWaiting ? ["amber", `Held until ${day} · your words are with the first mate`] : ["green", `Held until ${day}${delivery && !askedAgain ? ` · ${delivery}` : ""}`]
-          : ["muted", "Not held now · the first mate asked again, or the day came"];
+        : heldTo === answer.until
+          ? wordsWaiting ? ["amber", `Held until ${day} · your words are with the first mate`]
+            : blocked ? ["green", `Held until ${day} · and waiting on a blocker`]
+              : ["green", `Held until ${day}${delivery && !askedAgain ? ` · ${delivery}` : ""}`]
+          : heldTo
+            ? ["amber", `Held until ${askAgainDay(heldTo)} · the first mate moved it from ${day}`]
+            : blocked
+              ? ["muted", "Waiting on a blocker · no longer held to a day"]
+              : ["muted", "Not held now · the first mate asked again, or the day came"];
     return { kind: "deferred", line: false, kicker: "Your answer · not now", title, said: `Not now. Ask me again on ${day}.`, note: answer.words, tone, status, askedAgain };
   }
   const [tone, status]: [Tone, string] = !call
