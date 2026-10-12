@@ -637,14 +637,14 @@ fn deferred_lines(answers: &[Value]) -> Vec<String> {
     if answers.is_empty() {
         return Vec::new();
     }
-    let mut lines = vec![format!("Not now, already held until the captain's day with bin/fm-captain-hold.sh defer; do not hold them again. {DEFER_OVERRIDE}")];
+    let mut lines = vec![format!("Not now, already held until the captain's day with bin/fm-captain-hold.sh defer. {DEFER_OVERRIDE}")];
     for answer in answers {
         let decision = answer.get("decision").and_then(Value::as_str).unwrap_or("?");
         let until = answer.get("defer").and_then(Value::as_str).unwrap_or("?");
         lines.push(format!("Deferred: {decision} until {until}"));
         if let Some(note) = answer["note"].as_str().map(str::trim).filter(|note| !note.is_empty()) {
             lines.push(format!("  The captain added, kept on the call as his reply: {}", shorten(note, 1200)));
-            lines.push(format!("  {DEFER_WORDS_ACTION}"));
+            lines.push(format!("  {}", defer_words_action(decision, until)));
         }
     }
     lines
@@ -653,19 +653,22 @@ fn deferred_lines(answers: &[Value]) -> Vec<String> {
 /// How the first mate undoes a deferral it should not stand by.
 const DEFER_OVERRIDE: &str = "To ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date.";
 
-/// What the first mate does with words the captain added to a deferral.
-const DEFER_WORDS_ACTION: &str = "Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone.";
+/// What the first mate does with words the captain added to a deferral, and how it
+/// settles them while the deferral stands.
+fn defer_words_action(call: &str, until: &str) -> String {
+    format!("Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone. Once you have read them and the deferral stands, settle them with bin/fm-captain-hold.sh hold {call} --reason <its reason> --until {until}, which keeps it deferred to that day.")
+}
 
 /// What the first mate is told when the captain puts a call off to a day from
 /// Bearings: that firstmate's `defer` has already held it until then, with the
 /// year, and any words he added, kept on the call as his reply.
 pub fn defer_message(call: &str, until: &str, words: Option<&str>) -> String {
     let mut lines = vec![
-        format!("The captain deferred call {call} from Bearings until {until}; bin/fm-captain-hold.sh defer has already held it with --until {until}, so it asks the captain again that day. Do not hold it again."),
+        format!("The captain deferred call {call} from Bearings until {until}; bin/fm-captain-hold.sh defer has already held it with --until {until}, so it asks the captain again that day."),
         DEFER_OVERRIDE.to_string(),
     ];
     if let Some(words) = words.map(str::trim).filter(|words| !words.is_empty()) {
-        lines.push(format!("The captain added words, kept on the call as the captain's reply; nothing has recorded them. {DEFER_WORDS_ACTION}"));
+        lines.push(format!("The captain added words, kept on the call as the captain's reply; nothing has recorded them. {}", defer_words_action(call, until)));
         lines.push(format!("The captain said: {}", shorten(words, 1200)));
     }
     lines.join("\n")
@@ -2395,7 +2398,7 @@ mod tests {
         assert!(text.contains("\nAnswered in words, kept on each call as the captain's reply; nothing has recorded them. Record one with bin/fm-captain-hold.sh answer only if"), "{text}");
         assert!(text.contains("Never infer an answer from the words alone."), "{text}");
         assert!(text.contains("\nres-model-cellular: Pause, but tell the user why.\n"), "{text}");
-        assert!(text.contains("\nNot now, already held until the captain's day with bin/fm-captain-hold.sh defer; do not hold them again."), "{text}");
+        assert!(text.contains("\nNot now, already held until the captain's day with bin/fm-captain-hold.sh defer. To ask sooner"), "{text}");
         assert!(text.contains("\nDeferred: res-transcripts-source until 2026-10-03\n"), "{text}");
         assert!(!text.contains("res-transcripts-source: Not now"), "a deferral carried out went as words to transcribe: {text}");
         assert!(text.contains("\nres-refused: Too late for this one. (not kept on the call: call res-refused is already closed)"), "{text}");

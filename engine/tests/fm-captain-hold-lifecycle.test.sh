@@ -4283,6 +4283,64 @@ test_a_chat_answer_to_a_call_names_who_decided_it() {
   pass "an answer that closes a captain-held call says who decided it, and is refused when it does not"
 }
 
+# --by names who decided a captain-held call. On a worker's own question, a key
+# open only in its status log, there is no call for it to name, so the send is
+# refused before anything goes rather than taking the flag and dropping it.
+test_by_on_a_status_only_key_is_refused() {
+  local home id by out rc
+  home=$(make_home by-status-key)
+  id=sample-by-status
+  tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+    || fail "could not create the ship"
+  write_origin_meta "$home" "$id" ship
+  printf 'working: building\nneeds-decision [key=scope]: narrow or wide?\n' > "$home/state/$id.status"
+  for by in captain firstmate; do
+    rc=0
+    out=$(send_in "$home" "$id" --resolve-key scope --by "$by" 'go narrow' 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "--by $by on a status-log key was accepted"
+    assert_contains "$out" "--by names who decided a captain-held call" "the refusal does not say what --by is for"
+    assert_contains "$out" "--for-call <call>" "the refusal does not point a relayed captain answer at --for-call"
+    assert_contains "$out" "fm-captain-hold.sh decide" "the refusal does not point the first mate's own answer at decide"
+    assert_contains "$out" "Nothing was sent" "the refusal does not say nothing was sent"
+  done
+  assert_absent "$home/state/$id.inbox/001.msg" "a refused --by answer reached the worker"
+  [ "$(grep -c 'key=scope' "$home/state/$id.status")" = 1 ] || fail "a refused --by answer closed the key"
+  pass "--by on a key open only in a worker's status log is refused and leaves the key open"
+}
+
+# When the answer reaches the worker but the intake cannot close the call, the
+# send prints the one command that records it, naming the same decider, so the
+# first mate's own answer is never recorded as the captain's on the way back.
+test_a_failed_intake_names_the_decider_in_its_recovery() {
+  local home id call ro out rc
+  home=$(make_home by-intake-fails)
+  id=sample-intake-ship
+  call=sample-intake-call
+  tasks_in "$home" add "$id" "Ship the sample change" --kind ship --repo sample --start >/dev/null \
+    || fail "could not create the ship"
+  write_origin_meta "$home" "$id" ship
+  printf 'working: building\n' > "$home/state/$id.status"
+  run_captain "$home" hold "$call" --title 'Narrow or wide?' --reason 'narrow or wide' --about "$id" \
+    --question 'Narrow or wide?' --option narrow=Narrow --option wide=Wide >/dev/null \
+    || fail "could not hold the call"
+  ro="$home/readonly-backlog"
+  mkdir -p "$ro"
+  cat > "$ro/tasks-axi" <<SH
+#!/usr/bin/env bash
+[ "\$1" != update ] || { echo "error: the backlog is read-only" >&2; exit 1; }
+exec "$TASKS_AXI_BIN" "\$@"
+SH
+  chmod +x "$ro/tasks-axi"
+  rc=0
+  out=$(PATH="$ro:$PATH" send_in "$home" "$id" --resolve-key "$call" --by firstmate 'go narrow' 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a send whose intake failed exited 0"
+  assert_grep 'go narrow' "$home/state/$id.inbox/001.msg" "setup: the answer did not reach the worker"
+  assert_contains "$out" "bin/fm-captain-hold.sh answer $call --decision-file <file holding the answer> --by firstmate --via chat" \
+    "the recovery command does not name the first mate as the decider"
+  assert_contains "$(tasks_in "$home" show "$call" --full)" "state: queued" "setup: the intake closed the call"
+  pass "a delivered answer whose intake failed prints the recovery command with its decider"
+}
+
 # Before calls recorded the proposal they handle, a scout's proposal was raised
 # by hand on its own row, and the captain may already have answered it. After
 # the upgrade every completion path refuses it; `stamp` records that the call
@@ -4423,6 +4481,8 @@ EOF
 test_ship_teardown_passes_the_captain_call_gate
 test_a_relayed_captain_answer_needs_no_decision_of_its_own
 test_a_chat_answer_to_a_call_names_who_decided_it
+test_by_on_a_status_only_key_is_refused
+test_a_failed_intake_names_the_decider_in_its_recovery
 test_a_call_raised_before_proposals_were_recorded_is_stamped_not_reasked
 test_uninventoried_report_decision_refuses_completion
 test_hold_decodes_a_bare_scalar_body_without_the_nonref_default

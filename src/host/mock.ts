@@ -516,16 +516,17 @@ function keyed(answer: ReviewView["answers"][number]) {
 
 /** How the first mate undoes a deferral, and what it does with words added to one, as `src-tauri/src/review.rs` says them. */
 const DEFER_OVERRIDE = "To ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date.";
-const DEFER_WORDS_ACTION = "Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone.";
+const deferWordsAction = (call: string, until: string) =>
+  `Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone. Once you have read them and the deferral stands, settle them with bin/fm-captain-hold.sh hold ${call} --reason <its reason> --until ${until}, which keeps it deferred to that day.`;
 
 /** The lines the app's composer writes for the calls a review put off to a day, as `deferred_lines` does. */
 function deferredLines(answers: ReviewView["answers"]) {
   if (!answers.length) return [];
   return [
-    `Not now, already held until the captain's day with bin/fm-captain-hold.sh defer; do not hold them again. ${DEFER_OVERRIDE}`,
+    `Not now, already held until the captain's day with bin/fm-captain-hold.sh defer. ${DEFER_OVERRIDE}`,
     ...answers.flatMap((answer) => [
       `Deferred: ${answer.decision} until ${answer.defer}`,
-      ...(answer.note?.trim() ? [`  The captain added, kept on the call as his reply: ${answer.note.trim()}`, `  ${DEFER_WORDS_ACTION}`] : []),
+      ...(answer.note?.trim() ? [`  The captain added, kept on the call as his reply: ${answer.note.trim()}`, `  ${deferWordsAction(answer.decision, answer.defer ?? "?")}`] : []),
     ]),
   ];
 }
@@ -533,9 +534,9 @@ function deferredLines(answers: ReviewView["answers"]) {
 /** What the first mate is told when the captain puts a call off from Bearings, as `defer_message` words it. */
 function deferMessage(call: string, until: string, words: string | null) {
   return [
-    `The captain deferred call ${call} from Bearings until ${until}; bin/fm-captain-hold.sh defer has already held it with --until ${until}, so it asks the captain again that day. Do not hold it again.`,
+    `The captain deferred call ${call} from Bearings until ${until}; bin/fm-captain-hold.sh defer has already held it with --until ${until}, so it asks the captain again that day.`,
     DEFER_OVERRIDE,
-    ...(words ? [`The captain added words, kept on the call as the captain's reply; nothing has recorded them. ${DEFER_WORDS_ACTION}`, `The captain said: ${words}`] : []),
+    ...(words ? [`The captain added words, kept on the call as the captain's reply; nothing has recorded them. ${deferWordsAction(call, until)}`, `The captain said: ${words}`] : []),
   ].join("\n");
 }
 
