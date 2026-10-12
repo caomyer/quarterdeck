@@ -1815,24 +1815,16 @@ $1
 EOF
 }
 
-# A detached arm may overlap the next watcher cycle, which can start another
-# for the same task and URL. That is safe because bin/fm-pr-check.sh is
-# idempotent: arming the same task and URL again records the same pr= and the
-# same poll.
-PR_ARM_PID=
+# The arm runs detached, so it may overlap a later watcher cycle, a new
+# process, that arms the same task again. That is safe because
+# bin/fm-pr-check.sh is idempotent: arming the same task and URL again records
+# the same pr= and the same poll, so no guard is needed and none is kept. Each
+# forge call is bounded by FM_PR_ARM_TIMEOUT and the whole batch by its budget.
 signal_arm_pr_checks_detached() {
   local targets
-  if [ -n "$PR_ARM_PID" ]; then
-    if kill -0 "$PR_ARM_PID" 2>/dev/null; then
-      return 0
-    fi
-    wait "$PR_ARM_PID" 2>/dev/null || true
-    PR_ARM_PID=
-  fi
   targets=$(signal_pr_arm_targets)
   [ -n "$targets" ] || return 0
   signal_arm_pr_checks "$targets" </dev/null >/dev/null 2>&1 &
-  PR_ARM_PID=$!
 }
 
 # Surfaced-marker bookkeeping for the heartbeat backstop is owned by
