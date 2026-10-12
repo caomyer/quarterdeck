@@ -12,6 +12,7 @@ use super::{now_ms, Inner};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::future::Future;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, Semaphore};
@@ -30,7 +31,11 @@ const INBOUND_LIMIT: usize = 1024 * 1024;
 /// Requests one connection may have in hand at once.
 const IN_HAND: usize = 4;
 /// Connections at once, across every phone; anything past it is dropped unread.
-const CONNECTIONS: usize = 16;
+pub(super) const CONNECTIONS: usize = 16;
+/// How often the Mac pings a phone in session.
+pub(super) const KEEPALIVE: Duration = Duration::from_secs(30);
+/// A session from which nothing at all has arrived for this many pings is ended.
+const SILENT_PINGS: u32 = 3;
 
 type Socket = WebSocketStream<TcpStream>;
 
@@ -142,8 +147,15 @@ async fn pair(mut socket: Socket, mut channel: Channel, hello: Hello, inner: Arc
     let _ = socket.close(None).await;
 }
 
+/// Whether `sending` went out before a phone that has stopped listening could hold it up for longer than `quiet`.
+async fn within(quiet: Duration, sending: impl Future<Output = bool>) -> bool {
+    tokio::time::timeout(quiet, sending).await.unwrap_or(false)
+}
+
 /// A paired phone's session: every frame is one request, answered in its own
-/// time; events the Mac raises go out between answers. A revoke ends it at once.
+/// time; events the Mac raises go out between answers. A revoke ends it at once,
+/// and so does a phone from which nothing, not even a pong, has arrived for
+/// [`SILENT_PINGS`] pings.
 async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc<Inner>) {
     let (events_tx, mut events) = mpsc::unbounded_channel::<Value>();
     let (closed_tx, mut closed) = watch::channel(false);
@@ -151,11 +163,16 @@ async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc
     let (mut sink, mut stream) = socket.split();
     let (answers_tx, mut answers) = mpsc::unbounded_channel::<Value>();
     let in_hand = Arc::new(Semaphore::new(IN_HAND));
+    let quiet = inner.keepalive * SILENT_PINGS;
+    let mut pings = tokio::time::interval_at(tokio::time::Instant::now() + inner.keepalive, inner.keepalive);
+    pings.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut heard = tokio::time::Instant::now();
     loop {
         tokio::select! {
             biased;
             _ = closed.changed() => break,
             message = stream.next() => {
+                heard = tokio::time::Instant::now();
                 let frame = match message {
                     Some(Ok(Message::Binary(frame))) => frame,
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
@@ -187,18 +204,22 @@ async fn session(socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc
                 }
             },
             Some(answer) = answers.recv() => {
-                if *closed.borrow() || !send_sealed(&mut sink, &mut channel, &answer).await {
+                if *closed.borrow() || !within(quiet, send_sealed(&mut sink, &mut channel, &answer)).await {
                     break;
                 }
             },
             Some(event) = events.recv() => {
-                if *closed.borrow() || !send_sealed(&mut sink, &mut channel, &event).await {
+                if *closed.borrow() || !within(quiet, send_sealed(&mut sink, &mut channel, &event)).await {
+                    break;
+                }
+            },
+            _ = pings.tick() => {
+                if heard.elapsed() >= quiet || !within(quiet, async { sink.send(Message::Ping(Default::default())).await.is_ok() }).await {
                     break;
                 }
             },
         }
     }
     inner.detach(conn);
-    let _ = sink.send(Message::Close(None)).await;
-    let _ = sink.close().await;
+    within(quiet, async { sink.send(Message::Close(None)).await.is_ok() && sink.close().await.is_ok() }).await;
 }

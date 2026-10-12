@@ -76,24 +76,19 @@ export function PhoneSettings({ host }: { host: HostAdapter }) {
     };
   }, [host]);
 
-  // While a code shows, watch for the phone that scans it.
-  useEffect(() => {
-    if (!invite) return;
-    const timer = window.setInterval(() => {
-      host.phoneStatus().then((next) => {
-        const added = next.phones.find((phone) => !known.current?.phones.some((before) => before.id === phone.id));
-        setStatus(next);
-        if (added) {
-          setInvite(null);
-          setNotice(`${added.name} is paired.`);
-        } else if (next.invite_expires_at === null && showing.current && showing.current.expires_at > Date.now()) {
-          // Cancelled elsewhere, or spent by a phone this window did not see arrive.
-          setInvite(null);
-        }
-      }, () => undefined);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [host, invite]);
+  // Phones pairing, connecting and leaving, and a code going, as the link tells it.
+  useEffect(() => host.onPhones((change) => {
+    const added = change.phones.find((phone) => !known.current?.phones.some((before) => before.id === phone.id));
+    setStatus((before) => before && { ...before, ...change });
+    if (!showing.current) return;
+    if (added) {
+      setInvite(null);
+      setNotice(`${added.name} is paired.`);
+    } else if (change.invite_expires_at === null && showing.current.expires_at > Date.now()) {
+      // Cancelled elsewhere, or spent by a phone this window did not see arrive.
+      setInvite(null);
+    }
+  }), [host]);
 
   const act = async (work: () => Promise<void>) => {
     setBusy(true);

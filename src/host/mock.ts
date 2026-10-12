@@ -15,6 +15,7 @@ import { FLEET_FAILED, replyFleet, replyHistory } from "./mock-replies";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
 import { artifactPath } from "./types";
 import type {
+  PhoneChange,
   PickedCategory,
   AnswerWords,
   AppUpdate,
@@ -1335,6 +1336,10 @@ export class MockHostAdapter implements HostAdapter {
 
   phoneRevoke(id: string) {
     return this.phones.revoke(id);
+  }
+
+  onPhones(listener: (change: PhoneChange) => void) {
+    return this.phones.listen(listener);
   }
 
   async readQuota(): Promise<QuotaRead> {

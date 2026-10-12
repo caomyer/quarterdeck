@@ -127,6 +127,11 @@ Nothing serves pages on a network.
 The Mac also sends events between answers.
 `{"event": "call", "call": {"id", "title", "question"}}` says a call has come to need the captain since the Mac last read the fleet.
 
+The Mac sends a WebSocket ping every 30 seconds while a session is open.
+When nothing at all has arrived from the phone for 90 seconds, not a request and not a pong, the Mac ends the session.
+A WebSocket client answers pings by itself, so a phone only has to keep reading its socket.
+A phone that slept or lost its network simply opens a new session.
+
 ## Revoke
 
 Revoking a phone in Settings forgets its key and closes its connections before Settings answers.

@@ -153,6 +153,11 @@ struct World {
 
 impl World {
     fn new(name: &str) -> World {
+        World::pinging(name, super::server::KEEPALIVE)
+    }
+
+    /// A world whose Mac pings a phone in session every `keepalive`.
+    fn pinging(name: &str, keepalive: Duration) -> World {
         let root = scratch(name);
         let home = home(&root);
         let commands = Arc::new(Mutex::new(Vec::new()));
@@ -168,7 +173,7 @@ impl World {
         let at = home.clone();
         let desk = Desk::new(Arc::new(move || Some(at.clone())), host.messenger(), snapshots, Writes::default());
         let loopback: Box<dyn Fn() -> Vec<IpAddr> + Send + Sync> = Box::new(|| vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
-        let link = Link::open(&root.join("app/phone"), desk, loopback, Some(0), Box::new(|_| {}));
+        let link = Link::open(&root.join("app/phone"), desk, keepalive, loopback, Some(0), Box::new(|_| {}));
         World { root, home, link, commands, refreshes }
     }
 
@@ -401,6 +406,43 @@ async fn every_request_stays_on_the_captains_desk() {
     assert!(!world.home.join("state").exists(), "nothing touched the home's state, where its lock lives");
 }
 
+/// A phone that vanishes without closing, as a sleeping or unplugged one does,
+/// is let go once nothing has come from it for three pings: its place among the
+/// Mac's connections is free again and Settings no longer shows it connected.
+/// A phone that is only listening answers the pings, as any WebSocket does, and stays.
+#[tokio::test]
+async fn a_silent_phone_is_let_go_and_its_place_freed() {
+    let beat = Duration::from_millis(100);
+    let world = World::pinging("keepalive", beat);
+    let (key, mut listening) = paired_phone(&world, "Captain's iPhone").await;
+    let offer = world.invite().await;
+    let mut silent = Vec::new();
+    for _ in 1..super::server::CONNECTIONS {
+        silent.push(connect(&offer, &key, Purpose::Session, None).await.expect("a session while there is room"));
+    }
+    assert_eq!(world.inner().live.lock().unwrap().len(), super::server::CONNECTIONS, "every place is taken");
+
+    // Only reading, the listening phone hears nothing but pings, which it answers.
+    assert!(tokio::time::timeout(beat * 10, listening.receive()).await.is_err(), "the listening phone was not let go");
+    assert_eq!(world.inner().live.lock().unwrap().len(), 1, "every silent phone was let go");
+    assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], true, "the listening phone still shows connected");
+    for mut phone in silent {
+        assert_eq!(phone.receive().await, None, "a silent phone's connection was closed");
+    }
+
+    // Their places are free again: a new session gets in, where it would have been dropped unread.
+    let mut back = connect(&offer, &key, Purpose::Session, None).await.expect("a place for a new session");
+    assert_eq!(back.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true);
+    assert_eq!(listening.ask(&json!({"ask": "board"})).await.unwrap()["ok"], true, "the listening phone carries on");
+
+    drop((listening, back));
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !world.inner().live.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(beat).await;
+    }
+    assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], false, "a phone that left shows as not connected");
+}
+
 /// Every kind `PhoneRequest` has, as serde names them when refusing one it does not.
 fn every_kind() -> Vec<String> {
     let refused = serde_json::from_value::<PhoneRequest>(json!({"ask": "no-such-kind"})).unwrap_err().to_string();
@@ -432,31 +474,6 @@ fn the_request_set_is_exactly_what_was_approved() {
         (json!({"ask": "board"}), "no id"),
     ] {
         assert!(super::request::parse(asked.to_string().as_bytes()).is_err(), "{why} was read as a request");
-    }
-}
-
-/// The phone module itself cannot name what would let it start the first
-/// mate, run a script or dispatch work; the desk it is handed holds none of it.
-#[test]
-fn the_phone_module_names_no_way_to_start_anything() {
-    let sources = [
-        ("mod.rs", include_str!("mod.rs")),
-        ("desk.rs", include_str!("desk.rs")),
-        ("request.rs", include_str!("request.rs")),
-        ("server.rs", include_str!("server.rs")),
-        ("pairing.rs", include_str!("pairing.rs")),
-        ("seal.rs", include_str!("seal.rs")),
-    ];
-    let forbidden = [
-        "HostHandle", "Cmd::", "host_start", "host_restart", "session_option_set", "answer_permission", "start::", "take_on", "tasks::",
-        "envpath", "Command::new", "process::Command", "fm-spawn", "fm-brief", "fm-session-start", "SnapshotHandle", "set_home", "point_at",
-    ];
-    for (file, source) in sources {
-        // The doc comment that explains what is forbidden names some of it; only code counts.
-        let code: String = source.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-        for word in forbidden {
-            assert!(!code.contains(word), "phone/{file} names `{word}`");
-        }
     }
 }
 

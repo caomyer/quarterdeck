@@ -114,6 +114,8 @@ pub(crate) struct Inner {
     live: Mutex<Vec<Live>>,
     listening: tokio::sync::Mutex<Vec<Listening>>,
     pub(crate) desk: Desk,
+    /// How often a phone in session is pinged; [`server::KEEPALIVE`] but in tests.
+    keepalive: Duration,
     addresses: Box<dyn Fn() -> Vec<IpAddr> + Send + Sync>,
     /// Port 0 listens wherever the system says, for tests; otherwise the registry's port.
     port: Option<u16>,
@@ -295,13 +297,14 @@ impl Inner {
 pub struct Link(Result<Arc<Inner>, String>);
 
 impl Link {
-    pub(crate) fn open(dir: &Path, desk: Desk, addresses: Box<dyn Fn() -> Vec<IpAddr> + Send + Sync>, port: Option<u16>, on_change: Box<dyn Fn(Value) + Send + Sync>) -> Link {
+    pub(crate) fn open(dir: &Path, desk: Desk, keepalive: Duration, addresses: Box<dyn Fn() -> Vec<IpAddr> + Send + Sync>, port: Option<u16>, on_change: Box<dyn Fn(Value) + Send + Sync>) -> Link {
         Link(Registry::open(dir).map(|registry| {
             Arc::new(Inner {
                 registry: Mutex::new(registry),
                 live: Mutex::new(Vec::new()),
                 listening: tokio::sync::Mutex::new(Vec::new()),
                 desk,
+                keepalive,
                 addresses,
                 port,
                 on_change,
@@ -320,7 +323,7 @@ impl Link {
             Err(problem) => return Link(Err(problem)),
         };
         let emitter = app.clone();
-        let link = Link::open(&dir, desk, Box::new(tailnet_addresses), None, Box::new(move |status| {
+        let link = Link::open(&dir, desk, server::KEEPALIVE, Box::new(tailnet_addresses), None, Box::new(move |status| {
             let _ = emitter.emit("phones", status);
         }));
         if let Ok(inner) = &link.0 {

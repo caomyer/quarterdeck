@@ -1,6 +1,6 @@
 // Checks the captain's phone in the settings: no phone paired yet, pairing by a QR that works once and lapses, the
-// phone that scans it arriving, each paired phone with when it was paired and last seen, revoking one behind a
-// confirmation, a Mac not on a Tailscale network, and a phone list that cannot be read.
+// phone that scans it arriving, each paired phone with when it was paired and last seen, a phone leaving while the
+// list shows, revoking one behind a confirmation, a Mac not on a Tailscale network, and a phone list that cannot be read.
 //
 //   pnpm dev --port 4191 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4191 pnpm phones
@@ -122,6 +122,13 @@ await rows.nth(1).locator(".phone-revoke-now").click();
 await page.waitForFunction(() => document.querySelectorAll("[data-testid='phone-row']").length === 1);
 check((await phones.locator(".routing-notice").innerText()).startsWith("Old iPhone 12 is revoked."), "the revoked phone goes from the list, and the screen says so");
 await shot("revoked");
+
+// A phone that leaves while Settings is open says so at once, with no code showing.
+await openSettings("phones=leaves");
+check((await rows.nth(0).innerText()).includes("Connected now"), "a connected phone says so before it leaves");
+await page.waitForFunction(() => document.querySelector("[data-testid='phone-row'] small")?.textContent?.endsWith("Last seen just now"), null, { timeout: 8000 });
+check((await rows.nth(0).locator("small").innerText()).endsWith(" · Last seen just now"), "and says when it was last seen once it has left");
+await shot("left");
 
 // A Mac off its Tailscale network says why nothing can pair.
 await openSettings("phones=offline");
