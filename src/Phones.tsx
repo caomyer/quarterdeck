@@ -4,9 +4,14 @@ import type { HostAdapter, PairedPhone, PhoneInvite, PhoneStatus } from "./host"
 import { ago } from "./sources";
 import { useNow } from "./use-now";
 
-/** The backend's refusal as a sentence. */
+/** The backend's refusal in its own words, which begin in lower case. */
+function errorWords(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The backend's refusal as a sentence of its own. */
 function errorText(error: unknown) {
-  const text = error instanceof Error ? error.message : String(error);
+  const text = errorWords(error);
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
@@ -68,7 +73,7 @@ export function PhoneSettings({ host }: { host: HostAdapter }) {
 
   useEffect(() => {
     let live = true;
-    host.phoneStatus().then((next) => live && setStatus(next), (problem) => live && setLoadProblem(errorText(problem)));
+    host.phoneStatus().then((next) => live && setStatus(next), (problem) => live && setLoadProblem(errorWords(problem)));
     // A code nobody is looking at should not stay good.
     return () => {
       live = false;

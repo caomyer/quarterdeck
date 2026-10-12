@@ -139,7 +139,9 @@ await shot("offline");
 
 // A phone list that cannot be read says why, in the backend's words.
 await openSettings("phones=broken");
-check((await phones.locator(".routing-alert").innerText()).includes("cannot be read, so no phone can reach this Mac"), "a list that cannot be read says why");
+const unreadable = await phones.locator(".routing-alert").innerText();
+check(unreadable.includes("cannot be read, so no phone can reach this Mac"), "a list that cannot be read says why");
+check(unreadable.startsWith("The paired phones could not be read: the phone link"), `and the backend's words carry on the sentence (${unreadable})`);
 await shot("broken");
 
 // A narrow window keeps the code and its words side by side without spilling.
