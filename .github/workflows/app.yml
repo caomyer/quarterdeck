@@ -132,6 +132,9 @@ jobs:
       - name: Tests
         working-directory: src-tauri
         run: cargo test
+      - name: A release build ignores the phone link's test seam
+        working-directory: src-tauri
+        run: cargo test --release phone::tests::a_release_build_ignores_the_test_seam -- --exact
 
   bundle:
     name: Bundle

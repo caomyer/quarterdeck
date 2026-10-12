@@ -158,6 +158,11 @@ impl World {
 
     /// A world whose Mac pings a phone in session every `keepalive`.
     fn pinging(name: &str, keepalive: Duration) -> World {
+        World::on(name, keepalive, Box::new(|| vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]), 0)
+    }
+
+    /// A world whose link listens on what `addresses` gives, at `port`.
+    fn on(name: &str, keepalive: Duration, addresses: Box<dyn Fn() -> Vec<IpAddr> + Send + Sync>, port: u16) -> World {
         let root = scratch(name);
         let home = home(&root);
         let commands = Arc::new(Mutex::new(Vec::new()));
@@ -172,8 +177,7 @@ impl World {
         let snapshots = SnapshotReader::fixed(json!({"home": home, "snapshot": {"fleet": fleet(vec![call(CALL, "Ship it?")])}}), refreshes.clone());
         let at = home.clone();
         let desk = Desk::new(Arc::new(move || Some(at.clone())), host.messenger(), snapshots, Writes::default());
-        let loopback: Box<dyn Fn() -> Vec<IpAddr> + Send + Sync> = Box::new(|| vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
-        let link = Link::open(&root.join("app/phone"), desk, keepalive, loopback, Some(0), Box::new(|_| {}));
+        let link = Link::open(&root.join("app/phone"), desk, keepalive, addresses, Some(port), Box::new(|_| {}));
         World { root, home, link, commands, refreshes }
     }
 
@@ -658,6 +662,45 @@ fn nothing_listens_on_an_address_the_link_was_not_given() {
         let IpAddr::V4(ip) = ip else { panic!("{ip} is not IPv4") };
         assert!(ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]), "{ip}");
     }
+}
+
+/// A port nothing holds, for a test that must know where a link would listen.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port()
+}
+
+/// The test seam (`QUARTERDECK_PHONE_ADDRESSES`) works in a debug build, which is
+/// how a check drives the running app on a Mac with no Tailscale.
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn a_debug_build_listens_where_the_test_seam_says() {
+    std::env::set_var(super::ADDRESSES_OVERRIDE, "127.0.0.1");
+    let port = free_port();
+    let world = World::on("seam-debug", super::server::KEEPALIVE, Box::new(super::link_addresses), port);
+    let offer = world.invite().await;
+    std::env::remove_var(super::ADDRESSES_OVERRIDE);
+    assert_eq!(offer["addresses"], json!([format!("127.0.0.1:{port}")]));
+    assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.is_ok(), "the link listens on loopback");
+}
+
+/// A release build ignores the test seam: with it set, the app's link still
+/// offers and listens only on the tailnet, and nothing answers on loopback.
+/// CI runs this with `cargo test --release`.
+#[cfg(not(debug_assertions))]
+#[tokio::test]
+async fn a_release_build_ignores_the_test_seam() {
+    std::env::set_var("QUARTERDECK_PHONE_ADDRESSES", "127.0.0.1");
+    assert_eq!(super::link_addresses(), super::tailnet_addresses());
+    let port = free_port();
+    let world = World::on("seam-release", super::server::KEEPALIVE, Box::new(super::link_addresses), port);
+    if let Ok(invite) = world.inner().invite().await {
+        for address in invite["offer"]["addresses"].as_array().unwrap() {
+            let ip: std::net::SocketAddr = address.as_str().unwrap().parse().unwrap();
+            assert!(super::tailnet_addresses().contains(&ip.ip()), "{ip} is not a tailnet address");
+        }
+    }
+    std::env::remove_var("QUARTERDECK_PHONE_ADDRESSES");
+    assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.is_err(), "nothing listens on loopback");
 }
 
 /// The browser mock's invite (`src/host/mock-phones.ts`) is a QR this Mac would

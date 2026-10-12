@@ -95,6 +95,22 @@ pub(crate) fn tailnet_addresses() -> Vec<IpAddr> {
     found
 }
 
+/// Test seam: in a debug build, `QUARTERDECK_PHONE_ADDRESSES` (comma-separated
+/// IPs, e.g. `127.0.0.1`) replaces the tailnet so a check can drive the running
+/// app on a Mac with no Tailscale. It cannot ship: a release listener must bind
+/// only to the tailnet, so a release build never reads it.
+#[cfg(debug_assertions)]
+pub(crate) const ADDRESSES_OVERRIDE: &str = "QUARTERDECK_PHONE_ADDRESSES";
+
+/// Where the app's link listens: the tailnet, or the debug-only test seam above.
+pub(crate) fn link_addresses() -> Vec<IpAddr> {
+    #[cfg(debug_assertions)]
+    if let Ok(chosen) = std::env::var(ADDRESSES_OVERRIDE) {
+        return chosen.split(',').filter_map(|ip| ip.trim().parse().ok()).collect();
+    }
+    tailnet_addresses()
+}
+
 /// One phone connection the Mac has open: where its events go, and how to end it.
 struct Live {
     conn: u64,
@@ -325,7 +341,7 @@ impl Link {
             Err(problem) => return Link(Err(problem)),
         };
         let emitter = app.clone();
-        let link = Link::open(&dir, desk, server::KEEPALIVE, Box::new(tailnet_addresses), None, Box::new(move |status| {
+        let link = Link::open(&dir, desk, server::KEEPALIVE, Box::new(link_addresses), None, Box::new(move |status| {
             let _ = emitter.emit("phones", status);
         }));
         if let Ok(inner) = &link.0 {
