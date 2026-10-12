@@ -941,7 +941,7 @@ export class MockHostAdapter implements HostAdapter {
       const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
       const previous = call.reply ? { words: call.reply.words, via: call.reply.via, at: call.reply.at, message: call.reply.message } : null;
       const reply = words ? { words, via, at, message: null, previous } : null;
-      this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, captain_actionable: false, bucket: "dated", deferred: { until, via, at, message: null }, reply } : item) };
+      this.snapshot.fleet = { ...this.snapshot.fleet, calls: calls.map((item) => item.id === id ? { ...item, captain_actionable: false, bucket: "dated", hold_until: until, deferred: { until, via, at, message: null }, reply } : item) };
       if (reviewFlag("day-comes")) this.later(5000, () => {
         this.snapshot.fleet = { ...this.snapshot.fleet, calls: this.snapshot.fleet.calls!.map((item) => item.id === id ? { ...item, captain_actionable: true, bucket: "live" } : item) };
         this.emit({ type: "snapshot", payload: { phase: "ready", ...this.snapshot } });
