@@ -23,6 +23,16 @@ PROMOTE="$ROOT/bin/fm-promote.sh"
 PROJECT_MODE="$ROOT/bin/fm-project-mode.sh"
 TMP_ROOT=$(fm_test_tmproot fm-task-delivery)
 
+# Promotion delivers its ship instructions through bin/fm-send.sh, so every
+# promotion here rings a fake tmux that accepts the doorbell and reaches no session.
+QUIET_BIN="$TMP_ROOT/quiet-bin"
+mkdir -p "$QUIET_BIN"
+printf '#!/bin/sh\nexit 0\n' > "$QUIET_BIN/tmux"
+chmod +x "$QUIET_BIN/tmux"
+promote() {
+  PATH="$QUIET_BIN:$PATH" FM_SEND_SETTLE=0 "$PROMOTE" "$@"
+}
+
 # A home with one registered project, one project directory, and a fake tmux that
 # refuses, so a spawn that clears the delivery checks still creates nothing.
 # Echoes "<home>|<project-dir>|<fakebin>".
@@ -233,7 +243,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   [ "$status" -ne 0 ] || fail "promotion without --yolo should exit non-zero"
   assert_contains "$out" "promotion requires --yolo" "promote refusal did not name the missing merge posture"
 
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode no-mistakes-prod-only --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote promote-d1 --mode no-mistakes-prod-only --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion on a conditional policy should exit non-zero"
   assert_contains "$out" "classify this task's surface" "promote did not refuse the conditional policy as a task mode"
@@ -241,7 +251,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   blocked_data="$home/data-blocked"
   printf 'not a directory\n' > "$blocked_data"
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$blocked_data" \
-    "$PROMOTE" promote-d1 --mode direct-PR --yolo on --no-deliver 2>&1)
+    promote promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion without writable instruction storage should exit non-zero"
   assert_grep 'kind=scout' "$meta" "failed instruction publication still promoted the task"
@@ -251,7 +261,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   instructions_path="$home/data/promote-d1/ship-instructions.md"
   mkdir -p "$instructions_path"
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    "$PROMOTE" promote-d1 --mode direct-PR --yolo on --no-deliver 2>&1)
+    promote promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion over an instruction directory should exit non-zero"
   assert_contains "$out" "ship instructions path is a directory" \
@@ -261,7 +271,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_no_grep '^yolo=' "$meta" "invalid instruction destination recorded a merge posture"
   rmdir "$instructions_path"
 
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?
   expect_code 0 "$status" "a promotion carrying both flags should succeed"
   assert_grep 'kind=ship' "$meta" "promotion did not restore ship teardown protection"
@@ -286,7 +296,7 @@ test_promote_refuses_a_symlinked_task_record() {
   ln -s "$target" "$meta"
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    "$PROMOTE" promote-sym --mode direct-PR --yolo on --no-deliver 2>&1)
+    promote promote-sym --mode direct-PR --yolo on 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion through a symlink record should refuse"
   assert_contains "$out" "task record" "promotion did not identify the unpublished task record"
@@ -406,8 +416,7 @@ test_promotion_delivers_the_real_definition_of_done() {
 
 # A promotion whose delivery fails still stands, and says so: it names why, prints
 # the exact fm-send command that delivers the instructions by hand, and exits 3, so
-# the promoted worker is never left idle without firstmate hearing of it. --no-deliver
-# keeps the printed command for a caller that delivers the instructions itself.
+# the promoted worker is never left idle without firstmate hearing of it.
 test_promotion_that_cannot_deliver_says_so() {
   local home meta out rc fakebin id
   home="$TMP_ROOT/promote-undelivered/home"
@@ -430,15 +439,6 @@ test_promotion_that_cannot_deliver_says_so() {
   assert_contains "$out" "next: FM_HOME=" "the failed delivery gave no way to deliver by hand"
   assert_contains "$out" "bin/fm-send.sh fm-$id" "the manual delivery does not name the worker"
   assert_not_contains "$out" "delivered: $id" "an undelivered promotion claimed delivery"
-
-  id=promote-printonly
-  meta="$home/state/$id.meta"
-  printf 'window=sess:fm-%s\nkind=scout\nworktree=/tmp/wt\nharness=claude\n' "$id" > "$meta"
-  write_brief "$home" "$id"
-  out=$(PATH="$fakebin:$PATH" FM_SEND_SETTLE=0 FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    "$PROMOTE" "$id" --mode direct-PR --yolo off --no-deliver 2>&1) || fail "a print-only promotion failed: $out"
-  assert_contains "$out" "next: FM_HOME=" "--no-deliver did not print the delivery command"
-  assert_absent "$home/state/$id.inbox" "--no-deliver sent the instructions"
   pass "fm-promote: a promotion that cannot deliver its instructions stands, says why, and gives the command"
 }
 
@@ -647,7 +647,7 @@ EOF
   printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$meta"
   FM_HOME="$home" "$BRIEF" "$id" proj --scout >/dev/null 2>&1 \
     || fail "unfilled promote scout brief should scaffold"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-PR --yolo on --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote "$id" --mode direct-PR --yolo on 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion of an unfilled scout brief should exit non-zero"
   assert_contains "$out" "preserve the original ask in ## Captain's intent" \
@@ -659,7 +659,7 @@ EOF
   id=promote-missing-brief
   meta="$home/state/$id.meta"
   printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$meta"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-PR --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote "$id" --mode direct-PR --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion without a scout brief should exit non-zero"
   assert_contains "$out" "must contain nonempty" \
@@ -683,7 +683,7 @@ Unrelated notes are not the original ask.
 ## Firstmate spec
 Unrelated notes are not the task specification.
 EOF
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-PR --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote "$id" --mode direct-PR --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion without provenance-marked captain intent should fail"
   assert_contains "$out" "has no provenance-marked Captain's intent" \
@@ -700,7 +700,7 @@ EOF
   fill_brief_subsections "$home/data/$id/brief.md" \
     "Investigate why the identity check is failing." \
     "Ship the identity-check fix without adding a classifier."
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode no-mistakes --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote "$id" --mode no-mistakes --yolo off 2>&1)
   status=$?
   expect_code 0 "$status" "promotion of a filled scout brief should succeed"
   assert_grep 'kind=ship' "$meta" "filled promotion did not restore ship teardown protection"
@@ -741,7 +741,7 @@ Keep this closing requirement.
 # Setup
 This scout-only setup must not become the spec.
 EOF
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-PR --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote "$id" --mode direct-PR --yolo off 2>&1)
   status=$?
   expect_code 0 "$status" "promotion with nested and fenced spec content should succeed"
   brief="$home/data/$id/ship-instructions.md"
@@ -773,7 +773,7 @@ Ship the narrow session-floor fix with a regression test.
 # Setup
 This is a SCOUT task: the deliverable is a written report, not a PR.
 EOF
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-PR --yolo on --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote "$id" --mode direct-PR --yolo on 2>&1)
   status=$?
   expect_code 0 "$status" "promotion of a pre-subsection scout brief should succeed"
   brief="$home/data/$id/ship-instructions.md"
@@ -850,7 +850,7 @@ EOF
   printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$home/state/$id.meta"
   write_brief "$home" "$id"
   printf '# Task\n## Captain'"'"'s intent\nCaptain: investigate the refusal.\n\n## Firstmate spec\nReproduce it first.\n' > "$home/data/$id/brief.md"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode no-mistakes --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" promote "$id" --mode no-mistakes --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion of addressed intent should be refused"
   assert_contains "$out" "operator-address line: Captain: investigate the refusal." \
@@ -942,7 +942,7 @@ test_promote_relabels_the_backlog_row_so_the_merge_lands() {
   printf '## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
   printf 'window=fm-res-audit\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/res-audit.meta"
 
-  out=$(FM_HOME="$home" "$PROMOTE" res-audit --mode direct-PR --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" promote res-audit --mode direct-PR --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion without a backlog row should exit non-zero"
   assert_contains "$out" "has no backlog item" "promotion did not name the missing backlog row"
@@ -950,7 +950,7 @@ test_promote_relabels_the_backlog_row_so_the_merge_lands() {
 
   FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" add res-audit "Resonance: product and technical audit" \
     --kind scout --repo Resonance --start >/dev/null || fail "could not create the scout row"
-  out=$(FM_HOME="$home" "$PROMOTE" res-audit --mode direct-PR --yolo off --no-deliver \
+  out=$(FM_HOME="$home" promote res-audit --mode direct-PR --yolo off \
     --title "Resonance: fix snip lifecycle" 2>&1)
   expect_code 0 $? "promotion with a readable backlog row should succeed: $out"
   assert_contains "$out" "backlog row res-audit now reads kind ship" "promotion did not report the row it relabeled"
@@ -972,7 +972,7 @@ test_promote_relabels_the_backlog_row_so_the_merge_lands() {
   printf 'manual\n' > "$home/config/backlog-backend"
   write_brief "$home" manual-scout
   printf 'window=fm-manual-scout\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/manual-scout.meta"
-  out=$(FM_HOME="$home" "$PROMOTE" manual-scout --mode direct-PR --yolo off --no-deliver 2>&1)
+  out=$(FM_HOME="$home" promote manual-scout --mode direct-PR --yolo off 2>&1)
   expect_code 0 $? "a manual-backlog promotion should succeed: $out"
   assert_contains "$out" "change row manual-scout's (kind: scout) to (kind: ship)" \
     "a manual-backlog promotion did not say to relabel the row"
@@ -1004,7 +1004,7 @@ test_promote_passes_the_captain_call_gate() {
     --question 'How deep should the audit go?' --option shallow=Shallow --option deep=Deep >/dev/null \
     || fail "could not hold the scout's row"
 
-  out=$(env -u FM_TASK_ID FM_HOME="$home" "$PROMOTE" sign-audit --mode direct-PR --yolo off --no-deliver 2>&1)
+  out=$(unset FM_TASK_ID; FM_HOME="$home" promote sign-audit --mode direct-PR --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion passed beside an unraised proposal and an unrecorded answer"
   assert_contains "$out" "unraised proposal: sign-audit's report proposes a call" "promotion did not name the unraised proposal"
@@ -1023,7 +1023,7 @@ test_promote_passes_the_captain_call_gate() {
   FM_HOME="$home" env -u FM_TASK_ID "$ROOT/bin/fm-captain-hold.sh" decide --about sign-audit --key cert \
     --title 'Which certificate?' --what 'Use the self-signed one' --why 'It is the only one that exists today' >/dev/null \
     || fail "could not record the answer"
-  out=$(env -u FM_TASK_ID FM_HOME="$home" "$PROMOTE" sign-audit --mode direct-PR --yolo off --no-deliver 2>&1)
+  out=$(unset FM_TASK_ID; FM_HOME="$home" promote sign-audit --mode direct-PR --yolo off 2>&1)
   expect_code 0 $? "promotion once the gate passes: $out"
   assert_grep 'kind=ship' "$meta" "promotion did not change the kind once the gate passed"
   pass "fm-promote: a scout passes the captain-call gate before it becomes a ship"

@@ -12,7 +12,7 @@
  * Pure functions only: no React, no host.
  */
 import type { Call } from "./host/types";
-import { askAgainDay, type CallStanding, type MessageAnswer } from "./calls.ts";
+import { askAgainDay, type CallStanding, heldByDeferral, type MessageAnswer } from "./calls.ts";
 
 /** The captain's words kept on a call that nothing has recorded yet: what he said, and when. */
 export type ReplyWords = { words: string; at: string };
@@ -48,7 +48,8 @@ export function callLine(call: Call, standing: CallStanding, earlier: EarlierWor
       return { kind: "in-review", tone: "green", detail: "answered in your review of", pill: null, page: standing.page, pick: null };
     case "held": {
       // The day is the one firstmate's `defer` recorded, or else what he said; with neither in reach, it is not guessed.
-      const day = call.deferred?.until ? askAgainDay(call.deferred.until) : earlier ? notNowDay(earlier.words) : null;
+      const until = heldByDeferral(call);
+      const day = until ? askAgainDay(until) : earlier ? notNowDay(earlier.words) : null;
       return { kind: "held", tone: "amber", detail: day ? `not now, ask again ${day}` : "not now, held", pill: "held", page: null, pick: null };
     }
     case "closed":
@@ -151,7 +152,7 @@ export function answerCardView(answer: MessageAnswer, call: Call | undefined, { 
     // Held until the day by firstmate's `defer`, so the date is done, not waiting on anyone; words he added stay amber
     // while the call carries them as his reply, since only the first mate can say what they mean.
     const day = askAgainDay(answer.until);
-    const heldNow = call !== undefined && call.state === "open" && call.captain_actionable === false && call.deferred?.until === answer.until;
+    const heldNow = call !== undefined && heldByDeferral(call) === answer.until;
     const wordsWaiting = answer.words !== null && reply !== null && sameWords(reply.words, answer.words);
     const [tone, status]: [Tone, string] = !call
       ? ["muted", "The call has closed"]
