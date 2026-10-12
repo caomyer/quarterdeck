@@ -268,6 +268,7 @@ impl Inner {
         let mut status = self.status_without_listening();
         let listening = self.listening.lock().await;
         status["listening"] = json!(listening.iter().map(|kept| kept.address.to_string()).collect::<Vec<_>>());
+        status["tailnet"] = json!(!(self.addresses)().is_empty());
         status
     }
 
@@ -375,10 +376,7 @@ pub fn snapshot_read(app: &AppHandle, snapshot: &Value) {
 /// The paired phones, whether each is connected, any invite showing and where the Mac listens.
 #[tauri::command]
 pub async fn phone_status(link: TauriState<'_, Link>) -> Result<Value, String> {
-    let inner = link.ready()?;
-    let mut status = inner.status().await;
-    status["tailnet"] = json!(!(inner.addresses)().is_empty());
-    Ok(status)
+    Ok(link.ready()?.status().await)
 }
 
 /// Shows a new invite, replacing any other, and returns what the QR carries

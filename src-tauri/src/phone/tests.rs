@@ -383,6 +383,23 @@ async fn revoke_ends_the_phone_at_once_and_its_notifications_with_it() {
     assert!(!on_disk.contains(&super::seal::encode(&lost_key.public())), "its key is gone from disk too");
 }
 
+/// Settings takes what revoke and cancel answer as the whole status, so each
+/// says whether the Mac is on a tailnet, as reading the status does.
+#[tokio::test]
+async fn every_status_settings_is_handed_says_whether_the_mac_is_on_a_tailnet() {
+    let world = World::new("tailnet-status");
+    let (key, _phone) = paired_phone(&world, "Lost phone").await;
+    let id = world.inner().registry().paired(&key.public()).unwrap().id.clone();
+    assert!(world.inner().revoke(&id).unwrap());
+    assert_eq!(world.inner().status().await["tailnet"], true, "after a revoke");
+    world.invite().await;
+    world.inner().registry().cancel_invite();
+    assert_eq!(world.inner().status().await["tailnet"], true, "after a cancelled invite");
+
+    let off = World::on("tailnet-status-off", super::server::KEEPALIVE, Box::new(Vec::new), 0);
+    assert_eq!(off.inner().status().await["tailnet"], false);
+}
+
 /// The structural reason a phone cannot be a second host, as a behaviour:
 /// every kind of request, driven over the wire, reaches nothing but the
 /// running first mate's outbox and conversation and the intake the desktop
