@@ -160,8 +160,8 @@ async fn within(quiet: Duration, sending: impl Future<Output = bool>) -> bool {
 /// A paired phone's session: every frame is one request, answered in its own
 /// time; events the Mac raises go out between answers. It begins only once the
 /// phone's frame 0 opens, which proves it holds the paired key: until then the
-/// phone is neither connected nor seen. A revoke ends it at once, along with
-/// every request still in hand, and so does a phone from which nothing, not even
+/// phone is neither connected nor seen. A revoke ends it at once, and no request
+/// still in hand starts a write after it; so does a phone from which nothing, not even
 /// a pong, has arrived for [`SILENT_PINGS`] pings.
 async fn session(mut socket: Socket, mut channel: Channel, key: [u8; 32], inner: Arc<Inner>) {
     let Some(first) = first_frame(&mut socket, &mut channel).await else { return };
@@ -220,23 +220,18 @@ async fn session(mut socket: Socket, mut channel: Channel, key: [u8; 32], inner:
 }
 
 /// Takes one opened request in hand, answering on `answers`. A revoke, which
-/// sets `closed`, drops it wherever it stands, so nothing it has not yet done
-/// is done for a phone that is no longer paired.
+/// sets `closed`, keeps it from starting its writes; one already writing
+/// finishes, so nothing is left half done.
 fn take(payload: &[u8], inner: &Inner, in_hand: &Arc<Semaphore>, answers: &mpsc::UnboundedSender<Value>, closed: &watch::Receiver<bool>) {
     let answer = answers.clone();
     match request::parse(payload) {
         Ok((id, asked)) => match in_hand.clone().try_acquire_owned() {
             Ok(permit) => {
                 let desk = inner.desk.clone();
-                let mut revoked = closed.clone();
+                let revoked = closed.clone();
                 tokio::spawn(async move {
-                    tokio::select! {
-                        biased;
-                        Ok(_) = revoked.wait_for(|closed| *closed) => {}
-                        result = request::handle(&desk, asked) => {
-                            let _ = answer.send(request::answered(id, result));
-                        }
-                    }
+                    let result = request::handle(&desk, &revoked, asked).await;
+                    let _ = answer.send(request::answered(id, result));
                     drop(permit);
                 });
             }

@@ -17,7 +17,8 @@
 //!   way to start or stop the first mate, take its lock or dispatch work, so a
 //!   phone can never become a second host (`request`, `desk`).
 //! - Revoke forgets the phone's key and closes its connections at once, so its
-//!   next request is refused and nothing more reaches it.
+//!   next request is refused and nothing more reaches it; a write already under
+//!   way finishes, and no request in hand starts one.
 //! - Pages travel sealed through the link, read through the same resolver as
 //!   the desktop's `artifact` scheme; nothing serves them on a network.
 //!

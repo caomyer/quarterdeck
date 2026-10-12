@@ -143,6 +143,7 @@ export function PhoneSettings({ host }: { host: HostAdapter }) {
       <div className="phone-invite-text">
         <strong>Scan this with Quarterdeck on your phone</strong>
         <p>Your phone needs Tailscale, signed in to the same network as this Mac.</p>
+        <p>A paired phone can ask the first mate for anything you could ask in chat. Revoke takes that back.</p>
         <p className={lapsed ? "phone-lapsed" : undefined}>{lapsed ? "This code has lapsed. Show a new one to pair." : `It works once, until ${clock(invite.expires_at)}.`}</p>
         <div className="routing-actions">
           {lapsed && <button type="button" className="routing-primary" disabled={busy} onClick={() => void pair()}>Show a new code</button>}

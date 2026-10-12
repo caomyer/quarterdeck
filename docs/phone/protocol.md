@@ -13,12 +13,16 @@ Two files pin both halves to it:
 
 The phone and the Mac sit on the captain's own Tailscale network.
 No service of ours runs anywhere.
-The Mac listens only on its tailnet address (IPv4 in 100.64.0.0/10), port 47319 unless the invite names another, and only while a phone is paired or an invite is showing.
+The Mac listens only on its IPv4 addresses in 100.64.0.0/10 on a `utun` interface, the range Tailscale uses (another VPN may use it too), port 47319 unless the invite names another, and only while a phone is paired or an invite is showing.
 The connection is a WebSocket at `ws://<address>/qd-phone/1`.
 The tailnet already encrypts it; every payload is sealed again with keys pinned at pairing, so nothing depends on trusting the transport.
 
 A phone does four things: it learns a call needs the captain, answers it, reads the page that argues it and sends a review, and has a word with the first mate.
 It can ask for nothing else, and nothing it can ask starts, stops or takes over the first mate, so it can never become a second host.
+
+`say` speaks to the first mate with the captain's full authority.
+A paired phone can ask the first mate for anything the captain could ask in chat, including to get work dispatched, even though it cannot itself start, stop or reconfigure the first mate, or dispatch work.
+Pairing a phone hands it that reach, and revoking it is how it is taken back.
 
 All binary values in JSON are standard base64 with padding.
 
@@ -77,7 +81,7 @@ phone-to-mac key = okm[0..32], mac-to-phone key = okm[32..64], session = okm[64.
 
 `confirm` is the Mac's frame 0, whose payload is `th`.
 The phone accepts the Mac only if `mac` is the key it pinned and `confirm` opens to `th`: only the Mac holding that key, and while pairing the invite's secret, can produce it.
-The Mac learns the phone holds its key, and the invite's secret, when the phone's frame 0 opens.
+The Mac learns the phone holds its key, and the invite's secret, when the phone's frame 0 opens; until then it neither pairs the phone nor counts a session as begun.
 
 ## Frames
 
@@ -139,5 +143,5 @@ A phone that slept or lost its network simply opens a new session.
 
 Revoking a phone in Settings forgets its key and closes its connections before Settings answers.
 Its next greeting is refused, and no event reaches it again.
-A request it sent that the Mac has not finished is dropped where it stands and not answered.
+A request already writing when the phone is revoked finishes; nothing new starts after the revoke, and nothing is answered.
 Pairing it again needs a new invite.

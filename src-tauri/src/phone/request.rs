@@ -15,6 +15,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use tokio::sync::watch;
 
 /// Everything a paired phone can ask for. There is nothing else: a frame that
 /// does not read as one of these is refused, and no variant carries a command,
@@ -131,12 +132,23 @@ const SAY_LIMIT: usize = 20_000;
 const CHAT_DEFAULT: usize = 40;
 const CHAT_MAX: usize = 200;
 
-pub async fn handle(desk: &Desk, request: PhoneRequest) -> Result<Value, String> {
+/// Refuses a write once the phone has been revoked. Each write checks it just
+/// before it starts, and once past it runs to completion: a revoke stops what has
+/// not begun and never leaves a write half done.
+fn unrevoked(revoked: &watch::Receiver<bool>) -> Result<(), String> {
+    if *revoked.borrow() {
+        return Err("this phone has been revoked".to_string());
+    }
+    Ok(())
+}
+
+pub async fn handle(desk: &Desk, revoked: &watch::Receiver<bool>, request: PhoneRequest) -> Result<Value, String> {
     match request {
         PhoneRequest::Board => board(desk).await,
-        PhoneRequest::AnswerCall { call, option, page, note } => answer_call(desk, call, option, page, note).await,
+        PhoneRequest::AnswerCall { call, option, page, note } => answer_call(desk, revoked, call, option, page, note).await,
         PhoneRequest::ReplyToCall { call, words } => {
             let home = desk.home()?;
+            unrevoked(revoked)?;
             let replied = review::reply_and_tell(&home, &desk.messenger, &call, &words).await?;
             desk.snapshots.refresh();
             Ok(replied)
@@ -149,17 +161,20 @@ pub async fn handle(desk: &Desk, request: PhoneRequest) -> Result<Value, String>
         PhoneRequest::Comment { page, rev, body, anchor, thread } => {
             let log = log_of(desk, &page)?;
             let _one_writer = desk.writes.lock().await;
+            unrevoked(revoked)?;
             blocking(move || review::add_comment(&log, rev, &body, anchor, thread.as_deref(), None)).await
         }
         PhoneRequest::Discard { page, thread } => {
             let log = log_of(desk, &page)?;
             let _one_writer = desk.writes.lock().await;
+            unrevoked(revoked)?;
             blocking(move || review::discard(&log, &thread)).await
         }
         PhoneRequest::SendReview { page, rev, verdict } => {
             let home = desk.home()?;
             let dir = dir_of(desk, &page)?;
             let _one_writer = desk.writes.lock().await;
+            unrevoked(revoked)?;
             let sent = review::submit(&home, &desk.messenger, &dir, rev, verdict).await?;
             desk.snapshots.refresh();
             Ok(sent)
@@ -172,6 +187,7 @@ pub async fn handle(desk: &Desk, request: PhoneRequest) -> Result<Value, String>
             if text.chars().count() > SAY_LIMIT {
                 return Err(format!("a message from the phone is at most {SAY_LIMIT} characters"));
             }
+            unrevoked(revoked)?;
             let message = desk.messenger.tell(text).await?;
             Ok(json!({"message": message}))
         }
@@ -257,12 +273,13 @@ async fn keyed(desk: &Desk, call: &str, option: &str) -> Result<Keyed, String> {
 
 /// `call_answer`, as the desktop runs it. `recorded` is true only when
 /// firstmate's intake said it closed the call.
-async fn answer_call(desk: &Desk, call: String, option: String, page: Option<PageRef>, note: Option<String>) -> Result<Value, String> {
+async fn answer_call(desk: &Desk, revoked: &watch::Receiver<bool>, call: String, option: String, page: Option<PageRef>, note: Option<String>) -> Result<Value, String> {
     let home = desk.home()?;
     let keyed = keyed(desk, &call, &option).await?;
     let log = page.as_ref().map(|page| log_of(desk, page)).transpose()?;
     let answered = {
         let _one_writer = desk.writes.lock().await;
+        unrevoked(revoked)?;
         review::answer_call(&home, &desk.messenger, log, &keyed, note.as_deref()).await?
     };
     desk.snapshots.refresh();

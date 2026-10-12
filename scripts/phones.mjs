@@ -62,6 +62,7 @@ await phones.locator("[data-testid='phone-invite'] .phone-qr").waitFor();
 const invite = await phones.locator("[data-testid='phone-invite']").innerText();
 check(/It works once, until \d{1,2}:\d{2}/.test(invite), `the code says it works once and until when (${invite.split("\n").at(-2)})`);
 check(invite.includes("Tailscale"), "and that the phone needs Tailscale");
+check(invite.includes("A paired phone can ask the first mate for anything you could ask in chat. Revoke takes that back."), "and what pairing hands the phone, and how to take it back");
 check(await phones.locator("button", { hasText: "Pair a phone" }).count() === 0, "no second code is offered while one shows");
 const modules = await phones.locator(".phone-qr path").getAttribute("d");
 check((modules?.match(/M/g) ?? []).length > 1000, "the code is a full QR");

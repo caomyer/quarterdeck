@@ -493,8 +493,9 @@ async fn a_phone_is_connected_only_once_its_first_frame_opens() {
     assert_eq!(world.inner().registry().paired(&key.public()).unwrap().last_seen, seen, "the stranger did not move last seen");
 }
 
-/// A revoke drops every request the phone still has in hand: an answer waiting
-/// its turn behind another write is not recorded, and the first mate is not told.
+/// A revoke stops every request the phone still has in hand from starting its
+/// writes: an answer waiting its turn behind another write never reaches the
+/// intake, and the first mate is not told.
 #[tokio::test]
 async fn a_revoke_drops_the_requests_still_in_hand() {
     let world = World::new("revoke-in-hand");
@@ -511,8 +512,43 @@ async fn a_revoke_drops_the_requests_still_in_hand() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(world.ran().is_empty(), "the intake ran for a revoked phone: {:?}", world.ran());
+    assert!(!world.home.join("intake.stdin").exists(), "the intake was handed an answer from a revoked phone");
     let commands = world.commands.lock().unwrap()[told_before..].to_vec();
     assert!(commands.iter().all(|command| !command.starts_with("send ")), "the first mate was told for a revoked phone: {commands:?}");
+}
+
+/// A revoke never leaves a write half done: an answer whose intake has already
+/// started when the phone is revoked is recorded, the first mate is told, and
+/// the page's review notes that it was.
+#[tokio::test]
+async fn a_revoke_lets_a_write_already_started_finish_whole() {
+    let world = World::new("revoke-mid-write");
+    let (key, mut phone) = paired_phone(&world, "Lost phone").await;
+    let id = world.inner().registry().paired(&key.public()).unwrap().id.clone();
+    executable(
+        &world.home.join("bin/fm-captain-hold.sh"),
+        "#!/bin/sh\nhere=$(cd \"$(dirname \"$0\")/..\" && pwd)\necho \"$(basename \"$0\") $1\" >> \"$here/ran.log\"\ncase \"$1\" in\n  answers) cat >> \"$here/intake.stdin\"; touch \"$here/intake-started\"; sleep 1; cat \"$here/intake-says\" ;;\nesac\n",
+    );
+
+    let page = json!({"scope": "task", "task": TASK, "name": PAGE});
+    phone.send(&json!({"id": 7, "ask": "answer_call", "call": CALL, "option": "wait", "page": page})).await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !world.home.join("intake-started").exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(world.home.join("intake-started").exists(), "the intake started");
+    assert!(world.inner().revoke(&id).unwrap());
+
+    let told = format!("send {}", crate::review::answer_message(CALL, "wait", "Wait for the numbers", None));
+    let log = world.home.join("data").join(TASK).join("artifacts").join(PAGE).join("review.jsonl");
+    let noted = || std::fs::read_to_string(&log).unwrap_or_default().lines().any(|line| serde_json::from_str::<Value>(line).is_ok_and(|line| line["kind"] == "told"));
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !noted() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(std::fs::read_to_string(world.home.join("intake.stdin")).unwrap(), format!("{CALL}\twait\tWait for the numbers\trelease\n"), "the call was recorded");
+    assert!(world.commands.lock().unwrap().contains(&told), "the first mate was told");
+    assert!(noted(), "the review notes the first mate was told");
 }
 
 /// A phone that vanishes without closing, as a sleeping or unplugged one does,
