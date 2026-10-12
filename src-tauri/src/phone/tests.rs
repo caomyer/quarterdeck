@@ -443,6 +443,25 @@ async fn a_silent_phone_is_let_go_and_its_place_freed() {
     assert_eq!(world.inner().status_without_listening()["phones"][0]["connected"], false, "a phone that left shows as not connected");
 }
 
+/// Two sessions of one phone can end out of order; the one that ends last but
+/// heard from the phone earlier does not move its last seen back.
+#[test]
+fn last_seen_never_goes_back() {
+    let root = scratch("seen-order");
+    let mut registry = super::pairing::Registry::open(&root).unwrap();
+    let paired_at = super::now_ms();
+    let invite = registry.new_invite(paired_at).unwrap();
+    let key = Secret::generate().unwrap().public();
+    registry.claim(&invite.id, key, "Captain's iPhone", paired_at).unwrap();
+    let later = paired_at + 180_000;
+    registry.seen(&key, later);
+    registry.seen(&key, paired_at + 60_000);
+    assert_eq!(registry.paired(&key).unwrap().last_seen, Some(later));
+    let reopened = super::pairing::Registry::open(&root).unwrap();
+    assert_eq!(reopened.paired(&key).unwrap().last_seen, Some(later), "nor on disk");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Whether the Mac ends `phone`'s connection within [`WAIT`], reading past anything it sends first.
 async fn closed_by_the_mac(phone: &mut Phone) -> bool {
     let ended = async {

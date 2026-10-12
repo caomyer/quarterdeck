@@ -205,9 +205,13 @@ impl Registry {
         Ok(Some(phone))
     }
 
-    /// Notes that a phone was seen now, written at most once a minute.
+    /// Notes that a phone was seen at `now`, written at most once a minute. A
+    /// time older than the one kept, from a session that ended late, changes nothing.
     pub fn seen(&mut self, key: &[u8; 32], now: u64) {
         let Some(phone) = self.phones.iter_mut().find(|phone| &phone.key == key) else { return };
+        if phone.last_seen.is_some_and(|seen| seen >= now) {
+            return;
+        }
         phone.last_seen = Some(now);
         let id = phone.id.clone();
         if self.seen_written.get(&id).is_some_and(|written| now.saturating_sub(*written) < SEEN_EVERY_MS) {
