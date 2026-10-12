@@ -5,6 +5,7 @@ import recordedStream from "./mock-event-stream.json";
 // The example firstmate ships, read from the engine itself, so turning routing on here starts from the same rules.
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
 import { MockUpdates } from "./mock-update";
+import { MockPhones } from "./mock-phones";
 import { mockUsage } from "./mock-usage";
 import { MockSession, STAGED_TURN } from "./mock-session";
 import { addRefusal, linkedBody, linkFixtureRow, mockIssues, mockSources } from "./mock-sources";
@@ -739,6 +740,7 @@ export class MockHostAdapter implements HostAdapter {
   private routing = MockHostAdapter.initialRouting();
   private routingRevision = 1;
   /** `?update=<state>`: the app's own update (src/host/mock-update.ts). */
+  private readonly phones = new MockPhones();
   private readonly updates = new MockUpdates(() => this.state, (ms, run) => this.later(ms, run));
 
   /**
@@ -1317,6 +1319,22 @@ export class MockHostAdapter implements HostAdapter {
 
   onUpdate(listener: (update: AppUpdate) => void) {
     return this.updates.listen(listener);
+  }
+
+  phoneStatus() {
+    return this.phones.get();
+  }
+
+  phoneInvite() {
+    return this.phones.invite();
+  }
+
+  phoneInviteCancel() {
+    return this.phones.cancel();
+  }
+
+  phoneRevoke(id: string) {
+    return this.phones.revoke(id);
   }
 
   async readQuota(): Promise<QuotaRead> {

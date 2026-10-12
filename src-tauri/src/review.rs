@@ -85,7 +85,7 @@
 
 use crate::artifact;
 use crate::calls::{self, Keyed, Outcome};
-use crate::host::{Cmd, HostHandle};
+use crate::host::{HostHandle, Tell};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -674,8 +674,14 @@ fn log_path(app: &AppHandle, page: &Ref) -> Result<PathBuf, String> {
 /// out from the log before it is written, and a review is read, sent and then
 /// recorded, so two commands interleaving could hand out one id twice or send
 /// one draft twice. Async, because a submit holds it across the send.
-#[derive(Default)]
-pub struct Writes(tokio::sync::Mutex<()>);
+#[derive(Default, Clone)]
+pub struct Writes(std::sync::Arc<tokio::sync::Mutex<()>>);
+
+impl Writes {
+    pub(crate) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.0.lock().await
+    }
+}
 
 /// Runs file work on the blocking pool: every write is fsynced, and none of it
 /// belongs on the threads that drive the app.
@@ -1142,10 +1148,10 @@ pub async fn review_submit(
     let _one_writer = writes.0.lock().await;
     let home = home_for(&app)?;
     let dir = blocking(move || dir_for(&app, &page)).await?;
-    submit(&home, &host, &dir, rev, verdict).await
+    submit(&home, &*host, &dir, rev, verdict).await
 }
 
-pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64, verdict: String) -> Result<Value, String> {
+pub(crate) async fn submit(home: &Path, host: &impl Tell, dir: &Path, rev: u64, verdict: String) -> Result<Value, String> {
     let dir = dir.to_path_buf();
     let log = dir.join("review.jsonl");
     let (retold, unnoted) = match retell(home, host, &dir).await {
@@ -1175,7 +1181,7 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
     let replied = reply_worded(home, &log).await?;
     let sent_with = |message: &str| name_replies(home, &replied, message.to_string());
     let (text, threads, answers, relay) = draft(home, &dir, rev, &verdict).await?;
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
+    let message = match host.tell(text.clone()).await {
         Ok(message) => message,
         Err(problem) if relay.is_some() => {
             // A delivery was attempted, so the review is on the record as sent to its author whatever became of it, and the first mate is told on the next send.
@@ -1234,14 +1240,14 @@ pub(crate) async fn submit(home: &Path, host: &HostHandle, dir: &Path, rev: u64,
 /// could not, or why one could not go and its text; nothing after a failure is
 /// tried.
 #[allow(clippy::type_complexity)]
-async fn retell(home: &Path, host: &HostHandle, dir: &Path) -> Result<(Vec<(String, String)>, Option<String>), (String, String)> {
+async fn retell(home: &Path, host: &impl Tell, dir: &Path) -> Result<(Vec<(String, String)>, Option<String>), (String, String)> {
     let untold = {
         let dir = dir.to_path_buf();
         blocking(move || untold_reviews(&dir)).await.map_err(|problem| (problem, String::new()))?
     };
     let mut told = Vec::new();
     for (sent_at, text, replied) in untold {
-        let message = host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent).map_err(|problem| (problem, text.clone()))?;
+        let message = host.tell(text.clone()).await.map_err(|problem| (problem, text.clone()))?;
         name_replies(home, &replied, message.clone()).await;
         let event = json!({"at": now_ms(), "kind": "retold", "sent_at": sent_at, "message": message, "header": text.lines().next().unwrap_or_default()});
         let log = dir.join("review.jsonl");
@@ -1331,18 +1337,18 @@ pub(crate) async fn name_replies(home: &Path, replied: &[(String, String)], mess
 #[tauri::command]
 pub async fn call_reply(app: AppHandle, host: TauriState<'_, HostHandle>, call: String, words: String) -> Result<Value, String> {
     let home = home_for(&app)?;
-    reply_and_tell(&home, &host, &call, &words).await
+    reply_and_tell(&home, &*host, &call, &words).await
 }
 
 /// What `call_reply` does, for the command and for the live test that drives it.
-pub(crate) async fn reply_and_tell(home: &Path, host: &HostHandle, call: &str, words: &str) -> Result<Value, String> {
+pub(crate) async fn reply_and_tell(home: &Path, host: &impl Tell, call: &str, words: &str) -> Result<Value, String> {
     let (call, words) = (call.to_string(), words.trim().to_string());
     let home = home.to_path_buf();
     if let Err(problem) = calls::reply(&home, &call, &words, "quarterdeck", None).await {
         return Ok(json!({"kept": false, "problem": problem, "message": Value::Null, "text": Value::Null}));
     }
     let text = reply_message(&call, &words);
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
+    let message = match host.tell(text.clone()).await {
         Ok(message) => message,
         Err(problem) => {
             return Ok(json!({
@@ -1405,12 +1411,19 @@ pub async fn call_answer(
 ) -> Result<Value, String> {
     let _one_writer = writes.0.lock().await;
     let home = home_for(&app)?;
-    let keyed = Keyed { call: call.clone(), key: option.clone(), label: label.clone(), on_answer: on_answer.clone() };
+    let keyed = Keyed { call, key: option, label, on_answer };
     let log = match page {
         Some(page) => Some(blocking(move || log_path(&app, &page)).await?),
         None => None,
     };
-    let outcome = answer_one(&home, log.as_deref(), &keyed).await?;
+    answer_call(&home, &*host, log, &keyed, note.as_deref()).await
+}
+
+/// What `call_answer` does once it knows the home and the review the answer is
+/// noted in, for the command and for the phone, which answers through exactly
+/// this. The caller holds [`Writes`].
+pub(crate) async fn answer_call(home: &Path, host: &impl Tell, log: Option<PathBuf>, keyed: &Keyed, note: Option<&str>) -> Result<Value, String> {
+    let outcome = answer_one(home, log.as_deref(), keyed).await?;
     let review = match &log {
         Some(log) => {
             let log = log.clone();
@@ -1421,8 +1434,8 @@ pub async fn call_answer(
     if outcome["result"] != "closed" {
         return Ok(json!({"outcome": outcome, "message": Value::Null, "text": Value::Null, "review": review}));
     }
-    let text = answer_message(&call, &option, &label, note.as_deref());
-    let message = match host.call(|reply| Cmd::Send { text: text.clone(), reply }).await.and_then(|sent| sent) {
+    let text = answer_message(&keyed.call, &keyed.key, &keyed.label, note);
+    let message = match host.tell(text.clone()).await {
         Ok(message) => message,
         Err(problem) => {
             return Ok(json!({
@@ -1433,7 +1446,7 @@ pub async fn call_answer(
     };
     let review = match &log {
         Some(log) => {
-            let (log, call, message) = (log.clone(), call.clone(), message.clone());
+            let (log, call, message) = (log.clone(), keyed.call.clone(), message.clone());
             blocking(move || {
                 append(&log, &json!({"at": now_ms(), "kind": "told", "answers": [call], "message": message}))?;
                 Ok(view(&log))

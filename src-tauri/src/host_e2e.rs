@@ -1276,7 +1276,7 @@ async fn reply_e2e_live_scratch_home() {
     if let Some(call) = plain.first().cloned() {
         recorder.mark("2", "words on a call nothing argues, across a relaunch");
         let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
-        let replied = review::reply_and_tell(&home, &host, &call, DISPUTING).await;
+        let replied = review::reply_and_tell(&home, &*host, &call, DISPUTING).await;
         println!("reply on {call}: {replied:?}");
         let body = replied.clone().unwrap_or(Value::Null);
         let record_file: Value = std::fs::read_to_string(home.join("state/calls").join(format!("{call}.json")))
@@ -1327,7 +1327,7 @@ async fn reply_e2e_live_scratch_home() {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         let words = format!("Not now. Ask me again on {day}.");
-        let replied = review::reply_and_tell(&home, &host, &call, &words).await.unwrap_or(Value::Null);
+        let replied = review::reply_and_tell(&home, &*host, &call, &words).await.unwrap_or(Value::Null);
         let now = call_now(&home, &call);
         let message = replied["message"].as_str().unwrap_or_default().to_string();
         record(
