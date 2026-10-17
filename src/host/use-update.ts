@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { updateFeed } from "../update";
-import type { AppUpdate, HostAdapter } from "./types";
+import type { AppUpdate, HostAdapter } from "@quarterdeck/core/types";
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);

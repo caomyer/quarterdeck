@@ -11,8 +11,8 @@
  *   `deep`   a chain five tasks deep
  *   `stale`  the first edit finds the first mate changed that value a moment before
  */
-import type { BacklogRecord, TaskEdit, TaskEdited } from "./types";
-import { startRanks, standingOf } from "../tasks";
+import type { BacklogRecord, TaskEdit, TaskEdited } from "@quarterdeck/core/types";
+import { startRanks, standingOf } from "@quarterdeck/core/tasks";
 
 type Row = (id: string, title: string, fields: Partial<BacklogRecord>) => BacklogRecord;
 

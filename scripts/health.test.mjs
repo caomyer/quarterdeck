@@ -1,10 +1,10 @@
-// Unit tests for src/host/health.ts, what the window makes of the host's failure reports and the permissions it
+// Unit tests for packages/core/src/health.ts, what the window makes of the host's failure reports and the permissions it
 // answered for the first mate.
 //
 //   pnpm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DIAGNOSTIC_KINDS, errorWarning, permissionLine } from "../src/host/health.ts";
+import { DIAGNOSTIC_KINDS, errorWarning, permissionLine } from "@quarterdeck/core/health";
 
 test("a message whose durable copy could not be written is a warning, never silence", () => {
   const warning = errorWarning({ kind: "outbox_write_failed", id: "m42", error: "No space left on device (os error 28)" });

@@ -65,7 +65,7 @@ pub enum PhoneRequest {
     /// The recent conversation with the first mate.
     Chat { limit: Option<u32> },
     /// A message to the first mate in the captain's words. A reply to a place in
-    /// the chat arrives already carrying the block `src/replyto.ts` writes.
+    /// the chat arrives already carrying the block `packages/core/src/replyto.ts` writes.
     Say { text: String },
 }
 

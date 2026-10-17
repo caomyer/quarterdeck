@@ -1,5 +1,5 @@
 import invite from "../fixtures/phone-invite.json";
-import type { PairedPhone, PhoneChange, PhoneInvite, PhoneStatus } from "./types";
+import type { PairedPhone, PhoneChange, PhoneInvite, PhoneStatus } from "@quarterdeck/core/types";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;

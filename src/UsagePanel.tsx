@@ -2,8 +2,8 @@ import { ChevronRight, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { ContextReading, HostRuntimeState, QuotaRead, RateLimit } from "./host/types";
-import type { Compaction } from "./host/use-host";
+import type { ContextReading, HostRuntimeState, QuotaRead, RateLimit } from "@quarterdeck/core/types";
+import type { Compaction } from "@quarterdeck/core/conversation";
 import { ago, contextEvent, contextLevel, contextPercent, type Level, percent, type ProviderView, providerViews, stripLine, stripProviders, tokens, tokensExact, until, type WindowView } from "./usage";
 import { useNow } from "./use-now";
 

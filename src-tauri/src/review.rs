@@ -2143,7 +2143,7 @@ mod tests {
         assert!(!answer_message("a", "x", "X", Some("  ")).contains("added"));
     }
 
-    /// The chat reads these messages back as answer cards (`answerOfMessage` in `src/calls.ts`), from the same file.
+    /// The chat reads these messages back as answer cards (`answerOfMessage` in `packages/core/src/calls.ts`), from the same file.
     #[test]
     fn a_bearings_answer_or_reply_is_written_as_the_chat_reads_it() {
         let fixture: Value = serde_json::from_str(include_str!("../../src/fixtures/call-messages.json")).unwrap();

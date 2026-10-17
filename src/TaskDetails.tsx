@@ -9,9 +9,9 @@
  */
 import { ArrowRight, Check, ChevronRight, Lock, Pencil, Plus, Repeat2, RotateCcw, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { BacklogRecord, TaskEdit, TaskEdited } from "./host/types";
+import type { BacklogRecord, TaskEdit, TaskEdited } from "@quarterdeck/core/types";
 import { dayAfter, PriorityBadge, shortDate } from "./TaskList";
-import { downstreamOf, groupChoices, loopThrough, openById, priorityIsSet, priorityLevel, PRIORITIES, standingOf, startHere, taskGraph, upstreamOf, type ChainNode, upstreamTree } from "./tasks";
+import { downstreamOf, groupChoices, loopThrough, openById, priorityIsSet, priorityLevel, PRIORITIES, standingOf, startHere, taskGraph, upstreamOf, type ChainNode, upstreamTree } from "@quarterdeck/core/tasks";
 
 const KIND_NAMES: Record<string, string> = { scout: "Scout", ship: "Ship", secondmate: "Second mate", captain: "Call", program: "Group" };
 

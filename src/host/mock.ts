@@ -1,6 +1,6 @@
 import bearingsFixture from "../fixtures/bearings-snapshot.json";
 import fleetFixture from "../fixtures/fleet-snapshot.json";
-import type { CopyResult, PickResult } from "../attachments";
+import type { CopyResult, PickResult } from "@quarterdeck/core/attachments";
 import recordedStream from "./mock-event-stream.json";
 // The example firstmate ships, read from the engine itself, so turning routing on here starts from the same rules.
 import crewDispatchExample from "../../engine/docs/examples/crew-dispatch.json?raw";
@@ -13,7 +13,7 @@ import { mockPipeline } from "./mock-pipeline";
 import { applyTaskEdit, mockTaskRecords, reparse } from "./mock-tasks";
 import { FLEET_FAILED, replyFleet, replyHistory } from "./mock-replies";
 import lockScreenPicture from "../fixtures/task-files/lock-screen.svg?url";
-import { artifactPath } from "./types";
+import { artifactPath } from "@quarterdeck/core/types";
 import type {
   PhoneChange,
   PickedCategory,
@@ -65,7 +65,7 @@ import type {
   TaskEdit,
   TaskEdited,
   TaskSource,
-} from "./types";
+} from "@quarterdeck/core/types";
 
 type RecordedEvent = { t_ms: number; type: HostEvent["type"]; payload: Record<string, unknown> };
 

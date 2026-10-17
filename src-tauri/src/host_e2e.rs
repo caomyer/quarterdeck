@@ -1384,19 +1384,19 @@ async fn reply_e2e_live_scratch_home() {
 
 // -------------------------------------------------------------- attach ---
 
-/// The message the UI sends with `files`, written by `src/attachments.ts` itself
+/// The message the UI sends with `files`, written by `packages/core/src/attachments.ts` itself
 /// so this test sends exactly what the composer would.
 fn ui_message(text: &str, files: &[crate::attach::Attached]) -> String {
     let files: Vec<Value> = files
         .iter()
         .map(|file| json!({"name": file.name, "path": file.path.to_string_lossy(), "source": file.source.to_string_lossy(), "bytes": file.bytes}))
         .collect();
-    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/attachments.ts");
+    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../packages/core/src/attachments.ts");
     let script = "const [module, text, files] = process.argv.slice(1); const { withAttachments } = await import(module); process.stdout.write(withAttachments(text, JSON.parse(files)));";
     let node = crate::envpath::resolve("node").expect("node is installed");
     let output = std::process::Command::new(node)
         .args(["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", script])
-        .arg(module.canonicalize().expect("src/attachments.ts"))
+        .arg(module.canonicalize().expect("packages/core/src/attachments.ts"))
         .arg(text)
         .arg(Value::Array(files).to_string())
         .output()
@@ -1864,7 +1864,7 @@ fn drawer_phase(inputs: &Value) -> String {
 }
 
 /// What the app holds about the host at this moment, folded from its events the
-/// way `use-host.ts` and `App.tsx` fold them: the ask's delivery, the runtime,
+/// way `conversation.ts` and `App.tsx` fold them: the ask's delivery, the runtime,
 /// and when the first mate was last seen out of a turn.
 fn host_view(events: &Events, message: &str, opened: u64) -> (Value, String, Option<u64>) {
     let mut delivery = Value::Null;

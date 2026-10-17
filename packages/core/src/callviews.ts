@@ -3,7 +3,7 @@
  *
  * A call is drawn twice in the chat, each time where its event happened: a call card where the first mate raised it,
  * and an answer card where the captain answered it. Both read the snapshot's `calls[]`, where the call stands
- * (`callStanding` in src/calls.ts), and the app's own answer lines (`answerOfMessage`), never the first mate's prose.
+ * (`callStanding` in packages/core/src/calls.ts), and the app's own answer lines (`answerOfMessage`), never the first mate's prose.
  * `src/CallCards.tsx` draws what these return.
  *
  * The captain's reply on a call, words that nothing has recorded yet, is taken as an input rather than read off the
@@ -11,7 +11,7 @@
  *
  * Pure functions only: no React, no host.
  */
-import type { Call } from "./host/types";
+import type { Call } from "./types";
 import { askAgainDay, type CallStanding, heldUntil, type MessageAnswer } from "./calls.ts";
 
 /** The captain's words kept on a call that nothing has recorded yet: what he said, and when. */

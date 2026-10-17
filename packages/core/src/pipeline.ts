@@ -5,7 +5,7 @@
 // What it does decide is wording and the rail's cells, from the fields `bin/fm-crew-state.sh --json` read, and a
 // field the engine could not read stays unknown here too. The ci log carries no timestamps, so nothing says when
 // checks turned green, and nothing predicts when a run will end.
-import type { FleetTask, TaskPipeline, WaitingOn } from "./host/types";
+import type { FleetTask, TaskPipeline, WaitingOn } from "./types";
 
 export type Who = WaitingOn["who"];
 export type WhoTone = "coral" | "amber" | "blue" | "sea" | "green" | "muted" | "unknown";

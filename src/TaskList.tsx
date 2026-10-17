@@ -2,7 +2,7 @@
  * The task list: one generic component that takes its filter as input. A project page mounts it filtered to that
  * project, where it replaces the page's Work section; a list of every project is the same component with no filter.
  *
- * What it draws is read by src/tasks.ts from the backlog rows the snapshot carries, in the order firstmate starts work
+ * What it draws is read by packages/core/src/tasks.ts from the backlog rows the snapshot carries, in the order firstmate starts work
  * in. Every change goes through `onEdit`, which the app sends to firstmate's `fm-task-edit.sh`; the list never decides
  * whether an edit is allowed, it shows the script's answer where the edit was made.
  *
@@ -11,11 +11,11 @@
  */
 import { Check, ChevronRight, CircleCheck, Clock3, Search, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { BacklogRecord, TaskEdit, TaskEdited } from "./host/types";
+import type { BacklogRecord, TaskEdit, TaskEdited } from "@quarterdeck/core/types";
 import {
   daysSince, downstreamOf, groupChoices, groupSections, type ListRow, priorityIsSet, priorityLevel, PRIORITIES, taskGraph, type TaskFilter,
   type TaskGrouping, taskRows, type TaskSort, type TaskView, upstreamOf, viewCounts,
-} from "./tasks";
+} from "@quarterdeck/core/tasks";
 
 /** How an underway task's worker reads now, drawn the way the rest of the app draws it. */
 export type UnderwayStatus = { label: string; tone: string; icon: React.ReactNode; standing?: React.ReactNode };

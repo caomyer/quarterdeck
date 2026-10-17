@@ -1,6 +1,6 @@
 import { MockHostAdapter } from "./mock";
 import { TauriHostAdapter } from "./tauri";
-import type { HostAdapter } from "./types";
+import type { HostAdapter } from "@quarterdeck/core/types";
 
 declare global {
   interface Window {
@@ -12,5 +12,5 @@ export function createHostAdapter(): HostAdapter {
   return window.__TAURI_INTERNALS__ ? new TauriHostAdapter() : new MockHostAdapter();
 }
 
-export type * from "./types";
-export { artifactPath } from "./types";
+export type * from "@quarterdeck/core/types";
+export { artifactPath } from "@quarterdeck/core/types";

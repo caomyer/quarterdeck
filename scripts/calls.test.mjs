@@ -1,4 +1,4 @@
-// Unit tests for src/calls.ts, the one place every screen reads captain calls from.
+// Unit tests for packages/core/src/calls.ts, the one place every screen reads captain calls from.
 //
 //   pnpm test
 //
@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "../src/calls.ts";
+import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "@quarterdeck/core/calls";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();

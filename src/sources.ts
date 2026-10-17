@@ -6,7 +6,7 @@
  * `bin/fm-sources.sh`), each backlog row's `source_links`, and the take-on ask the app recorded. Nothing here knows
  * one provider from another except to name it: a link, an item and a write have the same shape for all of them.
  */
-import type { BacklogRecord, FleetSnapshot, HostRuntimeState, SourceFiled, SourceItem, SourceLink, SourcesRead, SourceWrite, TakeOnAsk, TaskSource } from "./host/types";
+import type { BacklogRecord, FleetSnapshot, HostRuntimeState, SourceFiled, SourceItem, SourceLink, SourcesRead, SourceWrite, TakeOnAsk, TaskSource } from "@quarterdeck/core/types";
 import { type AskDelivery, askProgress } from "./start.ts";
 
 /** How long without a successful read before a source's items are shown as a reading from then, not now. */
