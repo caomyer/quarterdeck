@@ -30,6 +30,9 @@
 #      (the operator path the OPEN DECISIONS hint names), while an unrelated
 #      writer's answered: note still cannot hijack or clear that key. A reserved
 #      key this send cannot close refuses before anything is sent.
+#   9. One answer closing several keys closes each and only those, and lists
+#      every question it settled as its own UNRECORDED DECISIONS line, each read
+#      from its own drain section, never from the whole drain.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -115,6 +118,17 @@ setup_home() {  # <name> -> echoes a fresh home dir with an empty state/
 
 drain_out() {  # <home>
   FM_STATE_OVERRIDE="$1/state" "$DRAIN" 2>/dev/null
+}
+
+# One drain section, heading through its hint line: other sections, such as
+# UNRECORDED DECISIONS, name keys too, so a key read from the whole drain is not
+# a key that section lists.
+drain_section() {  # <drain output> <section name>
+  printf '%s\n' "$1" | awk -v name="$2" '
+    index($0, name " (") == 1 { on = 1 }
+    on { print }
+    on && index($0, name ": ") == 1 { exit }
+  '
 }
 
 test_answer_send_closes_open_decision() {
@@ -334,7 +348,7 @@ test_failed_enqueue_does_not_close() {
 }
 
 test_multiple_keys_close_together() {
-  local dir fb log home rc out
+  local dir fb log home rc out open
   dir="$TMP_ROOT/multi"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
   home=$(setup_home multi)
@@ -349,12 +363,42 @@ test_multiple_keys_close_together() {
     "one answer covering both"; rc=$?
   expect_code 0 "$rc" "an answer resolving two keys should succeed"
   out=$(drain_out "$home")
-  printf '%s' "$out" | grep -F '[key=k3]' >/dev/null \
+  open=$(drain_section "$out" 'OPEN DECISIONS')
+  printf '%s' "$open" | grep -F '[key=k3]' >/dev/null \
     || fail "the unanswered third decision must stay open: $out"
-  if printf '%s' "$out" | grep -E '\[key=k1\]|\[key=k2\]' >/dev/null; then
+  if printf '%s' "$open" | grep -E '\[key=k1\]|\[key=k2\]' >/dev/null; then
     fail "an answered key is still open after a multi-key answer: $out"
   fi
   pass "fm-send --resolve-key: one answer closes each named key and only those"
+}
+
+# One answer that settles several questions is several decisions, each needing
+# its own record: `decide` records one --key, so UNRECORDED DECISIONS must name
+# every question the answer closed, one line each, or a first mate recording
+# the one it names leaves the rest unrecorded with nothing asking again. A
+# blocker the same answer cleared is not a question and is never listed.
+test_multi_key_answer_lists_every_question_unrecorded() {
+  local dir fb log home rc out unrecorded
+  dir="$TMP_ROOT/multi-unrecorded"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home multi-unrecorded)
+  fm_write_meta "$home/state/t7.meta" "window=sess:fm-t7" "kind=ship"
+  {
+    printf 'needs-decision [key=q1]: first question\n'
+    printf 'needs-decision [key=q2]: second question\n'
+    printf 'blocked [key=b1]: need the token\n'
+  } > "$home/state/t7.status"
+
+  run_send "$fb" "$home" "$log" t7 --resolve-key q1 --resolve-key q2 --resolve-key b1 \
+    "one answer settling all three"; rc=$?
+  expect_code 0 "$rc" "an answer resolving three keys should succeed"
+  out=$(drain_out "$home")
+  assert_equals "" "$(drain_section "$out" 'OPEN DECISIONS')" "every answered key should be closed"
+  unrecorded=$(drain_section "$out" 'UNRECORDED DECISIONS' | grep -F '[key=' || true)
+  assert_equals "t7 [key=q1]: you answered: one answer settling all three
+t7 [key=q2]: you answered: one answer settling all three" "$unrecorded" \
+    "each question the one answer settled needs its own record, and the blocker none"
+  pass "fm-send --resolve-key: one answer to several questions lists each as its own unrecorded decision"
 }
 
 test_local_secondmate_answer_marked_and_closed() {
@@ -728,6 +772,7 @@ test_not_open_key_refuses_before_send
 test_failed_ring_still_closes_at_enqueue
 test_failed_enqueue_does_not_close
 test_multiple_keys_close_together
+test_multi_key_answer_lists_every_question_unrecorded
 test_local_secondmate_answer_marked_and_closed
 test_remote_secondmate_answer_closes_locally
 test_remote_reply_corr_tag_does_not_block_resolve_key

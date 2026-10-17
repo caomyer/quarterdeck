@@ -381,9 +381,12 @@
 # sends. Such an answered key is RECORDED
 # once a decided call names it (`decide --about <task-id> --key <key>`), or once
 # the key is a call itself (`<key>` or `<task-id>-decision-<key>`, the
-# identities fm-send answers through). `unrecorded` is the read-only report the
-# wake drain prints as UNRECORDED DECISIONS: one `<task-id>\t<key>\t<answer
-# excerpt>` line per unrecorded key on a task still in this home.
+# identities fm-send answers through). A decided call records one key, so one
+# answer that settled several questions is one decision per key, each recorded
+# by its own `decide`, which refuses a second --key. `unrecorded` is the
+# read-only report the wake drain prints as UNRECORDED DECISIONS: one
+# `<task-id>\t<key>\t<answer excerpt>` line per unrecorded key on a task still
+# in this home.
 #
 # `gate` is the read-only captain-call gate every finished task passes, whatever
 # its kind: no keyed status decision still open, no proposal unhandled, and no
@@ -2231,7 +2234,9 @@ command_decide() {
       --kind) kind=$2 ;;
       --link) link=$2 ;;
       --origin) origin=$2 ;;
-      --key) key=$2 ;;
+      --key)
+        [ -z "$key" ] || fail "decide records one --key: record each key a single answer settled with its own decide"
+        key=$2 ;;
       --proposal-of) proposal_of=$2 ;;
       --option) call_content_flag --option "$2" ;;
       *) usage >&2; exit 2 ;;

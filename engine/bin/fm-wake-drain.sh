@@ -661,7 +661,7 @@ print_proposed_calls_section() {
 print_unrecorded_decisions_section() {
   print_captain_hold_report_section unrecorded \
     'UNRECORDED DECISIONS (you answered these worker questions yourself and nothing records them for the captain - your overdue work):' \
-    'record each with bin/fm-captain-hold.sh decide --about <task> --key <key> --title <the question> --what <what you decided> --why <why>; relaying the answer of a call the captain answered is bin/fm-send.sh <task> --resolve-key <key> --for-call <call>, which that call records.' \
+    'record each with bin/fm-captain-hold.sh decide --about <task> --key <key> --title <the question> --what <what you decided> --why <why>; one answer that settled several keys is listed once per key and needs a decide for each; relaying the answer of a call the captain answered is bin/fm-send.sh <task> --resolve-key <key> --for-call <call>, which that call records.' \
     '%s [key=%s]: you answered: %s'
 }
 

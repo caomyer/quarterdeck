@@ -1354,6 +1354,49 @@ EOF
   pass "a question the first mate answered itself is a decision it must record, and the gate holds until it does"
 }
 
+# One answer can settle several questions (fm-send --resolve-key k1 --resolve-key
+# k2), and a decided call records one key, so the contract is one record per
+# key: each key is listed until its own decide names it, a decide for one leaves
+# the other listed and the gate refusing, and decide refuses a second --key
+# rather than recording one of them and dropping the other unseen.
+test_one_answer_to_two_questions_needs_a_record_for_each() {
+  local home id out rc
+  home=$(make_home unrecorded-multi)
+  id=sample-ship
+  printf 'kind=ship\n' > "$home/state/$id.meta"
+  cat > "$home/state/$id.status" <<'EOF'
+needs-decision [key=port]: which port should the sample serve on?
+needs-decision [key=host]: which host should it bind?
+resolved [key=port]: answered: 9090 on localhost
+resolved [key=host]: answered: 9090 on localhost
+EOF
+  out=$(run_captain "$home" unrecorded) || fail "unrecorded failed"
+  assert_equals "$id	port	9090 on localhost
+$id	host	9090 on localhost" "$out" "each question one answer settled is listed on its own"
+
+  out=$(run_captain "$home" decide --about "$id" --key port --key host --title 'Port and host?' \
+    --what 'Serve on localhost:9090' --why 'Free port, local only' 2>&1); rc=$?
+  expect_code 1 "$rc" "decide with two --key flags"
+  assert_contains "$out" "decide records one --key" "the refusal says a decide records one key"
+  [ ! -e "$home/state/calls" ] || [ -z "$(find "$home/state/calls" -name 'decided-*')" ] \
+    || fail "a refused decide recorded a call"
+
+  run_captain "$home" decide --about "$id" --key port --title 'Which port?' \
+    --what 'Serve on 9090' --why 'The default port is taken' >/dev/null || fail "decide --key port failed"
+  assert_equals "$id	host	9090 on localhost" "$(run_captain "$home" unrecorded)" \
+    "recording one key does not record the other the same answer settled"
+  out=$(run_captain "$home" gate "$id" 2>&1); rc=$?
+  expect_code 1 "$rc" "the gate beside the second, still unrecorded key"
+  assert_contains "$out" "unrecorded decision: you answered $id [key=host] yourself" "the gate names the key left"
+  assert_not_contains "$out" "[key=port]" "the gate no longer names the recorded key"
+
+  run_captain "$home" decide --about "$id" --key host --title 'Which host?' \
+    --what 'Bind localhost' --why 'Local only' >/dev/null || fail "decide --key host failed"
+  assert_equals "" "$(run_captain "$home" unrecorded)" "a decide per key records both"
+  run_captain "$home" gate "$id" >/dev/null || fail "the gate refused once every key was recorded"
+  pass "one answer to two questions is two decisions, each needing its own decide"
+}
+
 test_the_wake_drain_lists_proposals_and_unrecorded_answers_until_handled() {
   local home out
   home=$(make_home gate-drain)
@@ -1429,4 +1472,5 @@ test_two_proposals_raised_onto_one_row_both_stay_handled
 test_completion_refuses_an_unraised_proposal_until_it_is_raised
 test_a_declined_proposal_passes_and_leaves_a_decision
 test_an_answer_the_first_mate_gave_needs_its_record
+test_one_answer_to_two_questions_needs_a_record_for_each
 test_the_wake_drain_lists_proposals_and_unrecorded_answers_until_handled
