@@ -3,9 +3,10 @@
 //   pnpm dev --port 4193 --strictPort
 //   FIRSTMATE_URL=http://127.0.0.1:4193 pnpm replies
 //
-// Words, a dated Not now, or an option a call cannot take by key are the captain's reply: firstmate's own
+// Words, or an option a call cannot take by key, are the captain's reply: firstmate's own
 // `bin/fm-captain-hold.sh reply` keeps them on the call, and the card draws them from the snapshot, amber, until the
-// first mate records an answer or asks again. The mock models `reply` the way the script does it (src/host/mock.ts,
+// first mate records an answer or asks again. A dated Not now is carried out by `bin/fm-captain-hold.sh defer`
+// (the mock's `deferCall`): the call is held until the day, and only words added to it stay a reply. The mock models `reply` the way the script does it (src/host/mock.ts,
 // `keepReply`), so each state here is one the engine produces: amber replied, coral refused, amber not told, green
 // recorded, asked again, and after a reload. Colours are compared with the theme's own tokens.
 // Set REPLY_SHOTS=<folder> to also save screenshots of each state in both themes.
@@ -135,23 +136,63 @@ async function captainMessages(page) {
   await page.close();
 }
 
-// A dated Not now typed on a card lands exactly the way words do.
+/** The answer card the chat draws for the captain's last message on a call, in the Chat view; the caller goes back. */
+async function chatAnswerCard(page, call) {
+  await page.locator(".nav-item", { hasText: "Chat" }).click();
+  const card = page.locator(`[data-testid='answer-card'][data-call-id='${call}']`).last();
+  await card.waitFor();
+  return card;
+}
+
+// A dated Not now typed on a card is carried out, never kept as words for the first mate to transcribe: firstmate's
+// `defer` holds the call until the day, so it leaves Captain's call at once, and the first mate is told what was done,
+// with the year. The answer card in the chat is green: the date waits on nobody.
 {
   const page = await open("");
   const card = page.locator(`.decision-card[data-call-id='${UNARGUED}']`);
+  const before = Number(await captainsCall(page).innerText());
   await card.locator(".suggestion-chips button", { hasText: "Not now" }).click();
   await card.locator(".date-field input").fill("2026-10-03");
-  check((await card.locator(".decision-actions > span").innerText()) === "→ keeps your words on the call for the first mate: Not now. Ask me again on Oct 3.", "a dated Not now is kept on the call like words");
+  check((await card.locator(".decision-actions > span").innerText()) === "→ holds it until Oct 3", "a dated Not now says it holds the call until the day");
   await card.locator(".decision-actions button", { hasText: "Send" }).click();
-  await card.locator("[data-testid='call-replied']").waitFor();
-  check((await card.locator("[data-testid='call-said']").innerText()).endsWith(": Not now. Ask me again on Oct 3."), "the Not now shows as what he said");
+  await card.waitFor({ state: "detached" });
+  check(Number(await captainsCall(page).innerText()) === before - 1, "deferred, the call leaves Captain's call at once");
   const told = await captainMessages(page);
-  check(told.some((text) => text.includes(`The captain replied to call ${UNARGUED} from Bearings`) && text.includes("Not now. Ask me again on Oct 3.")), "the Not now reaches the first mate naming the call");
-  // Saying something else replaces it, and what he said before stays in view.
-  await typeWords(card, "Actually, keep merging.");
+  const message = told.find((text) => text.includes(`The captain deferred call ${UNARGUED} from Bearings until 2026-10-03;`));
+  check(Boolean(message), "the first mate is told the call was deferred, naming the call and the day with its year");
+  check(Boolean(message?.includes("bin/fm-captain-hold.sh defer has already held it")) && !message?.includes("hold it with --until when"), "the message says what was done, not what to do");
+  const answer = await chatAnswerCard(page, UNARGUED);
+  check(await answer.getAttribute("data-kind") === "deferred", "the chat draws the deferral as its own answer card");
+  check((await answer.locator(".answer-chat-said").innerText()) === "Not now. Ask me again on Oct 3.", "the card says the Not now as the captain said it");
+  check((await answer.locator("[data-testid='answer-status']").innerText()).startsWith("Held until Oct 3"), "the card says the call is held until the day");
+  await inBothThemes(page, "defer-held", async (theme) => {
+    check(await paintedWith(answer.locator("[data-testid='answer-status']"), "--green"), `${theme}: a deferral carried out is painted --green`);
+  }, answer);
+  await page.close();
+}
+
+// Words added to a dated Not now stay his reply, amber, since they can change what the deferral means; when the day
+// comes, the call is back in Captain's call carrying them.
+{
+  const page = await open("&day-comes");
+  const card = page.locator(`.decision-card[data-call-id='${UNARGUED}']`);
+  await card.locator(".suggestion-chips button", { hasText: "Not now" }).click();
+  await card.locator(".date-field input").fill("2026-10-03");
+  await typeWords(card, "Unless the battery numbers land first.");
+  check((await card.locator(".decision-actions > span").innerText()) === "→ holds it until Oct 3, and keeps your words on the call for the first mate", "the hint says the words go on the call with the deferral");
   await card.locator(".decision-actions button", { hasText: "Send" }).click();
-  await card.locator("[data-testid='call-said-before']").waitFor();
-  check((await card.locator("[data-testid='call-said']").innerText()).endsWith(": Actually, keep merging.") && (await card.locator("[data-testid='call-said-before']").innerText()).endsWith(": Not now. Ask me again on Oct 3."), "a later reply replaces the earlier one, which stays as what he said before");
+  await card.waitFor({ state: "detached" });
+  const told = await captainMessages(page);
+  check(told.some((text) => text.includes(`The captain deferred call ${UNARGUED} from Bearings until 2026-10-03;`) && text.includes("The captain said: Unless the battery numbers land first.")), "the first mate is told of the deferral and given his words to read");
+  const answer = await chatAnswerCard(page, UNARGUED);
+  check((await answer.locator("[data-testid='answer-status']").innerText()) === "Held until Oct 3 · your words are with the first mate", "the card says his words are with the first mate");
+  check((await answer.locator(".answer-chat-added").innerText()) === "Unless the battery numbers land first.", "the card shows the words he added");
+  await inBothThemes(page, "defer-words", async (theme) => {
+    check(await paintedWith(answer.locator("[data-testid='answer-status']"), "--amber"), `${theme}: words with a deferral are painted --amber`);
+  }, answer);
+  await page.locator(".nav-item", { hasText: "Bearings" }).click();
+  await card.waitFor();
+  check((await card.locator("[data-testid='call-said']").innerText()).endsWith(": Unless the battery numbers land first."), "the day come, the call is back in Captain's call with his words");
   await page.close();
 }
 

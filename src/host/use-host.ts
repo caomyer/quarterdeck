@@ -21,6 +21,7 @@ import type {
   SnapshotProject,
   ToolStep,
 } from "./types";
+import { errorWarning, permissionLine } from "./health";
 
 export type ChatMessage = {
   id: string;
@@ -340,6 +341,15 @@ export function useHost(adapter: HostAdapter) {
       return;
     }
 
+    if (event.type === "permission") {
+      // A home that skips prompts still gets a request now and then, which the host answers itself; say so in the chat.
+      const line = permissionLine(event.payload);
+      if (!line) return;
+      const at = session.current;
+      setMessages((current) => [...current, { id: `permission-${crypto.randomUUID()}`, who: "notice", text: line, createdAt: new Date().toISOString(), session: at }]);
+      return;
+    }
+
     if (event.type === "permission_resolved") {
       resolvedApprovals.current.add(event.payload.id);
       setPermissionRequests((current) => current.filter((request) => request.id !== event.payload.id));
@@ -419,8 +429,17 @@ export function useHost(adapter: HostAdapter) {
         });
       } else if (warning) {
         warn({ kind: "other", message: warning });
+      } else {
+        // Any failure reported with an `error`, such as a message whose durable copy could not be written
+        // (`outbox_write_failed`) or a session pick that could not be kept (`session_pick_unsaved`). The kinds left
+        // undrawn are the host's diagnostics, named in DIAGNOSTIC_KINDS.
+        const failed = errorWarning(event.payload);
+        if (failed) warn({ kind: "other", message: failed });
       }
+      return;
     }
+
+    // Not drawn: `prompt_result` repeats how a message's turn ended, which its `outbox` event already says.
   }, [applySnapshot, receiveStep, noteHostHome, warn]);
 
   useEffect(() => {

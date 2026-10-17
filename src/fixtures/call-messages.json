@@ -1,5 +1,5 @@
 {
-  "about": "What the app writes to the first mate when the captain answers a call (answer_message) or replies to one (reply_message), as src-tauri/src/review.rs writes it. Its tests build each message and compare it with this file, and scripts/calls.test.mjs reads each back with answerOfMessage, so the two ends cannot drift apart.",
+  "about": "What the app writes to the first mate when the captain answers a call (answer_message), replies to one (reply_message), or puts one off to a day (defer_message), as src-tauri/src/review.rs writes it. Its tests build each message and compare it with this file, and scripts/calls.test.mjs reads each back with answerOfMessage, so the two ends cannot drift apart.",
   "answered": [
     {
       "call": "foreman-auto-merge",
@@ -26,6 +26,20 @@
       "call": "foreman-auto-merge",
       "words": "Not now. Ask me again on Oct 3. I want to see the battery numbers first.",
       "text": "The captain replied to call foreman-auto-merge from Bearings, in words; it is kept on the call as the captain's reply, and nothing has recorded it.\nRecord one with bin/fm-captain-hold.sh answer only if the captain's words decide the call (with --key when they name one of its options, and --via quarterdeck); otherwise answer the captain and ask again with bin/fm-captain-hold.sh offer, or hold it with --until when the words put it off to a date. Never infer an answer from the words alone.\nThe captain said: Not now. Ask me again on Oct 3. I want to see the battery numbers first."
+    }
+  ],
+  "deferred": [
+    {
+      "call": "foreman-auto-merge",
+      "until": "2026-10-03",
+      "words": null,
+      "text": "The captain deferred call foreman-auto-merge from Bearings until 2026-10-03; bin/fm-captain-hold.sh defer has already held it with --until 2026-10-03, so it asks the captain again that day.\nTo ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date."
+    },
+    {
+      "call": "res-wifi-drop",
+      "until": "2027-01-04",
+      "words": "Unless the battery numbers land first.",
+      "text": "The captain deferred call res-wifi-drop from Bearings until 2027-01-04; bin/fm-captain-hold.sh defer has already held it with --until 2027-01-04, so it asks the captain again that day.\nTo ask sooner, offer the call again with bin/fm-captain-hold.sh offer, or hold it again to move or lift the date.\nThe captain added words, kept on the call as the captain's reply; nothing has recorded them. Read them before the day comes, since they can change what the deferral means: record an answer with bin/fm-captain-hold.sh answer only if they decide the call, and otherwise answer the captain or ask again. Never infer an answer from the words alone. Once you have read them and the deferral stands, settle them with bin/fm-captain-hold.sh hold res-wifi-drop --reason <its reason> --until 2027-01-04, which keeps it deferred to that day.\nThe captain said: Unless the battery numbers land first."
     }
   ]
 }
