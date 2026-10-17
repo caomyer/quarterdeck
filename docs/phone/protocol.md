@@ -13,7 +13,9 @@ Two files pin both halves to it:
 
 The phone and the Mac sit on the captain's own Tailscale network.
 No service of ours runs anywhere.
-The Mac listens only on its IPv4 addresses in 100.64.0.0/10 on a `utun` interface, the range Tailscale uses (another VPN may use it too), port 47319 unless the invite names another, and only while a phone is paired or an invite is showing.
+The Mac listens only on its tailnet IPv4 addresses, port 47319 unless the invite names another, and only while a phone is paired or an invite is showing.
+Its tailnet is the `utun` interface carrying an IPv6 address in fd7a:115c:a1e0::/48, Tailscale's own prefix, and the listener takes that interface's addresses in 100.64.0.0/10.
+Another VPN that puts an address of that shared range on a tunnel, as Cloudflare WARP does, is never listened on.
 The connection is a WebSocket at `ws://<address>/qd-phone/1`.
 The tailnet already encrypts it; every payload is sealed again with keys pinned at pairing, so nothing depends on trusting the transport.
 
@@ -83,6 +85,11 @@ phone-to-mac key = okm[0..32], mac-to-phone key = okm[32..64], session = okm[64.
 The phone accepts the Mac only if `mac` is the key it pinned and `confirm` opens to `th`: only the Mac holding that key, and while pairing the invite's secret, can produce it.
 The Mac learns the phone holds its key, and the invite's secret, when the phone's frame 0 opens; until then it neither pairs the phone nor counts a session as begun.
 
+Until its frame 0 opens, a connection holds one of 16 places the Mac keeps across every address it listens on.
+When all are held and another connection comes, the place given up is the oldest held by whichever address holds the most, and the newcomer's own address's oldest when it holds as many as any.
+So nobody can keep a phone out by holding connections open or opening them as fast as it can: they displace only their own, and a phone that greets and sends its frame 0 straight away gets through.
+A connection that loses its place is closed without a word.
+
 ## Frames
 
 After the greeting every message is binary, one frame each:
@@ -107,6 +114,7 @@ The phone then opens a session.
 
 A session begins when the phone's frame 0, its first request, opens: until then the Mac neither counts the phone as connected nor notes it as seen, and sends it no events.
 A phone that sends no frame within 30 seconds of `ready` is closed.
+A phone has at most four sessions at once: a fifth closes its oldest, since a phone that changed networks leaves sessions behind that the Mac has not yet found dead.
 
 A request is `{"id": <number the phone picks>, "ask": "<kind>", ...fields}`.
 Its answer is `{"id": n, "ok": true, "result": ...}` or `{"id": n, "ok": false, "problem": "<words for the captain>"}`.
