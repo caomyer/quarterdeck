@@ -110,14 +110,17 @@ run_send() {
     "$SEND" "$@" 2>/dev/null
 }
 
-setup_home() {  # <name> -> echoes a fresh home dir with an empty state/
+setup_home() {  # <name> -> echoes a fresh home dir with an empty state/ and data/
   local home="$TMP_ROOT/$1-$RANDOM"
-  mkdir -p "$home/state"
+  mkdir -p "$home/state" "$home/data"
   printf '%s\n' "$home"
 }
 
+# The data override keeps the drain's captain-hold reports on this home: left
+# unset they resolve the checkout's own data/, absent in a clean clone, and
+# UNRECORDED DECISIONS silently drops out.
 drain_out() {  # <home>
-  FM_STATE_OVERRIDE="$1/state" "$DRAIN" 2>/dev/null
+  FM_STATE_OVERRIDE="$1/state" FM_DATA_OVERRIDE="$1/data" "$DRAIN" 2>/dev/null
 }
 
 # One drain section, heading through its hint line: other sections, such as
