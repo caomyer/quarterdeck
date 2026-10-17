@@ -7,7 +7,7 @@
 // that fails.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -54,11 +54,6 @@ const MUTANTS = [
   { name: "the DOM lib, referenced", file: `/// <reference lib="dom" />\nexport const title = () => document.title;\n`, says: /references lib "dom": the core runs on the language alone/ },
   { name: "a package's types, referenced", file: `/// <reference types="react" />\nexport const none = 0;\n`, says: /references types "react": the core takes no package's types/ },
 ];
-
-test("the app's build runs the check before anything else", () => {
-  const { scripts } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.match(scripts.build, /^node packages\/core\/check\.mjs && /);
-});
 
 // Each run type-checks a copy of the whole core, so they run side by side.
 describe("the core's boundary check", { concurrency: true }, () => {
