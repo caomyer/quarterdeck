@@ -5,7 +5,7 @@ import { Check, ChevronDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { elapsed } from "./calm";
-import type { CalmRead, PickedCategory, SessionCommand, SessionControls, SessionOption } from "./host/types";
+import type { CalmRead, PickedCategory, SessionCommand, SessionControls, SessionOption } from "@quarterdeck/core/types";
 import { categoryName, type Palette, pillState, routeOf, unfitReason, valueLabel, valueName } from "./sessionctl";
 
 /** One line of the palette's header: how many commands, and what the keys do. */

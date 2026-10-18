@@ -10,7 +10,7 @@
  *
  * Pure functions only: no React, no host.
  */
-import type { Artifact, BacklogRecord, BearingsSnapshot, Call, CallAnswer, CallReply, FleetSnapshot, IntakeResult } from "./host/types";
+import type { Artifact, BacklogRecord, BearingsSnapshot, Call, CallAnswer, CallReply, FleetSnapshot, IntakeResult } from "./types";
 
 /**
  * The calls this page argues, in the order the snapshot lists them: those whose evidence opens it, by naming it or as

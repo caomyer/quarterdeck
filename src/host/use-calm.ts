@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { CalmRead, HostAdapter, HostRuntimeState } from "./types";
+import type { CalmRead, HostAdapter, HostRuntimeState } from "@quarterdeck/core/types";
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);

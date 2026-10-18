@@ -6,7 +6,7 @@
  *
  * A message is words and nothing else: the outbox, a re-send and a resumed history all carry text, and the adapter
  * flattens any structured block to text before the model sees it. So the reply rides as a block the app writes before
- * the captain's words, the way the attached-files block (`src/attachments.ts`) rides after them. This module is the
+ * the captain's words, the way the attached-files block (`packages/core/src/attachments.ts`) rides after them. This module is the
  * one place that writes that block and the one place that reads it back. Every line in it states a fact the app
  * captured, never its reading of what the captain meant: a thing goes as `meant` only when the captain picked it or
  * pointed at a card, and everything else found goes as `named`. `engine/AGENTS.md` tells the first mate how to read
@@ -15,7 +15,7 @@
  * A reply points at its place by words, never by a message id, since ids do not survive a relaunch: the quote and the
  * text around it, latest match first, and nothing rather than a near miss. That is how a page review finds a place too.
  */
-import type { Artifact, BacklogRecord, Call, FleetSnapshot } from "./host/types";
+import type { Artifact, BacklogRecord, Call, FleetSnapshot } from "./types";
 
 export const REPLY_HEADING = "↩ The captain is replying to a place in this chat. It comes first; the captain's words follow the rule.";
 export const REPLY_RULE = "──";

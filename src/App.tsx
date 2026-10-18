@@ -49,12 +49,12 @@ import remarkGfm from "remark-gfm";
 
 import { type Artifact, type ArtifactRef, type ArtifactRevision, type BacklogRecord, type Call, type CallReplied, type CallReply, createHostAdapter, type ProjectHistory, type Landed, type FleetTask, type TaskEdit, type TaskEdited, type HostRuntimeState, type Needed, type ReasonKind, type SentReview, type SentThread, type CommentPicture, type PageBox, type PagePicture, type PictureReason, type ReviewAnchor, type ReviewDelivery, type ReviewSummary, type ReviewThread, type AnswerWords, type ReviewVerdict, type ReviewView, type SourcesRead, type StartAsk, type StartMode, type TakeOnAsk, type TaskFile, type TaskNote } from "./host";
 import { Camera, CameraOff, CheckCheck, RotateCcw, Shapes } from "lucide-react";
-import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "./attachments";
-import { type BodyBlock, bodyBlocks, type Span } from "./taskbody";
+import { type Attachment, formatBytes, type PickedFile, splitAttachments, withAttachments } from "@quarterdeck/core/attachments";
+import { type BodyBlock, bodyBlocks, type Span } from "@quarterdeck/core/taskbody";
 import { callProject, filterLog, landedWithin, type LogEntry, logCounts, logEntries, type LogFilter, logPeriods, outcomeLine, shortDay, upNext } from "./logbook";
-import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, askAgainDay, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, heldUntil, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "./calls";
-import { latestTime, pagePlaces } from "./chatorder";
-import { answerCardView, callCardView, callLine, type EarlierWords } from "./callviews";
+import { answeredBy, answeredByCaptain, answerInWords, answerOfMessage, askAgainDay, argumentOf, awaitsCaptain, callsArguedBy, callStanding, callsInChat, decidedForCaptain, type CallStanding, type Evidence, heldUntil, homeCalls, type IntakeNote, evidenceBeside, isOpen, latestTaskPage, linkLabel, type MessageAnswer, openCalls, pageOf, readLabel, optionsUpdatedSince, recommended, replyOf, resolveEvidence, stillOffered } from "@quarterdeck/core/calls";
+import { latestTime, pagePlaces } from "@quarterdeck/core/chatorder";
+import { answerCardView, callCardView, callLine, type EarlierWords } from "@quarterdeck/core/callviews";
 import { AnswerCard, CallLineCard, CallOpenCard, EvidenceLine } from "./CallCards";
 import { askedHow, askWantsReading, BUSY, judgeDetail, launchedAt, lighterReason, MODE_CHOICES, modeLine, postureHint, type StartInputs, type StartPhase, startPhase, wantsFreshReading, wantsReadingAfterTurn } from "./start";
 import type { ScenePlace, SceneProposal } from "./SceneEditor";
@@ -63,14 +63,15 @@ import { PhoneSettings } from "./Phones";
 import { IntakeSection, LinkField, SourceChips, SourcesSettings, UpstreamSections } from "./TaskSources";
 import { PriorityBadge, TaskList, type UnderwayStatus } from "./TaskList";
 import { type DetailsLock, TaskChain, TaskDetails, WaitingOnThis } from "./TaskDetails";
-import { standingOf } from "./tasks";
-import { collapse, commandOf, type FleetRead, knownThings, mateReplyOf, type MateReply, pageId, type Place, type ReplyDraft, replyBlock, splitReply, withReply } from "./replyto";
+import { standingOf } from "@quarterdeck/core/tasks";
+import { collapse, commandOf, type FleetRead, knownThings, mateReplyOf, type MateReply, pageId, type Place, type ReplyDraft, replyBlock, splitReply, withReply } from "@quarterdeck/core/replyto";
 import { CARDS, blockStretch, MateReplyHeader, placeAt, ReplyAffordances, ReplyHeader, ReplyStrip, selectionStretch, SentThings, showPlace, typing, unitOf, useSelectionChange, wordsOf } from "./Replies";
 import { askKey, linkViews, offerRows, type OfferRow, sourcesOf } from "./sources";
 
 /** Excalidraw is a few megabytes, so nothing of it loads until a diagram is opened. */
 const SceneEditor = lazy(() => import("./SceneEditor").then((module) => ({ default: module.SceneEditor })));
-import { type ChatMessage, type HealthWarning, type OutboxView, type PermissionView, type RewakeStorm, type SnapshotHealth, useHost } from "./host/use-host";
+import type { ChatMessage, HealthWarning, OutboxView, PermissionView, RewakeStorm, SnapshotHealth } from "@quarterdeck/core/conversation";
+import { useHost } from "./host/use-host";
 import { useCalm } from "./host/use-calm";
 import { useQuota } from "./host/use-quota";
 import { useUpdate } from "./host/use-update";
@@ -78,7 +79,7 @@ import { UpdateNotice } from "./UpdateNotice";
 import { Usage } from "./UsagePanel";
 import { PipelineBlock, pipelineChip, waitingOf } from "./PipelineStatus";
 import { calmHidden } from "./calm";
-import type { CalmRead, PickedCategory, SessionCommand, SessionControls } from "./host/types";
+import type { CalmRead, PickedCategory, SessionCommand, SessionControls } from "@quarterdeck/core/types";
 import { CalmPill, GhostHint, type SessionNotice, SessionNotices, SessionPills, SlashPalette, WorkingRow } from "./SessionControls";
 import { fill, ghostHint, palette as paletteFor, routeOf, typedCommand, typedSetting } from "./sessionctl";
 
@@ -2265,7 +2266,7 @@ function chatItems(messages: ChatMessage[], artifacts: Artifact[], reviews: Revi
     // A new lifecycle is a new card, so nothing from an earlier ask of the same call carries into it.
     ...callsInChat(calls, now).map(({ call, at }): Timed => ({ at, item: { type: "call", id: `call-${call.id}-${call.raised_at}`, call } })),
   ].sort((a, b) => a.at - b.at);
-  // Nothing ever renders below a message newer than it: pagePlaces (src/chatorder.ts) holds that, from the bounds.
+  // Nothing ever renders below a message newer than it: pagePlaces (packages/core/src/chatorder.ts) holds that, from the bounds.
   const places = pagePlaces(messages.map((message) => latestTime(message, sent.get(message.id)?.review.at)), shown.map(({ at }) => at));
   const pages = shown.map((page, index) => ({ ...page, place: places[index] }));
   const pushPages = (place: number) => {

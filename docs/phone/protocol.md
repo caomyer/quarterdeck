@@ -132,7 +132,7 @@ A request with a field its kind does not have, or a kind not listed here, is ref
 | `discard` | `page`, `thread` | Takes back a draft comment. |
 | `send_review` | `page`, `rev`, `verdict` (`approve`, `changes`, `comment`) | The desktop's Send review. |
 | `chat` | `limit`? (1 to 200, 40 by default) | The recent conversation: the captain's words and the first mate's. |
-| `say` | `text` | A message to the first mate. A reply to a place in the chat carries the block `src/replyto.ts` writes, before the captain's words. Words starting with `/` are a command for the first mate's session and are refused: those come only from the Mac. |
+| `say` | `text` | A message to the first mate. A reply to a place in the chat carries the block `packages/core/src/replyto.ts` writes, before the captain's words. Words starting with `/` are a command for the first mate's session and are refused: those come only from the Mac. |
 
 `page` is `{"scope": "task", "task": "<task id>", "name": "<page>"}` or `{"scope": "chat", "name": "<page>"}`.
 

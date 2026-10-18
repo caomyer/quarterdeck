@@ -1,11 +1,11 @@
-// Unit tests for src/tasks.ts, which decides what a task list shows, in what order, and what each task waits on.
+// Unit tests for packages/core/src/tasks.ts, which decides what a task list shows, in what order, and what each task waits on.
 //
 //   pnpm test
 //
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { daysSince, downstreamOf, groupSections, groupsFor, loopsIn, loopThrough, openRows, priorityIsSet, priorityLevel, standingOf, startHere, startRanks, taskGraph, taskRows, upstreamOf, upstreamTree, viewCounts } from "../src/tasks.ts";
+import { daysSince, downstreamOf, groupSections, groupsFor, loopsIn, loopThrough, openRows, priorityIsSet, priorityLevel, standingOf, startHere, startRanks, taskGraph, taskRows, upstreamOf, upstreamTree, viewCounts } from "@quarterdeck/core/tasks";
 
 let order = 0;
 /** A row as firstmate's parser writes it, with the start-order fields left for the test to give or leave out. */

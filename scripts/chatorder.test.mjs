@@ -1,11 +1,11 @@
-// Unit tests for src/chatorder.ts, which places the chat's pages among its messages.
+// Unit tests for packages/core/src/chatorder.ts, which places the chat's pages among its messages.
 //
 //   pnpm test
 //
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { latestTime, pagePlaces } from "../src/chatorder.ts";
+import { latestTime, pagePlaces } from "@quarterdeck/core/chatorder";
 
 const NOW = Date.parse("2026-09-24T06:52:00Z");
 const ago = (minutes) => NOW - minutes * 60_000;

@@ -5,7 +5,7 @@
  * rows. This module joins the two, says what each row delivered, and files the rows by period. It never decides
  * whether a call was answered: that is read from the call itself, as everywhere else.
  */
-import type { BacklogRecord, Call } from "./host/types";
+import type { BacklogRecord, Call } from "@quarterdeck/core/types";
 
 /** What a closed task left behind. `closed` is a row that delivered nothing: dropped, superseded, merged away. */
 export type LogKind = "shipped" | "report" | "decision" | "closed";

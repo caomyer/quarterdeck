@@ -9,7 +9,7 @@
  * The list is generic: it takes a filter, and a project page mounts it filtered to that project. Nothing here knows
  * where it is mounted.
  */
-import type { BacklogRecord } from "./host/types";
+import type { BacklogRecord } from "./types";
 
 /** What a list is mounted with. A project page passes its project; a list of everything passes nothing. */
 export type TaskFilter = { project?: string | null };

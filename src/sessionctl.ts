@@ -1,7 +1,7 @@
 // How the composer reads the first mate's session: the slash palette, drawn from the commands the session
 // advertises, and the model and effort it offers. Nothing here keeps a list of its own; every name, hint and value
 // comes from the adapter through the host (src-tauri/src/controls.rs).
-import type { PickedCategory, SessionCommand, SessionControls, SessionOption } from "./host/types";
+import type { PickedCategory, SessionCommand, SessionControls, SessionOption } from "@quarterdeck/core/types";
 
 /** What the palette shows for a draft: nothing, the matching commands, or why there are none. */
 export type Palette =

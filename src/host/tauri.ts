@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { CopyResult, PickResult } from "../attachments";
-import { artifactPath } from "./types";
-import type { CalmRead, PickedCategory, SessionControls } from "./types";
-import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CallReplied, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, PhoneChange, PhoneInvite, PhoneStatus, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskEdit, TaskEdited, TaskFile, TaskNotes, TaskSource } from "./types";
+import type { CopyResult, PickResult } from "@quarterdeck/core/attachments";
+import { artifactPath } from "@quarterdeck/core/types";
+import type { CalmRead, PickedCategory, SessionControls } from "@quarterdeck/core/types";
+import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CallReplied, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, PhoneChange, PhoneInvite, PhoneStatus, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskEdit, TaskEdited, TaskFile, TaskNotes, TaskSource } from "@quarterdeck/core/types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [

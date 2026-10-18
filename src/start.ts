@@ -7,7 +7,7 @@
  * entry. Above all, a worker is Working only when the snapshot has seen its agent alive (`endpoint.status`, which
  * `fm-fleet-snapshot.sh` reads through the process-level probe), never because a spawn returned or a pane exists.
  */
-import type { BacklogRecord, FleetTask, HostRuntimeState, StartAsk, StartMode } from "./host/types";
+import type { BacklogRecord, FleetTask, HostRuntimeState, StartAsk, StartMode } from "@quarterdeck/core/types";
 
 /** How long after a launch the drawer waits for its agent before saying it did not start, or that it cannot tell. */
 export const LAUNCH_GRACE_MS = 2 * 60_000;
@@ -30,7 +30,7 @@ export const LAUNCH_GRACE_MS = 2 * 60_000;
  */
 export type StartPhase = "queued" | "offline" | "held" | "asked" | "not_sent" | "not_started" | "starting" | "working" | "didnt_start" | "unconfirmed" | "orphaned" | "in_flight" | "underway" | "closed";
 
-/** The outbox's word on the ask's message, as `use-host.ts` keeps it. */
+/** The outbox's word on the ask's message, as `conversation.ts` keeps it. */
 export type AskDelivery = { status: string; readAt?: string; errorKind?: "not_sent" | "failed"; error?: string };
 
 export type StartInputs = {

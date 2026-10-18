@@ -1,7 +1,7 @@
 import { ArrowUpCircle, ChevronRight, CircleAlert, CircleCheck, CircleOff, RefreshCw } from "lucide-react";
 import { useState } from "react";
 
-import type { AppUpdate, HostRuntimeState } from "./host/types";
+import type { AppUpdate, HostRuntimeState } from "@quarterdeck/core/types";
 import { checkView, updateView, type UpdateView } from "./update";
 import { useNow } from "./use-now";
 import { ago } from "./usage";

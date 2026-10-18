@@ -18,7 +18,7 @@
  *   `unconnected` a queued row linked to a source this home has not connected
  *   `lost`        the as-filed copies lost with the cache, as after `state/` was cleared
  */
-import type { BacklogRecord, FleetTask, SourceFiled, SourceItem, SourceLink, SourcesRead, SourceWrite, TaskSource } from "./types";
+import type { BacklogRecord, FleetTask, SourceFiled, SourceItem, SourceLink, SourcesRead, SourceWrite, TaskSource } from "@quarterdeck/core/types";
 
 export const MOCK_SOURCE = "github:caomyer/resonance";
 const REPO = "caomyer/resonance";

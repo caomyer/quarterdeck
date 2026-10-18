@@ -1,4 +1,4 @@
-import type { CopyResult, PickResult } from "../attachments";
+import type { CopyResult, PickResult } from "./attachments";
 
 export type BearingsTask = {
   id: string;

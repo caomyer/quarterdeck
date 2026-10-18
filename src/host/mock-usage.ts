@@ -11,7 +11,7 @@
 //   missing    quota-axi is not installed
 //   compact-fails  Compact now runs and Claude Code says it could not compact
 
-import type { ContextReading, QuotaProvider, QuotaRead, RateLimit } from "./types";
+import type { ContextReading, QuotaProvider, QuotaRead, RateLimit } from "@quarterdeck/core/types";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;

@@ -1,4 +1,4 @@
-// Unit tests for src/pipeline.ts, which reads a task's pipeline status from the snapshot, and for the `?pipeline` mock
+// Unit tests for packages/core/src/pipeline.ts, which reads a task's pipeline status from the snapshot, and for the `?pipeline` mock
 // it is reviewed against.
 //
 //   pnpm test
@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { mockPipeline, PIPELINE_CASES } from "../src/host/mock-pipeline.ts";
-import { chipOf, fixRound, gateLine, hasRail, headline, howItShips, prLine, railNote, railOf, readAge, sourceLine, STEPS, waitingOf } from "../src/pipeline.ts";
+import { chipOf, fixRound, gateLine, hasRail, headline, howItShips, prLine, railNote, railOf, readAge, sourceLine, STEPS, waitingOf } from "@quarterdeck/core/pipeline";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 

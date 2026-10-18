@@ -3,7 +3,7 @@
 // session after every turn; plan limits belong to each account and come from quota-axi. The panel
 // never mixes their numbers, and a reading it does not have says so rather than showing 0%.
 
-import type { ContextReading, QuotaProvider, QuotaRead, QuotaWindow, RateLimit } from "./host/types";
+import type { ContextReading, QuotaProvider, QuotaRead, QuotaWindow, RateLimit } from "@quarterdeck/core/types";
 
 /** How loud a number is: quiet, amber, or coral. */
 export type Level = "" | "warn" | "over";

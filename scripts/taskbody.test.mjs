@@ -1,9 +1,9 @@
-// Unit tests for src/taskbody.ts, how a backlog row's body is read the way its filer wrote it.
+// Unit tests for packages/core/src/taskbody.ts, how a backlog row's body is read the way its filer wrote it.
 //
 //   pnpm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bodyBlocks, spans } from "../src/taskbody.ts";
+import { bodyBlocks, spans } from "@quarterdeck/core/taskbody";
 
 const plain = (text) => [{ code: false, text }];
 

@@ -8,7 +8,7 @@
  * they are never silently lost. A file the form cannot show at all is said so, and edited as JSON instead.
  */
 
-import type { HarnessChoice } from "./host/types";
+import type { HarnessChoice } from "@quarterdeck/core/types";
 
 type Json = Record<string, unknown>;
 export type Profile = Json;

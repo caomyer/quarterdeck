@@ -11,7 +11,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "@playwright/test";
-import { splitReply } from "../src/replyto.ts";
+import { splitReply } from "@quarterdeck/core/replyto";
 
 const baseUrl = process.env.FIRSTMATE_URL;
 if (!baseUrl) throw new Error("Set FIRSTMATE_URL to the Vite server you started yourself, for example http://127.0.0.1:4194. Other agents run servers from this checkout, so there is no safe default.");
