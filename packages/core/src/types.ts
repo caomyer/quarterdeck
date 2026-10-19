@@ -1,4 +1,4 @@
-import type { CopyResult, PickResult } from "../attachments";
+import type { CopyResult, PickResult } from "./attachments";
 
 export type BearingsTask = {
   id: string;
@@ -184,8 +184,8 @@ export type CallAnswer = {
 };
 
 /**
- * The captain's words on a call that nothing has recorded yet, kept by `bin/fm-captain-hold.sh reply`: words, a dated
- * not now, or an option the call cannot take by key. It records that the captain replied, never what he decided, and
+ * The captain's words on a call that nothing has recorded yet, kept by `bin/fm-captain-hold.sh reply`: words, words
+ * added to a dated not now, or an option the call cannot take by key. It records that the captain replied, never what he decided, and
  * only the first mate acting clears it, by recording an answer, asking again, or holding the call.
  */
 export type CallReply = {
@@ -198,6 +198,13 @@ export type CallReply = {
   /** The reply this one replaced, while nothing has cleared it. */
   previous?: Omit<CallReply, "previous"> | null;
 };
+
+/**
+ * The captain's dated not now, carried out by `bin/fm-captain-hold.sh defer`: the call is held until `until`
+ * (`yyyy-mm-dd`, the captain's day it asks again), and `message` is the one that told the first mate, once one has.
+ * It stays on the record as the last deferral; whether the call is still held is the hold's to say.
+ */
+export type CallDeferred = { until: string; via: string; at: string; message: string | null };
 
 /** Why the first mate settled a call for the captain, on a call raised and answered by `decide`. */
 export type CallDecided = { what: string; why: string; kind?: string | null; link?: string | null };
@@ -218,6 +225,8 @@ export type Call = {
   state: "open" | "answered" | "closed";
   bucket?: string | null;
   captain_actionable?: boolean;
+  /** The day the hold in force lifts, `yyyy-mm-dd`, whoever set it, null once it has come; another `hold` moves or clears it. */
+  hold_until?: string | null;
   /**
    * The earliest day Not now can name, `yyyy-mm-dd`: the day after the captain's day. Set by `homeCalls` from the
    * snapshot, never by firstmate; absent when the snapshot carries no captain's day.
@@ -237,6 +246,8 @@ export type Call = {
   decided: CallDecided | null;
   /** The captain's reply while the call is open and nothing has recorded it; absent from a firstmate that predates replies. */
   reply?: CallReply | null;
+  /** The last dated not now `defer` carried out on it, kept as history: it holds the call only while `hold_until` is its day. */
+  deferred?: CallDeferred | null;
 };
 
 /**
@@ -360,13 +371,16 @@ export type IntakeOutcome = { call: string; result: IntakeResult; detail: string
  * in words, or `defer` the date to be asked again on, and the first mate records it. `sent_at` is when the first
  * mate was told.
  */
-export type ReviewAnswer = { decision: string; option: string | null; label: string | null; on_answer?: string | null; note?: string | null; defer?: string | null; at: number; sent_at: number | null; /** Whether the first mate has been told of the review that carried it. */ told?: boolean; recorded?: { result: IntakeResult; detail: string; at: number } | null; /** Whether firstmate kept an answer in words on its call as the captain's reply, as the review went. */ reply?: { result: "kept" | "not_kept"; detail: string } | null };
+export type ReviewAnswer = { decision: string; option: string | null; label: string | null; on_answer?: string | null; note?: string | null; defer?: string | null; at: number; sent_at: number | null; /** Whether the first mate has been told of the review that carried it. */ told?: boolean; recorded?: { result: IntakeResult; detail: string; at: number } | null; /** Whether firstmate kept an answer in words on its call as the captain's reply, or, for a dated not now, held the call until its day (`deferred`, the day in `detail`), as the review went. */ reply?: { result: "kept" | "not_kept" | "deferred"; detail: string } | null };
 /** What the captain said in words with an answer: anything added to an option, or, with none, the answer itself, or a date. */
 export type AnswerWords = { note?: string; defer?: string };
 /** What sending a review did: the message (null if it could not go), and what the intake did with each answer. */
 export type ReviewSubmitted = { message: string | null; text: string; review: ReviewView; outcomes?: IntakeOutcome[]; /** Reviews its author already had, told to the first mate before anything new went. */ retold?: { message: string; text: string }[]; warning?: string };
-/** What replying to a call from Bearings did: kept on the call or not, and whether the first mate was told. */
-export type CallReplied = { kept: boolean; problem?: string; message: string | null; text: string | null; warning?: string };
+/**
+ * What replying to a call from Bearings did: kept on the call or not, and whether the first mate was told. A dated not
+ * now is `deferred` too when firstmate's `defer` held the call; a firstmate older than it keeps the date as words.
+ */
+export type CallReplied = { kept: boolean; deferred?: boolean; problem?: string; message: string | null; text: string | null; warning?: string };
 /** What answering a call from Bearings did. `message` is null when nothing was told to the first mate. */
 export type CallAnswered = { outcome: IntakeOutcome; message: string | null; text: string | null; review: ReviewView | null; warning?: string };
 /** What the list needs about a page's review, keyed `task/<id>/<name>` or `chat/<name>`. */
@@ -483,7 +497,7 @@ export type HostEvent =
   | { type: "prompt_result"; payload: { id: string; stop_reason?: string; error?: string | null; usage?: Record<string, number> } }
   | { type: "usage"; payload: UsageEvent }
   | { type: "compact"; payload: CompactEvent }
-  | { type: "permission"; payload: Record<string, unknown> }
+  | { type: "permission"; payload: { title?: string; chose?: string; /** The kind of the option the host answered with, as the adapter offered it. */ kind?: string | null } }
   | { type: "permission_request"; payload: PermissionRequest }
   | { type: "permission_resolved"; payload: { id: string; option_id: string } }
   | { type: "host_health"; payload: { warning?: string; rewake_storm?: boolean; [key: string]: unknown } }
@@ -690,6 +704,21 @@ export type HarnessChoice = {
 /** Where a newly turned-on routing's rules come from: the shipped example, none yet, or the rules set aside when it was turned off. */
 export type RoutingStart = "template" | "empty" | "restore";
 
+/** A phone paired with this Mac, as `src-tauri/src/phone/` keeps it. Times are unix milliseconds. */
+export type PairedPhone = { id: string; name: string; paired_at: number; last_seen: number | null; connected: boolean };
+
+/** The phone link: the paired phones, whether an invite is showing, and whether this Mac is on a Tailscale network. */
+export type PhoneStatus = { phones: PairedPhone[]; invite_expires_at: number | null; listening: string[]; tailnet: boolean };
+
+/** What the phone link says each time a phone pairs, connects, leaves or is revoked, or an invite shows or goes. */
+export type PhoneChange = Pick<PhoneStatus, "phones" | "invite_expires_at">;
+
+/**
+ * A one-time invite, shown as a QR the phone scans: what it carries (`docs/phone/protocol.md`) and the QR's modules,
+ * a row at a time, `1` for dark.
+ */
+export type PhoneInvite = { expires_at: number; offer: Record<string, unknown>; qr: { width: number; rows: string[] } };
+
 export type PaneCapture = { text: string; observed_at?: string };
 export type HostEventListener = (event: HostEvent) => void;
 
@@ -741,6 +770,15 @@ export interface HostAdapter {
   /** Stores the optional typed dispatch key in the home. Write-only: the reply says only that a key is set. */
   routingSetKey(key: string): Promise<Routing>;
   routingClearKey(): Promise<Routing>;
+  /** The paired phones and any invite showing. Reads only. */
+  phoneStatus(): Promise<PhoneStatus>;
+  /** Shows a new invite, replacing any other. Refused, with why, when this Mac is not on a Tailscale network. */
+  phoneInvite(): Promise<PhoneInvite>;
+  phoneInviteCancel(): Promise<PhoneStatus>;
+  /** Forgets a phone and cuts it off at once. */
+  phoneRevoke(id: string): Promise<PhoneStatus>;
+  /** Every change to the paired phones or the invite. Returns what stops listening. */
+  onPhones(listener: (change: PhoneChange) => void): () => void;
   /** Every provider's plan limits, from quota-axi. Reads only. */
   readQuota(): Promise<QuotaRead>;
   /** Reads plan limits once with quota-axi allowed to ask macOS for Claude's Keychain item. Only when the captain asks. */
@@ -797,6 +835,11 @@ export interface HostAdapter {
    * only then is the first mate told, naming the call. Words firstmate would not keep send nothing.
    */
   callReply(call: string, words: string): Promise<CallReplied>;
+  /**
+   * Puts one call off to a day from Bearings: firstmate's `defer` holds it until `until` and keeps any words the captain
+   * added as his reply, and only then is the first mate told what was done. A deferral firstmate refuses sends nothing.
+   */
+  callDefer(call: string, until: string, words: string | null): Promise<CallReplied>;
   /** Settles a sent comment, or opens it again. */
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean): Promise<ReviewView>;
   /** Remembers that the captain has looked at a revision, so a later one reads as new. */

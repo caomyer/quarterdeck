@@ -9,6 +9,7 @@ mod host;
 #[cfg(test)]
 mod host_e2e;
 mod notes;
+mod phone;
 mod quota;
 mod review;
 mod routing;
@@ -39,9 +40,16 @@ pub fn run() {
       std::thread::spawn(|| {
         let _ = envpath::search_path();
       });
-      app.manage(snapshot::SnapshotHandle::spawn(app.handle().clone()));
-      app.manage(host::HostHandle::spawn(app.handle().clone()));
-      app.manage(review::Writes::default());
+      let snapshots = snapshot::SnapshotHandle::spawn(app.handle().clone());
+      let host = host::HostHandle::spawn(app.handle().clone());
+      let writes = review::Writes::default();
+      // The phone gets the first mate only as something to tell, never the host itself.
+      let homes = app.handle().clone();
+      let desk = phone::Desk::new(std::sync::Arc::new(move || settings::saved_home(&homes)), host.messenger(), snapshots.reader(), writes.clone());
+      app.manage(phone::Link::spawn(app.handle(), desk));
+      app.manage(snapshots);
+      app.manage(host);
+      app.manage(writes);
       app.manage(start::Asks::default());
       app.manage(quota::Quota::default());
       app.manage(update::Updates::default());
@@ -98,6 +106,7 @@ pub fn run() {
       review::review_scene,
       review::call_answer,
       review::call_reply,
+      review::call_defer,
       start::start_work,
       start::start_asks,
       start::take_on,
@@ -114,6 +123,10 @@ pub fn run() {
       update::update_restart,
       update::update_cancel,
       update::update_seen,
+      phone::phone_status,
+      phone::phone_invite,
+      phone::phone_invite_cancel,
+      phone::phone_revoke,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application");

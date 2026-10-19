@@ -18,7 +18,7 @@
 //   ?turn=1..5  one turn held at a moment: 1 sent, 2 first tools, 3 still working, 4 reply arriving, 5 settled
 //   ?turn=play  the same turn played through, a few seconds a moment
 import captured from "../fixtures/session-controls.json";
-import type { CalmRead, HostEvent, PickedCategory, SessionCommand, SessionControls, SessionOption } from "./types";
+import type { CalmRead, HostEvent, PickedCategory, SessionCommand, SessionControls, SessionOption } from "@quarterdeck/core/types";
 
 const scenario = () => new URLSearchParams(window.location.search).get("session");
 

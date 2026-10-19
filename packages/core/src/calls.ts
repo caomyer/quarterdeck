@@ -10,7 +10,7 @@
  *
  * Pure functions only: no React, no host.
  */
-import type { Artifact, BacklogRecord, BearingsSnapshot, Call, CallAnswer, CallReply, FleetSnapshot, IntakeResult } from "./host/types";
+import type { Artifact, BacklogRecord, BearingsSnapshot, Call, CallAnswer, CallReply, FleetSnapshot, IntakeResult } from "./types";
 
 /**
  * The calls this page argues, in the order the snapshot lists them: those whose evidence opens it, by naming it or as
@@ -205,6 +205,15 @@ export function askAgainDay(date: string) {
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${date}T12:00:00`));
 }
 
+/**
+ * The day an open call is held to by the hold in force, or null when nothing holds it to a day still to come. It reads
+ * the row's own `hold_until`, which firstmate lists only while that day is still to come, blocked or not, and never
+ * the deferral record, which no later hold rewrites.
+ */
+export function heldUntil(call: Call) {
+  return call.state === "open" && call.hold_until ? call.hold_until : null;
+}
+
 /** An answer in words, as every surface says it: not now until a day, what the captain wrote, or both. */
 export function answerInWords(defer: string | null | undefined, note: string) {
   const words = note.trim();
@@ -278,19 +287,28 @@ export function stillOffered(call: Call, pick: { key: string; label: string }) {
 
 /**
  * A captain's message the app wrote to answer a call, read back from its words, which is all a resumed conversation
- * keeps. The app owns both ends of these lines (`answer_message` and `reply_message` in `src-tauri/src/review.rs`),
+ * keeps. The app owns both ends of these lines (`answer_message`, `reply_message` and `defer_message` in `src-tauri/src/review.rs`),
  * so this reads the app's own format, never the first mate's prose, and anything else is not an answer.
  *
  * - `recorded`: an option recorded through the intake from Bearings or the chat, with anything the captain added.
  * - `replied`: the captain's words kept on the call for the first mate to record.
+ * - `deferred`: not now until `until`, already held by firstmate's `defer`, with any words he added, kept as his reply.
  */
 export type MessageAnswer =
   | { kind: "recorded"; call: string; key: string; label: string; note: string | null }
-  | { kind: "replied"; call: string; words: string };
+  | { kind: "replied"; call: string; words: string }
+  | { kind: "deferred"; call: string; until: string; words: string | null };
 
 const ANSWERED_HEADER = "The captain answered a call from Bearings.";
 const RECORDED_LINE = /^Recorded: (\S+) = (\S+)(?: \("(.*)"\))?$/;
 const REPLIED_HEADER = /^The captain replied to call (\S+) from Bearings, in words;/;
+const DEFERRED_HEADER = /^The captain deferred call (\S+) from Bearings until (\d{4}-\d{2}-\d{2});/;
+
+/** What a message says the captain said, from its `The captain said: ` line to the end, or "" without one. */
+function saidIn(lines: string[]) {
+  const said = lines.findIndex((line) => line.startsWith("The captain said: "));
+  return said < 0 ? "" : [lines[said].slice("The captain said: ".length), ...lines.slice(said + 1)].join("\n").trim();
+}
 
 export function answerOfMessage(text: string, calls: Call[] = []): MessageAnswer | null {
   const lines = text.split("\n");
@@ -301,11 +319,9 @@ export function answerOfMessage(text: string, calls: Call[] = []): MessageAnswer
     return { kind: "recorded", call: recorded[1], key: recorded[2], label: recorded[3] ?? recorded[2], note: added ? added.trimStart().slice("The captain added: ".length) : null };
   }
   const replied = lines[0].match(REPLIED_HEADER);
-  if (replied) {
-    const said = lines.findIndex((line) => line.startsWith("The captain said: "));
-    const words = said < 0 ? "" : [lines[said].slice("The captain said: ".length), ...lines.slice(said + 1)].join("\n").trim();
-    return { kind: "replied", call: replied[1], words };
-  }
+  if (replied) return { kind: "replied", call: replied[1], words: saidIn(lines) };
+  const deferred = lines[0].match(DEFERRED_HEADER);
+  if (deferred) return { kind: "deferred", call: deferred[1], until: deferred[2], words: saidIn(lines) || null };
   // Before replies were kept on the call, the app sent words as `On the <call id, spaced>: ...`.
   const earlier = text.match(/^on the ([^:\n]+):\s*/i);
   const call = earlier && calls.find((candidate) => candidate.id.replaceAll("-", " ").toLowerCase() === earlier[1].trim().toLowerCase());

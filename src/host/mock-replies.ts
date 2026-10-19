@@ -4,11 +4,11 @@
 //   ?chat-reply               the conversation, and the fleet read
 //   ?chat-reply=fleet-failed  the same, but the last fleet read failed, so nothing a place names can be checked
 //
-// The replies already in the conversation are written by src/replyto.ts itself, as the app sent them: one whose place
+// The replies already in the conversation are written by packages/core/src/replyto.ts itself, as the app sent them: one whose place
 // is still on screen, one whose place went with an earlier conversation and whose task has left the board, one whose
 // call was recorded since, and a block cut short, which the chat shows as raw words.
-import { type FleetRead, type Place, replyBlock, withReply } from "../replyto";
-import type { BacklogRecord, Call, FleetSnapshot, HistoryItem } from "./types";
+import { type FleetRead, type Place, replyBlock, withReply } from "@quarterdeck/core/replyto";
+import type { BacklogRecord, Call, FleetSnapshot, HistoryItem } from "@quarterdeck/core/types";
 
 const minutes = (ago: number) => new Date(Date.now() - ago * 60_000).toISOString().replace(/\.\d{3}Z$/, "Z");
 

@@ -1,6 +1,6 @@
 /**
  * Replying to a place in the chat, as the captain sees it: the arrow on a paragraph, item or card, the strip above
- * the draft, the header a sent reply carries, and its things' chips. What a reply says is `src/replyto.ts`'s alone;
+ * the draft, the header a sent reply carries, and its things' chips. What a reply says is `packages/core/src/replyto.ts`'s alone;
  * this file only finds places on screen and draws what that module wrote or read.
  */
 import { CornerUpLeft, X } from "lucide-react";
@@ -8,7 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   chipState, type DrawnMessage, findPlace, type FleetRead, type Found, ownerLabel, prNumber, type ReplyDraft, resolve, type SentReply, type SentThing,
   type Thing, thingKey, type UnitKind,
-} from "./replyto";
+} from "@quarterdeck/core/replyto";
 
 /** The blocks of a message a reply can point at: the markdown's own, and a list's items one by one. */
 const PLACES = "li, h1, h2, h3, h4, h5, h6, p, pre, blockquote, table";

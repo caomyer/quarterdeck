@@ -45,6 +45,9 @@
   /* Text sitting on an accent fill. White clears 4.5:1 on the light --sea. */
   --on-accent: #ffffff;
   /* Brand gold: the mark, the project sigils, and the Ahoy card's wash. */
+  /* A QR reads dark on light for every camera, so it keeps these in both themes. */
+  --qr-ink: #101a18;
+  --qr-paper: #ffffff;
   --brand: #e7b85c;
   --brand-ink: #8a6115;
   --brand-wash: #fbf4e4;
@@ -1065,6 +1068,31 @@ button.reply-header:hover .reply-header-quote { color: var(--ink-2); text-decora
 .routing-rules { display: block; width: 100%; min-height: 220px; max-height: 42vh; resize: vertical; padding: 11px 13px; border: 1px solid var(--control); border-radius: 10px; outline: 0; color: var(--ink); background: var(--surface); font: 12px/1.55 var(--mono); tab-size: 2; white-space: pre; overflow: auto; }
 .routing-rules:focus { border-color: var(--sea); }
 .routing-rules:disabled { color: var(--muted); }
+.phones { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 12px; padding-top: 18px; border-top: 1px solid var(--rule); }
+.phones-head { display: flex; flex-direction: column; gap: 6px; }
+.phone-list { display: flex; width: 100%; flex-direction: column; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); list-style: none; }
+.phone-row { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 10px 12px 10px 14px; }
+.phone-row + .phone-row { border-top: 1px solid var(--rule); }
+.phone-row-icon { flex: none; color: var(--faint); }
+.phone-row-text { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
+.phone-row-text strong { overflow: hidden; color: var(--ink); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.settings-body .phone-row-text small { color: var(--muted); font-size: 12.5px; }
+.settings-body .phone-row-text .phone-connected { color: var(--green); }
+.phone-row .btn-base { height: 32px; padding: 0 12px; }
+.phone-confirm { display: flex; flex: none; align-items: center; gap: 6px; }
+.phone-confirm span { margin-right: 4px; color: var(--ink-3); font-size: 12.5px; }
+.phone-row .phone-confirm .routing-quiet { height: 32px; padding: 0 10px; }
+.phone-row .phone-revoke-now { border-color: var(--coral-edge); color: var(--coral); background: var(--coral-wash); }
+.phone-row .phone-revoke-now:hover:not(:disabled) { border-color: var(--coral); }
+.settings-body .phones-none { color: var(--ink-3); }
+.phone-invite { display: flex; width: 100%; align-items: center; gap: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.phone-qr { flex: none; border-radius: 8px; fill: var(--qr-ink); background: var(--qr-paper); box-shadow: inset 0 0 0 1px var(--border); transition: opacity .2s ease; }
+.phone-qr.lapsed { opacity: .14; }
+.phone-invite-text { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 6px; }
+.phone-invite-text strong { color: var(--ink); font-size: 14px; font-weight: 600; }
+.phone-invite-text p { text-wrap: pretty; }
+.settings-body .phone-invite-text .phone-lapsed { color: var(--amber); }
+.phone-invite-text .routing-actions { margin-top: 6px; }
 .routing-key { width: 100%; margin-top: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
 .routing-key summary { display: flex; align-items: center; gap: 7px; color: var(--ink-2); font-size: 13px; font-weight: 600; cursor: pointer; list-style: none; }
 .routing-key summary::-webkit-details-marker { display: none; }

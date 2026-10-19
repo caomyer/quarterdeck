@@ -1210,8 +1210,9 @@ const DISPUTING: &str = "Hold on, why is this even a question? I thought we sett
 
 /// A live run of the captain's reply on a call, through the same host functions the app's card and review use:
 /// words on a call nothing argues, kept on it with `reply` and told to the first mate naming the call, surviving a
-/// relaunch; a dated Not now the same way; and words sent in a page's review. Each time, the first mate must then
-/// record an answer or ask again, which is what clears the reply.
+/// relaunch; a dated Not now, held until its day by `defer` and told to the first mate as done; and words sent in a
+/// page's review. Each time words are kept, the first mate must then record an answer or ask again, which is what
+/// clears the reply.
 ///
 /// ```sh
 /// cd src-tauri && FM_E2E_HOME=<scratch home> \
@@ -1276,7 +1277,7 @@ async fn reply_e2e_live_scratch_home() {
     if let Some(call) = plain.first().cloned() {
         recorder.mark("2", "words on a call nothing argues, across a relaunch");
         let _ = ask(&host, |reply| Cmd::Stop { reply }).await;
-        let replied = review::reply_and_tell(&home, &host, &call, DISPUTING).await;
+        let replied = review::reply_and_tell(&home, &*host, &call, DISPUTING).await;
         println!("reply on {call}: {replied:?}");
         let body = replied.clone().unwrap_or(Value::Null);
         let record_file: Value = std::fs::read_to_string(home.join("state/calls").join(format!("{call}.json")))
@@ -1319,28 +1320,27 @@ async fn reply_e2e_live_scratch_home() {
         not_exercised(&mut steps, "words: firstmate keeps them on the call, and the message names the call", "no plain call".into());
     }
 
-    // 3. A dated Not now on another call nothing argues, the same way.
+    // 3. A dated Not now on another call nothing argues: firstmate's `defer` holds it until the day, on the captain's
+    // own calendar, and the first mate is told what was done rather than asked to do it.
     if let Some(call) = plain.get(1).cloned() {
         recorder.mark("3", "a dated not now");
         let day = {
-            let out = std::process::Command::new("/bin/date").args(["-v+7d", "+%b %-d"]).output().expect("date");
+            let out = std::process::Command::new("/bin/date").args(["-v+7d", "+%Y-%m-%d"]).output().expect("date");
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
-        let words = format!("Not now. Ask me again on {day}.");
-        let replied = review::reply_and_tell(&home, &host, &call, &words).await.unwrap_or(Value::Null);
+        let deferred = review::defer_and_tell(&home, &*host, &call, &day, None).await.unwrap_or(Value::Null);
         let now = call_now(&home, &call);
-        let message = replied["message"].as_str().unwrap_or_default().to_string();
+        let message = deferred["message"].as_str().unwrap_or_default().to_string();
         record(
             &mut steps,
-            "not now: kept on the call like words, and told naming the call",
-            replied["kept"] == Value::Bool(true) && (now["reply"]["words"] == words.as_str() || acted_on(&now).is_some())
-                && replied["text"].as_str().is_some_and(|text| text.contains(&format!("replied to call {call} "))),
-            format!("kept={}; message={message}; reply={}", replied["kept"], now["reply"]),
+            "not now: held until the day by defer, and the first mate told it was",
+            deferred["kept"] == Value::Bool(true) && deferred["deferred"] == Value::Bool(true)
+                && now["captain_actionable"] == Value::Bool(false) && now["deferred"]["until"] == day.as_str()
+                && deferred["text"].as_str().is_some_and(|text| text.contains(&format!("deferred call {call} from Bearings until {day};"))),
+            format!("kept={}; message={message}; deferred={}; captain_actionable={}", deferred["kept"], now["deferred"], now["captain_actionable"]),
         );
-        let acted = first_mate_acts(&home, &call, act_wait).await;
-        record(&mut steps, "not now: the first mate holds it until the day, records it, or asks again", acted.is_some(), format!("{acted:?}"));
     } else {
-        not_exercised(&mut steps, "not now: kept on the call like words, and told naming the call", "no second plain call".into());
+        not_exercised(&mut steps, "not now: held until the day by defer, and the first mate told it was", "no second plain call".into());
     }
 
     // 4. Words sent in the review of the page that argues a call.
@@ -1384,19 +1384,19 @@ async fn reply_e2e_live_scratch_home() {
 
 // -------------------------------------------------------------- attach ---
 
-/// The message the UI sends with `files`, written by `src/attachments.ts` itself
+/// The message the UI sends with `files`, written by `packages/core/src/attachments.ts` itself
 /// so this test sends exactly what the composer would.
 fn ui_message(text: &str, files: &[crate::attach::Attached]) -> String {
     let files: Vec<Value> = files
         .iter()
         .map(|file| json!({"name": file.name, "path": file.path.to_string_lossy(), "source": file.source.to_string_lossy(), "bytes": file.bytes}))
         .collect();
-    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/attachments.ts");
+    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../packages/core/src/attachments.ts");
     let script = "const [module, text, files] = process.argv.slice(1); const { withAttachments } = await import(module); process.stdout.write(withAttachments(text, JSON.parse(files)));";
     let node = crate::envpath::resolve("node").expect("node is installed");
     let output = std::process::Command::new(node)
         .args(["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", script])
-        .arg(module.canonicalize().expect("src/attachments.ts"))
+        .arg(module.canonicalize().expect("packages/core/src/attachments.ts"))
         .arg(text)
         .arg(Value::Array(files).to_string())
         .output()
@@ -1864,7 +1864,7 @@ fn drawer_phase(inputs: &Value) -> String {
 }
 
 /// What the app holds about the host at this moment, folded from its events the
-/// way `use-host.ts` and `App.tsx` fold them: the ask's delivery, the runtime,
+/// way `conversation.ts` and `App.tsx` fold them: the ask's delivery, the runtime,
 /// and when the first mate was last seen out of a turn.
 fn host_view(events: &Events, message: &str, opened: u64) -> (Value, String, Option<u64>) {
     let mut delivery = Value::Null;

@@ -2,7 +2,7 @@
 
 In Quarterdeck the captain can reply to a place in the chat: a paragraph, a list item, a card, or words they selected.
 The app then writes a block before the captain's words, so you know which place they mean and what it names.
-Quarterdeck's `src/replyto.ts` is the only writer of the block, and its `src/fixtures/reply-block.json` pins the example below, so this page and the app cannot drift apart.
+Quarterdeck's `packages/core/src/replyto.ts` is the only writer of the block, and its `src/fixtures/reply-block.json` pins the example below, so this page and the app cannot drift apart.
 
 ## The block
 

@@ -5,7 +5,7 @@
 //
 // `?evidence` (src/host/mock.ts) gives the home's calls every kind of evidence: several pieces on one call, more than
 // fit on a line, a report whose scout presented a page, a report with no page, and the page of a task with no worker
-// left. Every surface reads it through `resolveEvidence` and `argumentOf` in src/calls.ts, so what is checked here is
+// left. Every surface reads it through `resolveEvidence` and `argumentOf` in packages/core/src/calls.ts, so what is checked here is
 // what each surface draws from them, and above all that a call nothing argues draws no control at all.
 // Set EVIDENCE_SHOTS=<folder> to also save screenshots of each state in both themes.
 import { mkdirSync } from "node:fs";

@@ -1,4 +1,4 @@
-import type { AppUpdate, HostRuntimeState } from "./types";
+import type { AppUpdate, HostRuntimeState } from "@quarterdeck/core/types";
 
 /** What a release's notes look like: one line per pull request merged since the last one (scripts/release.mjs). */
 const NOTES = "- Usage panel: the context window and plan limits, with Compact now (#9)\n- Attach files to a message (#8)\n- Crew routing in Settings (#7)";

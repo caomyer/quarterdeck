@@ -6,7 +6,7 @@
  *   (none)   every state, read moments ago
  *   `stale`  the same, but the newest fleet read failed, so what shows is the last good one
  */
-import type { BacklogRecord, Call, FleetTask, TaskPipeline, WaitingOn } from "./types";
+import type { BacklogRecord, Call, FleetTask, TaskPipeline, WaitingOn } from "@quarterdeck/core/types";
 
 type Row = (id: string, title: string, fields: Partial<BacklogRecord>) => BacklogRecord;
 type Worker = (id: string, kind: string, state: string, minutesAgo: number) => FleetTask;

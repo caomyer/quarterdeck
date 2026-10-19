@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { CopyResult, PickResult } from "../attachments";
-import { artifactPath } from "./types";
-import type { CalmRead, PickedCategory, SessionControls } from "./types";
-import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CallReplied, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskEdit, TaskEdited, TaskFile, TaskNotes, TaskSource } from "./types";
+import type { CopyResult, PickResult } from "@quarterdeck/core/attachments";
+import { artifactPath } from "@quarterdeck/core/types";
+import type { CalmRead, PickedCategory, SessionControls } from "@quarterdeck/core/types";
+import type { AnswerWords, AppUpdate, ArtifactRef, ArtifactRevision, CallAnswered, CallAnswerRequest, CallReplied, CommentPicture, ContextReading, HistoryItem, HomeStatus, HostAdapter, HostEvent, HostEventListener, HostRuntimeState, HostStateSnapshot, Needed, OutboxStatus, PaneCapture, PermissionRequest, PhoneChange, PhoneInvite, PhoneStatus, ProjectHistory, QuotaRead, RateLimit, ReasonKind, ReviewSubmitted, ReviewSummary, ReviewVerdict, ReviewView, Routing, RoutingStart, SnapshotEvent, SourcesRead, StartAsk, StartRequest, TakeOnAsk, TakeOnRequest, TaskEdit, TaskEdited, TaskFile, TaskNotes, TaskSource } from "@quarterdeck/core/types";
 
 /** Backend event names. `update` carries the ACP updates the host does not name itself, such as `tool_call_update`. */
 const EVENT_NAMES = [
@@ -83,6 +83,10 @@ export class TauriHostAdapter implements HostAdapter {
 
   callReply(call: string, words: string) {
     return invoke<CallReplied>("call_reply", { call, words });
+  }
+
+  callDefer(call: string, until: string, words: string | null) {
+    return invoke<CallReplied>("call_defer", { call, until, words });
   }
 
   reviewSettle(ref: ArtifactRef, thread: string, resolved: boolean) {
@@ -271,6 +275,27 @@ export class TauriHostAdapter implements HostAdapter {
 
   routingClearKey() {
     return invoke<Routing>("routing_key_clear");
+  }
+
+  phoneStatus() {
+    return invoke<PhoneStatus>("phone_status");
+  }
+
+  phoneInvite() {
+    return invoke<PhoneInvite>("phone_invite");
+  }
+
+  phoneInviteCancel() {
+    return invoke<PhoneStatus>("phone_invite_cancel");
+  }
+
+  phoneRevoke(id: string) {
+    return invoke<PhoneStatus>("phone_revoke", { id });
+  }
+
+  onPhones(listener: (change: PhoneChange) => void) {
+    const dispose = listen<PhoneChange>("phones", ({ payload }) => listener(payload));
+    return () => void dispose.then((stop) => stop());
   }
 
   readQuota() {

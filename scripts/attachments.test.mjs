@@ -1,4 +1,4 @@
-// Unit tests for src/attachments.ts, the one place a message's attached files are written into its words and read
+// Unit tests for packages/core/src/attachments.ts, the one place a message's attached files are written into its words and read
 // back out of them.
 //
 //   pnpm test
@@ -6,7 +6,7 @@
 // Node runs the TypeScript module directly, types stripped, so this needs no build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ATTACHED_HEADING, formatBytes, splitAttachments, withAttachments } from "../src/attachments.ts";
+import { ATTACHED_HEADING, formatBytes, splitAttachments, withAttachments } from "@quarterdeck/core/attachments";
 
 const HOME = "/Users/captain/firstmate/data/.attachments";
 const file = (name, fields = {}) => ({ name, path: `${HOME}/1-1/${name}`, source: `/Users/captain/Downloads/${name}`, bytes: 2048, ...fields });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { HostAdapter, QuotaRead } from "./types";
+import type { HostAdapter, QuotaRead } from "@quarterdeck/core/types";
 
 /** Plan limits move over hours and days, so a read every few minutes keeps them honest without hammering quota-axi. */
 export const QUOTA_EVERY_MS = 5 * 60_000;

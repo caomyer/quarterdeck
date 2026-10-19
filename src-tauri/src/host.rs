@@ -193,6 +193,47 @@ impl HostHandle {
         HostHandle { tx, groups: Groups::default(), started_home: std::sync::Mutex::new(None) }
     }
 
+    /// A handle whose host records the name of every command it is given, takes
+    /// every message as `told-<n>`, and reports `conversation` as its state.
+    #[cfg(test)]
+    pub(crate) fn recording(commands: Arc<std::sync::Mutex<Vec<String>>>, conversation: Value) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut told = 0;
+            while let Some(cmd) = rx.recv().await {
+                let name = match &cmd {
+                    Cmd::Start { .. } => "start",
+                    Cmd::Stop { .. } => "stop",
+                    Cmd::Restart { .. } => "restart",
+                    Cmd::Send { .. } => "send",
+                    Cmd::GetState { .. } => "get_state",
+                    Cmd::AnswerPermission { .. } => "answer_permission",
+                    Cmd::SetOption { .. } => "set_option",
+                };
+                commands.lock().unwrap().push(match &cmd {
+                    Cmd::Send { text, .. } => format!("send {text}"),
+                    _ => name.to_string(),
+                });
+                match cmd {
+                    Cmd::Send { reply, .. } => {
+                        told += 1;
+                        let _ = reply.send(Ok(format!("told-{told}")));
+                    }
+                    Cmd::GetState { reply } => {
+                        let _ = reply.send(json!({"state": "ready", "queued": [], "conversation": {"session_id": "s-1", "items": conversation.clone()}}));
+                    }
+                    Cmd::Start { reply, .. } | Cmd::Stop { reply } | Cmd::Restart { reply } | Cmd::AnswerPermission { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    Cmd::SetOption { reply, .. } => {
+                        let _ = reply.send(Ok(Value::Null));
+                    }
+                }
+            }
+        });
+        HostHandle { tx, groups: Groups::default(), started_home: std::sync::Mutex::new(None) }
+    }
+
     /// Process groups of the adapters running now.
     #[cfg(test)]
     pub(crate) fn live_groups(&self) -> Vec<u32> {
@@ -220,6 +261,58 @@ impl HostHandle {
             .map_err(|_| "the first mate host is not running".to_string())?;
         rx.await
             .map_err(|_| "the first mate host stopped before answering".to_string())
+    }
+}
+
+/// Telling the first mate something the captain said, which is all that a path
+/// reporting to it needs. The message waits in the durable outbox for the
+/// session that is running; telling never starts, stops or restarts one.
+pub(crate) trait Tell: Send + Sync {
+    /// The id the host gave the message, or why it would not take it.
+    fn tell(&self, text: String) -> impl std::future::Future<Output = Result<String, String>> + Send;
+}
+
+impl Tell for HostHandle {
+    async fn tell(&self, text: String) -> Result<String, String> {
+        self.call(|reply| Cmd::Send { text, reply }).await?
+    }
+}
+
+/// The first mate as anything other than the captain's own window may reach it:
+/// it can be told something the captain said, and its conversation and state
+/// read. It holds no way to start, stop, restart or reconfigure the first mate,
+/// or to answer for it, so nothing holding only this can become a second host.
+/// Words starting with `/` are a command for the session, not words for the
+/// first mate, so it refuses them: commands come only from the captain's window.
+/// The phone link (`phone/`) is given this and never the [`HostHandle`].
+#[derive(Clone)]
+pub struct Messenger {
+    tx: mpsc::UnboundedSender<Cmd>,
+}
+
+impl Messenger {
+    /// The host's state as `get_state` reports it, conversation included.
+    pub async fn state(&self) -> Result<Value, String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Cmd::GetState { reply }).map_err(|_| "the first mate host is not running".to_string())?;
+        rx.await.map_err(|_| "the first mate host stopped before answering".to_string())
+    }
+}
+
+impl Tell for Messenger {
+    async fn tell(&self, text: String) -> Result<String, String> {
+        if text.trim_start().starts_with('/') {
+            return Err("a command for the first mate's session is given only from the Mac".to_string());
+        }
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Cmd::Send { text, reply }).map_err(|_| "the first mate host is not running".to_string())?;
+        rx.await.map_err(|_| "the first mate host stopped before answering".to_string())?
+    }
+}
+
+impl HostHandle {
+    pub fn messenger(&self) -> Messenger {
+        Messenger { tx: self.tx.clone() }
     }
 }
 
@@ -300,7 +393,7 @@ pub async fn session_option_set(
 
 enum HostEvent {
     Update { gen: u64, params: Value },
-    Permission { gen: u64, params: Value, chose: String },
+    Permission { gen: u64, params: Value, chose: String, kind: Option<String> },
     PermissionAsked { gen: u64, rpc_id: u64, params: Value },
     Exited { gen: u64 },
     Stderr { gen: u64, line: String },
@@ -715,23 +808,10 @@ async fn spawn_adapter(
                         }
                         // A bypass home skips prompts through the session mode; a request
                         // that still arrives is answered allow_once and reported.
-                        let options = params
-                            .get("options")
-                            .and_then(Value::as_array)
-                            .cloned()
-                            .unwrap_or_default();
-                        let pick = options
-                            .iter()
-                            .find(|o| o.get("kind").and_then(Value::as_str) == Some("allow_once"))
-                            .or_else(|| options.first());
-                        let chose = pick
-                            .and_then(|o| o.get("optionId"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
+                        let (chose, kind) = auto_answer(&params);
                         let reply = json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "selected", "optionId": chose}}});
                         let _ = rpc.write(&reply).await;
-                        let _ = events.send(HostEvent::Permission { gen, params, chose });
+                        let _ = events.send(HostEvent::Permission { gen, params, chose, kind });
                     }
                     (Some(other), Some(id)) => {
                         let reply = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("not supported: {other}")}});
@@ -830,6 +910,18 @@ async fn open_session(
 }
 
 // ---------------------------------------------------------------- policy ---
+
+/// The option a home that skips prompts answers a permission request with: its
+/// allow_once option, else the first one offered, as its id and its kind.
+fn auto_answer(params: &Value) -> (String, Option<String>) {
+    let options = params.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
+    let pick = options
+        .iter()
+        .find(|o| o.get("kind").and_then(Value::as_str) == Some("allow_once"))
+        .or_else(|| options.first());
+    let field = |name: &str| pick.and_then(|o| o.get(name)).and_then(Value::as_str).map(str::to_string);
+    (field("optionId").unwrap_or_default(), field("kind"))
+}
 
 /// firstmate's `config/claude-permission-mode`, applied exactly as `fm-spawn.sh`
 /// applies it to Claude workers: absent or `bypass` is bypass, `auto` is auto,
@@ -1926,9 +2018,9 @@ impl Host {
     fn handle_event(&mut self, event: HostEvent) {
         match event {
             HostEvent::Update { gen, params } if gen == self.gen => self.on_update(params),
-            HostEvent::Permission { gen, params, chose } if gen == self.gen => {
+            HostEvent::Permission { gen, params, chose, kind } if gen == self.gen => {
                 let title = params.pointer("/toolCall/title").and_then(Value::as_str).unwrap_or("");
-                self.emit("permission", json!({"title": title, "chose": chose}));
+                self.emit("permission", json!({"title": title, "chose": chose, "kind": kind}));
             }
             HostEvent::PermissionAsked { gen, rpc_id, params } if gen == self.gen => {
                 let title = params
@@ -3650,6 +3742,27 @@ while True:
         let (events, text) = fake_permission_turn("perm-bypass", None, None).await;
         assert_eq!(text, "chose allow");
         assert!(!events.iter().any(|(e, _)| e == "permission_request"));
+        let mut reported = events.iter().find(|(e, _)| e == "permission").map(|(_, body)| body.clone()).expect("the answer was reported");
+        reported.as_object_mut().unwrap().remove("at_ms");
+        assert_eq!(reported, json!({"title": "Delete the build folder", "chose": "allow", "kind": "allow_once"}));
+    }
+
+    /// With no allow_once on offer the host answers with the first option, and reports its kind, so a
+    /// refusal whose id says nothing of it is never shown as allowed.
+    #[test]
+    fn a_request_with_no_allow_once_reports_the_kind_it_was_answered_with() {
+        let params = json!({"toolCall": {"title": "Run git push"}, "options": [{"optionId": "deny", "kind": "reject_once"}, {"optionId": "ok", "kind": "allow_always"}]});
+        assert_eq!(auto_answer(&params), ("deny".to_string(), Some("reject_once".to_string())));
+        assert_eq!(auto_answer(&json!({"options": [{"optionId": "opt-1"}]})), ("opt-1".to_string(), None));
+
+        let (mut host, log) = bare_host("perm-kind");
+        let (chose, kind) = auto_answer(&params);
+        host.handle_event(HostEvent::Permission { gen: host.gen, params, chose, kind });
+        let mut reported = log.0.lock().unwrap().iter().find(|(e, _)| e == "permission").map(|(_, body)| body.clone());
+        if let Some(body) = reported.as_mut().and_then(Value::as_object_mut) {
+            body.remove("at_ms");
+        }
+        assert_eq!(reported, Some(json!({"title": "Run git push", "chose": "deny", "kind": "reject_once"})));
     }
 
     struct QuietEnv(PathBuf);

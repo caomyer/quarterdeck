@@ -1,5 +1,5 @@
 {
-  "about": "What the app writes before the captain's words when he replies to a place in the chat, as src/replyto.ts writes it, every time on the captain's clock in UTC. scripts/replyto.test.mjs builds each from its inputs and compares it with this file, reads each back with splitReply, and checks engine/AGENTS.md documents the first word for word, so the first mate's guidance, this file and the app cannot drift apart.",
+  "about": "What the app writes before the captain's words when he replies to a place in the chat, as packages/core/src/replyto.ts writes it, every time on the captain's clock in UTC. scripts/replyto.test.mjs builds each from its inputs and compares it with this file, reads each back with splitReply, and checks engine/AGENTS.md documents the first word for word, so the first mate's guidance, this file and the app cannot drift apart.",
   "cases": [
     {
       "name": "documented",

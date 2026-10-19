@@ -94,6 +94,54 @@ impl SnapshotHandle {
     }
 }
 
+impl SnapshotHandle {
+    /// A handle that can only read the snapshot and ask for a fresh read, for
+    /// the phone link: it can neither point the reader at another home nor
+    /// look at a worker's screen.
+    pub fn reader(&self) -> SnapshotReader {
+        SnapshotReader { tx: self.tx.clone() }
+    }
+}
+
+#[derive(Clone)]
+pub struct SnapshotReader {
+    tx: mpsc::UnboundedSender<SnapCmd>,
+}
+
+impl SnapshotReader {
+    /// What `snapshot_latest` returns.
+    pub async fn latest(&self) -> Result<Value, String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(SnapCmd::Latest { reply }).map_err(|_| "the snapshot reader is not running".to_string())?;
+        rx.await.map_err(|_| "the snapshot reader stopped before answering".to_string())
+    }
+
+    /// Asks for a fresh read, as `snapshot_refresh` does, without waiting for it.
+    pub fn refresh(&self) {
+        let _ = self.tx.send(SnapCmd::Refresh);
+    }
+
+    /// A reader that always has `snapshot` and counts the reads asked for.
+    #[cfg(test)]
+    pub(crate) fn fixed(snapshot: Value, refreshes: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    SnapCmd::Latest { reply } => {
+                        let _ = reply.send(snapshot.clone());
+                    }
+                    SnapCmd::Refresh => {
+                        refreshes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+            }
+        });
+        SnapshotReader { tx }
+    }
+}
+
 #[tauri::command]
 pub async fn snapshot_refresh(snapshots: TauriState<'_, SnapshotHandle>) -> Result<(), String> {
     snapshots
@@ -231,6 +279,7 @@ async fn run(app: AppHandle, mut cmd_rx: mpsc::UnboundedReceiver<SnapCmd>) {
                     if deadline.is_none() {
                         deadline = pulse_after(&merged).map(|wait| Instant::now() + wait);
                     }
+                    crate::phone::snapshot_read(&app, &merged);
                     latest = Some(merged);
                     let _ = app.emit("snapshot", payload);
                 }

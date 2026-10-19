@@ -193,7 +193,7 @@ fn task_file(data: &Path, segments: &[String]) -> Result<PathBuf, Refusal> {
     Ok(found)
 }
 
-fn content_type(path: &Path) -> &'static str {
+pub(crate) fn content_type(path: &Path) -> &'static str {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     match extension.as_str() {
         "html" | "htm" => "text/html; charset=utf-8",

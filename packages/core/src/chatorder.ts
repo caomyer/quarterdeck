@@ -9,7 +9,7 @@
  * which is right after every message it is known to be newer than. With no times at all in a resumed history, that
  * is above all of it: a page whose place cannot be told is shown too early, never too late.
  */
-import type { ChatMessage } from "./host/use-host";
+import type { ChatMessage } from "./conversation";
 
 /**
  * The latest a message can have been said, in milliseconds: its own time when it has one, the time of the review it

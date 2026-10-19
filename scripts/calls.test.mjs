@@ -1,4 +1,4 @@
-// Unit tests for src/calls.ts, the one place every screen reads captain calls from.
+// Unit tests for packages/core/src/calls.ts, the one place every screen reads captain calls from.
 //
 //   pnpm test
 //
@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "../src/calls.ts";
+import { answerInWords, answerOfMessage, answeredBy, answeredByCaptain, argumentOf, awaitsCaptain, callsArguedBy, callsInChat, callStanding, dayAfter, decidedForCaptain, evidenceAction, evidenceBeside, homeCalls, linkLabel, openCalls, optionsUpdatedSince, recommended, readLabel, replyOf, resolveEvidence, stillOffered } from "@quarterdeck/core/calls";
 
 const NOW = Date.parse("2026-09-18T18:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -214,6 +214,10 @@ test("the app's own answer messages read back as the answers they are", () => {
   }
   for (const sent of fixture.replied) {
     assert.deepEqual(answerOfMessage(sent.text), { kind: "replied", call: sent.call, words: sent.words });
+  }
+  assert.ok(fixture.deferred.length >= 2, "the fixture pins a deferral with and without words");
+  for (const sent of fixture.deferred) {
+    assert.deepEqual(answerOfMessage(sent.text), { kind: "deferred", call: sent.call, until: sent.until, words: sent.words });
   }
 });
 

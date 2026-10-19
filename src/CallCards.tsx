@@ -1,6 +1,6 @@
 /**
  * A call's two cards in the chat: the call card, where the first mate raised it, and the answer card, where the
- * captain answered it. What each says is worked out in src/callviews.ts; these only draw it.
+ * captain answered it. What each says is worked out in packages/core/src/callviews.ts; these only draw it.
  *
  * The call card takes its answer form as parts the answering surface hands in (`form`), so it answers through the one
  * form and the one path Bearings uses, and never through a copy of its own.
@@ -8,9 +8,9 @@
 import { Check, CircleAlert, CircleCheck, CirclePause, CircleSlash, Ellipsis, Info } from "lucide-react";
 import { useState } from "react";
 
-import { type Evidence, evidenceAction } from "./calls";
-import { type AnswerCardView, type CallCardView, type CallLine } from "./callviews";
-import type { Call } from "./host/types";
+import { type Evidence, evidenceAction } from "@quarterdeck/core/calls";
+import { type AnswerCardView, type CallCardView, type CallLine } from "@quarterdeck/core/callviews";
+import type { Call } from "@quarterdeck/core/types";
 
 /** How many pieces of evidence a line names before it folds the rest under "N more". */
 const EVIDENCE_SHOWN = 3;
@@ -145,7 +145,8 @@ export function AnswerCard({ callId, messageId, view, time, sent }: {
       <CircleCheck size={15} className="tone-green" /><span className="grow">Your call · <strong>{view.title}</strong> · {view.said}</span><span className="call-pill">closed</span>
     </article>;
   }
-  const recorded = view.kind === "recorded";
+  // A recorded option and a deferral carried out are done; words wait on the first mate.
+  const recorded = view.kind === "recorded" || view.kind === "deferred";
   return <article className={`answer-chat-card tone-${view.tone}`} data-testid="answer-card" data-kind={view.kind} data-call-id={callId} data-message-id={messageId} data-tone={view.tone}>
     <span className="answer-chat-kicker">{view.kicker}</span>
     <strong className="answer-chat-title">{view.title}</strong>

@@ -1,4 +1,4 @@
-import type { AppUpdate, HostRuntimeState } from "./host/types";
+import type { AppUpdate, HostRuntimeState } from "@quarterdeck/core/types";
 
 /** What the sidebar says about the app's own update: one line, a detail under it, and what the button does. */
 export type UpdateView = {

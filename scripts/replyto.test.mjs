@@ -1,4 +1,4 @@
-// Unit tests for src/replyto.ts, the one place a reply to a place in the chat is written into a message's words, read
+// Unit tests for packages/core/src/replyto.ts, the one place a reply to a place in the chat is written into a message's words, read
 // back out of them, and found again on screen.
 //
 //   pnpm test
@@ -9,10 +9,10 @@ process.env.TZ = "UTC";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { splitAttachments, withAttachments } from "../src/attachments.ts";
+import { splitAttachments, withAttachments } from "@quarterdeck/core/attachments";
 import {
   chipState, clock, commandOf, findPlace, knownThings, mateReplyOf, REPLY_HEADING, REPLY_RULE, replyBlock, resolve, splitReply, thingsNamed, withReply,
-} from "../src/replyto.ts";
+} from "@quarterdeck/core/replyto";
 
 const fixture = JSON.parse(readFileSync(new URL("../src/fixtures/reply-block.json", import.meta.url), "utf8"));
 const documented = fixture.cases.find((item) => item.name === "documented");

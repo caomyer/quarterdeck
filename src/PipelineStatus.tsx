@@ -1,14 +1,14 @@
 // A task's pipeline status: the block at the top of its drawer, and the strip beside its row in the task list.
 //
-// Both draw only what src/pipeline.ts reads from the snapshot. The block has no control of its own: answering a gate,
+// Both draw only what packages/core/src/pipeline.ts reads from the snapshot. The block has no control of its own: answering a gate,
 // restarting a run and merging stay where they are, and its one link opens a call that already exists.
 import { ExternalLink } from "lucide-react";
 import { useNow } from "./use-now";
-import type { Call, FleetTask } from "./host/types";
+import type { Call, FleetTask } from "@quarterdeck/core/types";
 import {
   type CellState, chipOf, findingPlace, gateLine, hasRail, headline, howItShips, prLine, railNote, railOf, readAge, sourceLine,
   waitingOf, type Waiting,
-} from "./pipeline";
+} from "@quarterdeck/core/pipeline";
 
 const GLYPH: Partial<Record<CellState, string>> = { completed: "✓", skipped: "–", parked: "❚❚", held: "✓", failed: "✕", cancelled: "✕", unknown: "?" };
 
