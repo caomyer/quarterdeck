@@ -1,0 +1,18 @@
+# Per-repo no-mistakes overrides.
+#
+# no-mistakes reads this file only from the repository root, and only from the
+# trusted default-branch copy, so a pushed branch cannot change it for itself.
+# engine/.no-mistakes.yaml predates the engine's move into this repository and
+# is not read for it.
+
+# Integrate a moved main with a merge commit instead of replaying the branch.
+# On a resubmitted branch, no-mistakes checks that nothing from its earlier
+# submission vanished. After a rebase it answers by comparing content, which
+# reads a faithful rebase as lost work whenever main touched nearby lines; that
+# refused branches four separate ways, reproduced in report:nm-rebase-guard-1.
+# A merge keeps the earlier head an ancestor of the new one, which the check
+# accepts as exact proof before comparing any content. Branches then carry
+# merge commits, which squash-merging keeps off main. scripts/nmconfig.test.mjs
+# keeps this set.
+rebase:
+  strategy: merge

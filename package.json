@@ -24,7 +24,7 @@
     "calls": "node scripts/chat-calls.mjs",
     "reply": "node --disable-warning=ExperimentalWarning scripts/chat-reply.mjs",
     "evidence": "node scripts/call-evidence.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/callviews.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs scripts/sources.test.mjs scripts/tasks.test.mjs scripts/sessionctl.test.mjs scripts/calm.test.mjs scripts/pipeline.test.mjs scripts/replyto.test.mjs scripts/phone-seal.test.mjs scripts/health.test.mjs scripts/conversation.test.mjs scripts/core-boundary.test.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/calls.test.mjs scripts/callviews.test.mjs scripts/logbook.test.mjs scripts/attachments.test.mjs scripts/rules.test.mjs scripts/usage.test.mjs scripts/update.test.mjs scripts/release.test.mjs scripts/taskbody.test.mjs scripts/chatorder.test.mjs scripts/start.test.mjs scripts/sources.test.mjs scripts/tasks.test.mjs scripts/sessionctl.test.mjs scripts/calm.test.mjs scripts/pipeline.test.mjs scripts/replyto.test.mjs scripts/phone-seal.test.mjs scripts/health.test.mjs scripts/conversation.test.mjs scripts/core-boundary.test.mjs scripts/nmconfig.test.mjs",
     "sources": "node scripts/task-sources.mjs",
     "session": "node scripts/session-controls.mjs",
     "tasks": "node scripts/task-list.mjs",
@@ -49,7 +49,8 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.0",
     "typescript": "~6.0.0",
-    "vite": "^8.0.0"
+    "vite": "^8.0.0",
+    "yaml": "^2.9.1"
   },
   "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"
 }

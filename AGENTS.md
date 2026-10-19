@@ -48,9 +48,9 @@ It is not a vendored dependency and not a submodule: it is ours, edited here, an
   When iCloud denies that path, the worktree dies with `fatal: not a git repository`, no matter where the worktree itself lives.
   One clone per agent: sessions run concurrently, and a shared clone puts two agents on one working tree and one branch.
   `origin` is the shared truth.
-  Run `git fetch origin && git rebase origin/main` before starting, and again after committing and before you push, then push your branch so it is visible to everyone else.
-  Rebase refuses to run while the tree has uncommitted changes, so "rebase before handing over" does nothing if you run it with your work still uncommitted: it prints `cannot rebase: You have unstaged changes` and you push anyway.
-  Commit first, then rebase, then push.
+  Run `git fetch origin && git merge origin/main` before starting, and again after committing and before you push, then push your branch so it is visible to everyone else.
+  Bring main in by merging, not rebasing, and never rebase a branch once it has been submitted to no-mistakes: a rewritten history reads to its resubmission check as lost work and the run is refused, while a merge keeps the submitted head an ancestor, which is why `.no-mistakes.yaml` has the pipeline merge too.
+  A merge refuses to run over uncommitted changes to the files it updates, so commit first, then merge, then push.
   Only James's checkout sits in iCloud, so the rule below applies to it alone.
 - This checkout is inside iCloud Drive, which adds sync attributes that make codesign fail, so the build output is kept outside it.
   `src-tauri/.cargo/config.toml` points Cargo at `~/Library/Caches/quarterdeck/target`; it holds a machine-specific path and is not committed.
